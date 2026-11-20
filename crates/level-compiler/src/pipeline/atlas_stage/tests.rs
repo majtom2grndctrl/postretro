@@ -147,7 +147,7 @@ fn empty_cut_rebuilds_the_pre_atlas_face_identity_set_unchanged() {
 fn partition_over(leaves: &BspLeavesSection, bvh: &BvhSection) -> CellPartitionPlan {
     plan_cell_partition(CellPartitionInputs {
         generated_portals: &[],
-        streaming_seam_regions: &[],
+        streaming_split_regions: &[],
         stream_resident_regions: &[],
         stream_priority_regions: &[],
         leaves,

@@ -58,6 +58,11 @@ const MEMBER_WRAPPER_SOURCES: &[(&str, &str, &str)] = &[
         include_str!("../../../sdk/lib/entities/attack_pools.luau"),
         "entities/attack_pools.luau",
     ),
+    (
+        "wrapSeamEntity",
+        include_str!("../../../sdk/lib/entities/seams.luau"),
+        "entities/seams.luau",
+    ),
 ];
 
 /// SDK library prelude — `map_entities.luau` returns `getMapEntities`, which
@@ -88,9 +93,14 @@ const DATA_SCRIPT_LUAU_SRC: &str = include_str!("../../../sdk/lib/data_script.lu
 /// temporary [`DATA_SCRIPT_PARTS_GLOBAL`] bridge carries them (and the shared
 /// subject tokens and dispatch params) across chunks and is cleared once the
 /// main module returns. `(bridge key, source, sdk/lib-relative path)`.
-/// `player_events` comes first because `commands.luau` reads
+/// `player_events` comes before `commands`, which reads
 /// `__postretroDataScriptParts.playerEvents` at load.
 const DATA_SCRIPT_PART_SOURCES: &[(&str, &str, &str)] = &[
+    (
+        "impactEvents",
+        include_str!("../../../sdk/lib/data_script/impact_events.luau"),
+        "data_script/impact_events.luau",
+    ),
     (
         "attackBudget",
         include_str!("../../../sdk/lib/data_script/attack_budget.luau"),
@@ -232,6 +242,7 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineStore",
     "defineDefenseLayer",
     "defineDamageType",
+    "defineStatus",
     "defineAttackToken",
     "defaultToken",
     "defineAttack",
@@ -351,6 +362,7 @@ const BRAIN_LUAU_FIELDS: &[&str] = &[
     "brain",
     "candidate",
     "defense",
+    "hasStatus",
     "state",
     "attackTurnHeld",
     "attackTurnFree",
@@ -470,6 +482,7 @@ pub const POSTRETRO_ROOT_MODULE_EXPORTS: &[&str] = &[
     "defineStore",
     "defineDefenseLayer",
     "defineDamageType",
+    "defineStatus",
     "defineAttackToken",
     "defaultToken",
     "defineAttack",
@@ -483,6 +496,7 @@ pub const POSTRETRO_ROOT_MODULE_EXPORTS: &[&str] = &[
     "brain",
     "candidate",
     "defense",
+    "hasStatus",
     "state",
     "attackTurnHeld",
     "attackTurnFree",

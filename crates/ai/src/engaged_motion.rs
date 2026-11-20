@@ -61,7 +61,7 @@ pub(super) fn plan(
                 target: target.entity,
                 direction,
             });
-            // Rotated to the current bearing every tick, so a strafe steps
+            // Rotated to the current bearing each decide, so a strafe steps
             // 45° from wherever the enemy is, never from the shared ring.
             let bearing = horizontal_bearing(target.position, position)
                 .or_else(|| {
@@ -169,6 +169,23 @@ pub(super) fn settle(outcome: &mut EnemyOutcome, claim: Option<CombatCandidate>)
         Some(claim) => SteeringIntent::MoveTo(claim.position),
         None => SteeringIntent::Clear,
     };
+}
+
+/// Between decides an engaged slot verb walks on to the slot its last decide
+/// claimed: acting runs every tick, only the choice waits for a decide. With
+/// no claim it keeps standing, as `settle` left it. So does one whose motion
+/// this tick is no slot verb, as a flinch's stagger plants it: the memory
+/// keeps the verb until the next decide, the stand starts now.
+pub(super) fn walk_on(outcome: &mut EnemyOutcome) {
+    let slot_verb = matches!(
+        outcome.motion,
+        Some(MotionVerb::Strafe | MotionVerb::Reposition)
+    ) && !matches!(outcome.brain.engaged_motion, EngagedMotionMemory::None);
+    if let (true, SteeringIntent::Clear, Some(slot)) =
+        (slot_verb, outcome.steering, outcome.brain.combat_slot)
+    {
+        outcome.steering = SteeringIntent::MoveTo(slot);
+    }
 }
 
 fn horizontal_bearing(from: Vec3, to: Vec3) -> Option<Vec3> {

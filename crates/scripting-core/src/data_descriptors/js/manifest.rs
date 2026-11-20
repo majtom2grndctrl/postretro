@@ -47,6 +47,7 @@ impl LevelManifest {
         let events = drain_impact_events_js(ctx, &obj, "setupLevel")?;
         let trigger_events = drain_level_trigger_events_js(&obj, "setupLevel")?;
         let teleport_events = drain_level_teleport_events_js(&obj, "setupLevel")?;
+        let seam_events = drain_level_seam_events_js(&obj, "setupLevel")?;
         let trigger_pools = drain_trigger_pools_js(&obj, "setupLevel")?;
         let player_events =
             drain_player_events_js(ctx, &obj, PlayerEventSite::Level, "setupLevel")?;
@@ -59,6 +60,7 @@ impl LevelManifest {
             crossings,
             trigger_events,
             teleport_events,
+            seam_events,
             trigger_pools,
             player_events,
             ui_trees,
@@ -1075,11 +1077,13 @@ pub fn drain_defense_vocabulary_js<'js>(
     ctx: &rquickjs::Ctx<'js>,
     obj: &Object<'js>,
 ) -> Result<postretro_foundation::defense::DefenseVocabulary, DescriptorError> {
-    let mut values: [Option<serde_json::Value>; 3] = [None, None, None];
-    for (slot, key) in values
-        .iter_mut()
-        .zip(["defenseLayers", "damageTypes", "defaultDamageType"])
-    {
+    let mut values: [Option<serde_json::Value>; 4] = [None, None, None, None];
+    for (slot, key) in values.iter_mut().zip([
+        "defenseLayers",
+        "damageTypes",
+        "defaultDamageType",
+        "statuses",
+    ]) {
         if !obj.contains_key(key).map_err(js_err)? {
             continue;
         }
@@ -1093,6 +1097,7 @@ pub fn drain_defense_vocabulary_js<'js>(
         values[0].as_ref(),
         values[1].as_ref(),
         values[2].as_ref(),
+        values[3].as_ref(),
     )
     .map_err(|reason| DescriptorError::InvalidShape { reason })
 }

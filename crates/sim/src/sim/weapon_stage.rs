@@ -16,7 +16,7 @@ pub(super) use commands::{
 };
 pub use commands::{ProjectileSource, projectile_model_body_rotation, spawn_projectile};
 pub(crate) use impact::apply_authorized_splash_impact_damage;
-pub use impact::apply_authorized_weapon_impact_damage;
+pub use impact::{apply_authorized_shot_impact_damage, apply_authorized_weapon_impact_damage};
 pub(super) use resource::tick_weapon_resources;
 pub(crate) use state::{finish_lowering, transition_to_idle};
 
@@ -2315,6 +2315,58 @@ mod tests {
             )
             .expect("projectile carries gameplay flight state");
         assert_eq!(component.source_weapon.as_deref(), Some("rocket_launcher"));
+    }
+
+    // AC 12 / P67: a projectile carries its owner's life counter from fire,
+    // so one landing after the owner respawns is known to predate it.
+    #[test]
+    fn local_projectile_fire_stamps_its_owners_life_counter() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let pawn = {
+            let mut registry = registry.borrow_mut();
+            let pawn = registry.spawn(Transform::default());
+            let weapon = registry.spawn(Transform::default());
+            registry
+                .set_component(
+                    weapon,
+                    projectile_weapon_component("weapon.test.projectile"),
+                )
+                .expect("projectile weapon attaches");
+            let mut inventory = Inventory::default();
+            inventory.wieldables[0] = Some(weapon);
+            registry
+                .set_component(pawn, inventory)
+                .expect("pawn wields projectile weapon");
+            let mut movement = crate::sim::tests::trigger_movement();
+            movement.life_counter = 3;
+            registry.set_component(pawn, movement).unwrap();
+            pawn
+        };
+        let mut ignore_impact = ignore_impact;
+        let result = run_local_weapon_command(
+            &registry,
+            Some(pawn),
+            false,
+            None,
+            &fire_command(true, true),
+            false,
+            &CollisionWorld::new(),
+            &HitZoneStore::new(),
+            0.0,
+            1.0 / 60.0,
+            &mut ignore_impact,
+        );
+        let [projectile] = result.projectile_spawns.as_slice() else {
+            panic!("accepted projectile fire must produce exactly one projectile");
+        };
+        let registry = registry.borrow();
+        let component = registry
+            .get_component::<postretro_entities::components::projectile::ProjectileComponent>(
+                *projectile,
+            )
+            .unwrap();
+        assert_eq!(component.owner_pawn, pawn);
+        assert_eq!(component.owner_life, 3);
     }
 
     #[test]
@@ -5103,6 +5155,7 @@ mod tests {
             &mut registry,
             weapon_id,
             None,
+            None,
             &impact,
             "weapon.test.rifle".to_string(),
             5.0,
@@ -5495,6 +5548,7 @@ mod tests {
                         knockback_impulse: [0.0; 3],
                         credit_source: "death-ordering".into(),
                         owner_pawn: attacker,
+                        owner_life: 0,
                         owner_weapon: weapon,
                         attackerless: false,
                         spawned: false,

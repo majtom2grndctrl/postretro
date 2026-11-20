@@ -103,8 +103,8 @@ pub(crate) fn light_table_from_lights(
 /// center (`TriggerVolumeBridge::populate_from_level`), a teleporter's entity
 /// origin, a spawner's narrowed entity origin (`entity_spawner::handle`), a
 /// projectile trap's entity origin (`projectile_trap::handle`), a ghost
-/// link's companion origin, and an attack pool's entity origin
-/// (`attack_pool::handle`).
+/// link's companion origin, an attack pool's entity origin
+/// (`attack_pool::handle`), and a seam's companion origin.
 pub(crate) fn map_members_from_map(
     movers: &[MapKinematicMover],
     triggers: &[MapTriggerVolume],
@@ -176,6 +176,17 @@ pub(crate) fn map_members_from_map(
             position: vec3(entity.origin),
             spawned_tags: Vec::new(),
         });
+    // One companion per seam, in seam order; runtime install spawns each seam
+    // at its companion's origin with its tags.
+    let seams = entities
+        .iter()
+        .filter(|entity| entity.classname == postretro_level_format::seams::SEAM_CLASSNAME)
+        .map(|entity| MapMember {
+            kind: MapMemberKind::Seam,
+            tags: entity.tags.clone(),
+            position: vec3(entity.origin),
+            spawned_tags: Vec::new(),
+        });
     movers
         .chain(triggers)
         .chain(spawners)
@@ -183,6 +194,7 @@ pub(crate) fn map_members_from_map(
         .chain(traps)
         .chain(ghost_links)
         .chain(attack_pools)
+        .chain(seams)
         .collect()
 }
 

@@ -146,7 +146,7 @@ pub use postretro_entities::data_descriptors::{
     GroupTarget, InventoryDescriptor, LifeStatesDescriptor, LocomotionDescriptor, MeshDescriptor,
     NamedReaction, PlayerEventDescriptor, PlayerEventEdge, PlayerEventSource, PlayerEventTrigger,
     PrimitiveDescriptor, ProgressDescriptor, RawAnimationState, RawMeshDescriptor,
-    ReactionDescriptor, SequenceStep, SequenceTarget, TeleportEventDescriptor,
+    ReactionDescriptor, SeamEventDescriptor, SequenceStep, SequenceTarget, TeleportEventDescriptor,
     TriggerEventDescriptor, TriggerPoolArm, TriggerPoolDescriptor, VolumeTriggerEventDescriptor,
     build_crossing, build_predicate_crossing,
 };

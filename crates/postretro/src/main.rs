@@ -104,7 +104,9 @@ mod ghost_links;
 mod render;
 mod render_preparation;
 mod runtime_movers;
+mod runtime_seams;
 mod runtime_teleporters;
+mod seam_crossing;
 use postretro_sim::scripting;
 // Live session-lifetime container: all session-lifetime state (scripting core,
 // audio, net endpoint, input/UI/modal group, and their bridges and registries),
@@ -115,6 +117,7 @@ mod session;
 // renderer outcomes. It never owns GPU objects.
 mod sh_streaming;
 mod sound_events;
+mod status_presentation;
 // Resource-neutral read issuer, drain budget, and id-49 hint decode shared by
 // every streamed resource.
 mod streaming;
@@ -882,6 +885,11 @@ pub(crate) struct App {
     /// every build; the `Alt+Shift+N` debug overlay (dev-tools-only) also
     /// consumes it.
     nav_graph: Option<nav::NavGraph>,
+    /// The NPC tick scheduler for the loaded level: perception (AI lead,
+    /// ghost-link cells, perceived cells, each NPC's cell) and each NPC's tier.
+    /// Built with the level; `None` without one, which runs every NPC every
+    /// tick.
+    npc_scheduler: Option<postretro_sim::npc_tiers::NpcScheduler>,
 
     /// Optional map path resolved from CLI args. When absent, boot lands in
     /// Frontend after the splash instead of requesting a boot level load.
@@ -1116,6 +1124,19 @@ pub(crate) struct App {
     /// the composed reaction set. The authoritative fixed tick dispatches each
     /// teleport's reactions through it, and the frame-end residual drain reads it.
     teleporter_bindings: postretro_sim::teleporter_system::TeleporterBindingTable,
+    /// The installed level's seams: inside test, latches, activations and
+    /// queued `arrive` events. Host-side; level-scoped.
+    seam_stage: postretro_sim::seam_stage::SeamStage,
+    /// The installed level's `arrive` bindings: brush `on_arrive` and script
+    /// `seamEvents`, host-only.
+    seam_bindings: postretro_sim::seam_system::SeamBindingTable,
+    /// Arrivals a seam load's unload harvested, for the next level's first
+    /// spawns. Cleared by the next unload, suspend, and a failed, cancelled
+    /// or superseded load.
+    seam_crossing: Option<crate::seam_crossing::SeamCrossing>,
+    /// A script level verb or a frontend return ran this frame; the frame-end
+    /// seam pick drops every seam activation.
+    script_level_request_this_frame: bool,
     /// The level's ghost links: link-state history and this frame's ghosts,
     /// built at level install and dropped at unload. Render collection reads it.
     ghost_links: ghost_links::GhostLinks,
@@ -1146,6 +1167,9 @@ pub(crate) struct App {
     /// (forward prediction, adoption, or the host seat's own crossing) and every
     /// observed remote arrival. Played and cleared by the frame's audio step.
     pending_teleport_sounds: Vec<postretro_audio::SoundRequest>,
+    /// Status presentation on this machine: attached emitters and tick sounds
+    /// from each entity's status presence.
+    status_presentation: status_presentation::StatusPresentation,
     client_fire_resolutions: Vec<weapon::ClientFireResolution>,
     client_predicted_shots: weapon::ClientPredictedShots,
     /// Connected-client reload edges derived from replicated slots.
@@ -2057,6 +2081,9 @@ impl App {
         // dispatch. A cancelled load reports nothing, so a suspended boot
         // load resumes and installs instead of exiting.
         self.cancel_level_load_for_suspend();
+        // A crossing client's arrival offer clears with the suspend (pin P6),
+        // not only at the next install.
+        self.spawn_poses.set_seam_offers(Default::default());
         // Hand off the upload thread before the renderer drops: a job still
         // running on the old device finishes into dropped receivers, and the
         // redraw poll joins the thread once it has.
@@ -2861,6 +2888,13 @@ impl App {
                         self.nav_graph.as_ref().map(|graph| graph.agent_params()),
                     )
                 {
+                    let placements = placements.with_arrival_world(
+                        crate::collision::moving::CombinedCollisionWorld::new(
+                            &self.collision_world,
+                            &self.kinematic_mover_colliders,
+                            &self.kinematic_mover_tick_states,
+                        ),
+                    );
                     self.spawn_poses.resolve_and_hint(
                         &crate::spawn_pose::NamedLevel {
                             placements: &placements,
@@ -3210,10 +3244,14 @@ impl App {
     }
 
     /// Present the frontend menu and queue the unload, then the declared
-    /// backdrop: navigation alone, which changes no membership. The
+    /// backdrop: navigation alone, which changes no membership, noted as a
+    /// level request so a seam on the same frame yields. The
     /// `returnToFrontend` verb reaches it only in single-player; a leave and
     /// `ui.quitToMenu` reach it through their own membership change.
     fn navigate_to_frontend(&mut self) {
+        // Every frontend return (a verb, quit to menu, a session ending)
+        // beats a seam activated on the same frame.
+        self.note_script_level_request();
         self.cancel_pending_entry("navigation");
         self.present_frontend_menu();
         let requests = self
@@ -3718,10 +3756,14 @@ impl App {
                     | SystemReactionCommand::JoinSession { .. }
             );
             if left_this_drain && !enters_next_session {
-                // A text edit can carry a password being typed: name its slot only.
+                // A text edit, or a name captured from the text entry, can carry
+                // a password being typed: name only the slot or the row.
                 let shown = match &command {
                     SystemReactionCommand::AppendText { slot, .. } => {
                         format!("AppendText {{ slot: {slot:?}, .. }}")
+                    }
+                    SystemReactionCommand::CreateCharacter { index, .. } => {
+                        format!("CreateCharacter {{ index: {index}, .. }}")
                     }
                     other => format!("{other:?}"),
                 };
@@ -3881,6 +3923,7 @@ impl App {
                     if let Some(session) = self.session.as_mut() {
                         session.modal_stack.clear_pushed();
                     }
+                    self.note_script_level_request();
                     self.enqueue_level_request(LevelRequest::Load(LevelSource::Catalog(map)));
                 }
                 SystemReactionCommand::RestartLevel { dispatch_source } => {
@@ -3891,6 +3934,7 @@ impl App {
                         if let Some(session) = self.session.as_mut() {
                             session.modal_stack.clear_pushed();
                         }
+                        self.note_script_level_request();
                         self.enqueue_level_request(LevelRequest::Load(source));
                     }
                 }
@@ -4110,6 +4154,12 @@ impl App {
         let environment_volumes = &self.environment_volumes;
         let collision_world = &self.collision_world;
         let spawn_poses = &mut self.spawn_poses;
+        let seam_stage = &mut self.seam_stage;
+        let arrival_world = crate::collision::moving::CombinedCollisionWorld::new(
+            &self.collision_world,
+            &self.kinematic_mover_colliders,
+            &self.kinematic_mover_tick_states,
+        );
         let published_level_identity = self.published_level_identity.as_deref();
         // `net_endpoint` and `mesh_clip_tables` are both session-owned but distinct
         // fields; bind the session once and reach each as a disjoint field borrow,
@@ -4265,6 +4315,8 @@ impl App {
                                                     host_agent_params,
                                                 )
                                         {
+                                            let placements =
+                                                placements.with_arrival_world(arrival_world);
                                             spawn_poses.resolve_and_hint(
                                                 &crate::spawn_pose::NamedLevel {
                                                     placements: &placements,
@@ -4457,7 +4509,8 @@ impl App {
                                     &host_spawn_points,
                                     &net_descriptors,
                                     host_agent_params,
-                                );
+                                )
+                                .map(|placements| placements.with_arrival_world(arrival_world));
                                 let mut promotion = None;
                                 let pawn = match placements.as_ref() {
                                     None => {
@@ -4542,6 +4595,34 @@ impl App {
                                     );
                                     continue;
                                 };
+                                // A seam arrival's motion, and every spawn's
+                                // latch, before any trigger tick sees the pawn.
+                                if let Some(crate::spawn_pose::PromotionSpawn {
+                                    spawn:
+                                        crate::spawn_pose::ResolvedSpawn::Unbacked(
+                                            crate::spawn_pose::UnbackedSpawn {
+                                                arrival: Some(arrival),
+                                                ..
+                                            },
+                                        ),
+                                    ..
+                                }) = promotion.as_ref()
+                                {
+                                    match crate::seam_crossing::apply_spawn_arrival(
+                                        &mut registry,
+                                        &arrival_world,
+                                        pawn,
+                                        arrival,
+                                    ) {
+                                        Ok(_) => seam_stage.queue_arrival(arrival.seam_index, pawn),
+                                        Err(fallback) => crate::seam_crossing::warn_fallback(
+                                            &arrival.seam,
+                                            fallback,
+                                            &format!("seat {}", seat.0),
+                                        ),
+                                    }
+                                }
+                                seam_stage.latch_spawned_in(&registry, pawn);
                                 replication.register_client(*client_id);
                                 state_slots.register_client(*client_id);
                                 if let Some(seats) = seat_table.as_deref_mut() {
@@ -5863,7 +5944,10 @@ impl App {
                 &mut script_ctx.presentation_overrides.borrow_mut(),
             );
         }
-        netcode::host_ingest_ready_hit_declarations(
+        // Hits that waited on this tick's fire authorization are in-tick
+        // producers of it: a status they apply counts on this tick.
+        registry.set_status_applications_immediate(true);
+        let ingested = netcode::host_ingest_ready_hit_declarations(
             server,
             &mut registry,
             &self.collision_world,
@@ -5892,7 +5976,54 @@ impl App {
             },
             |shot_id, point| projectile_presentations.note_contact(shot_id, point),
             |impact| remote_impacts.push(impact),
-        )
+        );
+        registry.set_status_applications_immediate(false);
+        ingested
+    }
+
+    /// Evaluate script impacts pending outside a fixed tick, in landing order:
+    /// at tick start and at frame end (`scripting.md` §2, Impact-policy
+    /// evaluation). A networked host streams overlay edges exactly as its
+    /// in-tick hits do; a connected client discards them unevaluated.
+    fn evaluate_pending_script_impacts(&mut self) {
+        let connected_client = self.is_connected_client();
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let script_ctx = session.scripting.script_ctx.clone();
+        let scripting = &mut session.scripting;
+        let Some(netcode::NetEndpoint::Host {
+            allocator,
+            replicable,
+            descriptor_entities,
+            ..
+        }) = session.net_endpoint.as_mut()
+        else {
+            scripting.settle_frame_end_impacts(connected_client);
+            return;
+        };
+        let overlay_config = scripting.impact_policy_runtime.client_overlay_config();
+        let overlay_tracker = &mut session.host_overlay_fact_tracker;
+        let identities = crate::host_overlays::HostOverlayIdentities::new(
+            allocator,
+            replicable,
+            descriptor_entities,
+        );
+        let mut registry = script_ctx.registry.borrow_mut();
+        scripting.evaluate_pending_in_tick_impacts_with_overlay_sink(
+            &mut registry,
+            |registry, damage| {
+                if let Some(config) = overlay_config.as_ref() {
+                    identities.record_damage(
+                        registry,
+                        damage,
+                        &mut script_ctx.presentation_overrides.borrow_mut(),
+                        overlay_tracker,
+                        config,
+                    );
+                }
+            },
+        );
     }
 
     fn host_take_ready_hit_declarations(&mut self) -> Vec<netcode::PendingHitDeclaration> {
@@ -7824,6 +7955,7 @@ mod tests {
             postretro_combat_model::EnvironmentTuning {
                 level_gravity: -9.81,
                 fluids: Default::default(),
+                status_names: Vec::new(),
             },
         );
         let terms = client_fire_muzzle_terms(&initial, 0).expect("host row exists");
@@ -7851,6 +7983,7 @@ mod tests {
             postretro_combat_model::EnvironmentTuning {
                 level_gravity: -9.81,
                 fluids: Default::default(),
+                status_names: Vec::new(),
             },
         );
         let terms = client_fire_muzzle_terms(&replacement, 0).expect("replacement row exists");

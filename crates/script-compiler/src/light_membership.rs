@@ -88,6 +88,11 @@ const MEMBER_WRAPPER_LUAU: &[(&str, &str, &str)] = &[
         include_str!("../../../sdk/lib/entities/attack_pools.luau"),
         "sdk/lib/entities/attack_pools.luau",
     ),
+    (
+        "wrapSeamEntity",
+        include_str!("../../../sdk/lib/entities/seams.luau"),
+        "sdk/lib/entities/seams.luau",
+    ),
 ];
 const MAP_ENTITIES_LUAU: &str = include_str!("../../../sdk/lib/map_entities.luau");
 const GRAVITY_LUAU: &str = include_str!("../../../sdk/lib/gravity.luau");
@@ -99,9 +104,14 @@ const DATA_SCRIPT_LUAU: &str = include_str!("../../../sdk/lib/data_script.luau")
 /// `data_script.luau` part chunks, evaluated in this order before it and
 /// published through the temporary `__postretroDataScriptParts` bridge,
 /// mirroring scripting-core's `evaluate_data_script_sdk`.
-/// `player_events` comes first because `commands.luau` reads
+/// `player_events` comes before `commands`, which reads
 /// `__postretroDataScriptParts.playerEvents` at load.
 const DATA_SCRIPT_PART_LUAU: &[(&str, &str, &str)] = &[
+    (
+        "impactEvents",
+        include_str!("../../../sdk/lib/data_script/impact_events.luau"),
+        "sdk/lib/data_script/impact_events.luau",
+    ),
     (
         "attackBudget",
         include_str!("../../../sdk/lib/data_script/attack_budget.luau"),
@@ -593,6 +603,7 @@ const BRAIN_LUAU_FIELDS: &[&str] = &[
     "brain",
     "candidate",
     "defense",
+    "hasStatus",
     "state",
     "attackTurnHeld",
     "attackTurnFree",
@@ -715,6 +726,7 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineStore",
     "defineDefenseLayer",
     "defineDamageType",
+    "defineStatus",
     "defineAttackToken",
     "defaultToken",
     "defineAttack",
@@ -1358,6 +1370,7 @@ const WORLD_QUERY_COMPONENTS: &[&str] = &[
     "spawner",
     "projectile_trap",
     "attack_pool",
+    "seam",
     "particle",
     "sprite_visual",
 ];
@@ -1670,8 +1683,9 @@ fn runtime_sequence_step_shape_is_valid(step: &JsonValue) -> bool {
 }
 
 /// Whether `target` is a subject token that carries `primitive`: the fired
-/// volume (`@trigger`) only arms and disarms, and the activators and the
-/// event player (`@player`) never do.
+/// volume (`@trigger`), teleporter (`@teleporter`) and seam (`@seam`) each
+/// carry only their own arm and disarm, and the activators and the event
+/// player (`@player`) carry no arming verb.
 /// Mirrors the runtime parser's `validate_subject_token_primitive`.
 fn subject_token_carries(target: &str, primitive: &str) -> bool {
     if matches!(primitive, "fireTrap" | "startTrap" | "stopTrap") {
@@ -1679,6 +1693,7 @@ fn subject_token_carries(target: &str, primitive: &str) -> bool {
     }
     let arms_a_trigger = matches!(primitive, "armTrigger" | "disarmTrigger");
     let arms_a_teleporter = matches!(primitive, "armTeleporter" | "disarmTeleporter");
+    let arms_a_seam = matches!(primitive, "armSeam" | "disarmSeam");
     // A ghost-link or attack-pool step addresses one member; no token
     // carries it.
     if postretro_foundation::is_ghost_link_primitive(primitive)
@@ -1687,9 +1702,10 @@ fn subject_token_carries(target: &str, primitive: &str) -> bool {
         return false;
     }
     match target {
-        "@activators" | "@player" => !arms_a_trigger && !arms_a_teleporter,
+        "@activators" | "@player" => !arms_a_trigger && !arms_a_teleporter && !arms_a_seam,
         "@trigger" => arms_a_trigger,
         "@teleporter" => arms_a_teleporter,
+        "@seam" => arms_a_seam,
         _ => false,
     }
 }
@@ -2936,6 +2952,86 @@ mod tests {
             (
                 r#"{ target: "@wait", primitive: "wait", args: { durationMs: 5 } },"#,
                 r#"{ target = "@wait", primitive = "wait", args = { durationMs = 5 } },"#,
+            ),
+        ] {
+            assert!(
+                evaluate(&quickjs(js), "fixture.ts").is_empty()
+                    && evaluate(&luau(lua), "fixture.luau").is_empty(),
+                "a step runtime rejects keeps the pass skipping its reaction: {js}"
+            );
+        }
+    }
+
+    // The level seam's `on.seam` token reserves no light slot beside a light
+    // member step, in both hosts. A seam verb on another token, or another
+    // verb on `on.seam`, makes the pass skip the reaction as runtime drops it.
+    #[test]
+    fn seam_subject_token_steps_mirror_runtime_in_both_hosts() {
+        let evaluate = |source: &str, path: &str| {
+            emit_light_membership_manifest(source, Path::new(path), Path::new("."), &table())
+                .expect("fixture evaluates")
+                .lights
+        };
+        let quickjs = |steps: &str| {
+            format!(
+                r#"
+                function setupLevel() {{
+                  const light = getMapEntities("light", {{ tag: "wave" }})[0];
+                  return {{ reactions: [
+                    defineReaction("levelLoad", (on) => ({{ sequence: [
+                      {{ id: light.id, primitive: "setLightAnimation", args: {{ startActive: false }} }},
+                      {steps}
+                    ] }})),
+                  ] }};
+                }}
+            "#
+            )
+        };
+        let luau = |steps: &str| {
+            format!(
+                r#"
+                function setupLevel(_)
+                  local light = getMapEntities("light", {{ tag = "wave" }})[1]
+                  return {{ reactions = {{
+                    defineReaction("levelLoad", function(on) return {{ sequence = {{
+                      {{ id = light.id, primitive = "setLightAnimation", args = {{ startActive = false }} }},
+                      {steps}
+                    }} }} end),
+                  }} }}
+                end
+            "#
+            )
+        };
+
+        let baseline_js = evaluate(&quickjs(""), "fixture.ts");
+        let baseline_luau = evaluate(&luau(""), "fixture.luau");
+        assert_eq!(
+            baseline_js.len(),
+            1,
+            "the light step alone reserves its slot"
+        );
+        assert_eq!(baseline_js, baseline_luau);
+        assert_eq!(
+            evaluate(&quickjs("on.seam.disarm(), on.seam.arm(),"), "fixture.ts"),
+            baseline_js
+        );
+        assert_eq!(
+            evaluate(&luau("on.seam:disarm(), on.seam:arm(),"), "fixture.luau"),
+            baseline_luau
+        );
+
+        for (js, lua) in [
+            (
+                r#"{ target: "@seam", primitive: "applyDamage", args: { amount: 5 } },"#,
+                r#"{ target = "@seam", primitive = "applyDamage", args = { amount = 5 } },"#,
+            ),
+            (
+                r#"{ target: "@teleporter", primitive: "armSeam", args: {} },"#,
+                r#"{ target = "@teleporter", primitive = "armSeam", args = {} },"#,
+            ),
+            (
+                r#"{ target: "@activators", primitive: "disarmSeam", args: {} },"#,
+                r#"{ target = "@activators", primitive = "disarmSeam", args = {} },"#,
             ),
         ] {
             assert!(

@@ -520,6 +520,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     let mut pending_mover_events = Vec::new();
     let mut pending_trigger_residuals = Vec::new();
     let mut pending_teleport_residuals = Vec::new();
+    let mut pending_seam_residuals = Vec::new();
     let mut pending_player_event_residuals = Vec::new();
     let mut repointed_pawns = Vec::new();
 
@@ -794,6 +795,11 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 continue;
             }
 
+            // Script impacts that landed before this tick (UI presses,
+            // `levelLoad`, the previous tick's player events) evaluate first,
+            // in landing order, before anything this tick reads health.
+            app.evaluate_pending_script_impacts();
+
             // Host-only ghost-link steps queued before this tick apply now,
             // at its start, in call order.
             app.apply_pending_ghost_link_commands();
@@ -821,6 +827,17 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             let teleport_before =
                 crate::runtime_teleporters::local_teleport_identity(&script_ctx.registry.borrow());
             let pending_tick = sim::begin_tick(&script_ctx.registry, Some(&script_ctx));
+            // Seam arms and disarms queued last tick apply beside the
+            // teleporters'; a touch seam armed from disarmed admits its
+            // unlatched standing occupants this tick.
+            {
+                let mut newly_armed = Vec::new();
+                postretro_sim::seam_commands::apply_pending_seam_mutations(
+                    &script_ctx,
+                    &mut newly_armed,
+                );
+                app.seam_stage.note_newly_armed(&newly_armed);
+            }
             // Recharge right after `begin_tick` and before the tick's game
             // logic, so layer values settle at tick start and every later
             // consumer this tick reads the same recharged value.
@@ -851,6 +868,12 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             // turned through the teleport frame exactly once; the local sum
             // also rides on the presentation camera aim below.
             let mut local_respawn_yaw = 0.0;
+            // Every respawn latches against the seams it lands in, before
+            // this tick's trigger stage sees it.
+            for turn in &respawn_turns {
+                app.seam_stage
+                    .latch_spawned_in(&script_ctx.registry.borrow(), turn.pawn);
+            }
             for turn in respawn_turns {
                 if Some(turn.pawn) == local_pawn {
                     command.movement.facing_yaw += turn.yaw_delta;
@@ -947,6 +970,15 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 presentation_camera_aim,
                 progress_tracker,
                 postretro_ai::tick_runner!(&mut app.ai_runtime),
+                app.level
+                    .as_ref()
+                    .zip(app.npc_scheduler.as_mut())
+                    .map(
+                        |(level, scheduler)| postretro_sim::npc_tiers::ScheduleInput {
+                            level,
+                            scheduler,
+                        },
+                    ),
                 &app.kinematic_mover_colliders,
                 &mut app.kinematic_mover_tick_states,
                 &remote_pawn_commands,
@@ -991,6 +1023,10 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 &touch_drop_edges,
                 Some(sim::TriggerTickContext {
                     teleporters: Some(&app.teleporter_bindings),
+                    seams: Some(sim::SeamTickContext {
+                        stage: &mut app.seam_stage,
+                        bindings: &app.seam_bindings,
+                    }),
                     system: trigger_system,
                     bridge: trigger_volume_bridge,
                     bindings: trigger_bindings,
@@ -1181,6 +1217,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             pending_death_events.extend(tick_events.death);
             pending_trigger_residuals.extend(tick_events.trigger_residuals);
             pending_teleport_residuals.extend(tick_events.teleport_residuals);
+            pending_seam_residuals.extend(tick_events.seam_residuals);
 
             crate::runtime_teleporters::push_local_traveller_cues(
                 &mut app.pending_teleport_sounds,
@@ -1279,6 +1316,19 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
 
     // Who fired each shot this frame, before impacts are attributed.
     app.record_ghost_shot_owners(&pending_weapon_script_events, &pending_ai_events);
+    // Status tick sounds and attached emitters follow each entity's status
+    // presence on this machine; the emitters spawn at render prep below.
+    let mut status_sounds = Vec::new();
+    {
+        let registry = script_ctx.registry.borrow();
+        let own_pawn = if app.is_connected_client() {
+            registry.local_player_pawn()
+        } else {
+            registry.local_player_movement_pawn()
+        };
+        app.status_presentation
+            .update(&registry, own_pawn, frame_dt * 1000.0, &mut status_sounds);
+    }
     // Descriptor sounds for this frame's events, placed at fire time.
     // They play alongside any reaction addressed to the same event.
     // The listener's pawn is named here, before any play this frame,
@@ -1352,6 +1402,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         }
         requests.extend(client_sounds.drain(..).map(Into::into));
         requests.extend(app.pending_teleport_sounds.drain(..).map(Into::into));
+        requests.extend(status_sounds.drain(..).map(Into::into));
         (edges, requests, listener_attached)
     };
     // A client's received link states enter link history once, here, so
@@ -1426,6 +1477,18 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         postretro_sim::teleporter_system::drain_teleport_residuals(
             &pending_teleport_residuals,
             &app.teleporter_bindings,
+            &session.scripting.scheduler,
+            postretro_sim::residual_drain::ResidualRegistries {
+                sequence: &session.scripting.sequence_registry,
+                reaction: &session.scripting.reaction_registry,
+                system: &session.scripting.system_registry,
+            },
+            &script_ctx,
+            &mut pending_trigger_follow_ups,
+        );
+        postretro_sim::seam_system::drain_seam_residuals(
+            &pending_seam_residuals,
+            &app.seam_bindings,
             &session.scripting.scheduler,
             postretro_sim::residual_drain::ResidualRegistries {
                 sequence: &session.scripting.sequence_registry,
@@ -1596,6 +1659,9 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     if !script_ctx.system_commands.is_empty() {
         app.dispatch_system_commands();
     }
+    // Every script level verb this frame has run: a seam activated this
+    // frame requests its level change only if none did.
+    app.pick_seam_level_request();
 
     app.update_player_options(frame_dt, options_menu_was_open);
     app.commit_render_extents();
@@ -1624,12 +1690,9 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         );
     }
 
-    if let Some(session) = app.session.as_mut() {
-        session
-            .scripting
-            .impact_policy_runtime
-            .discard_app_drain_pending();
-    }
+    // Script impacts that landed after the frame's last tick evaluate here,
+    // before the removal pass reaps any despawn their policies requested.
+    app.evaluate_pending_script_impacts();
 
     drop(stage_scope);
     let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::FrameEndRemoval);
@@ -2036,6 +2099,14 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 &mut registry,
                 frame_dt,
                 frame_script_delta,
+                app.script_time as f32,
+                &mut session.particle_pool,
+                &mut session.particle_render,
+            );
+            session.emitter_bridge.update_attached(
+                &registry,
+                &app.status_presentation,
+                frame_dt,
                 app.script_time as f32,
                 &mut session.particle_pool,
                 &mut session.particle_render,

@@ -46,7 +46,9 @@ pub const BRAIN_TIME_IN_ACTIVITY_MS_INPUT: &str = "@brain.timeInActivityMs";
 /// Milliseconds remaining on the selected offense action's cooldown; `0.0`
 /// with no selected action or once it has elapsed.
 pub const BRAIN_ATTACK_COOLDOWN_MS_INPUT: &str = "@brain.attackCooldownMs";
-/// `true` on the think-stride ticks where the engine re-evaluates acquisition.
+/// `true` on the NPC's decide ticks, where the engine checks acquisition: 15
+/// times a second while it is perceived, engaged, alwaysActive or recently
+/// disturbed; every 2 s while dormant.
 pub const BRAIN_ACQUISITION_DUE_INPUT: &str = "@brain.acquisitionDue";
 /// The enemy's current hit points.
 pub const BRAIN_HEALTH_INPUT: &str = "@brain.health";
@@ -144,6 +146,10 @@ pub const BRAIN_ACTIVITY_ROLL_INPUT: &str = "@brain.activityRoll";
 /// hit landing before the AI pass counts toward the activity the brain holds
 /// then; a hit landing after it counts toward the activity the pass entered.
 pub const BRAIN_DAMAGE_IN_ACTIVITY_INPUT: &str = "@brain.damageInActivity";
+/// The highest awareness meter of any candidate, 0 to 1, as the acquisition
+/// check on this decide left it; 1 while the enemy has a target. Guards on a
+/// decide read the value that decide's check produced.
+pub const BRAIN_AWARENESS_INPUT: &str = "@brain.awareness";
 
 /// Prefix of the named Bool read `attackTurnHeld(attack)`: a turn is held for
 /// that attack, as of the previous tick.
@@ -183,7 +189,7 @@ pub const BRAIN_NO_TARGET_DISTANCE: f32 = 1.0e9;
 /// it, so refresh must write the same slots in the same order. Names use the
 /// camelCase idiom of the script surface (scripting.md §4) inside the
 /// `@`-reserved ephemeral-dispatch-input namespace (scripting.md §5).
-pub const BRAIN_INPUTS: [(&str, IrType); 24] = [
+pub const BRAIN_INPUTS: [(&str, IrType); 25] = [
     (BRAIN_HAS_TARGET_INPUT, IrType::Bool),
     (BRAIN_TARGET_DISTANCE_INPUT, IrType::Number),
     (BRAIN_TIME_IN_ACTIVITY_MS_INPUT, IrType::Number),
@@ -208,6 +214,7 @@ pub const BRAIN_INPUTS: [(&str, IrType); 24] = [
     (BRAIN_ANIMATION_DONE_INPUT, IrType::Bool),
     (BRAIN_ACTIVITY_ROLL_INPUT, IrType::Number),
     (BRAIN_DAMAGE_IN_ACTIVITY_INPUT, IrType::Number),
+    (BRAIN_AWARENESS_INPUT, IrType::Number),
 ];
 
 /// What a brain input name resolves to, independent of where the values live.
@@ -232,6 +239,9 @@ pub enum BrainInputRef<'a> {
     /// `@attackTurnFree.<attack>`: one of the brain archetype's attacks, checked
     /// at load. Projects as a boolean.
     AttackTurnFree(&'a str),
+    /// `@status.<status>`: whether the brain entity carries that registered
+    /// status, checked at load. Projects as a boolean.
+    Status(&'a str),
 }
 
 /// The attack name a named attack-turn read carries, or `None` for any other
@@ -253,6 +263,9 @@ pub fn resolve_brain_input(name: &str) -> Option<BrainInputRef<'_>> {
     }
     if let Some(attack) = name.strip_prefix(ATTACK_TURN_HELD_INPUT_PREFIX) {
         return (!attack.is_empty()).then_some(BrainInputRef::AttackTurnHeld(attack));
+    }
+    if let Some(status) = name.strip_prefix(crate::status::STATUS_INPUT_PREFIX) {
+        return (!status.is_empty()).then_some(BrainInputRef::Status(status));
     }
     if let Some(attack) = name.strip_prefix(ATTACK_TURN_FREE_INPUT_PREFIX) {
         return (!attack.is_empty()).then_some(BrainInputRef::AttackTurnFree(attack));
@@ -290,7 +303,9 @@ impl BindingScope for BrainValidationScope {
         let ir_type = match resolve_brain_input(name)? {
             BrainInputRef::Fixed { ir_type, .. } => ir_type,
             BrainInputRef::State(_) | BrainInputRef::Defense { .. } => IrType::Number,
-            BrainInputRef::AttackTurnHeld(_) | BrainInputRef::AttackTurnFree(_) => IrType::Bool,
+            BrainInputRef::AttackTurnHeld(_)
+            | BrainInputRef::AttackTurnFree(_)
+            | BrainInputRef::Status(_) => IrType::Bool,
         };
         Some(ResolvedInput {
             handle: ir_type,
@@ -480,6 +495,15 @@ mod tests {
         assert_eq!(
             BRAIN_INPUTS[23],
             (BRAIN_DAMAGE_IN_ACTIVITY_INPUT, IrType::Number),
+            "new brain facts append; they never repoint existing guard handles"
+        );
+    }
+
+    #[test]
+    fn awareness_appends_at_fixed_slot_twenty_four() {
+        assert_eq!(
+            BRAIN_INPUTS[24],
+            (BRAIN_AWARENESS_INPUT, IrType::Number),
             "new brain facts append; they never repoint existing guard handles"
         );
     }

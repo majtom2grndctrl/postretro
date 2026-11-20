@@ -133,6 +133,44 @@ pub fn emit_splash_damage(
     damage_type: Option<u16>,
     on_impact: &mut impl FnMut(&mut EntityRegistry),
 ) -> bool {
+    emit_shot_splash_damage(
+        registry,
+        hit_zone_store,
+        collision_world,
+        center,
+        occlusion_origin,
+        splash,
+        damage,
+        owner_weapon,
+        owner_pawn,
+        None,
+        credit_owner,
+        credit_source,
+        damage_type,
+        on_impact,
+    )
+}
+
+/// [`emit_splash_damage`] for a shot's blast: `owner_life` is its firer's
+/// life counter when it was fired, so a blast from before a respawn touches
+/// no NPC's meter or attacker ledger.
+#[allow(clippy::too_many_arguments)]
+pub fn emit_shot_splash_damage(
+    registry: &mut EntityRegistry,
+    hit_zone_store: &HitZoneStore,
+    collision_world: &CollisionWorld,
+    center: Vec3,
+    occlusion_origin: Vec3,
+    splash: &SplashDescriptor,
+    damage: f32,
+    owner_weapon: EntityId,
+    owner_pawn: EntityId,
+    owner_life: Option<u32>,
+    credit_owner: bool,
+    credit_source: String,
+    damage_type: Option<u16>,
+    on_impact: &mut impl FnMut(&mut EntityRegistry),
+) -> bool {
     let targets = entities_in_sphere(
         registry,
         hit_zone_store,
@@ -194,6 +232,7 @@ pub fn emit_splash_damage(
             registry,
             owner_weapon,
             attacker,
+            owner_life,
             &impact,
             credit_source.clone(),
             amount,
@@ -695,6 +734,7 @@ mod tests {
                     )]),
                 }],
                 default_damage_type: None,
+                statuses: Vec::new(),
             },
         ));
         let owner = registry.spawn(Transform::default());
@@ -750,6 +790,7 @@ mod tests {
                 ]),
             }],
             default_damage_type: None,
+            statuses: Vec::new(),
         }));
         let owner = registry.spawn(Transform::default());
         let weapon = registry.spawn(Transform::default());

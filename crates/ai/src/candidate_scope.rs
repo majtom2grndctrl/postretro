@@ -460,11 +460,13 @@ mod tests {
             attacker: first,
             accumulated_damage: 7.5,
             time_since_damage_ms: 32.0,
+            life: 0,
         });
         ledger[1] = Some(RecentAttacker {
             attacker: second,
             accumulated_damage: 3.0,
             time_since_damage_ms: 64.0,
+            life: 0,
         });
         let factions = FactionRegistry::default();
         let mut scope = CandidateScope::for_validation();

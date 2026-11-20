@@ -125,6 +125,8 @@ pub fn dispatch(
                 zone: None,
                 producer: DamageProducer::AppDrain,
                 point: None,
+                attacker_life: None,
+                status: None,
             },
         );
     }
@@ -389,6 +391,7 @@ mod tests {
                     )]),
                 }],
                 default_damage_type: None,
+                statuses: Vec::new(),
             },
         ));
         let a = spawn_health(&mut reg, 100.0);
@@ -426,6 +429,7 @@ mod tests {
                 )]),
             }],
             default_damage_type: None,
+            statuses: Vec::new(),
         });
         let ok =
             serde_json::json!({ "amount": 5, "type": { "kind": "damageType", "name": "heavy" } });

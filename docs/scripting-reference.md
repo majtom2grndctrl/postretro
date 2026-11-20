@@ -56,7 +56,7 @@ the manifest lacks any required field.
 - TypeScript: standard ES module `import` of relative paths. The script compiler bundles all relative imports into `start-script.js` at build time. Bare-specifier imports of `"postretro"`, `"postretro/ui"` and `"postretro/audio"` symbols are stripped (the symbols arrive as runtime globals).
 - Luau: `require("./path")` resolves relative to the mod root. `require("./actors/player")` reads `content/<mod>/actors/player.luau` (the `.luau` extension is appended automatically). `require("postretro")`, `require("postretro/ui")` and `require("postretro/audio")` return engine-owned SDK module tables before file lookup. `..` traversal and absolute paths are rejected. Module caching, init-file conventions, and upward search are not implemented.
 
-**Names from `const` bindings.** In TypeScript, `defineStore`, `definePresentationTemplate`, `defineImpactEvent`, `defineDamageType`, `defineDefenseLayer`, `defineAttackToken`, `defineAttack` and `defineStance` take their name from the binding they initialize: `export const progression = defineStore({ ... })` names the store `progression`. Prefer this form, so the name a map or another script uses is the identifier you import. It needs the call to be the whole initializer of a top-level `const`, `let` or `var`, exported or not. For `defineDamageType`, `defineAttack` and `defineStance` the first argument must also be an object literal; `defineDefenseLayer` and `defineAttackToken` take the binding when called with no arguments or with an object literal, so a variable passed as the options takes no name from the binding. `defineStore`, `definePresentationTemplate` and `defineImpactEvent` need only the call shape. Otherwise pass the name as the first argument. Inside an array, a function, a destructuring pattern or a re-export, pass the name as the first argument. Luau always passes it.
+**Names from `const` bindings.** In TypeScript, `defineStore`, `definePresentationTemplate`, `defineImpactEvent`, `defineDamageType`, `defineDefenseLayer`, `defineAttackToken`, `defineAttack`, `defineStance` and `defineStatus` take their name from the binding they initialize: `export const progression = defineStore({ ... })` names the store `progression`. Prefer this form, so the name a map or another script uses is the identifier you import. It needs the call to be the whole initializer of a top-level `const`, `let` or `var`, exported or not. For `defineDamageType`, `defineAttack`, `defineStance` and `defineStatus` the first argument must also be an object literal (exactly one object-literal argument; `const held = { ... }; export const wet = defineStatus(held)` stays unnamed and throws); `defineDefenseLayer` and `defineAttackToken` take the binding when called with no arguments or with an object literal, so a variable passed as the options takes no name from the binding. `defineStore`, `definePresentationTemplate` and `defineImpactEvent` need only the call shape. Otherwise pass the name as the first argument. Inside an array, a function, a destructuring pattern or a re-export, pass the name as the first argument. Luau always passes it.
 
 **Lifecycle.** Entity types returned from `ModManifest.entities` survive level
 loads — they live in the engine-global type registry. Reactions are not
@@ -655,6 +655,200 @@ Pair shields with a `plasma` type that strips them (`{ shield: 1.5 }`) and
 armor with a `corrosive` one (`{ armor: 2 }`) to give each weapon a job.
 
 ---
+
+## Statuses
+
+A **status** is an effect that lives on an entity for a while: damage over
+time such as burning or corrosion, or with `damage: 0` a **marker** such as
+wet that other rules read. You declare statuses, list them in `defineMod`,
+and apply them from impact policies, reactions and fluids. Every damaging
+tick is a typed hit: it drains layers and health by its damage type's matrix,
+runs impact policies, and credits whoever applied it.
+
+### Declaring and registering
+
+```typescript
+// scripts/statuses.ts — each is named by its binding when scripts build
+import { defineStatus, emitter } from "postretro";
+import { acid, fireDamage } from "./damage-types";
+
+export const burning = defineStatus({
+  damage: 4, type: fireDamage, tickMs: 500, durationMs: 3000,
+  stacking: "stack", maxStacks: 3,
+  presentation: {
+    emitter: emitter({ sprite: "ember", rate: 24, lifetime: 0.6, velocity: [0, 1.5, 0] }),
+    tickSound: "burn_tick",
+  },
+});
+export const corroding = defineStatus({ damage: 2, type: acid, tickMs: 1000 }); // until cleared
+export const wet = defineStatus({ damage: 0, tickMs: 500, durationMs: 5000 }); // a marker
+
+// start-script.ts
+export default defineMod({
+  /* … */
+  damageTypes: [fireDamage, acid],
+  statuses: [burning, corroding, wet],
+});
+```
+
+Luau passes each name explicitly:
+`Postretro.defineStatus("burning", { damage = 4, type = fire, tickMs = 500 })`.
+
+In TypeScript, don't bind a declaration to a name the SDK already uses, such as
+`fire`, `wait` or `players`. The script fails to load with
+`redeclaration of 'fire'`. Name the binding something else and pass the name
+explicitly: `export const fireDamage = defineDamageType("fire", { health: 1.25 })`
+declares a type named `fire`.
+
+| Field | Range | What it does |
+|---|---|---|
+| `damage` | `0`–`1000000` | Damage per tick per stack. `0` makes a marker: its ticks deal nothing, run no impact policy and restart no layer delay. |
+| `type` | a damage-type handle, optional | The type each tick deals. Leave it out to deal `defaultDamageType`. |
+| `tickMs` | `1`–`60000` | Time between ticks. |
+| `durationMs` | `tickMs`–`600000`, optional | How long an instance lasts after its last application. Leave it out to last until cleared. |
+| `stacking` | `"refresh"` (default) or `"stack"` | What reapplying does: see below. |
+| `maxStacks` | whole number `1`–`64`, default `1` | The most stacks one applier builds with `"stack"`. |
+| `presentation` | optional | `{ emitter?, tickSound? }`: see [Showing a status](#showing-a-status). |
+
+- `tickMs` and `durationMs` round up to whole fixed ticks (60 per second), as
+  weapon timings do: `tickMs` 1 through 16 ticks every fixed tick.
+- A mod registers at most 64 statuses; more fails the load. A bad handle, or
+  a value out of range, fails the load naming the field.
+- Hot reload keeps live instances by status name, drops those whose status
+  was removed, and applies changed fields from the next tick.
+
+### Instances, stacking and timing
+
+- **One instance per status and applier.** The applier is the applying hit's
+  damager, or with none its source: `fluid.lava` for lava, `script.applyStatus`
+  for a reaction. Two players burning one enemy each own an instance: each
+  ticks, stacks and lasts on its own and credits its own player.
+- **One application per applier per tick.** Eight pellets from one shotgun
+  blast, or a rocket and its splash, apply once.
+- **`"refresh"`** resets the time left. **`"stack"`** adds a stack up to
+  `maxStacks` and resets the time left; a tick deals `damage × stacks`.
+- **Ticks.** An instance first ticks `tickMs` after it is created, then every
+  `tickMs`. Reapplying never moves the tick phase. A tick due on the tick the
+  instance runs out still lands; then it ends.
+- **Limits.** An entity holds at most 16 instances. A new one on a full
+  entity replaces the one with the least time left.
+- **Deaths.** A lethal tick kills on its own tick and credits the applier.
+  A tick due on a target already at health 0 or below is skipped, so another
+  hit's death plays alone. An entity at health 0 or below takes no new status.
+- **What clears them.** Death, respawn, a level change, a restart and a
+  rejoin clear every status. Saves record none.
+
+### Applying, clearing and reading
+
+| Where | Apply | Clear | Read |
+|---|---|---|---|
+| Impact policy | `impact.target.applyStatus(h)` | `impact.target.clearStatus(h)` | `impact.target.hasStatus(h)`, `impact.status(h)` |
+| Reaction | `players().applyStatus(h)`, `npcs({ tag }).applyStatus(h)`, `on.activators.applyStatus(h)`, `on.player.applyStatus(h)` | the same subjects' `.clearStatus(h)` | — |
+| Fluid | `defineFluid({ …, status: h })` | — | — |
+| Brain guard | — | — | `hasStatus(h)` |
+| HUD | — | — | `h.active` |
+
+- `hasStatus(h)` holds while any applier's instance of `h` is live on that
+  entity. `clearStatus(h)` removes every applier's.
+- `impact.status(h)` holds when this impact *is a tick of* `h`. Every other
+  hit reads it false.
+- A policy's `applyStatus` applies with the impact's damager as applier. A
+  reaction applies as `script.applyStatus`, on the host only; a subject
+  without health is skipped with a warning. An application made outside a
+  fixed tick, such as from a UI press or a `wait`, applies at the next tick.
+- A fluid's `status` applies every tick to each player whose body is in that
+  fluid at any depth, as `fluid.<name>`. After the player leaves, one more
+  tick can land. Fluid statuses reach players only; to hurt an enemy standing
+  in lava, cover the lava with a `trigger_volume` and apply the status from a
+  reaction.
+- In a brain transition, `{ to: "flee", when: hasStatus(burning) }` flees
+  while the enemy burns.
+- `h.active` is true while the local player carries `h`. Use it in a HUD
+  widget's `visibleWhen: stateEquals(burning.active, true)`. It reads only
+  your own player: it takes no `byPlayer`.
+
+### Recipe: fire ignites
+
+A burn tick is itself a fire hit. A policy that lights `burning` on every fire
+hit would relight it from its own ticks, and the burn would never end. Guard
+it with `impact.status(burning)`:
+
+```typescript
+import { defineImpactEvent, when } from "postretro";
+
+export const ignite = defineImpactEvent("statuses.ignite", { tag: "enemy" }, (impact) => [
+  // Fire lights what is not already a burn tick and not wet.
+  when(
+    impact.type(fireDamage).and(impact.status(burning).not()).and(impact.target.hasStatus(wet).not()),
+    [impact.target.applyStatus(burning)],
+  ),
+  // Acid dries a wet target.
+  when(impact.type(acid), [impact.target.clearStatus(wet)]),
+  // A burn kill plays its own death.
+  when(impact.status(burning).and(impact.target.healthAfter.le(0)), [impact.target.playAnim("burn_death")]),
+]);
+```
+
+```lua
+local ignite = Postretro.defineImpactEvent("statuses.ignite", { tag = "enemy" }, function(impact)
+  local target = impact.target
+  local isFire, burnTick, isWet = impact.type(fire), impact.status(burning), target:hasStatus(wet)
+  local lights = isFire["and"](isFire, burnTick["not"](burnTick))
+  lights = lights["and"](lights, isWet["not"](isWet))
+  return {
+    { when = lights, ["do"] = { target:applyStatus(burning) } },
+    { when = impact.type(acid), ["do"] = { target:clearStatus(wet) } },
+    { when = burnTick["and"](burnTick, target.healthAfter:le(0)), ["do"] = { target:playAnim("burn_death") } },
+  }
+end)
+```
+
+The `burn_death` row plays only if the target's animation set defines a
+`burn_death` state; otherwise the row does nothing.
+
+With the guard, one fire hit burns six times over three seconds and goes out.
+Each new fire hit stacks it again, up to three stacks.
+
+Lava that scalds, and a cure:
+
+```typescript
+export const scalding = defineStatus({ damage: 10, type: fireDamage, tickMs: 250, durationMs: 250 });
+export const lava = defineFluid({
+  name: "lava", viscosity: 0.6, viewTint: [1, 0.35, 0.05, 0.8], muffle: 0.9, surfaceOpacity: 1,
+  status: scalding,
+});
+export const cure = defineReaction("statuses.cure", players().clearStatus(corroding));
+```
+
+The dev mod carries this example, an incendiary rifle, a lava pool and a burn
+trap: see `content/dev/scripts/statuses.ts` and `status-hazards.ts`, and the
+lava and trap rows in `content/dev/maps/e24-environment-test.README.md`.
+
+### Showing a status
+
+`presentation` is optional and shows on every machine:
+
+- `emitter`: an `emitter()` value that follows each afflicted entity while
+  it carries the status. Your own player gets none, so it never fills your
+  view. A `presentation.emitter` that is not an `emitter()` value fails the
+  load.
+- `tickSound`: a sound played at the entity every `tickMs` while it carries
+  the status, starting one `tickMs` after the status appears.
+
+A damaging tick is an impact, so your impact policies can float a damage
+number for it. `impact.status(h)` picks its template and keeps the hit's
+type row from floating a second number. A tick has no contact point, so its
+number rises from the entity's position:
+
+```ts
+when(impact.status(burning), [present(burnNumber, impact.amount)]),
+when(impact.type(fireDamage).and(impact.status(burning).not()), [present(fireNumber, impact.amount)]),
+```
+
+**In co-op,** the host runs every status; clients run none. Each entity's
+statuses reach clients by name, and each client shows them with its own
+declaration of that name, as fluids do. A client whose mod lacks a status
+shows nothing for it. Statuses do not affect who can join.
 
 ## Attack tokens and budgets
 
@@ -1715,6 +1909,9 @@ defineEntity({
 | `attacks` | `Attack[]` (optional) | Attack handles from `defineAttack`. Omitted, the behavior has the attacks its actions, marks and rows reference; present, the list is exhaustive: a row to an unlisted attack is dropped with a log, and an action or mark naming one fails load. Each attack's declaration is either inline contact stats or a weapon reference. |
 | `engagementRadius` | `number` (optional) | Graph-wide combat-slot radius for non-attack activities. |
 | `moveSpeed` | `number` | Locomotion speed in metres/sec for behavior graph movement, seeding the navigation agent. Finite and `> 0`. |
+| `tacticalRange` | `number` (optional) | Metres, default `100`; finite and `> 0`. An engaged enemy whose target is farther than this (horizontal distance) routes toward it under `chaseTarget`, `strafe` and `reposition` instead of claiming a combat slot, and claims slots again once the target is 10 m inside. A value below the archetype's largest attack standoff plus 10 m is raised to that, with a warning at load and on each reload. |
+| `awareness` | `{ fillMs?, drainMs? }` (optional) | How fast the enemy notices each candidate when it has no target. Awareness fills over `fillMs` (default `1000`) while it sees a candidate that passes its candidacy, drains over `drainMs` (default `2000`) otherwise, and full awareness targets that candidate. Each finite and `≥ 0`; `0` acts as one check. Checked at the enemy's decide rate, about every 67 ms in view, so shorter differences are not distinguishable. See [Noticing and tick rates](#noticing-and-tick-rates). |
+| `alwaysActive` | `boolean` (optional) | Default `false`. `true` keeps this archetype's enemies at full-rate AI whether or not a player can perceive them, so an unseen escort, race or scripted walker reaches its triggers on time. It costs full rate for those enemies only. A placed enemy's `always_active` map key (`0` or `1`) overrides it; enemies a spawner releases take this value. |
 
 ### `candidate.*` inputs
 
@@ -1731,6 +1928,8 @@ defineEntity({
 | `candidate.damageDealtToMe` | `@candidate.damageDealtToMe` | `number` | Accumulated positive damage this candidate has dealt to this enemy, or `0` when absent from its attacker ledger. |
 | `candidate.timeSinceDamageFromCandidate` | `@candidate.timeSinceDamageFromCandidate` | `number` | Milliseconds since this candidate last damaged this enemy, or `1e9` when it has not. |
 | `candidate.tolerance` | `@candidate.tolerance` | `number` | Resolved retaliation tolerance: archetype override, then directional faction relationship, else `f32::MAX`. |
+
+When a player respawns, every enemy forgets what that player did before: `candidate.damageDealtToMe` reads `0` and `candidate.timeSinceDamageFromCandidate` reads `1e9` again, and a shot the player fired before respawning that lands afterwards still deals damage but adds nothing to either. Enemies that were targeting the player drop it on the respawn tick and notice the player again through a fresh fill of their `awareness`, unless the player hits one of them first.
 
 An activity is either a leaf or a composite:
 
@@ -2025,6 +2224,21 @@ These are the rules you cannot author a graph without.
 5. **The aggro gate skips evaluation.** When disarmed, it forces root `initial`
    and clears steering. Re-arming resumes ordinary evaluation.
 
+### Noticing and tick rates
+
+An enemy runs at one of three tiers, chosen on the host every fixed tick:
+
+| Tier | Who | Decides (acquisition, guards, selectors, combat slot) | Acts (steering, attacks, clips, facing) |
+|------|-----|------|------|
+| Engaged | has a target, perceived or not | 15 times a second | every tick |
+| Idle | perceived by a player, `alwaysActive`, or recently disturbed; no target | 15 times a second | every tick |
+| Dormant | no player can perceive it, no target, not `alwaysActive` | every 2 s | its whole tick twice a second |
+
+- **Perceived** means the enemy stands in a cell some player's cell can see, or within the level's AI wake lead of one (`ai_wake_lead` on worldspawn, default 16 m). Armed ghost links count as seeing through.
+- **Decides land on the decide tick.** Transition rows, `move` and `offense` selectors, a hold's release, a release's exit and `animationDone` all evaluate on decide ticks, so they can land up to one interval (about 67 ms) after the moment they become true. Acting between decides follows the last decide's choices.
+- **Moving between tiers.** An enemy moves up on the tick it becomes perceivable, gains a target, is hit, or has its aggro gate opened, with no catch-up movement. It moves down only after 2 s with none of those.
+- **Noticing.** An enemy without a target notices each candidate through its `awareness`: a candidate seen on two checks in a row fills its meter by the time between the checks over `fillMs`; a first sighting fills nothing, so a reveal or a teleport into view still gives a slow first notice. The first meter to reach full is acquired (a retaliation-ranked attacker first, then the candidate the enemy selected on its previous check, then the nearest), and the others clear. A hit from an attacker fills that attacker's meter at once. Closing the aggro gate empties every meter. An enemy that already has a target ranks and switches targets as before; a switch empties the other meters.
+
 ### `@brain.*` guard inputs
 
 A behavior guard binds against a fixed, read-only **brain** namespace. Import
@@ -2041,7 +2255,8 @@ exception is `brain.targetDistance`, which keeps its `1e9` sentinel.
 | `brain.targetDistance` | `@brain.targetDistance` | `number` | Distance to the selected target in metres — or the `1e9` no-target sentinel. **Read the trap below before using it.** |
 | `brain.timeInActivityMs` | `@brain.timeInActivityMs` | `number` | Milliseconds since the activity whose transition rows are being evaluated was entered. Scope-relative in nested graphs; resets on entry. A stance's pose counts as one activity, so it keeps running from rest to hold and back. |
 | `brain.attackCooldownMs` | `@brain.attackCooldownMs` | `number` | Milliseconds left on the active named attack cooldown; `0` when no action is active or the entry has elapsed. |
-| `brain.acquisitionDue` | `@brain.acquisitionDue` | `boolean` | True on the think-stride ticks where the engine re-evaluates acquisition. Detection is time-sliced; conjoin this onto detection edges so they only fire on an acquisition tick. |
+| `brain.acquisitionDue` | `@brain.acquisitionDue` | `boolean` | True on the enemy's decide ticks, where the engine checks acquisition: 15 times a second while it is in view, engaged, `alwaysActive` or recently disturbed, every 2 s while it is dormant. Guards run only on decide ticks, so on any tick a guard sees it reads `true`; kept for graphs written against the retired distance stride. |
+| `brain.awareness` | `@brain.awareness` | `number` | The enemy's highest awareness of any candidate, `0` to `1`; `1` once it has a target. A guard reads the value this decide's acquisition check produced, so `brain.awareness.ge(0.5)` can turn the enemy to look before it acquires. |
 | `brain.health` | `@brain.health` | `number` | The enemy's current hit points. |
 | `brain.maxHealth` | `@brain.maxHealth` | `number` | The enemy's maximum hit points. |
 | `brain.targetHealth` | `@brain.targetHealth` | `number` | The selected target's current hit points, or `0` with no target or no health component. Meaningful only when `hasTarget` is true. |
@@ -2598,8 +2813,9 @@ defineEntity({
 ```
 
 Fresh acquisition considers player pawns and brain-bearing peers. The nearest
-sentiment-hostile offer determines think-stride cadence, so a nearby friendly
-cannot make a farther hostile scan more often. The engine owns retaliation:
+sentiment-hostile offer is what the enemy notices, so a nearby friendly cannot
+stand in for a farther hostile. Acquisition runs on the enemy's decide ticks
+(see [Noticing and tick rates](#noticing-and-tick-rates)). The engine owns retaliation:
 recent accumulated damage above the resolved tolerance can admit and rank an
 otherwise non-hostile attacker ahead of distance candidates. The engine owns the
 formula and retention policy; authors may tune the shipped `windowMs`,
@@ -2722,10 +2938,12 @@ Do **not** spell this `runtime.le(brain.targetHealth, 0)`: that expression also
 fires when there is no target, because target health reads zero then, and it
 does not carry the engine death sweep's complete definition.
 
-On a non-engaged state such as `patrol`, target-side facts are meaningful only
-on an acquisition scan. Between strided scans they hold their no-target values,
-so a detection or re-acquisition guard using `targetDistance`, `targetHostile`,
-or `targetReachable` must conjunct `brain.acquisitionDue`:
+Targets, reachability and detection refresh on the enemy's decide ticks (about
+every 67 ms in view, every 2 s dormant). Between decides an enemy acts on its
+last decide. Guards run only on decide ticks, so a detection or re-acquisition
+guard using `targetDistance`, `targetHostile`, or `targetReachable` always sees
+fresh values and no longer needs to conjunct `brain.acquisitionDue`. Doing so is
+harmless:
 
 ```typescript
 runtime.select(
@@ -2751,19 +2969,20 @@ doors and lifts:
   enemy detours if another route exists. If none does, it holds where it
   stands.
 - **The door leaves.** Once the door starts moving off that waypoint, the next
-  acquisition-due tick reads `true` and the enemy resumes the chase. The fact
-  updates on acquisition-due ticks, like every target-side fact, so conjunct
-  `brain.acquisitionDue` as shown above.
+  decide tick reads `true` and the enemy resumes the chase. The fact updates on
+  decide ticks, like every target-side fact, so it can lag by up to one decide
+  interval (about 67 ms in view, 2 s dormant).
 - **A door stopped between waypoints** is not a gate. The fact does not change,
   and the door blocks the enemy by collision alone.
 - **A target reachable only across a lift.** The route boards a lift only
   while it rests at the enemy's landing, so `targetReachable` reads `false`
   while the lift is away from that landing or travelling, and `true` while it
   is docked there. The fact therefore flips as the lift cycles. It is
-  recomputed on the brain's acquisition stride, not every tick, so it can lag a
-  lift's arrival or departure by up to one stride.
+  recomputed on the enemy's decide ticks, not every tick, so it can lag a
+  lift's arrival or departure by up to one decide interval (about 67 ms in view,
+  2 s dormant).
 - **Riding a lift.** While the enemy rides a lift, `targetReachable` holds the
-  value it had when the enemy boarded, on every acquisition-due tick. It is
+  value it had when the enemy boarded, on every decide tick. It is
   recomputed on the first one after the enemy steps off. It also holds while a
   lift that rests at its stops carries the enemy between its docks, before the
   ride starts.
@@ -2995,6 +3214,7 @@ Per-level data scripts export a `setupLevel(ctx)` function to register reactions
 | `crossings` | State-crossing watchers (`onStateCrossing`). |
 | `triggerEvents` | Trigger-volume edges bound with a trigger member's `on` (see [Trigger events](#trigger-events)). |
 | `teleportEvents` | Teleports bound with a teleporter member's `on("teleport", …)` (see [teleporters.md](teleporters.md#the-teleport-event)). |
+| `seamEvents` | Arrivals bound with a seam member's `on("arrive", …)` (see [level-seams.md](level-seams.md#the-arrive-event)). |
 | `triggerPools` | Trigger pools (`defineTriggerPool`). |
 | `playerEvents` | Per-player state edges bound with `players().on` (see [Per-player events](#per-player-events)). A `ModManifest` may return this key too. |
 
@@ -3181,9 +3401,9 @@ A `wait` changes when a step happens, never who sees or hears it.
 
 A script reaches an entity in one of three ways, chosen by whether the set can change while the level runs:
 
-- **Map members** — entities placed in the map: movers, triggers, teleporters, ghost links, lights, fog volumes, emitters, spawners, projectile traps, attack pools. The set is fixed when the level loads, so `getMapEntities` hands you an array to inspect, sort and address one by one.
+- **Map members** — entities placed in the map: movers, triggers, teleporters, level seams, ghost links, lights, fog volumes, emitters, spawners, projectile traps, attack pools. The set is fixed when the level loads, so `getMapEntities` hands you an array to inspect, sort and address one by one.
 - **Groups** — NPCs and players, which come and go. `npcs()` and `players()` are opaque handles the engine resolves each time a command takes effect, so an NPC a spawner releases mid-level is included.
-- **Subject tokens** — the entity an event is about: `on.activators` and `on.trigger` inside a trigger-event reaction, `on.activators` and `on.teleporter` inside a teleport-event reaction.
+- **Subject tokens** — the entity an event is about: `on.activators` and `on.trigger` inside a trigger-event reaction, `on.activators` and `on.teleporter` inside a teleport-event reaction, `on.activators` and `on.seam` inside a seam `arrive` reaction.
 
 Every command is a method on its target. In TypeScript call it as `target.verb(…)`; in Luau, `target:verb(…)`. Each target carries only the verbs its kind supports — calling a verb a target lacks is a type error in TypeScript and an error in Luau.
 
@@ -3194,17 +3414,23 @@ Every command is a method on its target. In TypeScript call it as `target.verb(�
 | fog member | `getMapEntities("fog")` | `pulse`, `fade`, `flicker`, `pulseSaturation`, `fadeSaturation` |
 | trigger member | `getMapEntities("trigger")` | `arm`, `disarm`, `on` |
 | teleporter member | `getMapEntities("teleporter")` | `arm`, `disarm`, `on` |
+| seam member | `getMapEntities("seam")` | `arm`, `disarm`, `on` |
 | ghost link member | `getMapEntities("ghostLink")` | `arm`, `disarm`, `setMembers`, `setColorFilter` |
 | spawner member | `getMapEntities("spawner")` | `fire` |
 | trap member | `getMapEntities("trap")` | `fire`, `start`, `stop` |
 | attack pool member | `getMapEntities("attackPool")` | `start`, `stop` |
 | emitter member | `getMapEntities("emitter")` | none — snapshot fields only |
-| NPC group | `npcs({ tag? })` | `update`, `damage` |
-| player group | `players()` | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
-| `on.activators` | trigger- or teleport-event reaction param | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
-| `on.player` | player-event reaction param | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
+| NPC group | `npcs({ tag? })` | `update`, `damage`, `applyStatus`, `clearStatus` |
+| player group | `players()` | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn`, `applyStatus`, `clearStatus` |
+| `on.activators` | trigger-, teleport- or seam-event reaction param | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn`, `applyStatus`, `clearStatus` |
+| `on.player` | player-event reaction param | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn`, `applyStatus`, `clearStatus` |
 | `on.trigger` | trigger-event reaction param | `arm`, `disarm` |
 | `on.teleporter` | teleport-event reaction param | `arm`, `disarm` |
+| `on.seam` | seam `arrive` reaction param | `arm`, `disarm` |
+
+`applyStatus` and `clearStatus` run on the host only. A subject without health
+warns and is skipped. Fired outside a fixed tick, they apply at the next fixed
+tick. See [Statuses](#statuses).
 
 ### getMapEntities
 
@@ -3224,6 +3450,7 @@ Postretro.getMapEntities("light", { tag = "hallway_wave" })
 | `"mover"` | `MoverEntityHandle` | `id`, `position`, `tags` |
 | `"trigger"` | `TriggerVolumeHandle` | `id`, `position`, `tags` |
 | `"teleporter"` | `TeleporterHandle` (`arm`, `disarm`, `on("teleport", …)`; see [teleporters.md](teleporters.md#scripting)) | `id`, `position`, `tags` |
+| `"seam"` | `SeamHandle` (`arm`, `disarm`, `on("arrive", …)`; see [level-seams.md](level-seams.md#scripting)) | `id`, `position`, `tags` |
 | `"ghostLink"` | `GhostLinkHandle` (`arm`, `disarm`, `setMembers`, `setColorFilter`; see [ghost-links.md](ghost-links.md#scripting)) | `id`, `position`, `tags` |
 | `"light"` | `LightEntityHandle` | `id`, `position`, `isDynamic`, `tags`, `component` |
 | `"fog"` | `FogVolumeHandle` | `id`, `position`, `tags`, `component` |
@@ -3257,7 +3484,7 @@ players();                    // every player
 
 ### Subject tokens
 
-A trigger-event reaction receives `on.activators` (the players that caused the edge) and `on.trigger` (the volume that fired). A teleport-event reaction receives `on.activators` (the one player who teleported) and `on.teleporter` (the teleporter that fired; `arm`, `disarm`), as described in [teleporters.md](teleporters.md#the-teleport-event):
+A trigger-event reaction receives `on.activators` (the players that caused the edge) and `on.trigger` (the volume that fired). A teleport-event reaction receives `on.activators` (the one player who teleported) and `on.teleporter` (the teleporter that fired; `arm`, `disarm`), as described in [teleporters.md](teleporters.md#the-teleport-event). A seam `arrive` reaction receives `on.activators` (the arriving player) and `on.seam` (the seam arrived through; `arm`, `disarm`), as described in [level-seams.md](level-seams.md#the-arrive-event):
 
 ```typescript
 const heal = defineReaction((on: TriggerEventParams) => on.activators.grantHealth(25));
@@ -3828,9 +4055,9 @@ const purge = defineReaction("purge", players().damage(20));
 
 `damage(amount)` on an NPC group, the player group or `on.activators` routes a
 fixed `amount` of damage through the engine's damage chokepoint for every
-resolved target that carries a health component. This is the only non-weapon
-damage producer — use it to script scene damage (a trap, a collapsing floor, a
-retaliation strike).
+resolved target that carries a health component. Use it to script scene damage
+(a trap, a collapsing floor, a retaliation strike); for damage over time, apply
+a [status](#statuses) instead.
 
 `amount` must be **finite and `>= 0`** (the chokepoint only ever reduces HP;
 healing is out of scope). The handler never despawns. Reaching zero HP does not
@@ -3890,9 +4117,10 @@ amount is a warn-and-no-op at the chokepoint, never a subtraction path.
 `grantAmmo` pool keys must use the same ASCII identifier grammar as weapon
 resource types; a well-formed pool does not need a weapon to exist yet. Missing
 health or ammo-reserve components warn and skip that recipient while sibling
-targets continue. These reaction grants are independent of impact-policy
-producer gating, so a trigger pickup can grant resources even though
-source-addressed impact grants run only for in-tick weapon and AI impacts in v1.
+targets continue. These reaction grants are separate from impact policies, so a
+trigger pickup grants resources directly. Script damage has no damager, so
+`impact.source` grants on it reach no one (see
+[Impact policies](#impact-policies)).
 
 ### `addSlot`
 
@@ -3934,8 +4162,14 @@ expression; `set(ref, value)` writes an absolute value; and
 not an atomic increment. Use `when(condition, effects)` to defer a group until
 its boolean expression is true. If one fire writes the same slot more than
 once, every operand reads the same starting value and the last applied write
-wins. Impact policies currently run only for in-tick weapon damage, AI damage,
-and `kinematic_mover` crush damage; `applyDamage` reactions and other app-drain producers run no policy in v1.
+wins. Every impact runs its policies, whatever produced it: weapon damage, AI
+damage, `kinematic_mover` crush damage, status ticks and script damage.
+Script damage (an `applyDamage` reaction) is evaluated on the host where it
+lands, in landing order. Inside a fixed tick it is evaluated right after its
+damage (trigger- and teleporter-bound reactions); outside a tick it is evaluated
+at the start of the next tick, or at the end of the frame before the
+end-of-frame removal pass, whichever comes first. Connected clients discard
+script impacts unevaluated.
 
 `impact.target.adjustSentimentToward(impact.source, delta)` adjusts the target
 faction's live sentiment **toward** the source faction; calling the method on
@@ -3946,7 +4180,10 @@ the impact-policy wire primitive `adjustSentiment` (not
 recipient is gone, or either recipient has no faction; it never changes the
 authored baseline.
 
-That producer gate also applies to source grants: a script-fired `applyDamage` can create an impact record but never evaluates `impact.source.grantHealth` or `impact.source.grantAmmo` in v1. In-tick weapon and AI impacts are the only producers that can credit their damager through this arm.
+Source grants credit whoever dealt the damage. Script damage has no damager, so
+`impact.source.grantHealth` and `impact.source.grantAmmo` on it reach no one.
+A status tick credits its applier: an `impact.source.grantHealth` row on a burn
+tick heals the applier. Weapon, AI and crush impacts credit their damager.
 
 The type definitions for this area carry committed `@ts-expect-error` cases, so unsafe narrowing and forged effects fail a type check. Nothing here installs or downloads `tsc` — supply your own, and run `tsc --noEmit` against your scripts.
 
@@ -4017,7 +4254,7 @@ omitted from the emitted `args` entirely when not supplied — they are never se
 | `newRun(i, level)` | `{ primitive: "newRun", args: { index, map: level } }` | Starts a new run in slot `i` at catalog map `level` with the selected character as it stands. Frontend only. |
 | `deleteRun(i)` | `{ primitive: "deleteRun", args: { index } }` | Deletes run slot `i`. Frontend only, not while hosting. |
 | `selectCharacter(i)` | `{ primitive: "selectCharacter", args: { index } }` | Selects character slot `i` and reloads its progress. Frontend only, not while hosting. |
-| `createCharacter(i)` | `{ primitive: "createCharacter", args: { index } }` | Creates a character in empty slot `i`, named from `ui.textEntry`, and selects it. Frontend only, not while hosting. |
+| `createCharacter(i)` | `{ primitive: "createCharacter", args: { index } }` | Creates a character in empty slot `i`, named from `ui.textEntry` when the step fires, and selects it. Frontend only, not while hosting. |
 | `deleteCharacter(i)` | `{ primitive: "deleteCharacter", args: { index } }` | Deletes character slot `i`. Frontend only, not while hosting. |
 | `checkpoint(name)` | `{ primitive: "checkpoint", args: { name } }` | Saves the active run at checkpoint `name`, then the character and the world file. Outside an active run it saves the character and the world file only. Run by the host or a single player; does nothing on a connected client or in the frontend backdrop. |
 | `leaveSession()` | `{ primitive: "leaveSession", args: {} }` | Leaves the co-op session on a connected client, which lands at the frontend as single-player. Membership only. See [Session membership](#session-membership). |
@@ -4248,8 +4485,11 @@ language's `forEach` gives it: from 0 in TypeScript, from 1 in Luau.
 - `selectCharacter(i)` selects a character. The store reloads: every mod slot
   returns to its default, then the world file and the character apply.
 - `createCharacter(i)` creates a character in an empty slot, naming it from
-  `ui.textEntry`, and selects it. Open the text entry with no target field and
-  fire it from the entry's commit. An occupied slot is refused.
+  `ui.textEntry` as it stands when the step fires, and selects it. Open the
+  text entry with no target field and fire it from the entry's commit. Empty
+  `ui.textEntry` with `clearText` in the reaction that opens the entry, since a
+  cancelled entry leaves its text there; emptying it after `createCharacter`
+  is not needed. An occupied slot is refused.
 - `deleteCharacter(i)` and `deleteRun(i)` delete a slot, readable or not.
   Deleting the selection sets it to `-1`.
 - `continueRun(i)` selects the run's character, reloads the store with the run
@@ -4282,7 +4522,8 @@ checkpoint and saves the character. Spawns whose `checkpoint` key matches the
 name become where players respawn and late joiners arrive, and where Continue
 arrives later (see the level design reference's checkpoint spawns). The next
 level start clears it. A checkpoint outside an active run saves the character and the world file,
-never a run.
+never a run. A level seam crossing is a checkpoint too, at the destination seam,
+holding where the host crossed (see [level-seams.md](level-seams.md#seam-checkpoints)).
 
 ```typescript
 import { defineStore, defineReaction } from "postretro";
@@ -4478,7 +4719,8 @@ end))
 
 `getGameState().occupancy.tag(tag)` (`game.occupancy:tag(tag)` in Luau) reads
 two readonly Numbers about the trigger volumes carrying `tag`. A `switch` is a
-trigger volume, so it counts too.
+trigger volume, so it counts too, and so does a level seam carrying the tag,
+by its own brushes rather than a box (see [level-seams.md](level-seams.md#waiting-for-everyone)).
 
 - `occupiedCount`: how many of those volumes have at least one counted player
   inside.
@@ -5247,6 +5489,7 @@ through its `fluid` key. Each field is checked when the mod loads:
 | `muffle` | number | `0`–`1` | Low-pass on world sounds while the camera is inside. `0` is none, `1` the most. Music and UI sounds are never muffled. |
 | `surfaceOpacity` | number | `0`–`1` | How opaque the fluid's surface draws. |
 | `surfaceReflectivity` | number | `0`–`50`, optional | How strongly the surface reflects the room around it, strongest at a glancing view and faintest looking straight down. `0` reflects nothing, `1` is water (the default when left out), about `2` reads as glass, about `10` as wet polished stone, and `50` is a mirror at every angle. Opacity never dims the reflection: a clear fluid still mirrors fully at a glancing view. |
+| `status` | status handle | optional | Applied every tick to each player whose body is in this fluid at any depth, as `fluid.<name>`; a handle of a status `defineMod` does not register fails the load. See [Statuses](#statuses). |
 | `enterSound` | sound key | optional | Plays when the player starts swimming in this fluid. |
 | `exitSound` | sound key | optional | Plays when the player stops swimming in this fluid. |
 | `fogDistance` | metres | above `0`, optional | How far you see into the fluid from outside it: at this depth of view 95% of what lies beyond is hidden. Leave it out for a clear fluid. Never applies to the view from inside, which `viewTint` alone covers. |

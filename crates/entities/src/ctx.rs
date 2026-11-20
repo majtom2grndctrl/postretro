@@ -71,6 +71,8 @@ pub struct ScriptCtx {
     pub system_commands: SystemCommandQueue,
     /// Ordered host-only teleporter changes, consumed at the next fixed tick.
     pub pending_teleporter_mutations: Rc<RefCell<Vec<(crate::EntityId, bool)>>>,
+    /// Ordered host-only seam arm changes, consumed at the next fixed tick.
+    pub pending_seam_mutations: Rc<RefCell<Vec<(crate::EntityId, bool)>>>,
     /// Last request per pawn, drained at the next authoritative tick start.
     pub pending_respawns:
         Rc<RefCell<std::collections::BTreeMap<crate::EntityId, crate::RespawnRequest>>>,
@@ -108,6 +110,7 @@ impl ScriptCtx {
             owner_slot_writes_enabled: Rc::new(Cell::new(true)),
             system_commands: SystemCommandQueue::new(),
             pending_teleporter_mutations: Rc::new(RefCell::new(Vec::new())),
+            pending_seam_mutations: Rc::new(RefCell::new(Vec::new())),
             pending_respawns: Rc::new(RefCell::new(Default::default())),
             respawn_placements: Rc::new(RefCell::new(Default::default())),
             pending_ghost_link_commands: Rc::new(RefCell::new(Vec::new())),
@@ -140,6 +143,7 @@ pub struct WeakScriptCtx {
     owner_slot_writes_enabled: Weak<Cell<bool>>,
     system_commands: WeakSystemCommandQueue,
     pending_teleporter_mutations: Weak<RefCell<Vec<(crate::EntityId, bool)>>>,
+    pending_seam_mutations: Weak<RefCell<Vec<(crate::EntityId, bool)>>>,
     pending_respawns:
         Weak<RefCell<std::collections::BTreeMap<crate::EntityId, crate::RespawnRequest>>>,
     respawn_placements: Weak<RefCell<crate::RespawnPlacements>>,
@@ -164,6 +168,7 @@ impl ScriptCtx {
             owner_slot_writes_enabled: Rc::downgrade(&self.owner_slot_writes_enabled),
             system_commands: self.system_commands.downgrade(),
             pending_teleporter_mutations: Rc::downgrade(&self.pending_teleporter_mutations),
+            pending_seam_mutations: Rc::downgrade(&self.pending_seam_mutations),
             pending_respawns: Rc::downgrade(&self.pending_respawns),
             respawn_placements: Rc::downgrade(&self.respawn_placements),
             pending_ghost_link_commands: Rc::downgrade(&self.pending_ghost_link_commands),
@@ -189,6 +194,7 @@ impl WeakScriptCtx {
             owner_slot_writes_enabled: self.owner_slot_writes_enabled.upgrade()?,
             system_commands: self.system_commands.upgrade()?,
             pending_teleporter_mutations: self.pending_teleporter_mutations.upgrade()?,
+            pending_seam_mutations: self.pending_seam_mutations.upgrade()?,
             pending_respawns: self.pending_respawns.upgrade()?,
             respawn_placements: self.respawn_placements.upgrade()?,
             pending_ghost_link_commands: self.pending_ghost_link_commands.upgrade()?,

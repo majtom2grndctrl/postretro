@@ -37,6 +37,7 @@ pub(crate) fn apply_weapon_impact_damage(
         registry,
         weapon_id,
         attacker,
+        None,
         impact,
         effective.credit_source.to_string(),
         payload.amount,
@@ -54,10 +55,35 @@ pub fn apply_authorized_weapon_impact_damage(
     credit_source: String,
     damage_amount: f32,
 ) {
+    apply_authorized_shot_impact_damage(
+        registry,
+        weapon_id,
+        attacker,
+        None,
+        impact,
+        credit_source,
+        damage_amount,
+    );
+}
+
+/// [`apply_authorized_weapon_impact_damage`] for a shot landing after its fire
+/// tick (a projectile, a remote declaration): `attacker_life` is its firer's
+/// life counter when it was fired, so a shot from before a respawn touches no
+/// NPC's meter or attacker ledger.
+pub fn apply_authorized_shot_impact_damage(
+    registry: &mut EntityRegistry,
+    weapon_id: EntityId,
+    attacker: Option<EntityId>,
+    attacker_life: Option<u32>,
+    impact: &weapon::WeaponImpact,
+    credit_source: String,
+    damage_amount: f32,
+) {
     apply_weapon_impact_damage_with_source(
         registry,
         weapon_id,
         attacker,
+        attacker_life,
         impact,
         credit_source,
         damage_amount,
@@ -67,10 +93,12 @@ pub fn apply_authorized_weapon_impact_damage(
 
 /// Splash receiver damage. `impact.point` is the blast centre, which is not
 /// where the receiver was hit, so the dispatch carries no point.
+/// `attacker_life` as for [`apply_authorized_shot_impact_damage`].
 pub(crate) fn apply_authorized_splash_impact_damage(
     registry: &mut EntityRegistry,
     weapon_id: EntityId,
     attacker: Option<EntityId>,
+    attacker_life: Option<u32>,
     impact: &weapon::WeaponImpact,
     credit_source: String,
     damage_amount: f32,
@@ -79,6 +107,7 @@ pub(crate) fn apply_authorized_splash_impact_damage(
         registry,
         weapon_id,
         attacker,
+        attacker_life,
         impact,
         credit_source,
         damage_amount,
@@ -86,10 +115,12 @@ pub(crate) fn apply_authorized_splash_impact_damage(
     );
 }
 
+#[allow(clippy::too_many_arguments)] // each hit fact the chokepoint context carries.
 fn apply_weapon_impact_damage_with_source(
     registry: &mut EntityRegistry,
     weapon_id: EntityId,
     attacker: Option<EntityId>,
+    attacker_life: Option<u32>,
     impact: &weapon::WeaponImpact,
     credit_source: String,
     damage_amount: f32,
@@ -148,6 +179,8 @@ fn apply_weapon_impact_damage_with_source(
             zone: impact.zone.clone(),
             producer: DamageProducer::InTick,
             point,
+            status: None,
+            attacker_life,
         },
     );
 }

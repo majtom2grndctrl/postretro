@@ -187,6 +187,7 @@ impl Level {
                 suppress_boot_pawn: false,
                 local_carried_loadout: None,
                 spawn_checkpoint: None,
+                spawn_checkpoint_seam: false,
             };
             install_world_cpu(
                 handles,
@@ -361,6 +362,7 @@ impl Level {
             DT,
             Some(TriggerTickContext {
                 teleporters: Some(&app.teleporter_bindings),
+                seams: None,
                 system: &mut session.trigger_system,
                 bridge: &session.trigger_volume_bridge,
                 bindings: &app.trigger_bindings,
@@ -460,10 +462,7 @@ impl Level {
             &session.scripting.system_registry,
             &ctx,
         );
-        session
-            .scripting
-            .impact_policy_runtime
-            .discard_app_drain_pending();
+        session.scripting.settle_frame_end_impacts(false);
         crate::impact_effects::run_end_of_frame_removal_pass(
             &mut ctx.registry.borrow_mut(),
             |removal| {

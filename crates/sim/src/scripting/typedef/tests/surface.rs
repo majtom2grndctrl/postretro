@@ -91,11 +91,12 @@ fn reaction_handle_authoring_types_widen_in_both_outputs() {
     let luau = generate_luau(&r);
 
     // The name-optional `(body)` overload is present alongside `(name, body)`.
-    // Six authoring shapes (data, crossing, trigger-event, teleport-event,
-    // emitter and player-event tracer), each with and without an explicit name.
+    // Seven authoring shapes (data, crossing, trigger-event, teleport-event,
+    // seam-event, emitter and player-event tracer), each with and without an
+    // explicit name.
     assert_eq!(
         ts.matches("export function defineReaction").count(),
-        12,
+        14,
         "ts must declare data and all dispatch-scope tracer defineReaction overloads"
     );
     assert!(
@@ -810,6 +811,16 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
             "adjustSentimentToward: (self: TargetHandle, toward: TargetHandle | SourceHandle, delta: NumberValue) -> Effect,",
         ),
         (
+            "target.applyStatus",
+            "applyStatus(status: Status): Effect;",
+            "applyStatus: (self: TargetHandle, status: Status) -> Effect,",
+        ),
+        (
+            "target.clearStatus",
+            "clearStatus(status: Status): Effect;",
+            "clearStatus: (self: TargetHandle, status: Status) -> Effect,",
+        ),
+        (
             "grantHealth",
             "grantHealth(amount: NumberValue): Effect;",
             "grantHealth: (self: SourceHandle, amount: NumberValue) -> Effect,",
@@ -857,13 +868,13 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
     }
     assert_eq!(
         ts.matches("): Effect;").count(),
-        13,
-        "TypeScript must expose exactly the thirteen closed impact-effect builders"
+        15,
+        "TypeScript must expose exactly the fifteen closed impact-effect builders"
     );
     assert_eq!(
         luau.matches("-> Effect").count(),
-        11,
-        "Luau must expose exactly the eleven receiver-method impact-effect builders; set/update are global functions"
+        13,
+        "Luau must expose exactly the thirteen receiver-method impact-effect builders; set/update are global functions"
     );
     // The source's life-state read is a BoolRef, not an Effect.
     assert!(ts.contains("inLifeState(name: string): BoolRef;"));

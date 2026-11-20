@@ -80,6 +80,22 @@
   /** What a teleporter member's `on("teleport", …)` accepts: a sourceless or teleport-scoped reaction, or a reaction's name. */
   export type TeleportEventReaction = Reaction<{}> | Reaction<TeleportEventParams> | string;
 
+  /** Snapshot of a map-placed level seam: id, position and tags. */
+  export type SeamEntity = { id: EntityId; position: Vec3; tags: ReadonlyArray<string> };
+  /** Level seam member returned by `getMapEntities("seam")`. Arming state is host-only and never replicated; methods build closed command steps. */
+  export interface SeamHandle extends SeamEntity {
+    /** Arm the seam. Applies on the host at the start of its next tick; pawns latched in it stay latched. */
+    arm(): SequenceStep[];
+    /** Disarm the seam. Applies on the host at the start of its next tick. */
+    disarm(): SequenceStep[];
+    /** Fire `fire` once per pawn arriving by this seam, host-only, inside the first fixed tick after its spawn, and for no sibling sharing its tag. Return the entry from `setupLevel`'s `seamEvents`. */
+    on(event: "arrive", fire: SeamEventReaction[]): SeamEventDescriptor;
+  }
+  /** A seam member binding: the reactions named by `fire` run on the seam's `arrive` event. */
+  export type SeamEventDescriptor = { seam: EntityId; event: "arrive"; fire: string[] };
+  /** What a seam member's `on("arrive", …)` accepts: a sourceless or seam-scoped reaction, or a reaction's name. */
+  export type SeamEventReaction = Reaction<{}> | Reaction<SeamEventParams> | string;
+
   /** Snapshot of a map-placed ghost link: id, position and tags. */
   export type GhostLinkEntity = { id: EntityId; position: Vec3; tags: ReadonlyArray<string> };
   /** Ghost-link member returned by `getMapEntities("ghostLink")`. Armed state, member categories and colour filter are host-authoritative and replicated; each method builds closed command steps that apply on the host at its next tick, in call order, and do nothing on a connected client. An out-of-range argument warns and drops that step when it runs; a non-finite argument (NaN or Infinity) drops the whole reaction when the level loads. */
@@ -135,7 +151,7 @@
   }
 
   /** Map-placed kinds `getMapEntities` accepts. NPCs and players are groups (`npcs`, `players`), not members. */
-  export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap" | "attackPool";
+  export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap" | "attackPool" | "seam";
 
   /** The member handle each map kind yields. `"emitter"` yields the snapshot only (id, position, tags, and the `BillboardEmitterComponent` under `component`); it has no verbs. */
   export type MapEntityForKind<K extends MapEntityKind> =
@@ -149,6 +165,7 @@
     K extends "spawner" ? SpawnerEntityHandle :
     K extends "trap" ? TrapEntityHandle :
     K extends "attackPool" ? AttackPoolEntityHandle :
+    K extends "seam" ? SeamHandle :
     never;
 
   /** Narrows a member query to instances carrying `tag`. */
@@ -291,6 +308,10 @@
   export type ArmTeleporterStep = { id: EntityId; primitive: "armTeleporter"; args: Record<string, never> };
   /** Sequence step that disarms one teleporter (`t.disarm()`). Applies on the host at the start of its next movement tick. */
   export type DisarmTeleporterStep = { id: EntityId; primitive: "disarmTeleporter"; args: Record<string, never> };
+  /** Sequence step that arms one level seam (`s.arm()`). Applies on the host at the start of its next tick. */
+  export type ArmSeamStep = { id: EntityId; primitive: "armSeam"; args: Record<string, never> };
+  /** Sequence step that disarms one level seam (`s.disarm()`). Applies on the host at the start of its next tick. */
+  export type DisarmSeamStep = { id: EntityId; primitive: "disarmSeam"; args: Record<string, never> };
   /** Member categories a ghost link shows; an omitted category keeps its value. */
   export type GhostLinkMembersArgs = { players?: boolean; entities?: boolean; projectiles?: boolean; movers?: boolean };
   /** A ghost link's colour filter. Each named field ramps on its own over `periodMs` (default 0); an omitted field keeps its value and any ramp in flight. `tint` is `[r, g, b]`; `tint` components, `opacity` and `saturation` lie in 0..=1, and `periodMs` is finite and at least 0. Naming none of `tint`, `opacity` and `saturation` warns and drops the step. */
@@ -347,6 +368,8 @@
     | MoverSetBlockPolicyStep
     | ArmTeleporterStep
     | DisarmTeleporterStep
+    | ArmSeamStep
+    | DisarmSeamStep
     | ArmGhostLinkStep
     | DisarmGhostLinkStep
     | SetGhostLinkMembersStep
@@ -407,6 +430,10 @@
     grantAmmo(type: string, amount: number): SubjectTokenCommand;
     /** Refill `layer` on this fire's activators: omit `amount` to fill to capacity, or add a finite, non-negative `amount`, clamped to capacity. A pawn without that layer warns and is skipped. */
     grantLayer(layer: DefenseLayer, amount?: number): SubjectTokenCommand;
+    /** Apply `status` as `script.applyStatus`; a subject without health warns and is skipped. Host and single player only; applied at the next fixed tick when it fires outside one. */
+    applyStatus(status: Status): SubjectTokenCommand;
+    /** Remove every applier's instance of `status`. Host and single player only. */
+    clearStatus(status: Status): SubjectTokenCommand;
     /** Add `delta` to this fire's activators' value of a per-owner numeric slot. */
     addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;
   }
@@ -421,6 +448,11 @@
   const teleporterTargetBrand: unique symbol;
   export interface TeleporterTarget { readonly [teleporterTargetBrand]: true; arm(): SubjectTokenCommand; disarm(): SubjectTokenCommand; }
   export type TeleportEventParams = Readonly<{ activators: ActivatorsTarget; teleporter: TeleporterTarget }>;
+  const seamTargetBrand: unique symbol;
+  /** The level seam a pawn arrived by (`on.seam`). Legal only before any `wait`. */
+  export interface SeamTarget { readonly [seamTargetBrand]: true; arm(): SubjectTokenCommand; disarm(): SubjectTokenCommand; }
+  /** Dispatch values published by a level seam's `arrive` event: the arriving pawn and the seam it arrived by. */
+  export type SeamEventParams = Readonly<{ activators: ActivatorsTarget; seam: SeamTarget }>;
   export type TriggerEventParams = Readonly<{ activators: ActivatorsTarget; trigger: TriggerTarget; occupancy: RuntimeRead }>;
   const emitterTargetBrand: unique symbol;
   /** Opaque anchor for where the current named gameplay event happened. Legal only as `playSound`'s `at`. */
@@ -443,6 +475,10 @@
     grantAmmo(type: string, amount: number): SubjectTokenCommand;
     /** Refill `layer` on this event's player: omit `amount` to fill to capacity, or add a finite, non-negative `amount`, clamped to capacity. A pawn without that layer warns and is skipped. */
     grantLayer(layer: DefenseLayer, amount?: number): SubjectTokenCommand;
+    /** Apply `status` as `script.applyStatus`; a subject without health warns and is skipped. Host and single player only; applied at the next fixed tick when it fires outside one. */
+    applyStatus(status: Status): SubjectTokenCommand;
+    /** Remove every applier's instance of `status`. Host and single player only. */
+    clearStatus(status: Status): SubjectTokenCommand;
     /** Add `delta` to this event's player's value of a per-owner numeric slot. */
     addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;
   }
@@ -545,12 +581,18 @@
     /** The impact target's own layer, read before this fire's effects: `current` and `capacity`. A target without that layer reads 0; a bad reference drops the policy at install. */
     defense(layer: DefenseLayer): Readonly<{ current: NumberRef; capacity: NumberRef }>;
     setState(name: string, value: NumberValue): Effect;
+    /** Whether the target carries a live instance of `status`, from any applier, at this fire. A bad reference drops the policy at install. */
+    hasStatus(status: Status): BoolRef;
+    /** Apply `status` to the target. The applier is this impact's damager, or with none its source id (`fluid.<name>`, `script.applyDamage`); one applier's applications on one fixed tick count once. A target at health ≤ 0 accepts none. */
+    applyStatus(status: Status): Effect;
+    /** Remove every applier's instance of `status` from the target. */
+    clearStatus(status: Status): Effect;
   }
   export interface SourceHandle {
     readonly [sourceBrand]: true;
-    /** Add health to the impact damager. A fire with no damager skips this effect; app-drain impacts run no policy in v1. */
+    /** Add health to the impact damager. A fire with no damager skips this effect. Every impact runs its policies whatever produced it. Script `applyDamage` evaluates on the host where it lands (in-tick right after its damage, otherwise at the next tick start or frame end) and has no damager, so a grant on it reaches no one. A status tick's damager is its applier, so a grant there reaches the applier. */
     grantHealth(amount: NumberValue): Effect;
-    /** Add an ammo-pool balance to the impact damager. A fire with no damager skips this effect; app-drain impacts run no policy in v1. */
+    /** Add an ammo-pool balance to the impact damager. A fire with no damager skips this effect. Script damage has no damager, so a grant on it reaches no one; a status tick's damager is its applier, so a grant there reaches the applier. */
     grantAmmo(type: string, amount: NumberValue): Effect;
     /** Refill `layer` on the impact damager: omit `amount` to fill to capacity, or add `amount`, clamped to capacity. The capacity is evaluated when the grant applies. A damager without that layer warns and skips; a fire with no damager skips this effect. */
     grantLayer(layer: DefenseLayer, amount?: NumberValue): Effect;
@@ -561,8 +603,8 @@
     /** Adjust this faction's sentiment toward another impact recipient. Negative values degrade the relationship; positive values strengthen its bond. */
     adjustSentimentToward(toward: TargetHandle | SourceHandle, delta: NumberValue): Effect;
   }
-  /** One impact's facts. `amount` is points dealt: the total drained from layers and health after type multipliers and resistances. `raw` is the incoming amount after hit zones, before type and layers; `absorbed` is the layers' share of `amount`; `broke` is true when this hit took some layer from above zero to zero; `type(damageType)` is true when the hit dealt that type, the mod's default included. */
-  export type Impact = Readonly<{ target: TargetHandle; source: SourceHandle; amount: NumberRef; raw: NumberRef; absorbed: NumberRef; broke: BoolRef; type(damageType: DamageType): BoolRef }>;
+  /** One impact's facts. `amount` is points dealt: the total drained from layers and health after type multipliers and resistances. `raw` is the incoming amount after hit zones, before type and layers; `absorbed` is the layers' share of `amount`; `broke` is true when this hit took some layer from above zero to zero; `type(damageType)` is true when the hit dealt that type, the mod's default included; `status(h)` is true when this impact is a tick of `h`, the guard that keeps an igniting policy from reapplying a burn from its own ticks. */
+  export type Impact = Readonly<{ target: TargetHandle; source: SourceHandle; amount: NumberRef; raw: NumberRef; absorbed: NumberRef; broke: BoolRef; type(damageType: DamageType): BoolRef; status(status: Status): BoolRef }>;
   export interface ImpactEvent {
     readonly kind: "impact";
     readonly isOverride: boolean;
@@ -613,6 +655,8 @@
     /** Level trigger events, keyed by volume: build each with a trigger member's `on`. A tag-keyed entry belongs in `ModManifest.triggerEvents` (`defineTriggerEvent`) and is rejected here. */
     triggerEvents?: VolumeTriggerEventDescriptor[];
     teleportEvents?: TeleportEventDescriptor[];
+    /** Level seam events, keyed by seam: build each with a seam member's `on`. */
+    seamEvents?: SeamEventDescriptor[];
     triggerPools?: TriggerPoolDescriptor[];
     /** Per-player events, built with `players().on`. A level's entries belong to that level; an entry carrying `levels` is skipped with a warning (its siblings install). */
     playerEvents?: PlayerEventDescriptor[];
@@ -636,6 +680,7 @@
   export function defineReaction(tracer: (params: CrossingParams) => ReactionBody<CrossingParams>): Reaction<CrossingParams>;
   export function defineReaction(tracer: (params: TriggerEventParams) => ReactionBody<TriggerEventParams>): Reaction<TriggerEventParams>;
   export function defineReaction(tracer: (params: TeleportEventParams) => ReactionBody<TeleportEventParams>): Reaction<TeleportEventParams>;
+  export function defineReaction(tracer: (params: SeamEventParams) => ReactionBody<SeamEventParams>): Reaction<SeamEventParams>;
   export function defineReaction(tracer: (params: EmitterParams) => ReactionBody<EmitterParams>): Reaction<EmitterParams>;
   export function defineReaction(tracer: (params: PlayerEventParams) => ReactionBody<PlayerEventParams>): Reaction<PlayerEventParams>;
   /** Define a pure impact-policy descriptor. Omit `id` only in a TypeScript direct top-level binding declaration; scripts-build supplies that binding's name. Register it only by returning it through `events`. */
@@ -652,6 +697,7 @@
   export function defineReaction(name: string, tracer: (params: CrossingParams) => ReactionBody<CrossingParams>): Reaction<CrossingParams>;
   export function defineReaction(name: string, tracer: (params: TriggerEventParams) => ReactionBody<TriggerEventParams>): Reaction<TriggerEventParams>;
   export function defineReaction(name: string, tracer: (params: TeleportEventParams) => ReactionBody<TeleportEventParams>): Reaction<TeleportEventParams>;
+  export function defineReaction(name: string, tracer: (params: SeamEventParams) => ReactionBody<SeamEventParams>): Reaction<SeamEventParams>;
   export function defineReaction(name: string, tracer: (params: EmitterParams) => ReactionBody<EmitterParams>): Reaction<EmitterParams>;
   export function defineReaction(name: string, tracer: (params: PlayerEventParams) => ReactionBody<PlayerEventParams>): Reaction<PlayerEventParams>;
 
@@ -673,7 +719,7 @@
   /** One group command: a primitive descriptor carrying `kind` (and an optional `tag` filter) instead of a target. Legal both as a reaction body and directly as a sequence entry; the group resolves when the command takes effect, so NPCs spawned or players joined before then are included. */
   export type GroupCommand = { primitive: string; kind: GroupKind; tag?: string; args: Record<string, unknown> };
   /** The subject a token command addresses: this fire's activators, the volume that fired, or the event's player. */
-  export type SubjectTokenTarget = "@activators" | "@trigger" | "@teleporter" | "@player";
+  export type SubjectTokenTarget = "@activators" | "@trigger" | "@teleporter" | "@seam" | "@player";
   /** One subject-token command (`on.activators`, `on.trigger`, `on.teleporter`, `on.player`): a primitive descriptor whose `target` names the fire's subject. Legal both as a reaction body and directly as a sequence entry, but only before any `wait`, because the fire context does not survive one. */
   export type SubjectTokenCommand = { primitive: string; target: SubjectTokenTarget; args: Record<string, unknown> };
   /** Selects the NPCs a group command reaches. Omit `tag` for every NPC. */
@@ -686,6 +732,10 @@
     update(fields: NpcStateUpdateArgs): GroupCommand;
     /** Damage each NPC by a finite, non-negative amount. */
     damage(amount: number, options?: DamageOptions): GroupCommand;
+    /** Apply `status` to each NPC as `script.applyStatus`; one without health warns and is skipped. Host and single player only; applied at the next fixed tick when it fires outside one. */
+    applyStatus(status: Status): GroupCommand;
+    /** Remove every applier's instance of `status` from each NPC. Host and single player only. */
+    clearStatus(status: Status): GroupCommand;
   }
   /** Options for relocating a player to its seat placement on the next tick. `health` lies in (0, max] and defaults to the pawn's maximum; a value outside that range, or a non-finite one, warns and restores the maximum. `lifeState` names the state to enter at elapsed zero and defaults to the descriptor's `initial`. */
   export type RespawnOptions = { health?: number; lifeState?: string };
@@ -703,6 +753,10 @@
     grantAmmo(type: string, amount: number): GroupCommand;
     /** Refill `layer` on each player: omit `amount` to fill to capacity, or add a finite, non-negative `amount`, clamped to capacity. A player without that layer warns and is skipped. */
     grantLayer(layer: DefenseLayer, amount?: number): GroupCommand;
+    /** Apply `status` as `script.applyStatus`; a subject without health warns and is skipped. Host and single player only; applied at the next fixed tick when it fires outside one. */
+    applyStatus(status: Status): GroupCommand;
+    /** Remove every applier's instance of `status`. Host and single player only. */
+    clearStatus(status: Status): GroupCommand;
     /** Add `delta` to each player's value of a per-owner numeric slot. */
     addSlot(slot: StateRef<number>, delta: number): GroupCommand;
     /** Fire `fire` once per player whenever `edge`'s condition crosses for that player, or, for `assistReceived()` / `assistGiven()`, once per completed assist on its target or helper. Evaluated on the host (and in single player) once per authoritative tick, after the tick settles; a connected client registers nothing. Effective only when returned under a manifest's `playerEvents`; `options.levels` scopes a `ModManifest` entry. */
@@ -849,6 +903,63 @@
   /** Declare a damage type by its matrix. Omit `name` only in a TypeScript direct top-level binding declaration whose first argument is an object literal; scripts-build names it by its binding. Register it with `defineMod({ damageTypes: [type] })`. */
   export function defineDamageType(matrix: DamageTypeMatrix, options?: DamageTypeOptions): DamageType;
   export function defineDamageType(name: string, matrix: DamageTypeMatrix, options?: DamageTypeOptions): DamageType;
+
+  /** Input shape for `emitter()`. Required: `lifetime`, `velocity` and `sprite`; other fields fall back to the documented emitter defaults. */
+  export type EmitterProps = {
+    /** Starts this many particles every second. Omit for the default `0`; use `burst` for a one-off puff. Must be finite and ≥ 0. */
+    rate?: number;
+    /** Starts this many particles once, then clears itself. A whole number ≥ 0. */
+    burst?: number;
+    /** Widens particle directions around `velocity`, in radians. Finite and ≥ 0. Default: `0.2`. */
+    spread?: number;
+    /** How long each particle remains alive, in seconds. Finite and > 0. */
+    lifetime: number;
+    /** Starting movement as `[x, y, z]` metres per second (`y` is up). All three numbers finite. */
+    velocity: [number, number, number];
+    /** How gravity affects particles: `-1` falls normally, `0` floats, positive values rise. Default: `0.5`. */
+    buoyancy?: number;
+    /** How quickly motion slows, in 1/seconds. Finite and ≥ 0. Default: `0.5`. */
+    drag?: number;
+    /** Finite size multipliers sampled evenly from birth to death. Default: `[1]`. */
+    size_over_lifetime?: number[];
+    /** Finite opacity multipliers sampled evenly from birth to death. Default: `[1, 1, 0.8, 0]`. */
+    opacity_over_lifetime?: number[];
+    /** RGB tint, each in `[0, 1]`. Default: white. */
+    color?: [number, number, number];
+    /** Non-empty sprite or material name for the particle image, such as `"smoke"` or `"ember"`. */
+    sprite: string;
+    /** Billboard rotation speed in radians per second. Default: `0`. */
+    spin_rate?: number;
+  };
+  /** Build a `billboard_emitter` component value from `props`, validating them and filling defaults; throws naming the offending field. Use it in a component preset or a status's `presentation.emitter`. */
+  export function emitter(props: EmitterProps): { kind: "billboard_emitter" } & BillboardEmitterComponent;
+
+  /** How a repeat application by the same applier changes its instance: `"refresh"` resets time left; `"stack"` adds one stack up to `maxStacks`, resets time left, and each tick deals `damage × stacks`. */
+  export type StatusStacking = "refresh" | "stack";
+  /** What a status draws on each afflicted entity, on every machine: an `emitter()` that follows the entity while the status is live (never on the local player's own pawn), and a one-shot `tickSound` every `tickMs`. */
+  export type StatusPresentation = {
+    readonly emitter?: { kind: "billboard_emitter" } & BillboardEmitterComponent;
+    readonly tickSound?: string;
+  };
+  /** A status's literal parameters. `damage`: per tick per stack, in [0, 1e6]; `0` makes a marker that never enters the damage chokepoint. `type`: a registered damage type; omitted, ticks deal the mod's `defaultDamageType`. `tickMs` in [1, 60000] and `durationMs` in [`tickMs`, 600000], each rounded up to whole fixed ticks; omit `durationMs` to last until cleared. `maxStacks` a whole number in [1, 64], default 1. Any other key rejects load. */
+  export type StatusOptions = {
+    readonly damage: number;
+    readonly type?: DamageType;
+    readonly tickMs: number;
+    readonly durationMs?: number;
+    readonly stacking?: StatusStacking;
+    readonly maxStacks?: number;
+    readonly presentation?: StatusPresentation;
+  };
+  /** A registered status kind. It crosses the manifest as `{ kind, name }`. `active` reads whether the local player carries it (`player.status.<name>`): a local-only read with no `byPlayer`, which a player event rejects. */
+  export type Status = {
+    readonly kind: "status";
+    readonly name: string;
+    readonly active: ComputedRef<boolean>;
+  };
+  /** Declare a status kind. Omit `name` only in a TypeScript direct top-level binding declaration whose only argument is an object literal; scripts-build names it by its binding. Register it with `defineMod({ statuses: [status] })`. */
+  export function defineStatus(options: StatusOptions): Status;
+  export function defineStatus(name: string, options: StatusOptions): Status;
 
   /** A token's default budget on one target. `limit`: how much of it may be drawn on one target at once, an integer of at least 1 (default 3). `refreshMs`: how long a spent draw stays counted after its turn ends, a finite number of at least 0 (default 0). */
   export type AttackTokenBudget = { readonly limit?: number; readonly refreshMs?: number };
@@ -1193,7 +1304,7 @@
   export function defineFaction(name: string): FactionDescriptor;
   /** Build one directed relationship for `ModManifest.sentiment`; negative sentiment is hostile, zero neutral, and positive allied. Optional non-negative `decay` overrides the global return-to-baseline rate; zero holds the pair. */
   export function sentiment(fromFaction: string, toFaction: string, values: Pick<FactionSentimentDescriptor, "sentiment" | "tolerance" | "decay">): FactionSentimentDescriptor;
-  /** Pure identity builder for a fluid declaration in `ModManifest.fluids`. A map's `fluid_volume` names it through its `fluid` key; declaration order assigns its index. A field out of range, or a repeated name, is rejected with a warning naming the field, and the first declaration stands. */
+  /** Pure identity builder for a fluid declaration in `ModManifest.fluids`. A map's `fluid_volume` names it through its `fluid` key; declaration order assigns its index. A field out of range, or a repeated name, is rejected with a warning naming the field, and the first declaration stands. `status`, a status handle, is the exception: one naming a status `defineMod` does not register fails the load. */
   export function defineFluid(desc: FluidDescriptor): FluidDescriptor;
   /** Pure identity builder for a ghost style in `ModManifest.ghostStyles`. A map's `ghost_link` names it through its `ghost_style` key. Every field but `name` is optional and takes the floor style's value when omitted. A malformed field drops the whole style with a warning naming it, a repeated name is dropped and the first declaration stands, and a link naming no declared style uses the floor style. */
   export function defineGhostStyle(desc: GhostStyleDescriptor): GhostStyleDescriptor;
@@ -1365,7 +1476,7 @@
     readonly timeInActivityMs: RuntimeGuardNode;
     /** Milliseconds remaining on the selected offense action's named attack timer; zero with no action or a missing attack-map entry. Guard reads are pre-transition (number). */
     readonly attackCooldownMs: RuntimeGuardNode;
-    /** `true` on the think-stride ticks where acquisition is re-evaluated (boolean). */
+    /** `true` on the enemy's decide ticks, where acquisition is checked: 15 times a second in view or engaged, every 2 s dormant (boolean). */
     readonly acquisitionDue: RuntimeGuardNode;
     /** The enemy's current hit points (number). */
     readonly health: RuntimeGuardNode;
@@ -1407,6 +1518,8 @@
     readonly activityRoll: RuntimeGuardNode;
     /** Points drained from this enemy's defense layers and health since the currently-evaluated activity was entered, counting every damage producer, `applyDamage` included. Scope-relative like `timeInActivityMs`: each level, and its selectors, read their own sum, which resets to 0 when that level is entered (number). */
     readonly damageInActivity: RuntimeGuardNode;
+    /** Highest awareness of any candidate, 0 to 1; 1 once it has a target. A guard on a decide reads the value that decide's acquisition check produced (number). */
+    readonly awareness: RuntimeGuardNode;
   }
 
   /** Pre-wrapped guard input leaves for the fixed `@brain.*` namespace. */
@@ -1424,9 +1537,9 @@
     readonly died: RuntimeGuardNode;
     /** Directional sentiment from the evaluating faction toward this candidate: negative hostile, zero neutral, positive allied (number). */
     readonly sentiment: RuntimeGuardNode;
-    /** Accumulated positive damage this candidate has dealt to the evaluating enemy, or zero when it has not damaged that enemy (number). */
+    /** Accumulated positive damage this candidate has dealt to the evaluating enemy, or zero when it has not damaged that enemy since its latest respawn (number). */
     readonly damageDealtToMe: RuntimeGuardNode;
-    /** Milliseconds since this candidate last damaged the evaluating enemy, or `1e9` when it has not damaged that enemy (number). */
+    /** Milliseconds since this candidate last damaged the evaluating enemy, or `1e9` when it has not damaged that enemy since its latest respawn (number). */
     readonly timeSinceDamageFromCandidate: RuntimeGuardNode;
     /** Retaliation tolerance resolved from this enemy's archetype override, then its directed faction pair toward this candidate, or `f32::MAX` when unauthored (number). */
     readonly tolerance: RuntimeGuardNode;
@@ -1440,6 +1553,9 @@
 
   /** Read the brain entity's own defense layer as guard inputs, as `state(name)` reads its own state: `defense(armor).current.le(0)`. An entity without the layer reads `0`; a bad reference fails load. */
   export function defense(layer: DefenseLayer): Readonly<{ current: RuntimeGuardNode; capacity: RuntimeGuardNode }>;
+
+  /** `true` while the brain entity carries a live instance of `status`, from any applier: `{ to: "flee", when: hasStatus(burning) }`. A status `defineMod` does not register fails load. */
+  export function hasStatus(status: Status): RuntimeGuardNode;
 
   /** `true` while the enemy holds a turn for `attack`, one of its archetype's attacks, as of the previous tick. Naming another attack fails load; anything but an attack handle throws at the call. Reading it registers no attack. */
   export function attackTurnHeld(attack: Attack): RuntimeGuardNode;

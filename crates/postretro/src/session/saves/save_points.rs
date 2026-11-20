@@ -11,10 +11,18 @@ use crate::session::progress_save::save_world_and_character;
 /// destination with the earlier gear rather than the earlier level with the
 /// later gear; then the character, then the world. A destination with no
 /// catalog id (a path load) leaves the run's level unchanged.
-pub(crate) fn save_on_level_start(session: &mut Session, destination: Option<&str>) {
+pub(crate) fn save_on_level_start(
+    session: &mut Session,
+    destination: Option<&str>,
+    seam: Option<SeamLevelStart>,
+) {
     // A level start arrives at its level-start spawns; Continue's own arrival
-    // keeps the run's checkpoint set, which Continue chose.
-    if !session.saves.is_continue_arrival(destination) {
+    // keeps the run's checkpoint set, which Continue chose. A seam crossing
+    // arrives at the seam's set, run or no run: the mark comes from the
+    // crossing, never from the map.
+    if let Some(seam) = seam.as_ref() {
+        session.saves.set_seam_spawn_checkpoint(seam.name.clone());
+    } else if !session.saves.is_continue_arrival(destination) {
         session.saves.set_spawn_checkpoint(None);
     }
     if !session.state_store_lifecycle.can_save() {
@@ -24,9 +32,13 @@ pub(crate) fn save_on_level_start(session: &mut Session, destination: Option<&st
         && let Some(catalog_id) = destination
     {
         let (_, live) = collect_world_and_run(session);
+        let checkpoint = match seam {
+            Some(SeamLevelStart { name, pose }) => RunCheckpoint::Seam { name, pose },
+            None => RunCheckpoint::LevelStart,
+        };
         if !session
             .saves
-            .save_run_progress(catalog_id, RunCheckpoint::LevelStart, live)
+            .save_run_progress(catalog_id, checkpoint, live)
         {
             // Writing the character now would pair the run's earlier level
             // with this level's gear.
@@ -38,6 +50,13 @@ pub(crate) fn save_on_level_start(session: &mut Session, destination: Option<&st
     }
     let _ = save_world_and_character(session);
     publish_save_rows(session);
+}
+
+/// A seam crossing's level start: the crossing seam's name and seat 0's
+/// landmark-relative pose when it crossed inside the seam.
+pub(crate) struct SeamLevelStart {
+    pub(crate) name: String,
+    pub(crate) pose: Option<postretro_sim::scripting::save_files::SeamPoseRecord>,
 }
 
 /// The frontend is entered by any path on the host or in single player: the
@@ -63,8 +82,9 @@ pub(crate) fn end_run_at_frontend(session: &mut Session) {
     session.saves.set_run_load_queued(false);
     session.saves.set_spawn_checkpoint(None);
     session.saves.clear_continue_arrival();
+    session.saves.set_continue_seam_pose(None);
     if session.saves.selected_character().is_none() {
-        super::set_seat_zero_carry_from_selection(session);
+        super::set_seat_zero_from_selection(session);
     }
     publish_save_rows(session);
 }

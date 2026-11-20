@@ -134,7 +134,13 @@ impl Session {
         }
         registry.set_component(pawn, movement).unwrap();
         registry
-            .set_component(pawn, ImmersionComponent { immersion })
+            .set_component(
+                pawn,
+                ImmersionComponent {
+                    immersion,
+                    fluid: None,
+                },
+            )
             .unwrap();
     }
 

@@ -30,6 +30,9 @@ pub fn begin_tick(
         let mut registry = registry.borrow_mut();
         registry.snapshot_transforms();
         registry.advance_host_tick();
+        // Status applications made since the last tick count on this one,
+        // after the script impacts that landed before it evaluated.
+        registry.apply_latched_statuses();
     }
     let arrivals = if let Some(ctx) = ctx {
         crate::teleporter_commands::apply_pending_teleporter_mutations(ctx);
@@ -91,7 +94,7 @@ pub fn simulate_tick_with_presentation_aim<AiResult>(
     environment: EnvironmentView<'_>,
     mod_block_during_reload: bool,
     anim_time: f64,
-    mut presentation_camera_aim: (f32, f32),
+    presentation_camera_aim: (f32, f32),
     _progress_tracker: &mut ProgressTracker,
     run_ai: impl FnMut(&mut EntityRegistry, f32, AiTickInputs<'_>, &mut SimAiHost<'_>) -> AiResult,
     mover_colliders: &[MoverCollider],
@@ -117,6 +120,83 @@ pub fn simulate_tick_with_presentation_aim<AiResult>(
 where
     AiResult: Into<AiTickResult>,
 {
+    simulate_tick_scheduled(
+        registry,
+        collision_world,
+        hit_zone_store,
+        nav_graph,
+        environment,
+        mod_block_during_reload,
+        anim_time,
+        presentation_camera_aim,
+        _progress_tracker,
+        run_ai,
+        None,
+        mover_colliders,
+        mover_tick_states,
+        remote_pawn_commands,
+        command,
+        post_movement,
+        tick_dt,
+        touch_system,
+        assist_state,
+        descriptors,
+        descriptor_generation,
+        factions,
+        faction_sentiment,
+        default_weapon_placement,
+        use_pressed,
+        drop_pressed,
+        trigger_context,
+        ingest_ready_remote_hits,
+        on_impact,
+        timing,
+    )
+}
+
+/// [`simulate_tick_with_presentation_aim`] with the NPC tick scheduler: its
+/// perception and tiers run between the Projectiles and AI stages.
+#[allow(clippy::too_many_arguments)]
+pub fn simulate_tick_scheduled<AiResult>(
+    registry: Rc<RefCell<EntityRegistry>>,
+    collision_world: &CollisionWorld,
+    hit_zone_store: &HitZoneStore,
+    nav_graph: Option<&NavGraph>,
+    environment: EnvironmentView<'_>,
+    mod_block_during_reload: bool,
+    anim_time: f64,
+    mut presentation_camera_aim: (f32, f32),
+    _progress_tracker: &mut ProgressTracker,
+    run_ai: impl FnMut(&mut EntityRegistry, f32, AiTickInputs<'_>, &mut SimAiHost<'_>) -> AiResult,
+    schedule: Option<crate::npc_tiers::ScheduleInput<'_>>,
+    mover_colliders: &[MoverCollider],
+    mover_tick_states: &mut MoverTickStateTable,
+    remote_pawn_commands: &[RemotePawnCommand],
+    command: &SimCommand,
+    post_movement: impl FnMut(&Rc<RefCell<EntityRegistry>>) -> PostMovementCommand,
+    tick_dt: f32,
+    touch_system: &mut TouchSystem,
+    assist_state: &mut super::assist::AssistState,
+    descriptors: &[EntityTypeDescriptor],
+    descriptor_generation: u64,
+    factions: &FactionRegistry,
+    faction_sentiment: &RefCell<FactionSentimentState>,
+    default_weapon_placement: Option<&WeaponPlacementDescriptor>,
+    use_pressed: &HashMap<PlayerId, bool>,
+    drop_pressed: &HashMap<PlayerId, bool>,
+    trigger_context: Option<TriggerTickContext<'_>>,
+    ingest_ready_remote_hits: impl FnMut(&mut EntityRegistry, &mut dyn FnMut(&mut EntityRegistry)),
+    mut on_impact: impl FnMut(&mut EntityRegistry),
+    timing: postretro_stage_timing::TimingGate,
+) -> TickEvents
+where
+    AiResult: Into<AiTickResult>,
+{
+    // Script impacts that landed before this tick evaluate at its start, in
+    // landing order, before anything this tick reads health (`scripting.md`
+    // §2, Impact-policy evaluation). The windowed host does the same before
+    // calling [`begin_tick`] itself.
+    on_impact(&mut registry.borrow_mut());
     let ctx = trigger_context
         .as_ref()
         .and_then(|context| context.script_ctx.as_ref());
@@ -180,6 +260,7 @@ where
         presentation_camera_aim,
         _progress_tracker,
         run_ai,
+        schedule,
         mover_colliders,
         mover_tick_states,
         &remote_pawn_commands,

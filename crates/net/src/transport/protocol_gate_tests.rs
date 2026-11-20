@@ -31,6 +31,8 @@ const PRLE_39: u64 = (0x_5052_4C45_u64 << 32) | 39;
 const PRLE_40: u64 = (0x_5052_4C45_u64 << 32) | 40;
 /// The build before the carried loadout on the wire: PRLF / wire 40.
 const PRLF_40: u64 = (0x_5052_4C46_u64 << 32) | 40;
+/// A PRLG / wire-41 peer predates the status-presence component payload.
+const PRLG_41: u64 = (0x_5052_4C47_u64 << 32) | 41;
 
 const STEP: Duration = Duration::from_millis(16);
 /// Polls before the matching peer must have connected.
@@ -145,7 +147,7 @@ fn poll_past_connect(mut poll: impl FnMut() -> bool) -> bool {
 // on the same host and the same polls connects: refusal, not a silent link.
 #[test]
 fn netcode_handshake_refuses_stale_protocol_clients_and_connects_a_matching_one() {
-    assert_eq!(transport_protocol_id(), (0x_5052_4C47_u64 << 32) | 41);
+    assert_eq!(transport_protocol_id(), (0x_5052_4C47_u64 << 32) | 42);
     let socket = loopback_socket();
     let server_addr = socket.local_addr().expect("server address");
     let mut server = NetServer::new(socket, server_addr, 8, Duration::from_secs(1), None)
@@ -174,6 +176,7 @@ fn netcode_handshake_refuses_stale_protocol_clients_and_connects_a_matching_one(
         (112, PRLE_39),
         (113, PRLE_40),
         (114, PRLF_40),
+        (115, PRLG_41),
     ]
     .into_iter()
     .map(|(id, protocol_id)| (protocol_id, RawClient::new(server_addr, id, protocol_id)))
@@ -188,7 +191,7 @@ fn netcode_handshake_refuses_stale_protocol_clients_and_connects_a_matching_one(
         matching.is_connected()
     });
 
-    assert!(reached, "the matching PRLG / 41 client connects");
+    assert!(reached, "the matching PRLG / 42 client connects");
     assert_eq!(server.connected_clients(), vec![7]);
     for (protocol_id, client) in &stale {
         assert!(

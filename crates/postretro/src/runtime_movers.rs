@@ -157,12 +157,14 @@ pub(crate) fn level_content_digest(geometry: &KinematicGeometry, world: &LevelWo
 /// tick, so they are prediction inputs. Denylist recipe: each record is
 /// destructured exhaustively, so a new field fails to compile until it is
 /// hashed or named as a skip. Named skips: the header's `level_gravity`, which
-/// the host sends (a client never predicts with its own), and each volume's
+/// the host sends (a client never predicts with its own), its `ai_wake_lead`,
+/// which only the host's NPC scheduler reads, and each volume's
 /// `surface_faces`, which only draw. Fluid presentation lives in the mod
 /// manifest and never reaches this function.
 fn hash_environment_volumes(hasher: &mut blake3::Hasher, section: &EnvironmentVolumesSection) {
     let EnvironmentVolumesSection {
         level_gravity: _,
+        ai_wake_lead: _,
         volumes,
     } = section;
     hash_len(hasher, volumes.len());
@@ -1526,6 +1528,7 @@ pub(crate) mod tests {
                     matrix: Default::default(),
                 }],
                 default_damage_type: Some(0),
+                statuses: Vec::new(),
             },
         ));
         let ids = spawn_from_geometry(&mut registry, &geometry).unwrap();

@@ -12,9 +12,10 @@
 -- SYNC OBLIGATION: `brain` mirrors the `BRAIN_INPUTS` table in
 -- `crates/foundation/src/brain.rs`; `candidate` mirrors `CANDIDATE_INPUTS` in
 -- `crates/foundation/src/candidate.rs`. `brain.ts` carries both sets. Adding an
--- input means editing both preludes; the SDK-helper drift tests in
--- `crates/scripting-core/src/data_descriptors/tests/behavior.rs` fail until
--- they agree.
+-- input means editing both preludes and both typedef templates;
+-- `brain_input_typedefs_match_the_foundation_table` (in
+-- `crates/sim/src/scripting/typedef/tests/surface.rs`) fails until the
+-- templates agree with the table.
 -- See: context/lib/scripting.md §11 · context/lib/entity_model.md §4
 
 local function input(name: string): RuntimeGuardNode
@@ -61,7 +62,9 @@ local BrainSdk = {}
 --- (number; points drained from defense layers and health since the
 --- currently-evaluated activity was entered, by every damage producer,
 --- `applyDamage` included; scope-relative like `timeInActivityMs`, resetting
---- to 0 when that level is entered).
+--- to 0 when that level is entered), and `awareness` (number; highest
+--- awareness of any candidate, 0 to 1, 1 once it has a target; a guard on a
+--- decide reads the value that decide's acquisition check produced).
 BrainSdk.brain = table.freeze({
   hasTarget = input("@brain.hasTarget"),
   targetDistance = input("@brain.targetDistance"),
@@ -87,6 +90,7 @@ BrainSdk.brain = table.freeze({
   animationDone = input("@brain.animationDone"),
   activityRoll = input("@brain.activityRoll"),
   damageInActivity = input("@brain.damageInActivity"),
+  awareness = input("@brain.awareness"),
 })
 
 --- Facts about one offered target, evaluated during acquisition.
@@ -126,6 +130,16 @@ function BrainSdk.defense(layer: any): { current: RuntimeGuardNode, capacity: Ru
     current = input(defenseInput(layer, false)),
     capacity = input(defenseInput(layer, true)),
   })
+end
+
+--- `true` while the brain entity carries a live instance of `status`, from
+--- any applier. A status `defineMod` does not register fails load.
+function BrainSdk.hasStatus(status: any): RuntimeGuardNode
+  local name = "@invalid"
+  if type(status) == "table" and rawget(status, "kind") == "status" and type(rawget(status, "name")) == "string" then
+    name = rawget(status, "name")
+  end
+  return input("@status." .. name)
 end
 
 -- The attack name a turn fact reads. Anything but an attack handle (a bare

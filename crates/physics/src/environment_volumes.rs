@@ -143,6 +143,7 @@ mod tests {
         wind.fluid = "water".to_string();
         let world = world_with(EnvironmentVolumesSection {
             level_gravity: -9.81,
+            ai_wake_lead: None,
             volumes: vec![low_gravity, wind],
         });
 
@@ -179,6 +180,7 @@ mod tests {
         wind.push = Some([1.0, 2.0, 3.0]);
         let mut world = world_with(EnvironmentVolumesSection {
             level_gravity: -9.81,
+            ai_wake_lead: None,
             volumes: vec![low_gravity, wind],
         });
         let windy_point = probe(Vec3::new(12.0, 2.0, 2.0));
@@ -221,6 +223,7 @@ mod tests {
         let dry = record(2, box_brush([0.0; 3], [1.0; 3]));
         let world = world_with(EnvironmentVolumesSection {
             level_gravity: -9.81,
+            ai_wake_lead: None,
             volumes: vec![sludge, dry],
         });
         let asked = std::cell::RefCell::new(Vec::new());

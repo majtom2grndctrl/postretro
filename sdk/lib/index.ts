@@ -20,7 +20,7 @@ export type { Activation, ActivationShotOptions, ActivationShotScale } from "./a
 export { activation } from "./activation";
 
 export type { BrainInputs, CandidateInputs } from "./brain";
-export { attackTurnFree, attackTurnHeld, brain, candidate, defense, state } from "./brain";
+export { attackTurnFree, attackTurnHeld, brain, candidate, defense, hasStatus, state } from "./brain";
 
 export type { AnimatableScalar, AnimatableVec3 } from "./animation";
 
@@ -34,6 +34,7 @@ export type { MoverEntityHandle } from "./entities/movers";
 
 export type { TriggerVolumeHandle } from "./entities/triggers";
 export type { TeleporterEntity, TeleporterHandle, TeleportEventDescriptor, TeleportEventReaction } from "./entities/teleporters";
+export type { SeamEntity, SeamHandle, SeamEventDescriptor, SeamEventReaction } from "./entities/seams";
 export type { GhostLinkEntity, GhostLinkHandle } from "./entities/ghost_links";
 
 export type { SpawnerEntityHandle } from "./entities/spawners";
@@ -82,6 +83,10 @@ export type {
   TeleporterTarget,
   ArmTeleporterStep,
   DisarmTeleporterStep,
+  SeamEventParams,
+  SeamTarget,
+  ArmSeamStep,
+  DisarmSeamStep,
   ArmGhostLinkStep,
   DisarmGhostLinkStep,
   SetGhostLinkMembersStep,
@@ -154,6 +159,7 @@ export {
   defineStore,
   defineDefenseLayer,
   defineDamageType,
+  defineStatus,
   defineAttackToken,
   defaultToken,
   defineAttack,

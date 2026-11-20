@@ -18,6 +18,8 @@ The integrating executor owns `plan.md`, shared contracts, commits, and final ve
 
 After every numbered workflow step or task, check free space on the workspace filesystem. If less than 15 GB remains, clear Cargo incremental build caches in the active target directory and any workflow-owned target directories. Recheck. If space is still below 15 GB, clear Cargo's downloaded crate archive cache. Recheck before continuing. Delete only caches; keep full target directories, source checkouts, worktrees, and unrelated files.
 
+In a disposable cloud container, also delete whole target directories the next step does not build: another profile's (`target/release` after a release-only check) or a finished worktree's. A rebuild costs only time there. On the owner's machine, keep them.
+
 ## Locate the brief
 
 Inspect `context/plans/ready/` and `context/plans/in-progress/`.

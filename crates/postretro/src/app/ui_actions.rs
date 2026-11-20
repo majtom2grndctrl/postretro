@@ -3,6 +3,7 @@
 // See: context/lib/ui.md §4
 
 use crate::*;
+use postretro_entities::engine_state_catalog::TEXT_ENTRY_SLOT;
 use postretro_entities::reactions::system_commands::TextEditCommand;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,9 +126,6 @@ pub(crate) struct PendingSliderStep {
     min: f32,
     max: f32,
 }
-
-/// The slot both text-entry input paths edit.
-const TEXT_ENTRY_SLOT: &str = "ui.textEntry";
 
 /// The field an open text-entry tree commits into (`openTextEntry`'s target),
 /// with the push of the tree that opened for it. `slot` is `None` once the

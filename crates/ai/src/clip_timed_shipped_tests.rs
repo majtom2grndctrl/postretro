@@ -26,7 +26,7 @@ impl Shipped {
         Self {
             manifest,
             reg,
-            runtime: AiRuntime::new(),
+            runtime: AiRuntime::deciding_every_tick(),
             clips: HitZoneStore::new(),
             player,
         }
@@ -67,6 +67,7 @@ impl Shipped {
                 factions: &FactionRegistry::default(),
                 faction_sentiment: &RefCell::new(FactionSentimentState::default()),
                 clips: Some(&self.clips),
+                schedule: Default::default(),
                 cpu: None,
             },
             |_| {},
@@ -363,13 +364,24 @@ fn brute_run(
     seconds: f32,
     place: impl FnMut(&Shipped, EntityId, &[String]) -> Option<Vec3>,
 ) -> BruteRun {
-    brute_run_in(dev_manifest(), tell, attack, player_at, seconds, place)
+    brute_run_in(
+        dev_manifest(),
+        None,
+        tell,
+        attack,
+        player_at,
+        seconds,
+        place,
+    )
 }
 
 /// [`brute_run`] on `manifest`, the dev mod's or an edit of it. The floor is
-/// 64 m a side, room for a 50 m leap.
+/// 64 m a side, room for a 50 m leap. With a `decide_phase`, the brute runs
+/// production's decide cadence on that phase; without, it decides every tick,
+/// as the timing rows here pin it.
 fn brute_run_in(
     manifest: ModManifestResult,
+    decide_phase: Option<u64>,
     tell: &str,
     attack: &str,
     player_at: Vec3,
@@ -388,6 +400,17 @@ fn brute_run_in(
         home,
     );
     give_reference_armor(&mut shipped.reg, brute);
+    // A cadence row runs production's decide interval at a pinned phase.
+    if let Some(phase) = decide_phase {
+        shipped.runtime = AiRuntime::new();
+        let mut brain = shipped
+            .reg
+            .get_component::<BrainComponent>(brute)
+            .unwrap()
+            .clone();
+        brain.schedule_identity = Some(crate::decide::identity_deciding_on(phase));
+        shipped.reg.set_component(brute, brain).unwrap();
+    }
     let mut run = BruteRun::default();
     let mut seated = false;
     for tick in 0..(seconds / DT) as usize {
@@ -418,6 +441,7 @@ fn brute_run_in(
                 factions: &FactionRegistry::default(),
                 faction_sentiment: &RefCell::new(FactionSentimentState::default()),
                 clips: Some(&shipped.clips),
+                schedule: Default::default(),
                 cpu: None,
             },
             |_| {},
@@ -718,6 +742,7 @@ const LEAP_LANDING_TOLERANCE: f32 = 0.02;
 /// second into the release, 200 ms before the hit.
 fn leap_run_in(
     manifest: ModManifestResult,
+    decide_phase: Option<u64>,
     distance: f32,
     sidestep: bool,
     seconds: f32,
@@ -725,6 +750,7 @@ fn leap_run_in(
     let mut stepped_out = false;
     brute_run_in(
         manifest,
+        decide_phase,
         "crouch",
         "leap",
         Vec3::new(10.0, 0.0, 0.0),
@@ -748,7 +774,7 @@ fn leap_run_in(
 }
 
 fn leap_run(distance: f32, sidestep: bool, seconds: f32) -> BruteRun {
-    leap_run_in(dev_manifest(), distance, sidestep, seconds)
+    leap_run_in(dev_manifest(), None, distance, sidestep, seconds)
 }
 
 impl BruteRun {
@@ -991,7 +1017,7 @@ fn shipped_brute_leap_capped_below_its_distance_falls_short_and_whiffs() {
     assert_eq!(leap.motion, Some(postretro_foundation::MotionVerb::Leap));
     leap.speed = Some(4.0);
 
-    let run = leap_run_in(manifest, 30.0, false, 6.0);
+    let run = leap_run_in(manifest, None, 30.0, false, 6.0);
     let release = run.entered("leap_release");
     let recover = run.entered("leap_recover");
     let (hit, _) = run.moments["leap_strike"];
@@ -1650,7 +1676,7 @@ fn capped_leap_manifest(speed: f32) -> ModManifestResult {
 // at its cap after the hit, through the rest of the release.
 #[test]
 fn shipped_brute_leap_that_falls_short_stands_from_its_moment() {
-    let run = leap_run_in(capped_leap_manifest(4.0), 30.0, false, 6.0);
+    let run = leap_run_in(capped_leap_manifest(4.0), None, 30.0, false, 6.0);
     let release = run.entered("leap_release");
     let recover = run.entered("leap_recover");
     let (hit, _) = run.moments["leap_strike"];
@@ -1668,5 +1694,65 @@ fn shipped_brute_leap_that_falls_short_stands_from_its_moment() {
             "tick {tick}: the leap stands after its moment, {} m on from where it fell short",
             distance_xz(position, landed)
         );
+    }
+}
+
+/// The ticks each hit landed on, counted from the entry of `tell`.
+fn hits_from_tell(run: &BruteRun, tell: &str) -> Vec<usize> {
+    let entry = run.entered(tell);
+    run.hits
+        .iter()
+        .filter(|&&(tick, _)| tick >= entry)
+        .map(|&(tick, _)| tick - entry)
+        .collect()
+}
+
+// AC 37: at production cadence, counted from the tell's entry, the combo's
+// three jabs and the leap's hit land no earlier than at 60 Hz and at most one
+// decide interval later, for every decide phase. Guards (a hold's release, a
+// release's exit) wait for a decide; the clip moments themselves land on the
+// tick they fall.
+#[test]
+fn shipped_brute_combo_and_leap_land_within_one_decide_interval_at_every_phase() {
+    let combo = |phase| {
+        brute_run_in(
+            dev_manifest(),
+            phase,
+            "flurry",
+            "combo",
+            Vec3::new(1.5, 0.0, 0.0),
+            6.0,
+            |_, _, _| None,
+        )
+    };
+    let leap = |phase| leap_run_in(dev_manifest(), phase, 12.0, false, 6.0);
+    // The attack's own hits: the combo's three jabs, the leap's landing. Later
+    // hits belong to later cycles, which a decide's delay shifts as a whole.
+    type Case<'a> = (&'a str, usize, &'a dyn Fn(Option<u64>) -> BruteRun);
+    let cases: [Case; 2] = [("flurry", 3, &combo), ("crouch", 1, &leap)];
+    for (tell, hits, run) in cases {
+        let first = |run: &BruteRun| -> Vec<usize> {
+            hits_from_tell(run, tell).into_iter().take(hits).collect()
+        };
+        let every_tick = first(&run(None));
+        assert_eq!(
+            every_tick.len(),
+            hits,
+            "{tell}: the 60 Hz run lands its hits"
+        );
+        for phase in 0..crate::decide::DECIDE_INTERVAL_TICKS {
+            let cadenced = first(&run(Some(phase)));
+            assert_eq!(
+                cadenced.len(),
+                every_tick.len(),
+                "{tell}, phase {phase}: {cadenced:?} against {every_tick:?}"
+            );
+            for (at, base) in cadenced.iter().zip(&every_tick) {
+                assert!(
+                    *at >= *base && *at <= base + crate::decide::DECIDE_INTERVAL_TICKS as usize,
+                    "{tell}, phase {phase}: hits {cadenced:?} against 60 Hz {every_tick:?}"
+                );
+            }
+        }
     }
 }

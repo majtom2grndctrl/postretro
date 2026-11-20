@@ -34,6 +34,7 @@ use crate::components::mesh::MeshComponent;
 use crate::components::player_movement::PlayerMovementComponent;
 use crate::components::projectile::{ProjectileComponent, ProjectilePresentationAge};
 use crate::components::projectile_trap::ProjectileTrapComponent;
+use crate::components::seam::SeamComponent;
 use crate::components::spawner::SpawnerComponent;
 use crate::components::sprite_visual::SpriteVisual;
 use crate::components::teleporter::TeleporterComponent;
@@ -69,6 +70,11 @@ impl EntityId {
 
     fn generation(self) -> u16 {
         (self.0 >> Self::INDEX_BITS) as u16
+    }
+
+    /// The registry slot this id addresses, for side tables keyed by slot.
+    pub(crate) fn slot_index(self) -> usize {
+        usize::from(self.index())
     }
 
     /// Raw packed `u32` representation. The scripting FFI layer crosses the
@@ -181,6 +187,13 @@ pub enum ComponentKind {
     /// state. Host-owned and never replicated; scripts address it through
     /// member handles.
     AttackPool = 28,
+    /// Map-authored level-seam identity and host-owned arming state. Host-only
+    /// and never replicated; scripts address it through member handles.
+    Seam = 29,
+    /// A connected client's copy of an entity's replicated status presence:
+    /// one bit per host status kind. The host never carries it; its live
+    /// instances sit in the registry's status table.
+    StatusPresence = 30,
 }
 
 impl ComponentKind {
@@ -219,6 +232,8 @@ impl ComponentKind {
             ComponentKind::GhostLink,
             ComponentKind::DefenseLayers,
             ComponentKind::AttackPool,
+            ComponentKind::Seam,
+            ComponentKind::StatusPresence,
         ];
         VARIANTS.len()
     };
@@ -297,6 +312,8 @@ pub enum ComponentValue {
     GhostLink(GhostLinkComponent),
     DefenseLayers(DefenseLayersComponent),
     AttackPool(AttackPoolComponent),
+    Seam(SeamComponent),
+    StatusPresence(crate::components::statuses::StatusPresenceComponent),
 }
 
 impl ComponentValue {
@@ -331,6 +348,8 @@ impl ComponentValue {
             ComponentValue::GhostLink(_) => ComponentKind::GhostLink,
             ComponentValue::DefenseLayers(_) => ComponentKind::DefenseLayers,
             ComponentValue::AttackPool(_) => ComponentKind::AttackPool,
+            ComponentValue::Seam(_) => ComponentKind::Seam,
+            ComponentValue::StatusPresence(_) => ComponentKind::StatusPresence,
         }
     }
 }
@@ -761,6 +780,19 @@ impl Component for MapOrdinal {
     }
 }
 
+impl Component for crate::components::statuses::StatusPresenceComponent {
+    const KIND: ComponentKind = ComponentKind::StatusPresence;
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::StatusPresence(value) => Some(value),
+            _ => None,
+        }
+    }
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::StatusPresence(self)
+    }
+}
+
 impl Component for ImmersionComponent {
     const KIND: ComponentKind = ComponentKind::Immersion;
     fn from_value(value: &ComponentValue) -> Option<&Self> {
@@ -784,6 +816,19 @@ impl Component for TeleporterComponent {
     }
     fn into_value(self) -> ComponentValue {
         ComponentValue::Teleporter(self)
+    }
+}
+
+impl Component for SeamComponent {
+    const KIND: ComponentKind = ComponentKind::Seam;
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::Seam(value) => Some(value),
+            _ => None,
+        }
+    }
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::Seam(self)
     }
 }
 
@@ -918,6 +963,8 @@ pub struct EntityRegistry {
     /// The committed damage vocabulary the chokepoint scales hits by. Empty
     /// until a mod registers one, which leaves every hit untyped.
     defense_vocabulary: std::sync::Arc<postretro_foundation::defense::DefenseVocabulary>,
+    /// Live status instances and latched applications (`components::statuses`).
+    pub(crate) statuses: crate::components::statuses::StatusTable,
     /// The committed attack tokens and budget profiles the AI's attack
     /// budget arbitrates under. The SDK default until a mod commits one.
     attack_budgets: std::sync::Arc<postretro_foundation::attack_budget::AttackBudgetVocabulary>,
@@ -972,6 +1019,7 @@ impl EntityRegistry {
             impact_dispatches: Vec::new(),
             host_tick: 0,
             defense_vocabulary: Default::default(),
+            statuses: Default::default(),
             attack_budgets:
                 postretro_foundation::attack_budget::AttackBudgetVocabulary::shared_default(),
             defense_parameters: None,
@@ -1343,6 +1391,7 @@ impl EntityRegistry {
         for column in &mut self.components {
             column[index] = None;
         }
+        self.statuses.clear_entity(index, id);
         if had_light {
             self.light_membership_generation = self.light_membership_generation.wrapping_add(1);
         }
@@ -1423,7 +1472,15 @@ impl EntityRegistry {
         &mut self,
         vocabulary: std::sync::Arc<postretro_foundation::defense::DefenseVocabulary>,
     ) {
-        self.defense_vocabulary = vocabulary;
+        // Live instances keep their kind by name; a removed kind's go. Remap
+        // even an empty table: it also drops the instances the last stage
+        // ended, whose indices name the previous vocabulary.
+        let previous = std::mem::replace(&mut self.defense_vocabulary, vocabulary);
+        let next = &self.defense_vocabulary;
+        self.statuses.remap(|status| {
+            let name = &previous.statuses.get(usize::from(status))?.name;
+            next.status_index(name).map(|index| index as u16)
+        });
     }
 
     /// The committed attack-budget vocabulary.
@@ -1706,6 +1763,7 @@ impl EntityRegistry {
                 .map(|(idx, _)| idx as u16),
         );
         self.impact_dispatches.clear();
+        self.statuses.clear();
         self.clear_presentation_spawns();
         self.impact_particle_requests.clear();
         self.dropped_impact_particle_requests = 0;

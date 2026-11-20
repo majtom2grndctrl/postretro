@@ -830,6 +830,7 @@ fn a_crush_immune_agent_is_pushed_clear_once_the_crusher_stops_pinning_it() {
                 )]),
             }],
             default_damage_type: None,
+            statuses: Vec::new(),
         }));
     // The crusher docks through the agent's axis, then stops pressing it.
     let closed = Vec3::new(-0.6, 0.0, 0.0);

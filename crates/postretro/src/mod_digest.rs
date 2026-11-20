@@ -486,6 +486,7 @@ pub(crate) mod tests {
 
     fn behavior_descriptor() -> BehaviorGraphDescriptor {
         BehaviorGraphDescriptor {
+            ai: Default::default(),
             knockback: Default::default(),
             envelope: BehaviorGraphEnvelope {
                 initial: "idle".to_string(),
@@ -1030,6 +1031,7 @@ pub(crate) mod tests {
             wave_amplitude: 8.0,
             wave_length: [64.0, 80.0],
             surface_reflectivity: 1.0,
+            status: None,
         }
     }
 

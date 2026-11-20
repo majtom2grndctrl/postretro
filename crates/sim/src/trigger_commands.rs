@@ -58,6 +58,16 @@ pub(crate) enum BoundTriggerCommand {
         layer: String,
         amount: Option<f32>,
     },
+    /// `applyStatus`: the status name, resolved against the vocabulary when
+    /// it executes so a hot reload that reorders statuses never retargets it.
+    ApplyStatus {
+        target: BoundTarget,
+        status: String,
+    },
+    ClearStatus {
+        target: BoundTarget,
+        status: String,
+    },
     Arm {
         target: BoundTarget,
     },
@@ -65,6 +75,12 @@ pub(crate) enum BoundTriggerCommand {
         target: BoundTarget,
     },
     TeleporterArmed {
+        target: BoundTarget,
+        armed: bool,
+    },
+    /// `armSeam` / `disarmSeam`: queued host-only for the next tick, like a
+    /// teleporter change.
+    SeamArmed {
         target: BoundTarget,
         armed: bool,
     },
@@ -129,6 +145,8 @@ pub(crate) enum BoundTarget {
     Activators,
     FiredTrigger,
     FiredTeleporter,
+    /// `on.seam`: the level seam a pawn arrived by.
+    FiredSeam,
     /// `on.player`: the pawn of the player a player event fires for.
     EventPlayer,
 }
@@ -137,6 +155,8 @@ pub(crate) enum BoundTarget {
 pub struct TriggerFireContext {
     pub fired_trigger: Option<EntityId>,
     pub fired_teleporter: Option<EntityId>,
+    /// The seam whose `arrive` event fired; `None` on every other fire.
+    pub fired_seam: Option<EntityId>,
     /// One authoritative player produces each fire. Keeping that identity as
     /// an option lets command dispatch borrow it instead of cloning a vector
     /// for every command in the fixed-tick path.
@@ -173,9 +193,12 @@ pub(crate) enum BoundTriggerCommandKind {
     GrantHealth,
     GrantAmmo,
     GrantLayer,
+    ApplyStatus,
+    ClearStatus,
     Arm,
     Disarm,
     TeleporterArmed,
+    SeamArmed,
     GhostLink,
     StoreSlot,
     AddOwnerSlot,
@@ -187,6 +210,12 @@ pub(crate) enum BoundTriggerCommandKind {
 }
 
 impl BoundTriggerCommand {
+    /// Whether executing this command can publish an impact dispatch, so an
+    /// in-tick caller evaluates right after it.
+    pub(crate) fn produces_impacts(&self) -> bool {
+        matches!(self, Self::Damage { .. })
+    }
+
     pub(crate) fn execute(
         &self,
         registry: &mut EntityRegistry,
@@ -298,6 +327,15 @@ impl BoundTriggerCommand {
                     *armed,
                 );
             }
+            Self::SeamArmed { target, armed } => {
+                let targets = target.resolve(registry, fire_context);
+                crate::seam_commands::enqueue_seam_mutations(
+                    script_ctx,
+                    registry,
+                    targets.as_slice(),
+                    *armed,
+                );
+            }
             Self::GhostLink { target, command } => {
                 let targets = target.resolve(registry, fire_context);
                 crate::ghost_link_commands::enqueue_ghost_link_commands(
@@ -327,6 +365,7 @@ impl BoundTriggerCommand {
                 }
                 BoundStoreValue::Ir(program) => {
                     if fire_context.fired_teleporter.is_none()
+                        && fire_context.fired_seam.is_none()
                         && let Err(error) = dispatch_scope
                             .seed("@occupancy", IrValue::Number(fire_context.occupancy as f32))
                     {
@@ -460,6 +499,14 @@ impl BoundTriggerCommand {
                     );
                 }
             }
+            Self::ApplyStatus { target, status } => {
+                let targets = target.resolve(registry, fire_context);
+                crate::status_commands::apply_status_to(registry, targets.as_slice(), status);
+            }
+            Self::ClearStatus { target, status } => {
+                let targets = target.resolve(registry, fire_context);
+                crate::status_commands::clear_status_on(registry, targets.as_slice(), status);
+            }
             Self::Arm { target } => arm_trigger_targets(
                 registry,
                 target.resolve(registry, fire_context).as_slice(),
@@ -493,6 +540,7 @@ impl BoundTriggerCommand {
                     | BoundTarget::Activators
                     | BoundTarget::FiredTrigger
                     | BoundTarget::FiredTeleporter
+                    | BoundTarget::FiredSeam
                     | BoundTarget::EventPlayer => {
                         log::warn!(
                             "[Trigger] updateNpcState requires a tag or group target; special target is invalid; skipping"
@@ -522,6 +570,7 @@ impl BoundTriggerCommand {
                 | BoundTarget::Activators
                 | BoundTarget::FiredTrigger
                 | BoundTarget::FiredTeleporter
+                | BoundTarget::FiredSeam
                 | BoundTarget::EventPlayer => {
                     log::warn!(
                         "[Trigger] spawnFromSpawner requires a spawner member or tag target; skipping"
@@ -549,6 +598,9 @@ impl BoundTriggerCommand {
             Self::TeleporterArmed { .. } => {
                 log::warn!("[Teleport] bound command requires a live ScriptCtx queue; skipped")
             }
+            Self::SeamArmed { .. } => {
+                log::warn!("[Seam] bound command requires a live ScriptCtx queue; skipped")
+            }
             Self::GhostLink { .. } => {
                 log::warn!("[Ghost] bound command requires a live ScriptCtx queue; skipped")
             }
@@ -568,9 +620,12 @@ impl BoundTriggerCommand {
             | Self::GrantHealth { target, .. }
             | Self::GrantAmmo { target, .. }
             | Self::GrantLayer { target, .. }
+            | Self::ApplyStatus { target, .. }
+            | Self::ClearStatus { target, .. }
             | Self::Arm { target }
             | Self::Disarm { target }
             | Self::TeleporterArmed { target, .. }
+            | Self::SeamArmed { target, .. }
             | Self::GhostLink { target, .. }
             | Self::AddOwnerSlot { target, .. }
             | Self::AnimationState { target, .. }
@@ -596,9 +651,12 @@ impl BoundTriggerCommand {
             Self::GrantHealth { .. } => BoundTriggerCommandKind::GrantHealth,
             Self::GrantAmmo { .. } => BoundTriggerCommandKind::GrantAmmo,
             Self::GrantLayer { .. } => BoundTriggerCommandKind::GrantLayer,
+            Self::ApplyStatus { .. } => BoundTriggerCommandKind::ApplyStatus,
+            Self::ClearStatus { .. } => BoundTriggerCommandKind::ClearStatus,
             Self::Arm { .. } => BoundTriggerCommandKind::Arm,
             Self::Disarm { .. } => BoundTriggerCommandKind::Disarm,
             Self::TeleporterArmed { .. } => BoundTriggerCommandKind::TeleporterArmed,
+            Self::SeamArmed { .. } => BoundTriggerCommandKind::SeamArmed,
             Self::GhostLink { .. } => BoundTriggerCommandKind::GhostLink,
             Self::StoreSlot { .. } => BoundTriggerCommandKind::StoreSlot,
             Self::AddOwnerSlot { .. } => BoundTriggerCommandKind::AddOwnerSlot,
@@ -641,6 +699,7 @@ impl BoundTarget {
             Self::FiredTeleporter => {
                 ResolvedTargets::Borrowed(fire_context.fired_teleporter.as_slice())
             }
+            Self::FiredSeam => ResolvedTargets::Borrowed(fire_context.fired_seam.as_slice()),
             Self::EventPlayer => match fire_context.event_player {
                 Some(pawn) if !registry.exists(pawn) => {
                     log::warn!(

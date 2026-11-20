@@ -269,6 +269,13 @@ pub enum SectionId {
     /// moments.
     /// See `probe_depth_tiles::ProbeDepthTilesSection`.
     ProbeDepthTiles = 59,
+
+    // 60 is reserved for Emissive (`build_pipeline.md` §PRL section IDs).
+    /// Optional level-seam regions: name, catalog target, activation, mode,
+    /// starting state and resolved landmark pose per `level_seam`. Absent
+    /// means no seams.
+    /// See `seams::SeamsSection`.
+    Seams = 61,
 }
 
 impl SectionId {
@@ -321,6 +328,7 @@ impl SectionId {
             57 => Some(Self::MoverProbeChannel),
             58 => Some(Self::LightmapPoolBound),
             59 => Some(Self::ProbeDepthTiles),
+            61 => Some(Self::Seams),
             _ => None,
         }
     }
@@ -380,6 +388,7 @@ mod tests {
             SectionId::MoverProbeChannel,
             SectionId::LightmapPoolBound,
             SectionId::ProbeDepthTiles,
+            SectionId::Seams,
         ];
 
         for section_id in registered {

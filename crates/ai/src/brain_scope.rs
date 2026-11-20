@@ -1,5 +1,5 @@
 // Runtime `BindingScope` for behavior-graph transition guards: the live brain
-// namespace guards bind against at spawn and read every tick.
+// namespace guards bind against at spawn and read on each decide.
 // See: context/lib/scripting.md §11 (IR substrate — pluggable scope abstraction)
 
 // The scope pairs the fixed `@brain.*` facts the engine computes each tick with
@@ -27,7 +27,7 @@ use postretro_foundation::{
 /// The engine-computed facts for one enemy's guard evaluation this tick.
 ///
 /// These are the values the AI tick already derives before evaluating a brain —
-/// target selection, the think stride, and the brain's own timers — handed to
+/// target selection, the decide schedule, and the brain's own timers — handed to
 /// [`BrainScope::refresh`] rather than re-derived inside it. Health is not here
 /// because it is read straight from the registry during refresh.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -60,11 +60,12 @@ pub(crate) struct BrainFacts {
     /// This is false for contextless script damage even though its generic
     /// damage-recency timer still resets.
     pub damage_source_known: bool,
-    /// `true` on the think-stride ticks where acquisition is re-evaluated.
+    /// `true` on a decide tick, where acquisition is checked; guards run only on
+    /// decide ticks, so a guard always reads `true`.
     pub acquisition_due: bool,
     /// XZ distance from the enemy's current position to its spawn-time home
-    /// anchor. Computed by the AI tick every tick, independently of target
-    /// selection and acquisition stride.
+    /// anchor. Computed by the AI tick every tick, decide or not, independently
+    /// of target selection and decide ticks.
     pub distance_from_anchor: f32,
     /// Whether the selected target's faction differs from the evaluating
     /// enemy's. `false` without a selected target, following the target-side
@@ -85,6 +86,9 @@ pub(crate) struct BrainFacts {
     /// Whether the animation the active path selects has played through.
     /// Entity-wide: one value for every level's guards.
     pub animation_done: bool,
+    /// The highest awareness meter, 0 to 1, as this decide's acquisition
+    /// check left it; 1 while the enemy has a target.
+    pub awareness: f32,
 }
 
 /// A resolved read handle: an index into one of the scope's two snapshots.
@@ -98,6 +102,8 @@ pub(crate) enum BrainInputHandle {
     Defense(usize),
     /// Index into the interned named attack-turn reads.
     AttackTurn(usize),
+    /// Index into the interned `@status.*` reads of the brain's own statuses.
+    Status(usize),
 }
 
 /// Values whose meaning changes with the activity level currently being
@@ -156,7 +162,7 @@ const SCOPE_RELATIVE_SLOTS: [ScopeRelativeSlot; 4] = [
 ];
 
 /// The live brain namespace an authored guard binds against once at spawn and
-/// reads on every tick.
+/// reads on each decide.
 ///
 /// One instance is shared by every enemy: [`BrainScope::refresh`] repopulates
 /// both snapshots for the enemy about to be evaluated (the `MovementScope`
@@ -181,9 +187,162 @@ pub(crate) struct BrainScope {
     /// bind. Parallel to `attack_turn_values`, refreshed per enemy.
     attack_turn_reads: RefCell<Vec<(String, AttackTurnRead)>>,
     attack_turn_values: RefCell<Vec<bool>>,
+    /// Interned `@status.*` names, appended at bind; parallel to
+    /// `status_values`, refreshed per enemy by name against the committed
+    /// vocabulary, so a hot reload that reorders statuses keeps each read.
+    status_names: RefCell<Vec<String>>,
+    status_values: RefCell<Vec<bool>>,
+    /// The enemy's selector choices this pass: recorded on a decide tick,
+    /// recalled on the ticks between.
+    selectors: SelectorTrack,
+}
+
+/// A selector layer of one activity: its `move` rows or its `offense` rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SelectorLayer {
+    Move,
+    Offense,
+}
+
+const DEPTHS: usize = postretro_foundation::MAX_BEHAVIOR_NESTING_DEPTH;
+/// No choice recorded at this depth.
+const UNSET: u16 = u16::MAX;
+/// The layer was evaluated and no row matched.
+const NO_ROW: u16 = u16::MAX - 1;
+
+/// The selector rows one enemy's last decide chose, per active depth, on the
+/// path it held then. Host-only and transient: the ticks between decides act
+/// on these without evaluating a guard (`entity_model.md` §7c, decide ticks).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SelectorChoices {
+    path: [usize; DEPTHS],
+    path_len: usize,
+    rows: [[u16; 2]; DEPTHS],
+    /// The attack a standing rest's first open queued row waited on.
+    queued: Option<u16>,
+    /// The AI tick of the decide that recorded these.
+    tick: u64,
+}
+
+impl SelectorChoices {
+    fn fresh(path: &[usize]) -> Self {
+        let mut stored = [0; DEPTHS];
+        let path_len = path.len().min(DEPTHS);
+        stored[..path_len].copy_from_slice(&path[..path_len]);
+        Self {
+            path: stored,
+            path_len,
+            rows: [[UNSET; 2]; DEPTHS],
+            queued: None,
+            tick: 0,
+        }
+    }
+
+    pub(crate) fn is_for(&self, path: &[usize]) -> bool {
+        self.path[..self.path_len] == *path
+    }
+
+    pub(crate) fn queued(&self) -> Option<u16> {
+        self.queued
+    }
+
+    /// The AI tick of the decide that recorded these.
+    pub(crate) fn tick(&self) -> u64 {
+        self.tick
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SelectorPass {
+    /// Evaluate every selector reached, and record its row.
+    Decide,
+    /// Read the recorded rows; a layer with none is evaluated and recorded.
+    Recall,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SelectorTrack {
+    pass: SelectorPass,
+    choices: SelectorChoices,
+}
+
+impl Default for SelectorTrack {
+    fn default() -> Self {
+        Self {
+            pass: SelectorPass::Decide,
+            choices: SelectorChoices::fresh(&[]),
+        }
+    }
 }
 
 impl BrainScope {
+    /// Start an enemy's decide pass on `path`: selectors evaluate and record.
+    pub(crate) fn begin_decide(&mut self, path: &[usize]) {
+        self.selectors = SelectorTrack {
+            pass: SelectorPass::Decide,
+            choices: SelectorChoices::fresh(path),
+        };
+    }
+
+    /// Start an enemy's acting pass: selectors answer from `recalled` when it
+    /// was recorded on `path`. Returns `false`, and starts a decide pass, when
+    /// the path moved since (a reseat between decides).
+    pub(crate) fn begin_recall(
+        &mut self,
+        recalled: Option<SelectorChoices>,
+        path: &[usize],
+    ) -> bool {
+        match recalled.filter(|choices| choices.is_for(path)) {
+            Some(choices) => {
+                self.selectors = SelectorTrack {
+                    pass: SelectorPass::Recall,
+                    choices,
+                };
+                true
+            }
+            None => {
+                self.begin_decide(path);
+                false
+            }
+        }
+    }
+
+    /// The choices this pass recorded or recalled, kept for the ticks until
+    /// the next decide.
+    pub(crate) fn selector_choices(&self) -> SelectorChoices {
+        self.selectors.choices
+    }
+
+    /// Close a decide on AI tick `tick`: its queued attack, kept for the
+    /// ticks until the next.
+    pub(crate) fn record_decide(&mut self, tick: u64, queued: Option<u16>) {
+        self.selectors.choices.queued = queued;
+        self.selectors.choices.tick = tick;
+    }
+
+    /// On an acting pass, the row recorded for `layer` at `depth`: `Some` of
+    /// the row or of none. `None` means evaluate it.
+    pub(crate) fn recalled_row(&self, depth: usize, layer: SelectorLayer) -> Option<Option<usize>> {
+        if self.selectors.pass != SelectorPass::Recall || depth >= DEPTHS {
+            return None;
+        }
+        match self.selectors.choices.rows[depth][layer as usize] {
+            UNSET => None,
+            NO_ROW => Some(None),
+            row => Some(Some(usize::from(row))),
+        }
+    }
+
+    /// Record the row `layer` chose at `depth`, or none.
+    pub(crate) fn record_row(&mut self, depth: usize, layer: SelectorLayer, row: Option<usize>) {
+        if depth < DEPTHS {
+            self.selectors.choices.rows[depth][layer as usize] = row
+                .and_then(|row| u16::try_from(row).ok())
+                .filter(|&row| row < NO_ROW)
+                .unwrap_or(NO_ROW);
+        }
+    }
+
     /// A scope with no live values, for declaration-time and spawn-time binds.
     ///
     /// Bind consults only names and types, so guards type-check against this
@@ -202,6 +361,9 @@ impl BrainScope {
             defense: Default::default(),
             attack_turn_reads: RefCell::new(Vec::new()),
             attack_turn_values: RefCell::new(Vec::new()),
+            status_names: RefCell::new(Vec::new()),
+            status_values: RefCell::new(Vec::new()),
+            selectors: SelectorTrack::default(),
         }
     }
 
@@ -260,9 +422,21 @@ impl BrainScope {
             IrValue::Number(0.0),
             // Scope-relative, like the activity timer: re-pointed per level.
             IrValue::Number(0.0),
+            IrValue::Number(facts.awareness),
         ];
 
         self.defense.seed(registry, Some(entity));
+        {
+            let names = self.status_names.borrow();
+            let mut values = self.status_values.borrow_mut();
+            let vocabulary = registry.defense_vocabulary();
+            for (value, name) in values.iter_mut().zip(names.iter()) {
+                *value = vocabulary
+                    .status_index(name)
+                    .and_then(|index| u16::try_from(index).ok())
+                    .is_some_and(|index| registry.has_status(entity, index));
+            }
+        }
         let state = registry.get_component::<EntityStateComponent>(entity).ok();
         let names = self.state_names.borrow();
         let mut values = self.state_values.borrow_mut();
@@ -321,6 +495,17 @@ impl BrainScope {
         reads.len() - 1
     }
 
+    /// Intern one `@status.*` read, returning its stable snapshot index.
+    fn intern_status_read(&self, status: &str) -> usize {
+        let mut names = self.status_names.borrow_mut();
+        if let Some(index) = names.iter().position(|bound| bound == status) {
+            return index;
+        }
+        names.push(status.to_string());
+        self.status_values.borrow_mut().push(false);
+        names.len() - 1
+    }
+
     /// Intern one `@state.*` field name, returning its stable snapshot index.
     ///
     /// This is the only place either snapshot grows, and it runs at bind alone —
@@ -369,6 +554,10 @@ impl BindingScope for BrainScope {
                 ),
                 ir_type: IrType::Bool,
             }),
+            BrainInputRef::Status(status) => Some(ResolvedInput {
+                handle: BrainInputHandle::Status(self.intern_status_read(status)),
+                ir_type: IrType::Bool,
+            }),
         }
     }
 
@@ -391,6 +580,7 @@ impl BindingScope for BrainScope {
             BrainInputHandle::AttackTurn(index) => {
                 IrValue::Bool(self.attack_turn_values.borrow()[*index])
             }
+            BrainInputHandle::Status(index) => IrValue::Bool(self.status_values.borrow()[*index]),
         }
     }
 
@@ -408,7 +598,7 @@ mod tests {
     use postretro_foundation::{
         BRAIN_ACQUISITION_DUE_INPUT, BRAIN_ACTIVITY_ROLL_INPUT, BRAIN_ANIMATION_DONE_INPUT,
         BRAIN_ATTACK_COOLDOWN_MS_INPUT, BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT,
-        BRAIN_DAMAGE_BEARING_INPUT, BRAIN_DAMAGE_IN_ACTIVITY_INPUT,
+        BRAIN_AWARENESS_INPUT, BRAIN_DAMAGE_BEARING_INPUT, BRAIN_DAMAGE_IN_ACTIVITY_INPUT,
         BRAIN_DAMAGE_SOURCE_KNOWN_INPUT, BRAIN_DISTANCE_FROM_ANCHOR_INPUT,
         BRAIN_DISTANCE_TO_LAST_KNOWN_INPUT, BRAIN_HAS_ATTACK_TURN_INPUT, BRAIN_HAS_TARGET_INPUT,
         BRAIN_HEALTH_INPUT, BRAIN_MAX_HEALTH_INPUT, BRAIN_TARGET_DIED_INPUT,
@@ -500,6 +690,7 @@ mod tests {
             attacks_fired_in_activity: 3,
             has_attack_turn: true,
             animation_done: true,
+            awareness: 1.0,
         }
     }
 
@@ -639,6 +830,7 @@ mod tests {
             BRAIN_ANIMATION_DONE_INPUT => IrValue::Bool(facts.animation_done),
             BRAIN_ACTIVITY_ROLL_INPUT => IrValue::Number(0.0),
             BRAIN_DAMAGE_IN_ACTIVITY_INPUT => IrValue::Number(0.0),
+            BRAIN_AWARENESS_INPUT => IrValue::Number(facts.awareness),
             other => panic!(
                 "`{other}` is in BRAIN_INPUTS but `expected_fixed_value` has no case for it \
                  — add one alongside the new `refresh` slot"
@@ -701,6 +893,48 @@ mod tests {
         // The other enemy carries no armor: it reads 0, as unset state does.
         scope.refresh(&registry, target, engaged_facts(enemy));
         assert_number(eval_value(&capacity, &scope), 0.0);
+    }
+
+    // A `hasStatus(h)` guard holds while the brain entity carries any
+    // instance of `h`, by name, so a reload that reorders statuses keeps it.
+    #[test]
+    fn brain_guard_reads_own_status_presence() {
+        use postretro_entities::components::statuses::StatusApplier;
+        let (mut registry, enemy, target) = seeded_registry();
+        let statuses = |names: &[&str]| {
+            let entries: Vec<_> = names
+                .iter()
+                .map(|name| serde_json::json!({ "kind": "status", "name": name, "damage": 0, "tickMs": 500 }))
+                .collect();
+            std::sync::Arc::new(postretro_foundation::defense::DefenseVocabulary {
+                statuses: postretro_foundation::status::parse_statuses(
+                    Some(&serde_json::Value::Array(entries)),
+                    |_| None,
+                )
+                .unwrap(),
+                ..Default::default()
+            })
+        };
+        registry.set_defense_vocabulary(statuses(&["wet", "burning"]));
+        let mut scope = BrainScope::for_validation();
+        bind_brain_guard(&input("@status.burning")).expect("validates as a Bool read");
+        let burning = bind_read("@status.burning", &scope);
+        scope.refresh(&registry, enemy, engaged_facts(target));
+        assert_eq!(eval_value(&burning, &scope), IrValue::Bool(false));
+        registry.set_status_applications_immediate(true);
+        let source = registry.intern_status_source("weapon.incendiary");
+        registry.apply_status(enemy, 1, StatusApplier::Source(source), source);
+        scope.refresh(&registry, enemy, engaged_facts(target));
+        assert_eq!(eval_value(&burning, &scope), IrValue::Bool(true));
+        registry.set_defense_vocabulary(statuses(&["burning", "wet"]));
+        scope.refresh(&registry, enemy, engaged_facts(target));
+        assert_eq!(
+            eval_value(&burning, &scope),
+            IrValue::Bool(true),
+            "kept by name across a reorder"
+        );
+        scope.refresh(&registry, target, engaged_facts(enemy));
+        assert_eq!(eval_value(&burning, &scope), IrValue::Bool(false));
     }
 
     #[test]

@@ -10,9 +10,10 @@
 // SYNC OBLIGATION: `brain` mirrors the `BRAIN_INPUTS` table in
 // `crates/foundation/src/brain.rs`; `candidate` mirrors `CANDIDATE_INPUTS` in
 // `crates/foundation/src/candidate.rs`. `brain.luau` carries both sets. Adding
-// an input means editing both preludes; the SDK-helper drift tests in
-// `crates/scripting-core/src/data_descriptors/tests/behavior.rs` fail until
-// they agree.
+// an input means editing both preludes and both typedef templates;
+// `brain_input_typedefs_match_the_foundation_table` (in
+// `crates/sim/src/scripting/typedef/tests/surface.rs`) fails until the
+// templates agree with the table.
 // See: context/lib/scripting.md §11 · context/lib/entity_model.md §4
 
 import type { RuntimeGuardNode } from "postretro";
@@ -39,8 +40,8 @@ export interface BrainInputs {
    * timer; zero with no action or a missing attack-map entry. Guard reads are
    * pre-transition (number). */
   readonly attackCooldownMs: RuntimeGuardNode;
-  /** `true` on the think-stride ticks where acquisition is re-evaluated
-   * (boolean). */
+  /** `true` on the enemy's decide ticks, where acquisition is checked: 15
+   * times a second in view or engaged, every 2 s dormant (boolean). */
   readonly acquisitionDue: RuntimeGuardNode;
   /** The enemy's current hit points (number). */
   readonly health: RuntimeGuardNode;
@@ -115,6 +116,10 @@ export interface BrainInputs {
    * level, and its selectors, read their own sum, which resets to 0 when that
    * level is entered (number). */
   readonly damageInActivity: RuntimeGuardNode;
+  /** Highest awareness of any candidate, 0 to 1; 1 once it has a target. A
+   * guard on a decide reads the value that decide's acquisition check
+   * produced (number). */
+  readonly awareness: RuntimeGuardNode;
 }
 
 /** Facts about one offered target, evaluated during acquisition. */
@@ -131,10 +136,12 @@ export interface CandidateInputs {
    * negative hostile, zero neutral, positive allied (number). */
   readonly sentiment: RuntimeGuardNode;
   /** Accumulated positive damage this candidate has dealt to the evaluating
-   * enemy, or zero when it has not damaged that enemy (number). */
+   * enemy, or zero when it has not damaged that enemy since its latest
+   * respawn (number). */
   readonly damageDealtToMe: RuntimeGuardNode;
   /** Milliseconds since this candidate last damaged the evaluating enemy, or
-   * `1e9` when it has not damaged that enemy (number). */
+   * `1e9` when it has not damaged that enemy since its latest respawn
+   * (number). */
   readonly timeSinceDamageFromCandidate: RuntimeGuardNode;
   /** Retaliation tolerance resolved from this enemy's archetype override, then
    * its directed faction pair toward this candidate, or `f32::MAX` when
@@ -168,6 +175,7 @@ export const brain: BrainInputs = Object.freeze({
   animationDone: input("@brain.animationDone"),
   activityRoll: input("@brain.activityRoll"),
   damageInActivity: input("@brain.damageInActivity"),
+  awareness: input("@brain.awareness"),
 });
 
 /** Pre-wrapped leaves for graph candidate eligibility. */
@@ -210,6 +218,18 @@ export function defense(
     current: runtime.read(defenseInput(layer, false)) as RuntimeGuardNode,
     capacity: runtime.read(defenseInput(layer, true)) as RuntimeGuardNode,
   });
+}
+
+/** `true` while the brain entity carries a live instance of `status`, from
+ * any applier: `{ to: "flee", when: hasStatus(burning) }`. A status
+ * `defineMod` does not register fails load. */
+export function hasStatus(status: import("postretro").Status): RuntimeGuardNode {
+  const handle = status as { kind?: unknown; name?: unknown } | null;
+  const name =
+    handle !== null && typeof handle === "object" && handle.kind === "status" && typeof handle.name === "string"
+      ? handle.name
+      : "@invalid";
+  return runtime.read(`@status.${name}`) as RuntimeGuardNode;
 }
 
 /** The attack name a turn fact reads. Anything but an attack handle (a bare

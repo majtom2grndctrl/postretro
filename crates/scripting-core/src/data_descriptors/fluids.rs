@@ -13,7 +13,7 @@ use postretro_foundation::data_descriptors::{FluidDescriptor, FluidRegistry};
 
 /// Keys a fluid entry may carry. Anything else rejects the entry, so a
 /// misspelled optional sound is loud.
-const FLUID_KEYS: [&str; 13] = [
+const FLUID_KEYS: [&str; 14] = [
     "name",
     "viscosity",
     "viewTint",
@@ -27,6 +27,7 @@ const FLUID_KEYS: [&str; 13] = [
     "wavePeriod",
     "waveAmplitude",
     "waveLength",
+    "status",
 ];
 
 /// An optional range: one number `L`, meaning `[L, L]`, or a `[min, max]`
@@ -113,6 +114,12 @@ fn fluid_from_json(
         wave_period: path.optional_number(&entry, "wavePeriod")?,
         wave_amplitude,
         wave_length,
+        // Judged against the status vocabulary once both are drained, where a
+        // bad reference fails load.
+        status: entry
+            .get("status")
+            .filter(|status| !status.is_null())
+            .map(|status| postretro_foundation::AuthoredHandle(status.clone())),
     })
 }
 

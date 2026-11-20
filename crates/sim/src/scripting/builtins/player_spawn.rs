@@ -74,6 +74,31 @@ pub fn active_spawn_set(spawn_points: &[MapEntity], checkpoint: Option<&str>) ->
     level_start
 }
 
+/// A level seam's spawn set, after a crossing or Continue from one: the
+/// spawns keyed with the seam's name, else the level-start set with no
+/// unknown-checkpoint warning, since most seams key no set.
+pub fn seam_spawn_set(spawn_points: &[MapEntity], seam: &str) -> Vec<MapEntity> {
+    if spawn_points
+        .iter()
+        .any(|spawn| checkpoint_name(spawn) == Some(seam))
+    {
+        return active_spawn_set(spawn_points, Some(seam));
+    }
+    active_spawn_set(spawn_points, None)
+}
+
+/// The active set for `checkpoint`, a seam's (`seam`) or a `checkpoint()`'s.
+pub fn spawn_set_for(
+    spawn_points: &[MapEntity],
+    checkpoint: Option<&str>,
+    seam: bool,
+) -> Vec<MapEntity> {
+    match checkpoint {
+        Some(name) if seam => seam_spawn_set(spawn_points, name),
+        checkpoint => active_spawn_set(spawn_points, checkpoint),
+    }
+}
+
 /// The order the first player tries spawn points in, each paired with whether
 /// it is [`COOP_ONLY_KEY`]: every open spawn in map order, then the co-op-only
 /// ones as a fallback. Reads each spawn's key once, so a malformed value warns

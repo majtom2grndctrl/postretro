@@ -151,6 +151,7 @@ impl Fixture {
             (0.0, 0.0),
             &mut progress,
             postretro_ai::test_tick_runner!(&mut ai_runtime),
+            None,
             &[],
             &mut mover_states,
             &[],
@@ -172,6 +173,7 @@ impl Fixture {
             &edges,
             Some(TriggerTickContext {
                 teleporters: None,
+                seams: None,
                 system: &mut self.trigger_system,
                 bridge: &self.bridge,
                 bindings: &bindings,

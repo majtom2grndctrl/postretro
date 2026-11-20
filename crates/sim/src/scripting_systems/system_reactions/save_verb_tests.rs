@@ -51,7 +51,11 @@ fn luau_reaction(body: &str) -> NamedReaction {
 /// Install `reaction` as a level does, fire it by name from a UI press, and
 /// return what it queued for the app drain.
 fn fire(reaction: NamedReaction) -> Vec<SystemReactionCommand> {
-    let ctx = ScriptCtx::new();
+    fire_on(&ScriptCtx::new(), reaction)
+}
+
+/// [`fire`] on a given context.
+fn fire_on(ctx: &ScriptCtx, reaction: NamedReaction) -> Vec<SystemReactionCommand> {
     let sequence_registry = SequencedPrimitiveRegistry::new();
     let installed = validate_sequence_primitives(vec![reaction], &sequence_registry);
     assert_eq!(installed.len(), 1, "the reaction installs");
@@ -66,7 +70,7 @@ fn fire(reaction: NamedReaction) -> Vec<SystemReactionCommand> {
         &sequence_registry,
         &ReactionPrimitiveRegistry::new(),
         &system_registry,
-        &ctx,
+        ctx,
         Some(NamedEventDispatchContext {
             origin: press(),
             source: SOURCE.into(),
@@ -125,6 +129,7 @@ fn save_verb_sdk_calls_queue_their_exact_command_in_both_runtimes_as_body_and_st
             "UI.createCharacter(4)",
             SystemReactionCommand::CreateCharacter {
                 index: 3,
+                name: None,
                 dispatch_source: source(),
                 origin: press(),
             },
@@ -208,4 +213,69 @@ fn save_verb_dispatch_refuses_bad_wire_args_naming_verb_and_value() {
         }
     }
     assert!(queue.take().is_empty(), "a refused verb queues nothing");
+}
+
+// Play-test regression: a body that empties the entry after `createCharacter`
+// (the dev menu did) unnamed the character, because the edit applies at
+// dispatch and the verb read the slot at the drain. The name is captured when
+// the verb dispatches, in both runtimes.
+#[test]
+fn create_character_keeps_the_name_typed_when_its_reaction_fired() {
+    use postretro_entities::slot_table::SlotValue;
+    for reaction in [
+        typescript_reaction("[createCharacter(2), clearText({ slot: 'ui.textEntry' })]"),
+        luau_reaction("{ UI.createCharacter(3), UI.clearText({ slot = 'ui.textEntry' }) }"),
+    ] {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .get_mut("ui.textEntry")
+            .expect("the engine declares the text entry")
+            .write_value(Some(SlotValue::String("Vex".into())));
+        super::SystemStateSink::install(&ctx, std::rc::Rc::default());
+        let commands = fire_on(&ctx, reaction);
+        assert_eq!(
+            commands,
+            vec![SystemReactionCommand::CreateCharacter {
+                index: 2,
+                name: Some("Vex".into()),
+                dispatch_source: SOURCE.into(),
+                origin: press(),
+            }]
+        );
+        assert_eq!(
+            ctx.slot_table.borrow().get("ui.textEntry").unwrap().value,
+            Some(SlotValue::String(String::new())),
+            "the clear still applied"
+        );
+    }
+}
+
+// The capture is the entry as the body's earlier steps left it, not as the
+// body found it.
+#[test]
+fn create_character_captures_edits_made_earlier_in_its_body() {
+    use postretro_entities::slot_table::SlotValue;
+    let ctx = ScriptCtx::new();
+    ctx.slot_table
+        .borrow_mut()
+        .get_mut("ui.textEntry")
+        .expect("the engine declares the text entry")
+        .write_value(Some(SlotValue::String("stale".into())));
+    super::SystemStateSink::install(&ctx, std::rc::Rc::default());
+    let commands = fire_on(
+        &ctx,
+        typescript_reaction(
+            "[clearText({ slot: 'ui.textEntry' }), appendText({ slot: 'ui.textEntry' }, 'Kai'), createCharacter(0)]",
+        ),
+    );
+    assert_eq!(
+        commands,
+        vec![SystemReactionCommand::CreateCharacter {
+            index: 0,
+            name: Some("Kai".into()),
+            dispatch_source: SOURCE.into(),
+            origin: press(),
+        }]
+    );
 }

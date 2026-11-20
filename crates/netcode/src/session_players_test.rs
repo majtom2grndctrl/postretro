@@ -250,3 +250,38 @@ fn host_rows_read_statuses_and_claim_names() {
     assert_eq!(row(&table, 0), shown(true, "Player 1", "inPlay", true));
     assert_eq!(row(&table, 1), shown(true, "Wren", "loading", false));
 }
+
+// Seat 0 asserts no claim: its name is the local player's character, in its
+// own row and in the roster every client fills its rows from. A new hosted
+// run keeps it, and an overlong name cuts as a claim's does.
+#[test]
+fn host_seat_reads_the_local_name_in_rows_and_roster() {
+    use postretro_net::wire::DISPLAY_NAME_MAX_BYTES;
+    let mut seats = SeatTable::local_only();
+    seats.set_local_display_name("Vex");
+    seats
+        .remint_for_hosting(|bytes| {
+            bytes.fill(9);
+            Ok(())
+        })
+        .unwrap();
+    let statuses = [(Seat(0), SeatStatus::InPlay)];
+    let mut table = SlotTable::default();
+    PlayerRowsWriter::default().write(&mut table, seat_rows(&seats, &statuses));
+    assert_eq!(row(&table, 0), shown(true, "Vex", "inPlay", true));
+    assert_eq!(seats.roster_entries()[0].name, "Vex");
+
+    // A rename republishes the roster at once; the same name again does not.
+    let _ = seats.take_roster_dirty();
+    seats.set_local_display_name("Ash");
+    assert!(seats.take_roster_dirty(), "a new name republishes");
+    seats.set_local_display_name("Ash");
+    assert!(!seats.take_roster_dirty(), "an unchanged name does not");
+
+    // An overlong name cuts on a character boundary, as a claim's does.
+    seats.set_local_display_name(&format!("{}é", "a".repeat(DISPLAY_NAME_MAX_BYTES - 1)));
+    assert_eq!(
+        seats.display_name(Seat(0)),
+        "a".repeat(DISPLAY_NAME_MAX_BYTES - 1)
+    );
+}

@@ -84,7 +84,7 @@ fn invalid_scope(descriptor: &ReactionDescriptor) -> bool {
     }
     match descriptor {
         ReactionDescriptor::Primitive(p) => {
-            p.target.as_deref() == Some("@trigger") || invalid_args(&p.args)
+            matches!(p.target.as_deref(), Some("@trigger" | "@seam")) || invalid_args(&p.args)
         }
         ReactionDescriptor::Sequence(steps) => {
             let mut waited = false;
@@ -100,7 +100,9 @@ fn invalid_scope(descriptor: &ReactionDescriptor) -> bool {
                 invalid_args(&step.args)
                     || matches!(
                         step.id,
-                        SequenceTarget::FiredTrigger | SequenceTarget::EventPlayer
+                        SequenceTarget::FiredTrigger
+                            | SequenceTarget::FiredSeam
+                            | SequenceTarget::EventPlayer
                     )
                     || (waited
                         && matches!(
@@ -226,6 +228,20 @@ impl TeleporterBindingTable {
         pawn: EntityId,
         player: PlayerId,
     ) -> Option<TeleportResidual> {
+        self.execute_evaluating_impacts(ctx, index, pawn, player, &mut |_| {})
+    }
+
+    /// [`Self::execute`], evaluating each script impact right after its
+    /// damage applies (`scripting.md` §2, Impact-policy evaluation): a later
+    /// command, or a later hit this tick, sees the target after its policies.
+    pub fn execute_evaluating_impacts(
+        &self,
+        ctx: &ScriptCtx,
+        index: u16,
+        pawn: EntityId,
+        player: PlayerId,
+        on_impact: &mut dyn FnMut(&mut postretro_entities::EntityRegistry),
+    ) -> Option<TeleportResidual> {
         if !group_commands_apply_here(ctx) {
             return None;
         }
@@ -255,6 +271,9 @@ impl TeleporterBindingTable {
                 &self.spawn_context,
                 &fire,
             );
+            if command.produces_impacts() {
+                on_impact(&mut registry);
+            }
         }
         let seat = registry.seat_for_pawn(pawn);
         (!binding.residual.is_empty()).then_some(TeleportResidual {

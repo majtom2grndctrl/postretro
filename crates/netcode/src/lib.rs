@@ -834,6 +834,8 @@ pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
         ComponentKind::GhostLink => postretro_net::wire::COMPONENT_KIND_GHOST_LINK,
         ComponentKind::DefenseLayers => postretro_net::wire::COMPONENT_KIND_DEFENSE_LAYERS,
         ComponentKind::AttackPool => postretro_net::wire::COMPONENT_KIND_ATTACK_POOL,
+        ComponentKind::Seam => postretro_net::wire::COMPONENT_KIND_SEAM,
+        ComponentKind::StatusPresence => postretro_net::wire::COMPONENT_KIND_STATUS_PRESENCE,
     }
 }
 
@@ -887,6 +889,7 @@ fn payload_is_finite(payload: &ComponentPayload) -> bool {
             state.index != postretro_net::wire::NO_WIRE_TELEPORTER
         }
         ComponentPayload::GhostLinkState(state) => state.validate().is_ok(),
+        ComponentPayload::StatusPresence(_) => true,
         // The movement payload is received and validated here but not yet applied
         // to any local `PlayerMovementComponent` — the authoritative mover is
         // Transform-only. Validate its floats now so a non-finite payload is
@@ -1847,6 +1850,14 @@ pub fn host_environment_tuning(script_ctx: &postretro_entities::ScriptCtx) -> En
     EnvironmentTuning {
         level_gravity: script_ctx.gravity.get(),
         fluids: FluidMovementTable::from_registry(&script_ctx.data_registry.borrow().fluids),
+        status_names: script_ctx
+            .data_registry
+            .borrow()
+            .defense
+            .statuses
+            .iter()
+            .map(|status| status.name.clone())
+            .collect(),
     }
 }
 
@@ -2289,17 +2300,18 @@ fn ingest_hit_declaration(
                 ),
                 damage_type: None,
             });
-            crate::sim::apply_authorized_weapon_impact_damage(
+            crate::sim::apply_authorized_shot_impact_damage(
                 context.registry,
                 open.shot.weapon,
                 Some(open.shot.pawn),
+                Some(open.shot.pawn_life),
                 &direct_push,
                 open.shot.credit_source.clone(),
                 0.0,
             );
         }
         let point = impact.point;
-        let hit_accepted = crate::sim::splash::emit_splash_damage(
+        let hit_accepted = crate::sim::splash::emit_shot_splash_damage(
             context.registry,
             context.hit_zone_store,
             context.collision_world,
@@ -2314,6 +2326,7 @@ fn ingest_hit_declaration(
             open.shot.damage,
             open.shot.weapon,
             open.shot.pawn,
+            Some(open.shot.pawn_life),
             true,
             open.shot.credit_source.clone(),
             open.shot.damage_type,
@@ -2586,10 +2599,11 @@ fn apply_valid_hit_record(
             damage_type: shot.damage_type,
         }),
     };
-    crate::sim::apply_authorized_weapon_impact_damage(
+    crate::sim::apply_authorized_shot_impact_damage(
         registry,
         shot.weapon,
         Some(shot.pawn),
+        Some(shot.pawn_life),
         &impact,
         shot.credit_source.clone(),
         shot.damage,
@@ -2904,6 +2918,7 @@ mod tests {
         EnvironmentTuning {
             level_gravity: -9.81,
             fluids: test_fluids(),
+            status_names: Vec::new(),
         }
     }
 
@@ -3425,6 +3440,7 @@ mod tests {
             EnvironmentTuning {
                 level_gravity: -3.0,
                 fluids: test_fluids(),
+                status_names: Vec::new(),
             },
         );
         let rebytes = tuning_payload::encode_tuning_payload(&regravitated);
@@ -3450,6 +3466,7 @@ mod tests {
             installed.wieldables.clone(),
             EnvironmentTuning {
                 level_gravity: -3.0,
+                status_names: Vec::new(),
                 fluids: FluidMovementTable::new(vec![
                     postretro_combat_model::FluidMovementTuning {
                         name: "water".to_string(),
@@ -3486,6 +3503,7 @@ mod tests {
             EnvironmentTuning {
                 level_gravity: -3.0,
                 fluids: test_fluids(),
+                status_names: Vec::new(),
             },
         );
         replace_client_tuning(
@@ -3553,6 +3571,7 @@ mod tests {
                 &EnvironmentTuning {
                     level_gravity,
                     fluids: test_fluids(),
+                    status_names: Vec::new(),
                 },
                 &[],
                 0,
@@ -4136,6 +4155,7 @@ mod tests {
             knockback: None,
             shot_id,
             pawn,
+            pawn_life: 0,
             weapon,
             fire_tick,
             damage,
@@ -4984,6 +5004,7 @@ mod tests {
                     knockback: stats.knockback,
                     shot_id: self.shot_id,
                     pawn: self.pawn,
+                    pawn_life: 0,
                     weapon: self.weapon,
                     fire_tick: 99,
                     damage: stats.damage,
@@ -7040,6 +7061,7 @@ mod tests {
                     )]),
                 }],
                 default_damage_type: None,
+                statuses: Vec::new(),
             },
         ));
         // The type was frozen from the host's weapon at FIRE; the client's
@@ -7374,7 +7396,9 @@ mod tests {
                 ComponentKind::ProjectileTrap => Some(ComponentKind::GhostLink),
                 ComponentKind::GhostLink => Some(ComponentKind::DefenseLayers),
                 ComponentKind::DefenseLayers => Some(ComponentKind::AttackPool),
-                ComponentKind::AttackPool => None,
+                ComponentKind::AttackPool => Some(ComponentKind::Seam),
+                ComponentKind::Seam => Some(ComponentKind::StatusPresence),
+                ComponentKind::StatusPresence => None,
             }
         }
 

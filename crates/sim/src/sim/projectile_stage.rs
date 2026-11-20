@@ -13,7 +13,7 @@ use crate::emission::{Emitter, ImpactContact, WeaponEmission};
 use crate::scripting_systems::hit_zones::{
     EntityRayHit, HitZoneStore, nearest_entity_hit_ignoring,
 };
-use crate::sim::weapon_stage::apply_authorized_weapon_impact_damage;
+use crate::sim::weapon_stage::apply_authorized_shot_impact_damage;
 use crate::weapon::{self, ActivationOutcome, DamagePayload, WeaponImpact};
 
 enum PendingProjectileAction {
@@ -186,15 +186,16 @@ pub fn advance(
             if let Some(splash) = component.splash.as_ref() {
                 // Splash replaces direct health damage. An explicitly authored
                 // direct shove still composes with the blast's radial shove.
-                apply_authorized_weapon_impact_damage(
+                apply_authorized_shot_impact_damage(
                     registry,
                     component.owner_weapon,
                     credited_attacker(registry, component),
+                    Some(component.owner_life),
                     impact,
                     component.credit_source.clone(),
                     0.0,
                 );
-                crate::sim::splash::emit_splash_damage(
+                crate::sim::splash::emit_shot_splash_damage(
                     registry,
                     hit_zone_store,
                     collision_world,
@@ -204,6 +205,7 @@ pub fn advance(
                     component.damage,
                     component.owner_weapon,
                     component.owner_pawn,
+                    Some(component.owner_life),
                     !component.attackerless,
                     component.credit_source.clone(),
                     component.damage_type,
@@ -216,10 +218,11 @@ pub fn advance(
                 if target_is_damage_eligible
                     && let ActivationOutcome::Hit(payload) = &impact.outcome
                 {
-                    apply_authorized_weapon_impact_damage(
+                    apply_authorized_shot_impact_damage(
                         registry,
                         component.owner_weapon,
                         credited_attacker(registry, component),
+                        Some(component.owner_life),
                         impact,
                         component.credit_source.clone(),
                         payload.amount,
@@ -792,6 +795,7 @@ mod tests {
                     damage,
                     credit_source: "test.projectile".to_string(),
                     owner_pawn,
+                    owner_life: 0,
                     owner_weapon,
                     attackerless: false,
                     spawned: true,
@@ -2207,6 +2211,7 @@ mod tests {
                         )]),
                     }],
                     default_damage_type: None,
+                    statuses: Vec::new(),
                 },
             ));
         let target = spawn_target(
@@ -2260,6 +2265,7 @@ mod tests {
                     )]),
                 }],
                 default_damage_type: None,
+                statuses: Vec::new(),
             }));
         let target = spawn_target(
             &mut registry.borrow_mut(),

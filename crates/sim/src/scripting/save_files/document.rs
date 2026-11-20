@@ -40,12 +40,35 @@ pub struct LedgerDocument {
 }
 
 /// The level a run last reached, and the checkpoint within it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LevelRecord {
     pub catalog_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint: Option<String>,
+    /// Present when `checkpoint` is a level seam's, written by the crossing:
+    /// Continue then spawns seat 0 at its pose, and an empty set of keyed
+    /// spawns falls back silently. A file written before seams loads as none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seam: Option<SeamCheckpointRecord>,
+}
+
+/// The seam mark on a run checkpoint, with seat 0's pose in the destination
+/// seam landmark's frame when seat 0 crossed inside the seam.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SeamCheckpointRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pose: Option<SeamPoseRecord>,
+}
+
+/// A landmark-relative pose: body offset, view yaw and pitch. Never motion.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SeamPoseRecord {
+    pub offset: [f32; 3],
+    pub view_yaw: f32,
+    pub view_pitch: f32,
 }
 
 /// What makes a run file a run: the character it belongs to and when it was

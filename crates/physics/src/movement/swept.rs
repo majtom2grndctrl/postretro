@@ -237,15 +237,29 @@ pub fn snap_to_floor(
     if params.step_height <= 0.0 {
         return None;
     }
-    let (floor, source) = probe_floor(
+    let floor = resting_floor(
         collision,
         capsule,
         position,
         ground_stick_reach(params),
         params.cos_walkable,
     )?;
+    Some((position - Vec3::Y * floor.drop, floor))
+}
+
+/// The floor [`snap_to_floor`] rests a pose on, without moving it: the
+/// [`floor_below`] probe, then the perched rule. Reads collision only, so a
+/// body that takes no sweep this tick is classified as one that does.
+pub fn resting_floor(
+    collision: &CombinedCollisionWorld<'_>,
+    capsule: CollisionCapsule,
+    position: Vec3,
+    max_down: f32,
+    cos_walkable: f32,
+) -> Option<FloorBelow> {
+    let (floor, source) = probe_floor(collision, capsule, position, max_down, cos_walkable)?;
     match source {
-        FloorSource::Sweep => Some((position - Vec3::Y * floor.drop, floor)),
+        FloorSource::Sweep => Some(floor),
         // The ray found the floor past an edge the sweep met first, so the drop
         // is swept: beside a riser the capsule rests on the edge instead of
         // sinking its side into it. It still counts as grounded, as before, but
@@ -264,15 +278,13 @@ pub fn snap_to_floor(
             )
             .filter(|hit| hit.time_of_impact < floor.drop);
             let Some(stop) = stop else {
-                return Some((position - Vec3::Y * floor.drop, floor));
+                return Some(floor);
             };
-            let drop = stop.time_of_impact.clamp(0.0, floor.drop);
-            let perched = FloorBelow {
-                drop,
+            Some(FloorBelow {
+                drop: stop.time_of_impact.clamp(0.0, floor.drop),
                 ground: ground_ref_from_hit(stop),
                 ..floor
-            };
-            Some((position - Vec3::Y * drop, perched))
+            })
         }
     }
 }

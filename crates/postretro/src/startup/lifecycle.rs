@@ -84,6 +84,21 @@ mod lifecycle_world_handles;
 #[cfg(test)]
 #[path = "save_verbs_tests.rs"]
 mod save_verbs_tests;
+#[cfg(test)]
+#[path = "seam_checkpoint_tests.rs"]
+mod seam_checkpoint_tests;
+#[cfg(test)]
+#[path = "seam_coop_tests.rs"]
+mod seam_coop_tests;
+#[cfg(test)]
+#[path = "seam_install_tests.rs"]
+mod seam_install_tests;
+#[cfg(test)]
+#[path = "seam_level_change_tests.rs"]
+mod seam_level_change_tests;
+#[cfg(test)]
+#[path = "seam_test_fixtures.rs"]
+mod seam_test_fixtures;
 #[path = "session_entry.rs"]
 pub(crate) mod session_entry;
 #[cfg(test)]
@@ -280,6 +295,8 @@ impl App {
             self.finish_beside_level_failure(&reason);
             return;
         }
+        // An arrival belongs to the load that carried the seam.
+        self.clear_seam_crossing();
         self.retire_active_level_load();
         let host_named = self.level_load.as_ref().is_some_and(|load| load.host_named);
         let level = self
@@ -349,7 +366,7 @@ fn failed_level_label(entry: &LevelLoadEntry) -> String {
 pub(crate) mod tests {
     pub(super) use super::lifecycle_test_fixtures::descriptor;
     pub(crate) use super::lifecycle_test_fixtures::{
-        drop_in_flight_load, install_capture_world, install_descriptor_world, level_world,
-        runtime_audience_manifest, script_ctx, test_app,
+        connect_test_app_as_client, drop_in_flight_load, install_capture_world,
+        install_descriptor_world, level_world, runtime_audience_manifest, script_ctx, test_app,
     };
 }

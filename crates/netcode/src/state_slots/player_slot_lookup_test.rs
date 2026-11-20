@@ -248,7 +248,13 @@ fn spawn(registry: &mut EntityRegistry, state: PawnState) -> EntityId {
         }
         registry.set_component(pawn, movement).unwrap();
         registry
-            .set_component(pawn, ImmersionComponent { immersion })
+            .set_component(
+                pawn,
+                ImmersionComponent {
+                    immersion,
+                    fluid: None,
+                },
+            )
             .unwrap();
     }
     if let Some(ticks) = state.life_ticks {

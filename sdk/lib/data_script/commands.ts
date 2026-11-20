@@ -53,6 +53,10 @@ export interface NpcGroup {
   update(fields: NpcStateUpdateArgs): GroupCommand;
   /** Damage each NPC by a finite, non-negative amount. */
   damage(amount: number, options?: DamageOptions): GroupCommand;
+  /** Apply `status` to each NPC as `script.applyStatus`; one without health warns and is skipped. Host and single player only; applied at the next fixed tick when it fires outside one. */
+  applyStatus(status: import("postretro").Status): GroupCommand;
+  /** Remove every applier's instance of `status` from each NPC. Host and single player only. */
+  clearStatus(status: import("postretro").Status): GroupCommand;
 }
 
 /**
@@ -77,6 +81,10 @@ export interface PlayerGroup {
    * that layer warns and is skipped.
    */
   grantLayer(layer: import("postretro").DefenseLayer, amount?: number): GroupCommand;
+  /** Apply `status` as `script.applyStatus`; a subject without health warns and is skipped. Host and single player only; applied at the next fixed tick when it fires outside one. */
+  applyStatus(status: import("postretro").Status): GroupCommand;
+  /** Remove every applier's instance of `status`. Host and single player only. */
+  clearStatus(status: import("postretro").Status): GroupCommand;
   /** Add `delta` to each player's value of a per-owner numeric slot. */
   addSlot(slot: StateRef<number>, delta: number): GroupCommand;
   /**
@@ -90,7 +98,7 @@ export interface PlayerGroup {
 }
 
 /** The subject a token command addresses: this fire's activators, the volume that fired, the teleporter that fired, or the event's player. */
-export type SubjectTokenTarget = "@activators" | "@trigger" | "@teleporter" | "@player";
+export type SubjectTokenTarget = "@activators" | "@trigger" | "@teleporter" | "@seam" | "@player";
 
 /**
  * One subject-token command: a primitive descriptor whose `target` names the
@@ -107,6 +115,7 @@ export type SubjectTokenCommand = {
 declare const activatorsTargetBrand: unique symbol;
 declare const triggerTargetBrand: unique symbol;
 declare const teleporterTargetBrand: unique symbol;
+declare const seamTargetBrand: unique symbol;
 declare const playerTargetBrand: unique symbol;
 
 /** The pawns that caused the current trigger edge. Legal only before any `wait`. */
@@ -124,6 +133,10 @@ export interface ActivatorsTarget {
   grantAmmo(type: string, amount: number): SubjectTokenCommand;
   /** Refill this fire's activators' `layer`: omit `amount` to fill, or add it, clamped to capacity. */
   grantLayer(layer: import("postretro").DefenseLayer, amount?: number): SubjectTokenCommand;
+  /** Apply `status` as `script.applyStatus`; a subject without health warns and is skipped. Host and single player only; applied at the next fixed tick when it fires outside one. */
+  applyStatus(status: import("postretro").Status): SubjectTokenCommand;
+  /** Remove every applier's instance of `status`. Host and single player only. */
+  clearStatus(status: import("postretro").Status): SubjectTokenCommand;
   /** Add `delta` to this fire's activators' value of a per-owner numeric slot. */
   addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;
 }
@@ -147,6 +160,10 @@ export interface PlayerTarget {
   grantAmmo(type: string, amount: number): SubjectTokenCommand;
   /** Refill this event's player's `layer`: omit `amount` to fill, or add it, clamped to capacity. */
   grantLayer(layer: import("postretro").DefenseLayer, amount?: number): SubjectTokenCommand;
+  /** Apply `status` as `script.applyStatus`; a subject without health warns and is skipped. Host and single player only; applied at the next fixed tick when it fires outside one. */
+  applyStatus(status: import("postretro").Status): SubjectTokenCommand;
+  /** Remove every applier's instance of `status`. Host and single player only. */
+  clearStatus(status: import("postretro").Status): SubjectTokenCommand;
   /** Add `delta` to this event's player's value of a per-owner numeric slot. */
   addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;
 }
@@ -154,6 +171,15 @@ export interface PlayerTarget {
 export interface TeleporterTarget {
   readonly [teleporterTargetBrand]: true;
   arm(): SubjectTokenCommand;
+  disarm(): SubjectTokenCommand;
+}
+
+/** The level seam a pawn arrived by (`on.seam`). Legal only before any `wait`. */
+export interface SeamTarget {
+  readonly [seamTargetBrand]: true;
+  /** Arm the seam. Applies on the host at the start of its next tick; latched pawns stay latched. */
+  arm(): SubjectTokenCommand;
+  /** Disarm the seam. Applies on the host at the start of its next tick. */
   disarm(): SubjectTokenCommand;
 }
 
@@ -193,6 +219,8 @@ function playerVerbs<R>(make: CommandBuilder<R>) {
     grantAmmo: (type: string, amount: number): R => make("grantAmmo", { type, amount }),
     grantLayer: (layer: import("postretro").DefenseLayer, amount?: number): R =>
       make("grantLayer", amount === undefined ? { layer } : { layer, amount }),
+    applyStatus: (status: import("postretro").Status): R => make("applyStatus", { status }),
+    clearStatus: (status: import("postretro").Status): R => make("clearStatus", { status }),
     addSlot: (slot: StateRef<number>, delta: number): R =>
       make("addSlot", { slot: slot.slot, delta }),
   };
@@ -210,6 +238,8 @@ export function npcs(filter?: NpcGroupFilter): NpcGroup {
     update: (fields: NpcStateUpdateArgs) => make("updateNpcState", fields),
     damage: (amount: number, options?: DamageOptions) =>
       make("applyDamage", damageArgs(amount, options)),
+    applyStatus: (status: import("postretro").Status) => make("applyStatus", { status }),
+    clearStatus: (status: import("postretro").Status) => make("clearStatus", { status }),
   });
 }
 
@@ -249,3 +279,11 @@ const teleporterTarget = {
 };
 Object.defineProperty(teleporterTarget, "__wire", { value: "@teleporter", enumerable: false });
 export const TELEPORTER_TARGET = Object.freeze(teleporterTarget) as unknown as TeleporterTarget;
+
+const seamCommand = tokenCommand("@seam");
+const seamTarget = {
+  arm: () => seamCommand("armSeam", {}),
+  disarm: () => seamCommand("disarmSeam", {}),
+};
+Object.defineProperty(seamTarget, "__wire", { value: "@seam", enumerable: false });
+export const SEAM_TARGET = Object.freeze(seamTarget) as unknown as SeamTarget;

@@ -20,7 +20,7 @@ pub(super) fn reject_invalid_streaming_hint_source_hulls(map_text: &str, scale: 
         };
         if !matches!(
             classname,
-            "streaming_seam_volume" | "stream_resident_volume" | "stream_priority_region"
+            "stream_split_volume" | "stream_resident_volume" | "stream_priority_region"
         ) {
             continue;
         }
@@ -36,7 +36,7 @@ pub(super) fn reject_invalid_streaming_hint_source_hulls(map_text: &str, scale: 
     }
     if let Some(entity) = unterminated
         && let Some(
-            classname @ ("streaming_seam_volume"
+            classname @ ("stream_split_volume"
             | "stream_resident_volume"
             | "stream_priority_region"),
         ) = source_entity_property(entity, "classname")
@@ -244,9 +244,9 @@ mod tests {
 
     #[test]
     fn ignores_comments_and_quoted_text_when_scanning_hint_hulls() {
-        let source = r#"// { "classname" "streaming_seam_volume" "( nan 0 0 )" }
+        let source = r#"// { "classname" "stream_split_volume" "( nan 0 0 )" }
 {
-"classname" "streaming_seam_volume"
+"classname" "stream_split_volume"
 "origin" "1 2 3"
 "note" "( nan 0 0 ) // { not geometry }"
 {
@@ -264,7 +264,7 @@ mod tests {
         assert!(unterminated.is_none());
         assert_eq!(
             source_entity_property(blocks[0], "classname"),
-            Some("streaming_seam_volume"),
+            Some("stream_split_volume"),
             "only a top-level KVP may identify a streaming hint"
         );
         let normalized = super::super::encode_quoted_brush_textures(source);

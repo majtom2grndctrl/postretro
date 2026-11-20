@@ -515,6 +515,7 @@ fn life_state_o16_o35_trigger_transition_blocks_weapons_but_keeps_stage_pickup_p
                 &edges,
                 context.then_some(TriggerTickContext {
                     teleporters: None,
+                    seams: None,
                     system: &mut system,
                     bridge: &bridge,
                     bindings: &bindings,

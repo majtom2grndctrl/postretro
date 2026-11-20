@@ -165,6 +165,29 @@ fn run_headless_inner(
         &world,
         environment_fluids.names(),
     );
+    // Fluid statuses, as the windowed host installs them.
+    {
+        let data = script_ctx.data_registry.borrow();
+        let statuses: Vec<(String, Option<String>)> = data
+            .fluids
+            .descriptors()
+            .iter()
+            .map(|fluid| {
+                let status = fluid.status.as_ref().and_then(|status| {
+                    status
+                        .handle("status")
+                        .ok()
+                        .and_then(|handle| handle.expect_status().ok().map(str::to_string))
+                });
+                (fluid.name.clone(), status)
+            })
+            .collect();
+        script_ctx.registry.borrow_mut().set_fluid_statuses(
+            statuses
+                .iter()
+                .map(|(fluid, status)| (fluid.as_str(), status.as_deref())),
+        );
+    }
     let mut fog_volume_bridge = FogVolumeBridge::new();
     // Trigger volumes are populated for parity with the windowed install, but the
     // tick loop passes no `TriggerTickContext` to `simulate_tick`, so the trigger
@@ -215,6 +238,7 @@ fn run_headless_inner(
             suppress_boot_pawn: false,
             local_carried_loadout: None,
             spawn_checkpoint: None,
+            spawn_checkpoint_seam: false,
         };
         install_world_cpu(
             handles,
@@ -359,6 +383,9 @@ fn run_headless_inner(
             &mut session.scripting.slot_accumulator_bindings,
             TICK_DT,
         );
+        // Script impacts that landed after the tick evaluate before the
+        // removal pass, as the frame loop's do.
+        session.scripting.settle_frame_end_impacts(false);
         run_headless_frame_end_removals(
             &registry,
             &mut progress_tracker,
@@ -563,6 +590,8 @@ mod tests {
             forgiveness: None,
             crouch: None,
             slide: None,
+            swim: None,
+            vault: None,
             view_feel: None,
         }
     }

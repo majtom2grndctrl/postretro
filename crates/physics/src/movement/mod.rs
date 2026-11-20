@@ -5,6 +5,7 @@ use glam::{Vec2, Vec3};
 
 pub mod agent_motion;
 mod carry;
+pub mod seam_arrival;
 pub mod teleport;
 pub use teleport::TeleportEvent;
 mod dispatch;
@@ -246,7 +247,7 @@ pub fn tick_with_immersion(
     position: Vec3,
 ) -> (Vec3, MovementEvents, f32) {
     let world = collision.combined_collision();
-    tick_with_immersion_and_armed(
+    let (position, events, immersion) = tick_with_immersion_and_armed(
         component,
         input,
         collision,
@@ -254,7 +255,8 @@ pub fn tick_with_immersion(
         dt,
         position,
         |index| world.static_world.teleporters.records()[index].enabled_on_spawn,
-    )
+    );
+    (position, events, immersion.immersion)
 }
 
 /// Advance one pawn one fixed tick: the movement entry for host movement, client
@@ -278,7 +280,11 @@ pub fn tick_with_immersion_and_armed(
     dt: f32,
     position: Vec3,
     armed: impl FnMut(usize) -> bool,
-) -> (Vec3, MovementEvents, f32) {
+) -> (
+    Vec3,
+    MovementEvents,
+    postretro_foundation::ImmersionComponent,
+) {
     if component.life_state != postretro_foundation::UNDECLARED_LIFE_STATE {
         component.life_state_elapsed_ticks = component.life_state_elapsed_ticks.saturating_add(1);
     }
@@ -527,7 +533,14 @@ pub fn tick_with_immersion_and_armed(
         &mut events,
         armed,
     );
-    (current_pos, events, resolved_environment.immersion)
+    (
+        current_pos,
+        events,
+        postretro_foundation::ImmersionComponent {
+            immersion: resolved_environment.immersion,
+            fluid: resolved_environment.fluid,
+        },
+    )
 }
 
 #[cfg(test)]

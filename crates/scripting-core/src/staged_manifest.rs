@@ -788,6 +788,13 @@ fn manifest_from_js_value<'js>(
             ),
         },
     )?;
+    crate::runtime::check_fluid_status_references(&fluids, &defense).map_err(|error| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` default mod manifest export invalid: {error}"
+            ),
+        }
+    })?;
 
     Ok(ModManifestResult {
         name,
@@ -1192,6 +1199,11 @@ fn run_staged_mod_init_luau(
             reason: format!("mod-init: `{source_path}` returned mod manifest invalid: {error}"),
         },
     )?;
+    crate::runtime::check_fluid_status_references(&fluids, &defense).map_err(|error| {
+        ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` returned mod manifest invalid: {error}"),
+        }
+    })?;
 
     Ok(ModManifestResult {
         name,
@@ -1235,6 +1247,9 @@ fn run_staged_mod_init_luau(
 #[cfg(test)]
 #[path = "staged_manifest/defense_manifest_tests.rs"]
 mod defense_manifest_tests;
+#[cfg(test)]
+#[path = "staged_manifest/status_manifest_tests.rs"]
+mod status_manifest_tests;
 
 #[cfg(test)]
 #[path = "staged_manifest/attack_budget_manifest_tests.rs"]
@@ -1247,6 +1262,10 @@ mod attack_turn_read_tests;
 #[cfg(test)]
 #[path = "staged_manifest/surface_example_tests.rs"]
 mod surface_example_tests;
+
+#[cfg(test)]
+#[path = "staged_manifest/seam_surface_example_tests.rs"]
+mod seam_surface_example_tests;
 
 #[cfg(test)]
 #[path = "staged_manifest/attack_handle_tests.rs"]

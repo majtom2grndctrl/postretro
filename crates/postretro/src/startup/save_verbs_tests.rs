@@ -42,6 +42,7 @@ fn select(index: usize) -> SystemReactionCommand {
 fn create(index: usize) -> SystemReactionCommand {
     SystemReactionCommand::CreateCharacter {
         index,
+        name: None,
         dispatch_source: src(),
         origin: origin(),
     }
@@ -202,6 +203,90 @@ fn create_character_refuses_occupied_slot() {
         std::fs::read(saves(dir.path()).character_path(0)).unwrap(),
         before
     );
+}
+
+// The name a reaction captured when it fired wins over the entry as the drain
+// finds it: a later step of the same body may have emptied it.
+#[test]
+fn create_character_takes_the_name_captured_at_dispatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = frontend(dir.path());
+    name_entry(&app, "");
+    app.handle_save_verb(SystemReactionCommand::CreateCharacter {
+        index: 0,
+        name: Some("Vex".into()),
+        dispatch_source: src(),
+        origin: origin(),
+    });
+    assert_eq!(
+        app.session
+            .as_ref()
+            .unwrap()
+            .saves
+            .selected_character_name(),
+        "Vex"
+    );
+
+    // A captured empty name is a name, not a missing capture: the slot's
+    // later text does not replace it.
+    name_entry(&app, "Ash");
+    app.handle_save_verb(SystemReactionCommand::CreateCharacter {
+        index: 1,
+        name: Some(String::new()),
+        dispatch_source: src(),
+        origin: origin(),
+    });
+    assert_eq!(selection(&app).character, 1);
+    assert_eq!(
+        app.session
+            .as_ref()
+            .unwrap()
+            .saves
+            .selected_character_name(),
+        ""
+    );
+}
+
+// Play-test regression: the host's own row and roster entry read `Player 1`
+// whatever its character was named, because seat 0 asserts no claim.
+fn seat_zero_name(app: &App) -> String {
+    app.session
+        .as_ref()
+        .unwrap()
+        .seat_table
+        .as_ref()
+        .expect("the frontend fixture holds a seat ledger")
+        .display_name(postretro_foundation::Seat(0))
+        .to_owned()
+}
+
+#[test]
+fn seat_zero_is_named_for_the_selected_character() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = frontend(dir.path());
+    character(&mut app, 0, "Vex");
+    assert_eq!(seat_zero_name(&app), "Vex");
+    character(&mut app, 1, "Ash");
+    assert_eq!(seat_zero_name(&app), "Ash");
+    app.handle_save_verb(select(0));
+    assert_eq!(seat_zero_name(&app), "Vex");
+    app.handle_save_verb(delete_character(0));
+    assert_eq!(seat_zero_name(&app), "", "no character selected");
+}
+
+// The common case: a relaunch with last session's character still selected
+// names seat 0 from the boot restore alone, before any verb runs.
+#[test]
+fn seat_zero_is_named_at_boot_for_the_saved_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let mut app = frontend(dir.path());
+        character(&mut app, 0, "Vex");
+        character(&mut app, 1, "Wren");
+    }
+    let app = frontend(dir.path());
+    assert_eq!(selection(&app).character, 1);
+    assert_eq!(seat_zero_name(&app), "Wren");
 }
 
 #[test]

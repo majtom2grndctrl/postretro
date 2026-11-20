@@ -116,6 +116,29 @@ export type TeleportEventDescriptor = { teleporter: EntityId, event: "teleport",
 --- teleport-scoped reaction, or a reaction's name.
 export type TeleportEventReaction = Reaction<{}> | Reaction<TeleportEventParams> | string
 
+--- Snapshot of a map-placed level seam: id, position and tags.
+export type SeamEntity = { id: EntityId, position: Vec3, tags: {string} }
+--- Level seam member returned by `getMapEntities("seam")`. Arming state is
+--- host-only and never replicated; methods return closed command steps.
+export type SeamHandle = {
+  id: EntityId, position: Vec3, tags: {string},
+  --- Arm the seam. Applies on the host at the start of its next tick; pawns
+  --- latched in it stay latched.
+  arm: (self: SeamHandle) -> {ArmSeamStep},
+  --- Disarm the seam. Applies on the host at the start of its next tick.
+  disarm: (self: SeamHandle) -> {DisarmSeamStep},
+  --- Fire `fire` once per pawn arriving by this seam, host-only, inside the
+  --- first fixed tick after its spawn, and for no sibling sharing its tag.
+  --- Return the entry from `setupLevel`'s `seamEvents`.
+  on: (self: SeamHandle, event: "arrive", fire: {Reaction<any> | string}) -> SeamEventDescriptor,
+}
+--- A seam member binding: the reactions named by `fire` run on the seam's
+--- `arrive` event.
+export type SeamEventDescriptor = { seam: EntityId, event: "arrive", fire: {string} }
+--- What a seam member's `on("arrive", ...)` accepts: a sourceless or
+--- seam-scoped reaction, or a reaction's name.
+export type SeamEventReaction = Reaction<{}> | Reaction<SeamEventParams> | string
+
 --- Snapshot of a map-placed ghost link: id, position and tags.
 export type GhostLinkEntity = { id: EntityId, position: Vec3, tags: {string} }
 --- Ghost-link member returned by `getMapEntities("ghostLink")`. Armed state,
@@ -208,7 +231,7 @@ export type AttackPoolEntityHandle = {
 
 --- Map-placed kinds `getMapEntities` accepts. NPCs and players are groups
 --- (`npcs`, `players`), not members.
-export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap" | "attackPool"
+export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap" | "attackPool" | "seam"
 
 --- Narrows a member query to instances carrying `tag`.
 export type MapEntityFilter = { tag: string? }
@@ -229,6 +252,7 @@ declare getMapEntities: ((kind: "mover", filter: MapEntityFilter?) -> {MoverEnti
   & ((kind: "spawner", filter: MapEntityFilter?) -> {SpawnerEntityHandle})
   & ((kind: "trap", filter: MapEntityFilter?) -> {TrapEntityHandle})
   & ((kind: "attackPool", filter: MapEntityFilter?) -> {AttackPoolEntityHandle})
+  & ((kind: "seam", filter: MapEntityFilter?) -> {SeamHandle})
 
 --- Level default gravity in m/s² (negative = downward; positive = upward):
 --- the gravity outside every gravity volume. Seeded from the worldspawn
@@ -503,6 +527,12 @@ export type ArmTeleporterStep = { id: EntityId, primitive: "armTeleporter", args
 --- Sequence step that disarms one teleporter (`t:disarm()`). Applies on the
 --- host at the start of its next movement tick.
 export type DisarmTeleporterStep = { id: EntityId, primitive: "disarmTeleporter", args: {} }
+--- Sequence step that arms one level seam (`s:arm()`). Applies on the host at
+--- the start of its next tick.
+export type ArmSeamStep = { id: EntityId, primitive: "armSeam", args: {} }
+--- Sequence step that disarms one level seam (`s:disarm()`). Applies on the
+--- host at the start of its next tick.
+export type DisarmSeamStep = { id: EntityId, primitive: "disarmSeam", args: {} }
 --- Member categories a ghost link shows; an omitted category keeps its value.
 export type GhostLinkMembersArgs = { players: boolean?, entities: boolean?, projectiles: boolean?, movers: boolean? }
 --- A ghost link's colour filter. Each named field ramps on its own over
@@ -599,7 +629,7 @@ export type FireStep = {
 
 --- Union of every supported sequence step shape. New sequenced primitives
 --- extend this union.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmGhostLinkStep | DisarmGhostLinkStep | SetGhostLinkMembersStep | SetGhostLinkColorFilterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | FireTrapStep | StartTrapStep | StopTrapStep | StartAttackPoolStep | StopAttackPoolStep | GroupCommand | SubjectTokenCommand | SystemReactionStep | WaitStep | FireStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmSeamStep | DisarmSeamStep | ArmGhostLinkStep | DisarmGhostLinkStep | SetGhostLinkMembersStep | SetGhostLinkColorFilterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | FireTrapStep | StartTrapStep | StopTrapStep | StartAttackPoolStep | StopAttackPoolStep | GroupCommand | SubjectTokenCommand | SystemReactionStep | WaitStep | FireStep
 
 --- Steps in authored order. Nested tables of steps flatten at any depth, so the
 --- tables member methods, `wait()` and `fire()` return need no `append`. A
@@ -642,6 +672,13 @@ export type ActivatorsTarget = {
   --- Refill `layer` on this fire's activators: omit `amount` to fill to
   --- capacity, or add it, clamped to capacity.
   grantLayer: (self: ActivatorsTarget, layer: DefenseLayer, amount: number?) -> SubjectTokenCommand,
+  --- Apply `status` as `script.applyStatus`; a subject without health warns
+  --- and is skipped. Host and single player only; applied at the next fixed
+  --- tick when it fires outside one.
+  applyStatus: (self: ActivatorsTarget, status: Status) -> SubjectTokenCommand,
+  --- Remove every applier's instance of `status`. Host and single
+  --- player only.
+  clearStatus: (self: ActivatorsTarget, status: Status) -> SubjectTokenCommand,
   --- Add `delta` to this fire's activators' value of a per-owner numeric slot.
   addSlot: (self: ActivatorsTarget, slot: StateRef<number>, delta: number) -> SubjectTokenCommand,
 }
@@ -658,6 +695,15 @@ export type TeleporterTarget = {
   disarm: (self: TeleporterTarget) -> SubjectTokenCommand,
 }
 export type TeleportEventParams = { activators: ActivatorsTarget, teleporter: TeleporterTarget }
+--- The level seam a pawn arrived by (`on.seam`). Legal only before any `wait`.
+--- Call its verbs with `:`.
+export type SeamTarget = {
+  arm: (self: SeamTarget) -> SubjectTokenCommand,
+  disarm: (self: SeamTarget) -> SubjectTokenCommand,
+}
+--- Dispatch values published by a level seam's `arrive` event: the arriving
+--- pawn and the seam it arrived by.
+export type SeamEventParams = { activators: ActivatorsTarget, seam: SeamTarget }
 export type TriggerEventParams = { activators: ActivatorsTarget, trigger: TriggerTarget, occupancy: RuntimeRead }
 --- Opaque anchor for where the current named gameplay event happened. Legal
 --- only as `playSound`'s `at`.
@@ -683,6 +729,13 @@ export type PlayerTarget = {
   --- Refill `layer` on this event's player: omit `amount` to fill to
   --- capacity, or add it, clamped to capacity.
   grantLayer: (self: PlayerTarget, layer: DefenseLayer, amount: number?) -> SubjectTokenCommand,
+  --- Apply `status` as `script.applyStatus`; a subject without health warns
+  --- and is skipped. Host and single player only; applied at the next fixed
+  --- tick when it fires outside one.
+  applyStatus: (self: PlayerTarget, status: Status) -> SubjectTokenCommand,
+  --- Remove every applier's instance of `status`. Host and single
+  --- player only.
+  clearStatus: (self: PlayerTarget, status: Status) -> SubjectTokenCommand,
   --- Add `delta` to this event's player's value of a per-owner numeric slot.
   addSlot: (self: PlayerTarget, slot: StateRef<number>, delta: number) -> SubjectTokenCommand,
 }
@@ -771,6 +824,7 @@ type ImpactEffectWire =
   | { primitive: "grantHealth", target: "@impact.source", args: { amount: any } }
   | { primitive: "grantAmmo", target: "@impact.source", args: { type: string, amount: any } }
   | { primitive: "grantLayer", target: "@impact.source", args: { layer: DefenseLayer, amount: any? } }
+  | { primitive: "applyStatus" | "clearStatus", target: "@impact.target", args: { status: Status } }
   | { primitive: "setLifeState", target: "@impact.source", args: { state: string } }
   | { primitive: "adjustSentiment", target: "@impact.target" | "@impact.source", args: { toward: "@impact.target" | "@impact.source", delta: any } }
   | { primitive: "slot.set", args: { slot: string, value: any } }
@@ -800,14 +854,28 @@ export type TargetHandle = {
   --- without that layer reads 0; a bad reference drops the policy at install.
   defense: (self: TargetHandle, layer: DefenseLayer) -> { current: NumberRef, capacity: NumberRef },
   setState: (self: TargetHandle, name: string, value: NumberValue) -> Effect,
+  --- Whether the target carries a live instance of `status` at this fire.
+  hasStatus: (self: TargetHandle, status: Status) -> BoolRef,
+  --- Apply `status` to the target. The applier is this impact's damager, or
+  --- with none its source id; one applier's applications on one fixed tick
+  --- count once. A target at health <= 0 accepts none.
+  applyStatus: (self: TargetHandle, status: Status) -> Effect,
+  --- Remove every applier's instance of `status` from the target.
+  clearStatus: (self: TargetHandle, status: Status) -> Effect,
 }
 export type SourceHandle = {
   __impactSourceBrand: true,
   --- Add health to the impact damager. A fire with no damager skips this
-  --- effect; app-drain impacts run no policy in v1.
+  --- effect. Every impact runs its policies whatever produced it. Script
+  --- `applyDamage` evaluates on the host where it lands (in-tick right after
+  --- its damage, otherwise at the next tick start or frame end) and has no
+  --- damager, so a grant on it reaches no one. A status tick's damager is its
+  --- applier, so a grant there reaches the applier.
   grantHealth: (self: SourceHandle, amount: NumberValue) -> Effect,
   --- Add an ammo-pool balance to the impact damager. A fire with no damager
-  --- skips this effect; app-drain impacts run no policy in v1.
+  --- skips this effect. Script damage has no damager, so a grant on it reaches
+  --- no one; a status tick's damager is its applier, so a grant there reaches
+  --- the applier.
   grantAmmo: (self: SourceHandle, type: string, amount: NumberValue) -> Effect,
   --- Refill `layer` on the impact damager: omit `amount` to fill to
   --- capacity, or add it, clamped to capacity evaluated when the grant
@@ -827,8 +895,9 @@ export type SourceHandle = {
 }
 --- One impact's facts. `amount` is points dealt; `raw` is the incoming amount
 --- after hit zones; `absorbed` is the layers' share; `broke` is true when this hit
---- emptied a layer; `type(damageType)` is true when the hit dealt that type.
-export type Impact = { target: TargetHandle, source: SourceHandle, amount: NumberRef, raw: NumberRef, absorbed: NumberRef, broke: BoolRef, type: (damageType: DamageType) -> BoolRef }
+--- emptied a layer; `type(damageType)` is true when the hit dealt that type;
+--- `status(h)` is true when this impact is a tick of `h`.
+export type Impact = { target: TargetHandle, source: SourceHandle, amount: NumberRef, raw: NumberRef, absorbed: NumberRef, broke: BoolRef, type: (damageType: DamageType) -> BoolRef, status: (status: Status) -> BoolRef }
 export type ImpactEvent = {
   kind: "impact",
   isOverride: boolean,
@@ -948,6 +1017,8 @@ export type LevelManifest = {
   --- (`defineTriggerEvent`) and is rejected here.
   triggerEvents: {VolumeTriggerEventDescriptor}?,
   teleportEvents: {TeleportEventDescriptor}?,
+  --- Level seam events, keyed by seam: build each with a seam member's `on`.
+  seamEvents: {SeamEventDescriptor}?,
   triggerPools: {TriggerPoolDescriptor}?,
   --- Per-player events, built with `players():on`. A level's entries belong
   --- to that level; an entry carrying `levels` is skipped with a warning (its
@@ -976,6 +1047,8 @@ declare defineReaction: (
   & ((name: string, tracer: (CrossingParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)) -> Reaction<CrossingParams>)
   & ((tracer: (TeleportEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)) -> Reaction<TeleportEventParams>)
   & ((name: string, tracer: (TeleportEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)) -> Reaction<TeleportEventParams>)
+  & ((tracer: (SeamEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)) -> Reaction<SeamEventParams>)
+  & ((name: string, tracer: (SeamEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)) -> Reaction<SeamEventParams>)
   & ((tracer: (TriggerEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)) -> Reaction<TriggerEventParams>)
   & ((name: string, tracer: (TriggerEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)) -> Reaction<TriggerEventParams>)
   & ((tracer: (EmitterParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)) -> Reaction<EmitterParams>)
@@ -1013,7 +1086,7 @@ export type GroupKind = "npc" | "player"
 export type GroupCommand = { primitive: string, kind: GroupKind, tag: string?, args: { [string]: any } }
 --- The subject a token command addresses: this fire's activators, the volume
 --- that fired, the teleporter that fired, or the event's player.
-export type SubjectTokenTarget = "@activators" | "@trigger" | "@teleporter" | "@player"
+export type SubjectTokenTarget = "@activators" | "@trigger" | "@teleporter" | "@seam" | "@player"
 --- One subject-token command (`on.activators`, `on.trigger`, `on.teleporter`,
 --- `on.player`): a primitive
 --- descriptor whose `target` names the fire's subject. Legal both as a reaction
@@ -1031,6 +1104,13 @@ export type NpcGroup = {
   update: (self: NpcGroup, fields: NpcStateUpdateArgs) -> GroupCommand,
   --- Damage each NPC by a finite, non-negative amount.
   damage: (self: NpcGroup, amount: number, options: DamageOptions?) -> GroupCommand,
+  --- Apply `status` to each NPC as `script.applyStatus`; one without health
+  --- warns and is skipped. Host and single player only; applied at the next
+  --- fixed tick when it fires outside one.
+  applyStatus: (self: NpcGroup, status: Status) -> GroupCommand,
+  --- Remove every applier's instance of `status` from each NPC. Host and
+  --- single player only.
+  clearStatus: (self: NpcGroup, status: Status) -> GroupCommand,
 }
 --- Options for relocating a player to its seat placement on the next tick.
 --- `health` lies in (0, max] and defaults to the pawn's maximum; a value
@@ -1057,6 +1137,13 @@ export type PlayerGroup = {
   --- Refill `layer` on each player: omit `amount` to fill to capacity, or
   --- add it, clamped to capacity.
   grantLayer: (self: PlayerGroup, layer: DefenseLayer, amount: number?) -> GroupCommand,
+  --- Apply `status` as `script.applyStatus`; a subject without health warns
+  --- and is skipped. Host and single player only; applied at the next fixed
+  --- tick when it fires outside one.
+  applyStatus: (self: PlayerGroup, status: Status) -> GroupCommand,
+  --- Remove every applier's instance of `status`. Host and single
+  --- player only.
+  clearStatus: (self: PlayerGroup, status: Status) -> GroupCommand,
   --- Add `delta` to each player's value of a per-owner numeric slot.
   addSlot: (self: PlayerGroup, slot: StateRef<number>, delta: number) -> GroupCommand,
   --- Fire `fire` once per player whenever `edge`'s condition crosses for that
@@ -1147,6 +1234,8 @@ declare function sentiment(fromFaction: string, toFaction: string, values: { sen
 --- mod manifest. A map's `fluid_volume` names it through its `fluid` key;
 --- declaration order assigns its index. A field out of range, or a repeated
 --- name, is rejected with a warning naming the field; the first stands.
+--- `status`, a status handle, is the exception: one naming a status
+--- `defineMod` does not register fails the load.
 declare function defineFluid(desc: FluidDescriptor): FluidDescriptor
 --- Pure identity builder for a ghost style in `ghostStyles` on the returned
 --- mod manifest. A map's `ghost_link` names it through its `ghost_style` key.
@@ -1339,7 +1428,8 @@ declare function deleteRun(index: number): SystemReactionStep
 declare function selectCharacter(index: number): SystemReactionStep
 
 --- System reaction: create a character in empty slot `index` (1-based
---- `forEach` row), named from `ui.textEntry`. A save verb, frontend-only.
+--- `forEach` row), named from `ui.textEntry` when this step fires. A save
+--- verb, frontend-only.
 --- Machine-local. Pure: returns a SystemReactionStep.
 declare function createCharacter(index: number): SystemReactionStep
 
@@ -1501,6 +1591,7 @@ export type ModManifestInput = {
   defenseLayers: {DefenseLayer}?,
   damageTypes: {DamageType}?,
   defaultDamageType: DamageType?,
+  statuses: {Status}?,
   attackTokens: {AttackToken}?,
   attackBudgets: { [string]: {AttackToken | AttackTokenRef} }?,
 }
@@ -1536,6 +1627,31 @@ declare function defineDefenseLayer(name: string, options: {}?): DefenseLayer
 --- Declare a damage type by its matrix. Luau passes the name explicitly.
 --- Register it with `defineMod({ damageTypes = { type } })`. `options` is reserved.
 declare function defineDamageType(name: string, matrix: DamageTypeMatrix, options: {}?): DamageType
+--- How a repeat application by the same applier changes its instance:
+--- `"refresh"` resets time left; `"stack"` adds one stack up to `maxStacks`.
+export type StatusStacking = "refresh" | "stack"
+--- What a status draws on each afflicted entity: an `emitter()` that follows
+--- it while the status is live, and a one-shot `tickSound` every `tickMs`.
+export type StatusPresentation = { emitter: ComponentValue?, tickSound: string? }
+--- A status's literal parameters. `damage` in [0, 1e6] per tick per stack (0
+--- is a marker); `type` a registered damage type; `tickMs` in [1, 60000];
+--- `durationMs` in [`tickMs`, 600000], omitted to last until cleared;
+--- `maxStacks` a whole number in [1, 64], default 1.
+export type StatusOptions = {
+  damage: number,
+  type: DamageType?,
+  tickMs: number,
+  durationMs: number?,
+  stacking: StatusStacking?,
+  maxStacks: number?,
+  presentation: StatusPresentation?,
+}
+--- A registered status kind. It crosses the manifest as `{ kind, name }`.
+--- `active` reads whether the local player carries it; it has no `byPlayer`.
+export type Status = { kind: "status", name: string, active: ComputedRef<boolean> }
+--- Declare a status kind. Luau passes the name explicitly. Register it with
+--- `defineMod({ statuses = { status } })`.
+declare function defineStatus(name: string, options: StatusOptions): Status
 --- A token's default budget on one target. `limit`: how much of it may be
 --- drawn on one target at once, an integer of at least 1 (default 3).
 --- `refreshMs`: how long a spent draw stays counted after its turn ends, a
@@ -2121,7 +2237,7 @@ export type BrainInputs = {
   timeInActivityMs: RuntimeGuardNode,
   --- Milliseconds remaining on the selected offense action's named attack timer; zero with no action or a missing attack-map entry. Guard reads are pre-transition (number).
   attackCooldownMs: RuntimeGuardNode,
-  --- `true` on the think-stride ticks where acquisition is re-evaluated (boolean).
+  --- `true` on the enemy's decide ticks, where acquisition is checked: 15 times a second in view or engaged, every 2 s dormant (boolean).
   acquisitionDue: RuntimeGuardNode,
   --- The enemy's current hit points (number).
   health: RuntimeGuardNode,
@@ -2163,6 +2279,8 @@ export type BrainInputs = {
   activityRoll: RuntimeGuardNode,
   --- Points drained from this enemy's defense layers and health since the currently-evaluated activity was entered, counting every damage producer, `applyDamage` included. Scope-relative like `timeInActivityMs`: each level, and its selectors, read their own sum, which resets to 0 when that level is entered (number).
   damageInActivity: RuntimeGuardNode,
+  --- Highest awareness of any candidate, 0 to 1; 1 once it has a target. A guard on a decide reads the value that decide's acquisition check produced (number).
+  awareness: RuntimeGuardNode,
 }
 
 --- Pre-wrapped guard input leaves for the fixed `@brain.*` namespace.
@@ -2180,9 +2298,9 @@ export type CandidateInputs = {
   died: RuntimeGuardNode,
   --- Directional sentiment from the evaluating faction toward this candidate: negative hostile, zero neutral, positive allied (number).
   sentiment: RuntimeGuardNode,
-  --- Accumulated positive damage this candidate has dealt to the evaluating enemy, or zero when it has not damaged that enemy (number).
+  --- Accumulated positive damage this candidate has dealt to the evaluating enemy, or zero when it has not damaged that enemy since its latest respawn (number).
   damageDealtToMe: RuntimeGuardNode,
-  --- Milliseconds since this candidate last damaged the evaluating enemy, or `1e9` when it has not damaged that enemy (number).
+  --- Milliseconds since this candidate last damaged the evaluating enemy, or `1e9` when it has not damaged that enemy since its latest respawn (number).
   timeSinceDamageFromCandidate: RuntimeGuardNode,
   --- Retaliation tolerance resolved from this enemy's archetype override, then its directed faction pair toward this candidate, or `f32::MAX` when unauthored (number).
   tolerance: RuntimeGuardNode,
@@ -2196,6 +2314,9 @@ declare function state(name: string): RuntimeGuardNode
 
 --- Read the brain entity's own defense layer as guard inputs, as `state(name)` reads its own state: `defense(armor).current:le(0)`. An entity without the layer reads `0`; a bad reference fails load.
 declare function defense(layer: DefenseLayer): { current: RuntimeGuardNode, capacity: RuntimeGuardNode }
+
+--- `true` while the brain entity carries a live instance of `status`, from any applier. A status `defineMod` does not register fails load.
+declare function hasStatus(status: Status): RuntimeGuardNode
 
 --- `true` while the enemy holds a turn for `attack`, one of its archetype's attacks, as of the previous tick. Naming another attack fails load; anything but an attack handle raises at the call. Reading it registers no attack.
 declare function attackTurnHeld(attack: Attack): RuntimeGuardNode

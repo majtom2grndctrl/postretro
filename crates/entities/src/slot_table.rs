@@ -453,6 +453,32 @@ impl SlotTable {
         }
     }
 
+    /// Replace the local-only `player.status.<name>` Bool family with one slot
+    /// per registered status. Local-only (never replicated, outside the
+    /// state-schema fingerprint): each machine fills it from its own pawn's
+    /// status presence.
+    pub fn replace_player_status_slots(&mut self, status_names: &[String]) {
+        use postretro_foundation::status::PLAYER_STATUS_SLOT_PREFIX;
+        self.slots
+            .retain(|name, _| !name.starts_with(PLAYER_STATUS_SLOT_PREFIX));
+        for status in status_names {
+            self.slots.insert(
+                format!("{PLAYER_STATUS_SLOT_PREFIX}{status}"),
+                SlotRecord::new(SlotSchema {
+                    slot_type: SlotType::Boolean,
+                    default: Some(SlotValue::Boolean(false)),
+                    range: None,
+                    persist: false,
+                    readonly: true,
+                    ownership: SlotOwnership::Engine,
+                    network: ReplicationScope::None,
+                    per_owner: false,
+                    accumulate: None,
+                }),
+            );
+        }
+    }
+
     pub fn get_mut(&mut self, name: &str) -> Option<&mut SlotRecord> {
         self.slots.get_mut(name)
     }

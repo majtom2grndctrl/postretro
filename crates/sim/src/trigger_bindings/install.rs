@@ -134,12 +134,15 @@ impl TriggerBindingTable {
         }
         // `on.player` as a target, read owner or presentation audience exists
         // only in a player event's fire; a trigger publishes no event player.
-        // `on.teleporter` likewise exists only in a teleport event's fire.
+        // `on.teleporter` likewise exists only in a teleport event's fire, and
+        // `on.seam` only in a seam `arrive` event's fire.
         if let Some((reaction, token, source)) = matched.iter().find_map(|reaction| {
             if reaction_uses_event_player(&reaction.descriptor) {
                 Some((reaction, "on.player", "a player event"))
             } else if crate::teleporter_system::reaction_uses_teleporter(&reaction.descriptor) {
                 Some((reaction, "on.teleporter", "a teleport event"))
+            } else if crate::seam_system::reaction_uses_seam(&reaction.descriptor) {
+                Some((reaction, "on.seam", "a seam arrive event"))
             } else {
                 None
             }

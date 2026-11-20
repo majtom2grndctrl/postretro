@@ -52,6 +52,7 @@ impl LevelManifest {
         let events = drain_impact_events_lua(&table, "setupLevel")?;
         let trigger_events = drain_level_trigger_events_lua(&table, "setupLevel")?;
         let teleport_events = drain_level_teleport_events_lua(&table, "setupLevel")?;
+        let seam_events = drain_level_seam_events_lua(&table, "setupLevel")?;
         let trigger_pools = drain_trigger_pools_lua(&table, "setupLevel")?;
         let player_events = drain_player_events_lua(&table, PlayerEventSite::Level, "setupLevel")?;
 
@@ -63,6 +64,7 @@ impl LevelManifest {
             crossings,
             trigger_events,
             teleport_events,
+            seam_events,
             trigger_pools,
             player_events,
             ui_trees,
@@ -893,11 +895,13 @@ pub fn drain_maps_lua(table: &Table, scope: &str) -> Result<Vec<ModMapEntry>, De
 pub fn drain_defense_vocabulary_lua(
     table: &Table,
 ) -> Result<postretro_foundation::defense::DefenseVocabulary, DescriptorError> {
-    let mut values: [Option<serde_json::Value>; 3] = [None, None, None];
-    for (slot, key) in values
-        .iter_mut()
-        .zip(["defenseLayers", "damageTypes", "defaultDamageType"])
-    {
+    let mut values: [Option<serde_json::Value>; 4] = [None, None, None, None];
+    for (slot, key) in values.iter_mut().zip([
+        "defenseLayers",
+        "damageTypes",
+        "defaultDamageType",
+        "statuses",
+    ]) {
         let raw: LuaValue = table.get(key).map_err(lua_err)?;
         if matches!(raw, LuaValue::Nil) {
             continue;
@@ -908,6 +912,7 @@ pub fn drain_defense_vocabulary_lua(
         values[0].as_ref(),
         values[1].as_ref(),
         values[2].as_ref(),
+        values[3].as_ref(),
     )
     .map_err(|reason| DescriptorError::InvalidShape { reason })
 }

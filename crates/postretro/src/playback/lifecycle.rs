@@ -259,6 +259,9 @@ impl App {
         Some(match request {
             LevelRequest::Unload => "level unload requested".to_string(),
             LevelRequest::HostLevel(id) => format!("host level `{id}` requested"),
+            LevelRequest::Seam { catalog_id, seam } => {
+                format!("level seam `{seam}` crossing to `{catalog_id}` requested")
+            }
             LevelRequest::Load(source) if self.active_level_source.as_ref() == Some(source) => {
                 format!("level reload requested ({})", describe_source(source))
             }

@@ -108,10 +108,11 @@ pub enum MapMemberKind {
     ProjectileTrap,
     GhostLink,
     AttackPool,
+    Seam,
 }
 
 impl MapMemberKind {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::KinematicMover,
         Self::TriggerVolume,
         Self::Teleporter,
@@ -119,6 +120,7 @@ impl MapMemberKind {
         Self::ProjectileTrap,
         Self::GhostLink,
         Self::AttackPool,
+        Self::Seam,
     ];
 
     /// The `worldQuery` component name, which is also the wire spelling.
@@ -131,6 +133,7 @@ impl MapMemberKind {
             Self::ProjectileTrap => "projectile_trap",
             Self::GhostLink => "ghost_link",
             Self::AttackPool => "attack_pool",
+            Self::Seam => "seam",
         }
     }
 
@@ -142,7 +145,7 @@ impl MapMemberKind {
 }
 
 /// One runtime-placed mover, trigger volume, teleporter, spawner, projectile
-/// trap, ghost link or attack pool, in authored order within its kind. Mirrors the runtime identity snapshot
+/// trap, ghost link, attack pool or level seam, in authored order within its kind. Mirrors the runtime identity snapshot
 /// (`collect_identity_snapshots_json` in `postretro-sim`); `scripts-build`
 /// assigns the build id.
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]

@@ -85,6 +85,9 @@ enum QueryFilter {
     AttackPool {
         tag: Option<String>,
     },
+    Seam {
+        tag: Option<String>,
+    },
     /// Always returns an empty array. Sprite visuals are engine-managed.
     AlwaysEmpty,
 }
@@ -104,11 +107,12 @@ fn parse_query_filter(component: &str, tag: Option<String>) -> Result<QueryFilte
         "spawner" => Ok(QueryFilter::Spawner { tag }),
         "projectile_trap" => Ok(QueryFilter::ProjectileTrap { tag }),
         "attack_pool" => Ok(QueryFilter::AttackPool { tag }),
+        "seam" => Ok(QueryFilter::Seam { tag }),
         "sprite_visual" => Ok(QueryFilter::AlwaysEmpty),
         other => Err(ScriptError::InvalidArgument {
             reason: format!(
                 "worldQuery: unknown component `{other}`; supported: \
-                 \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"teleporter\" | \"ghost_link\" | \"spawner\" | \"projectile_trap\" | \"attack_pool\" | \"sprite_visual\""
+                 \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"teleporter\" | \"ghost_link\" | \"spawner\" | \"projectile_trap\" | \"attack_pool\" | \"seam\" | \"sprite_visual\""
             ),
         }),
     }
@@ -116,7 +120,7 @@ fn parse_query_filter(component: &str, tag: Option<String>) -> Result<QueryFilte
 
 const WORLD_QUERY_DOC: &str = "Return an array of raw entity snapshots matching the filter. Raises outside a level's data script (module evaluation or `setupLevel`). \
      Returns map-placed instances only; an entity a runtime spawn carries never appears. \
-     Filter shape: { component: \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"teleporter\" | \"ghost_link\" | \"spawner\" | \"projectile_trap\" | \"attack_pool\" | \"sprite_visual\", tag?: string }. \
+     Filter shape: { component: \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"teleporter\" | \"ghost_link\" | \"spawner\" | \"projectile_trap\" | \"attack_pool\" | \"seam\" | \"sprite_visual\", tag?: string }. \
      `\"sprite_visual\"` always returns `[]` (engine-managed). \
      Unknown component values raise InvalidArgument. \
      The SDK's `getMapEntities` (`map_entities.ts`) lowers to it and wraps each snapshot in its kind's member handle; the raw primitive is absent from author-facing typedefs.";
@@ -428,6 +432,11 @@ fn register_world_query(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
                             tag.as_deref(),
                         )))
                     }
+                    QueryFilter::Seam { tag } => Ok(JsonValue(collect_identity_snapshots_json(
+                        &ctx,
+                        ComponentKind::Seam,
+                        tag.as_deref(),
+                    ))),
                     QueryFilter::AlwaysEmpty => Ok(JsonValue(serde_json::Value::Array(Vec::new()))),
                 }
             }
@@ -1887,6 +1896,112 @@ mod tests {
                 .all(|record| record.level > log::Level::Warn),
             "a query with no match is silent: {:?}",
             capture.records()
+        );
+    }
+
+    fn add_seam(ctx: &ScriptCtx, index: u16, x: f32, tags: &[&str]) -> EntityId {
+        let mut reg = ctx.registry.borrow_mut();
+        let tags: Vec<String> = tags.iter().map(|tag| tag.to_string()).collect();
+        let id = reg
+            .try_spawn(
+                Transform {
+                    position: Vec3::new(x, 2.0, 3.0),
+                    ..Transform::default()
+                },
+                &tags,
+            )
+            .unwrap();
+        reg.set_component(
+            id,
+            postretro_entities::SeamComponent {
+                index,
+                source_entity: 20 + u32::from(index),
+                name: format!("seam{index}"),
+                armed: true,
+                on_arrive: String::new(),
+            },
+        )
+        .unwrap();
+        id
+    }
+
+    // `getMapEntities("seam", { tag })` resolves to the entities carrying a
+    // seam component, tagged from their map tags, in map order; each verb
+    // bakes the seam's id into a step and `on("arrive")` builds its binding.
+    // TS and Luau agree.
+    #[test]
+    fn seam_members_query_by_tag_and_build_their_steps_in_both_runtimes() {
+        use mlua::LuaSerdeExt as _;
+        let _level = LevelDataContext::enter();
+        let ctx = ScriptCtx::new();
+        let first = add_seam(&ctx, 0, 1.0, &["airlock", "east"]);
+        add_seam(&ctx, 1, 2.0, &["other"]);
+        let second = add_seam(&ctx, 2, 4.0, &["airlock"]);
+        let r = registry_for(ctx);
+
+        let rt = rquickjs::Runtime::new().unwrap();
+        let jsctx = rquickjs::Context::full(&rt).unwrap();
+        let ts: serde_json::Value = jsctx.with(|qjs| {
+            install_all(&r, &qjs);
+            postretro_scripting_core::quickjs::evaluate_prelude(&qjs).unwrap();
+            let json: String = qjs
+                .eval(
+                    r#"
+                    const airlock = getMapEntities("seam", { tag: "airlock" });
+                    JSON.stringify({
+                      members: airlock.map((s) => ({ id: s.id, position: s.position, tags: s.tags })),
+                      all: getMapEntities("seam").length,
+                      arm: airlock[0].arm(),
+                      disarm: airlock[1].disarm(),
+                      on: airlock[0].on("arrive", ["airlock.sealed"]),
+                    })
+                    "#,
+                )
+                .unwrap();
+            serde_json::from_str(&json).unwrap()
+        });
+
+        let lua = mlua::Lua::new();
+        install_all_lua(&r, &lua);
+        postretro_scripting_core::luau_prelude::evaluate_prelude(&lua, None).unwrap();
+        let value: mlua::Value = lua
+            .load(
+                r#"
+                local airlock = getMapEntities("seam", { tag = "airlock" })
+                local members = {}
+                for i, s in ipairs(airlock) do
+                  members[i] = { id = s.id, position = s.position, tags = s.tags }
+                end
+                return {
+                  members = members,
+                  all = #getMapEntities("seam"),
+                  arm = airlock[1]:arm(),
+                  disarm = airlock[2]:disarm(),
+                  on = airlock[1]:on("arrive", { "airlock.sealed" }),
+                  bridgeHidden = wrapSeamEntity == nil,
+                }
+                "#,
+            )
+            .eval()
+            .unwrap();
+        let mut luau: serde_json::Value = lua.from_value(value).unwrap();
+        assert_eq!(luau["bridgeHidden"], true, "the wrapper bridge is cleared");
+        luau.as_object_mut().unwrap().remove("bridgeHidden");
+
+        assert_eq!(ts, luau, "TS and Luau seam members diverged");
+        let (a, b) = (first.to_raw(), second.to_raw());
+        assert_eq!(
+            ts,
+            json!({
+                "members": [
+                    { "id": a, "position": { "x": 1, "y": 2, "z": 3 }, "tags": ["airlock", "east"] },
+                    { "id": b, "position": { "x": 4, "y": 2, "z": 3 }, "tags": ["airlock"] },
+                ],
+                "all": 3,
+                "arm": [{ "id": a, "primitive": "armSeam", "args": {} }],
+                "disarm": [{ "id": b, "primitive": "disarmSeam", "args": {} }],
+                "on": { "seam": a, "event": "arrive", "fire": ["airlock.sealed"] },
+            })
         );
     }
 

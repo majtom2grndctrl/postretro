@@ -28,6 +28,7 @@ fn life_state_o38_received_look_gate_freezes_sent_facing_and_host_accepts_in_fli
         &postretro_combat_model::EnvironmentTuning {
             level_gravity: 0.0,
             fluids: Default::default(),
+            status_names: Vec::new(),
         },
         &data.life_state_names,
         data.life_state_table_revision,

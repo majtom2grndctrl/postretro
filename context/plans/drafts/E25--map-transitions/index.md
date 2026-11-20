@@ -171,7 +171,7 @@ Players walk from one map into the next as if into the next room. A **seam** is 
 - A dev-mod two-map pair joined by a seam, catalogued, playable both ways.
 - Whether `loadLevel` gains an optional seam argument for scripted transitions: brief decides.
 
-**Depends on.** `coop--client-spawn-view-handoff`: a co-op client takes its spawn pose from the host's one resolver, which U2 extends with the seat's arrival. Runs concurrently with U1. Brief: `ready/E25--landmark-level-change/`.
+**Depends on.** `coop--client-spawn-view-handoff`: a co-op client takes its spawn pose from the host's one resolver, which U2 extends with the seat's arrival. Runs concurrently with U1. Brief: `done/E25--landmark-level-change/`.
 
 **Key acceptance.** AC 3–9.
 

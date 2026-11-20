@@ -125,7 +125,7 @@ export type PostretroUiModule = {
   deleteRun: (index: number) -> SystemReactionStep,
   --- Select the character in slot `index` (1-based `UI.forEach` row of `getGameState().saves.characters`). A save verb, frontend-only: refused with a warning inside a played level, on a connected client and while hosting.
   selectCharacter: (index: number) -> SystemReactionStep,
-  --- Create a character in empty slot `index` (1-based `UI.forEach` row), named from `ui.textEntry`, and select it. Refused into an occupied slot. A save verb, frontend-only: refused with a warning inside a played level, on a connected client and while hosting.
+  --- Create a character in empty slot `index` (1-based `UI.forEach` row), named from `ui.textEntry` when this step fires, and select it; a later step that empties the entry keeps the name. Refused into an occupied slot. A save verb, frontend-only: refused with a warning inside a played level, on a connected client and while hosting.
   createCharacter: (index: number) -> SystemReactionStep,
   --- Delete the character in slot `index` (1-based `UI.forEach` row). Permitted on an unreadable slot. A save verb, frontend-only: refused with a warning inside a played level, on a connected client and while hosting.
   deleteCharacter: (index: number) -> SystemReactionStep,
@@ -224,6 +224,7 @@ export type PostretroModule = {
   defineStore: typeof(defineStore),
   defineDefenseLayer: typeof(defineDefenseLayer),
   defineDamageType: typeof(defineDamageType),
+  defineStatus: typeof(defineStatus),
   --- Declare an attack token by its default budget.
   defineAttackToken: typeof(defineAttackToken),
   --- The SDK's attack token at the default budget; every mod has it.
@@ -254,6 +255,7 @@ export type PostretroModule = {
   state: typeof(state),
   --- Build `@defense.<name>` guard input leaves for the brain's own layer.
   defense: typeof(defense),
+  hasStatus: typeof(hasStatus),
   --- Build an `@attackTurnHeld.<attack>` guard input leaf from one of the archetype's attack handles.
   attackTurnHeld: typeof(attackTurnHeld),
   --- Build an `@attackTurnFree.<attack>` guard input leaf from one of the archetype's attack handles.

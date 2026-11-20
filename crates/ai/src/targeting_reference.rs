@@ -35,8 +35,8 @@ pub(crate) fn target_candidates(
 }
 
 /// Find the pure nearest hostile target without retaining a heap-backed copy
-/// of the candidate set. A due selection replays [`target_candidates`], so a
-/// later retaliation admission can never alter this stride-price input.
+/// of the candidate set. This is the reference nearest hostile the
+/// index-equivalence tests compare against.
 pub(crate) fn target_offers(
     registry: &EntityRegistry,
     factions: &LiveFactionSentiment<'_>,
@@ -44,10 +44,10 @@ pub(crate) fn target_offers(
     enemy_faction: f32,
     evaluating_enemy: Option<EntityId>,
     exclude: Option<EntityId>,
-) -> TargetOffers {
+) -> ScannedOffers {
     let mut nearest = None;
     for candidate in target_candidates(registry, from, evaluating_enemy, exclude) {
-        // Hostility alone contributes to the pure-distance stride price. The
+        // Hostility alone makes a pawn the pure nearest hostile. The
         // non-hostile pawn remains in the raw scan so selection can admit it
         // only if its one refreshed candidate scope proves over tolerance.
         // Retained lookup stays above this scan and deliberately never re-gates
@@ -64,10 +64,9 @@ pub(crate) fn target_offers(
             nearest = Some(candidate);
         }
     }
-    TargetOffers {
+    ScannedOffers {
+        offers: super::target_offers(from, exclude),
         nearest,
-        from,
-        exclude,
     }
 }
 

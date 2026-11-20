@@ -114,9 +114,13 @@ pub(crate) fn resolve_trigger_volume(
         .get("on_exit")
         .map(|v| v.trim().to_owned())
         .unwrap_or_default();
-    if target_tag.is_empty() && on_fire.is_empty() && on_exit.is_empty() {
+    // A tagged volume can be bound at load by a tag-keyed `defineTriggerEvent`.
+    let tagged = props
+        .get("_tags")
+        .is_some_and(|tags| !tags.trim().is_empty());
+    if target_tag.is_empty() && on_fire.is_empty() && on_exit.is_empty() && !tagged {
         log::warn!(
-            "[LevelCompiler] {classname} `{name}` has neither `target_tag`, `on_fire`, nor `on_exit`; it will be inert"
+            "[LevelCompiler] {classname} `{name}` has neither `target_tag`, `on_fire`, `on_exit`, nor `_tags`; it will be inert"
         );
     }
     if command == 3 && command_arg.is_empty() {
@@ -241,6 +245,23 @@ mod tests {
             cleared.rearm_ms,
             absent.rearm_ms
         );
+    }
+
+    // A volume with no command, reaction or target is inert unless it carries
+    // `_tags`: a tag-keyed `defineTriggerEvent` binds it at load.
+    #[test]
+    fn trigger_volume_inert_warning_spares_a_tagged_volume() {
+        let warned = |kvps: &[(&str, &str)]| {
+            let capture = postretro_test_log_capture::LogCapture::start();
+            resolve(kvps).expect("resolves");
+            capture
+                .records()
+                .iter()
+                .any(|record| record.message.contains("it will be inert"))
+        };
+        assert!(warned(&[]), "a bare volume is inert");
+        assert!(warned(&[("_tags", " ")]), "blank tags bind nothing");
+        assert!(!warned(&[("_tags", "burn_trap")]));
     }
 
     #[test]

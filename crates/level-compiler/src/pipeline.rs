@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use postretro_level_format::delta_sh_volumes::{PROBES_PER_CELL, delta_probe_f16_stride};
+use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::octahedral::DEFAULT_IRRADIANCE_TILE_DIMENSION;
 
 use crate::affinity_grid::{
@@ -2170,12 +2171,15 @@ fn run_after_parsing(
     // Fluid surfaces intern their textures here, after geometry and movers and
     // just before the mip bake reads the table: a fluid-only texture appends
     // past every world entry, and no earlier stage's cache key sees it.
-    let environment_volumes_section = environment_volumes::encode_environment_volumes_section(
-        &map_data.environment_volumes,
-        map_data.initial_gravity,
-        &map_data.brush_volumes,
-        &mut geo_result.texture_names,
-    );
+    let environment_volumes_section = EnvironmentVolumesSection {
+        ai_wake_lead: map_data.ai_wake_lead,
+        ..environment_volumes::encode_environment_volumes_section(
+            &map_data.environment_volumes,
+            map_data.initial_gravity,
+            &map_data.brush_volumes,
+            &mut geo_result.texture_names,
+        )
+    };
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::TextureMips);
     texture_stage::bake_remaining_textures(
@@ -2302,6 +2306,7 @@ fn run_after_parsing(
         environment_volumes: &environment_volumes_section,
         teleporters: &map_data.teleporters,
         ghost_links: &map_data.ghost_links,
+        seams: &map_data.seams,
         mover_probe_channel: delta_sections.mover_channel.as_ref(),
         push_forces: push_forces_section.as_ref(),
         reflection_probes: reflection_probes_section.as_ref(),

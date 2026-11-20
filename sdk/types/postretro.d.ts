@@ -902,6 +902,14 @@ declare module "postretro" {
     recencyWeight?: number;
   };
 
+  /** How fast an NPC without a target notices each candidate: one meter per candidate, for the nearest eight. */
+  export type AwarenessDescriptor = {
+    /** Optional milliseconds, default 1000; finite and >= 0. The meter fills over this while the NPC sees the candidate on consecutive checks and they pass its candidacy; a first sighting gains nothing. 0 acts as one check. */
+    fillMs?: number;
+    /** Optional milliseconds, default 2000; finite and >= 0. The meter drains over this while the candidate is out of sight or fails its candidacy. 0 empties it on the first check that misses them. */
+    drainMs?: number;
+  };
+
   /** Authored hierarchical behavior statechart attached to `EntityTypeDescriptor.components.behavior`. The root is a recursive envelope plus root-only candidate, patrol, attack, speed, and combat-slot policy. */
   export type BehaviorGraphDescriptor = {
     /** Root initial activity, or a stance handle to start in its rest. It is also forced when the aggro gate closes. */
@@ -924,6 +932,12 @@ declare module "postretro" {
     moveSpeed: number;
     /** Default radius of the ring of combat slots the engine spreads engaged agents around their target, in metres. Must be finite and > 0 when present. Attack-firing states use the named attack's `standoffDistance` when present, otherwise that action's resolved engagement radius; non-attack states use this value or the engine default. */
     engagementRadius?: number;
+    /** Optional; default false. True keeps this archetype's NPCs out of the dormant tier: they keep full-rate AI whether or not a player can perceive them, so an unseen escort, race or scripted walker reaches its triggers on time. Costs full rate for those NPCs only. A placed NPC's `always_active` map key (0 or 1) overrides it; NPCs a spawner releases take this value. A reload moves live NPCs placed without the key. */
+    alwaysActive?: boolean;
+    /** Optional metres, default 100; finite and > 0. An engaged NPC whose target is farther than this (horizontal distance) heads straight for it under `chaseTarget`, `strafe` and `reposition` instead of claiming a combat slot, and claims slots again once the target is 10 m inside. A value below the archetype's largest attack standoff plus 10 m is raised to that, with a warning at load and on each reload. */
+    tacticalRange?: number;
+    /** Optional. How fast an NPC notices each candidate: awareness fills over `fillMs` (default 1000) while it sees them and they pass its candidacy, drains over `drainMs` (default 2000) otherwise, and full awareness targets them. Each ≥ 0. Checked at the NPC's decide rate, about every 67 ms in view; shorter differences are not distinguishable. */
+    awareness?: AwarenessDescriptor;
   };
 
   /** Authored player-movement preset. `capsule`, `ground`, `air`, and `fall` are required. `dash`, `crouch`, `slide`, and `viewFeel` are opt-in features; `forgiveness` has engine defaults when omitted. Distances use metres and time uses seconds unless a key is suffixed `Ms`. */
@@ -1648,6 +1662,8 @@ declare module "postretro" {
     waveAmplitude?: number;
     /** Crest-to-crest length, in texture texels: one number L, meaning [L, L], or a `[min, max]` range from which each crest takes its own length. Finite, 0 < min <= max <= 128, and min >= 8 x `waveAmplitude` (the default 8 included). Omitted: [max(48, 8A), max(80, 8A)] for amplitude A. */
     waveLength?: number | readonly [number, number];
+    /** Optional status, a handle `defineMod({ statuses })` registers, applied each tick to every player pawn whose body is in this fluid at any depth, as `fluid.<name>`. Host-only gameplay data: it never reaches a client or the replicated movement tuning. Enemies resolve no fluid; hurt them with a trigger and `applyStatus`. A status `defineMod` does not register fails load. */
+    status?: Status;
   };
 
   /** A ghost style declared in `ModManifest.ghostStyles`, built with `defineGhostStyle`: how a ghost link's ghosts look and whether their sounds carry. A map's `ghost_link` names it through its `ghost_style` key. Every field but `name` is optional; an omitted field takes the floor style's value (neutral, translucent, no sound). A malformed field drops the whole style with a warning naming it, and a second declaration of an existing name is dropped; the first declaration stands and the rest of the manifest is kept. A link naming no declared style uses the floor style. Styles resolve on each machine by name and never affect co-op compatibility. */
@@ -1736,6 +1752,8 @@ declare module "postretro" {
     damageTypes?: ReadonlyArray<DamageType>;
     /** The type every producer that names none deals; it must be listed in `damageTypes`. Optional; without it, untyped damage is ×1 on every pool and no resist applies. */
     defaultDamageType?: DamageType;
+    /** Status kinds from `defineStatus(...)`, in registration order. Optional; at most 64. Impact policies, reactions and a fluid's `status` apply only a listed kind; two entries with one name, an entry that is not a status handle, an unknown key, a `type` that is not a registered damage type, or a parameter out of range fails load naming its key path. */
+    statuses?: ReadonlyArray<Status>;
     /** Attack tokens from `defineAttackToken(...)`, each carrying its default budget. Optional; the SDK's `defaultToken` is always registered and is never listed. An attack's `draws` name only a listed token or `defaultToken`; two entries with one name, a token named `default`, an entry that is not a token handle, or a `limit` that is not an integer of at least 1 or a `refreshMs` that is not a finite number of at least 0 fails load. */
     attackTokens?: ReadonlyArray<AttackToken>;
     /** Budget profiles keyed by name, each a list of overrides made with the token's `with({ limit?, refreshMs? })` (`melee.with(...)` in TypeScript, `melee:with(...)` in Luau); a token a profile leaves out keeps its declared budget. Attack pools select a profile by name, and enemies in no running pool use `default`, which is the declared budgets unless the mod declares it. Optional. A token overridden twice by one profile, a `cost`, or an unregistered token fails load. */
@@ -2069,6 +2087,22 @@ declare module "postretro" {
   /** What a teleporter member's `on("teleport", …)` accepts: a sourceless or teleport-scoped reaction, or a reaction's name. */
   export type TeleportEventReaction = Reaction<{}> | Reaction<TeleportEventParams> | string;
 
+  /** Snapshot of a map-placed level seam: id, position and tags. */
+  export type SeamEntity = { id: EntityId; position: Vec3; tags: ReadonlyArray<string> };
+  /** Level seam member returned by `getMapEntities("seam")`. Arming state is host-only and never replicated; methods build closed command steps. */
+  export interface SeamHandle extends SeamEntity {
+    /** Arm the seam. Applies on the host at the start of its next tick; pawns latched in it stay latched. */
+    arm(): SequenceStep[];
+    /** Disarm the seam. Applies on the host at the start of its next tick. */
+    disarm(): SequenceStep[];
+    /** Fire `fire` once per pawn arriving by this seam, host-only, inside the first fixed tick after its spawn, and for no sibling sharing its tag. Return the entry from `setupLevel`'s `seamEvents`. */
+    on(event: "arrive", fire: SeamEventReaction[]): SeamEventDescriptor;
+  }
+  /** A seam member binding: the reactions named by `fire` run on the seam's `arrive` event. */
+  export type SeamEventDescriptor = { seam: EntityId; event: "arrive"; fire: string[] };
+  /** What a seam member's `on("arrive", …)` accepts: a sourceless or seam-scoped reaction, or a reaction's name. */
+  export type SeamEventReaction = Reaction<{}> | Reaction<SeamEventParams> | string;
+
   /** Snapshot of a map-placed ghost link: id, position and tags. */
   export type GhostLinkEntity = { id: EntityId; position: Vec3; tags: ReadonlyArray<string> };
   /** Ghost-link member returned by `getMapEntities("ghostLink")`. Armed state, member categories and colour filter are host-authoritative and replicated; each method builds closed command steps that apply on the host at its next tick, in call order, and do nothing on a connected client. An out-of-range argument warns and drops that step when it runs; a non-finite argument (NaN or Infinity) drops the whole reaction when the level loads. */
@@ -2124,7 +2158,7 @@ declare module "postretro" {
   }
 
   /** Map-placed kinds `getMapEntities` accepts. NPCs and players are groups (`npcs`, `players`), not members. */
-  export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap" | "attackPool";
+  export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap" | "attackPool" | "seam";
 
   /** The member handle each map kind yields. `"emitter"` yields the snapshot only (id, position, tags, and the `BillboardEmitterComponent` under `component`); it has no verbs. */
   export type MapEntityForKind<K extends MapEntityKind> =
@@ -2138,6 +2172,7 @@ declare module "postretro" {
     K extends "spawner" ? SpawnerEntityHandle :
     K extends "trap" ? TrapEntityHandle :
     K extends "attackPool" ? AttackPoolEntityHandle :
+    K extends "seam" ? SeamHandle :
     never;
 
   /** Narrows a member query to instances carrying `tag`. */
@@ -2280,6 +2315,10 @@ declare module "postretro" {
   export type ArmTeleporterStep = { id: EntityId; primitive: "armTeleporter"; args: Record<string, never> };
   /** Sequence step that disarms one teleporter (`t.disarm()`). Applies on the host at the start of its next movement tick. */
   export type DisarmTeleporterStep = { id: EntityId; primitive: "disarmTeleporter"; args: Record<string, never> };
+  /** Sequence step that arms one level seam (`s.arm()`). Applies on the host at the start of its next tick. */
+  export type ArmSeamStep = { id: EntityId; primitive: "armSeam"; args: Record<string, never> };
+  /** Sequence step that disarms one level seam (`s.disarm()`). Applies on the host at the start of its next tick. */
+  export type DisarmSeamStep = { id: EntityId; primitive: "disarmSeam"; args: Record<string, never> };
   /** Member categories a ghost link shows; an omitted category keeps its value. */
   export type GhostLinkMembersArgs = { players?: boolean; entities?: boolean; projectiles?: boolean; movers?: boolean };
   /** A ghost link's colour filter. Each named field ramps on its own over `periodMs` (default 0); an omitted field keeps its value and any ramp in flight. `tint` is `[r, g, b]`; `tint` components, `opacity` and `saturation` lie in 0..=1, and `periodMs` is finite and at least 0. Naming none of `tint`, `opacity` and `saturation` warns and drops the step. */
@@ -2336,6 +2375,8 @@ declare module "postretro" {
     | MoverSetBlockPolicyStep
     | ArmTeleporterStep
     | DisarmTeleporterStep
+    | ArmSeamStep
+    | DisarmSeamStep
     | ArmGhostLinkStep
     | DisarmGhostLinkStep
     | SetGhostLinkMembersStep
@@ -2396,6 +2437,10 @@ declare module "postretro" {
     grantAmmo(type: string, amount: number): SubjectTokenCommand;
     /** Refill `layer` on this fire's activators: omit `amount` to fill to capacity, or add a finite, non-negative `amount`, clamped to capacity. A pawn without that layer warns and is skipped. */
     grantLayer(layer: DefenseLayer, amount?: number): SubjectTokenCommand;
+    /** Apply `status` as `script.applyStatus`; a subject without health warns and is skipped. Host and single player only; applied at the next fixed tick when it fires outside one. */
+    applyStatus(status: Status): SubjectTokenCommand;
+    /** Remove every applier's instance of `status`. Host and single player only. */
+    clearStatus(status: Status): SubjectTokenCommand;
     /** Add `delta` to this fire's activators' value of a per-owner numeric slot. */
     addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;
   }
@@ -2410,6 +2455,11 @@ declare module "postretro" {
   const teleporterTargetBrand: unique symbol;
   export interface TeleporterTarget { readonly [teleporterTargetBrand]: true; arm(): SubjectTokenCommand; disarm(): SubjectTokenCommand; }
   export type TeleportEventParams = Readonly<{ activators: ActivatorsTarget; teleporter: TeleporterTarget }>;
+  const seamTargetBrand: unique symbol;
+  /** The level seam a pawn arrived by (`on.seam`). Legal only before any `wait`. */
+  export interface SeamTarget { readonly [seamTargetBrand]: true; arm(): SubjectTokenCommand; disarm(): SubjectTokenCommand; }
+  /** Dispatch values published by a level seam's `arrive` event: the arriving pawn and the seam it arrived by. */
+  export type SeamEventParams = Readonly<{ activators: ActivatorsTarget; seam: SeamTarget }>;
   export type TriggerEventParams = Readonly<{ activators: ActivatorsTarget; trigger: TriggerTarget; occupancy: RuntimeRead }>;
   const emitterTargetBrand: unique symbol;
   /** Opaque anchor for where the current named gameplay event happened. Legal only as `playSound`'s `at`. */
@@ -2432,6 +2482,10 @@ declare module "postretro" {
     grantAmmo(type: string, amount: number): SubjectTokenCommand;
     /** Refill `layer` on this event's player: omit `amount` to fill to capacity, or add a finite, non-negative `amount`, clamped to capacity. A pawn without that layer warns and is skipped. */
     grantLayer(layer: DefenseLayer, amount?: number): SubjectTokenCommand;
+    /** Apply `status` as `script.applyStatus`; a subject without health warns and is skipped. Host and single player only; applied at the next fixed tick when it fires outside one. */
+    applyStatus(status: Status): SubjectTokenCommand;
+    /** Remove every applier's instance of `status`. Host and single player only. */
+    clearStatus(status: Status): SubjectTokenCommand;
     /** Add `delta` to this event's player's value of a per-owner numeric slot. */
     addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;
   }
@@ -2534,12 +2588,18 @@ declare module "postretro" {
     /** The impact target's own layer, read before this fire's effects: `current` and `capacity`. A target without that layer reads 0; a bad reference drops the policy at install. */
     defense(layer: DefenseLayer): Readonly<{ current: NumberRef; capacity: NumberRef }>;
     setState(name: string, value: NumberValue): Effect;
+    /** Whether the target carries a live instance of `status`, from any applier, at this fire. A bad reference drops the policy at install. */
+    hasStatus(status: Status): BoolRef;
+    /** Apply `status` to the target. The applier is this impact's damager, or with none its source id (`fluid.<name>`, `script.applyDamage`); one applier's applications on one fixed tick count once. A target at health ≤ 0 accepts none. */
+    applyStatus(status: Status): Effect;
+    /** Remove every applier's instance of `status` from the target. */
+    clearStatus(status: Status): Effect;
   }
   export interface SourceHandle {
     readonly [sourceBrand]: true;
-    /** Add health to the impact damager. A fire with no damager skips this effect; app-drain impacts run no policy in v1. */
+    /** Add health to the impact damager. A fire with no damager skips this effect. Every impact runs its policies whatever produced it. Script `applyDamage` evaluates on the host where it lands (in-tick right after its damage, otherwise at the next tick start or frame end) and has no damager, so a grant on it reaches no one. A status tick's damager is its applier, so a grant there reaches the applier. */
     grantHealth(amount: NumberValue): Effect;
-    /** Add an ammo-pool balance to the impact damager. A fire with no damager skips this effect; app-drain impacts run no policy in v1. */
+    /** Add an ammo-pool balance to the impact damager. A fire with no damager skips this effect. Script damage has no damager, so a grant on it reaches no one; a status tick's damager is its applier, so a grant there reaches the applier. */
     grantAmmo(type: string, amount: NumberValue): Effect;
     /** Refill `layer` on the impact damager: omit `amount` to fill to capacity, or add `amount`, clamped to capacity. The capacity is evaluated when the grant applies. A damager without that layer warns and skips; a fire with no damager skips this effect. */
     grantLayer(layer: DefenseLayer, amount?: NumberValue): Effect;
@@ -2550,8 +2610,8 @@ declare module "postretro" {
     /** Adjust this faction's sentiment toward another impact recipient. Negative values degrade the relationship; positive values strengthen its bond. */
     adjustSentimentToward(toward: TargetHandle | SourceHandle, delta: NumberValue): Effect;
   }
-  /** One impact's facts. `amount` is points dealt: the total drained from layers and health after type multipliers and resistances. `raw` is the incoming amount after hit zones, before type and layers; `absorbed` is the layers' share of `amount`; `broke` is true when this hit took some layer from above zero to zero; `type(damageType)` is true when the hit dealt that type, the mod's default included. */
-  export type Impact = Readonly<{ target: TargetHandle; source: SourceHandle; amount: NumberRef; raw: NumberRef; absorbed: NumberRef; broke: BoolRef; type(damageType: DamageType): BoolRef }>;
+  /** One impact's facts. `amount` is points dealt: the total drained from layers and health after type multipliers and resistances. `raw` is the incoming amount after hit zones, before type and layers; `absorbed` is the layers' share of `amount`; `broke` is true when this hit took some layer from above zero to zero; `type(damageType)` is true when the hit dealt that type, the mod's default included; `status(h)` is true when this impact is a tick of `h`, the guard that keeps an igniting policy from reapplying a burn from its own ticks. */
+  export type Impact = Readonly<{ target: TargetHandle; source: SourceHandle; amount: NumberRef; raw: NumberRef; absorbed: NumberRef; broke: BoolRef; type(damageType: DamageType): BoolRef; status(status: Status): BoolRef }>;
   export interface ImpactEvent {
     readonly kind: "impact";
     readonly isOverride: boolean;
@@ -2602,6 +2662,8 @@ declare module "postretro" {
     /** Level trigger events, keyed by volume: build each with a trigger member's `on`. A tag-keyed entry belongs in `ModManifest.triggerEvents` (`defineTriggerEvent`) and is rejected here. */
     triggerEvents?: VolumeTriggerEventDescriptor[];
     teleportEvents?: TeleportEventDescriptor[];
+    /** Level seam events, keyed by seam: build each with a seam member's `on`. */
+    seamEvents?: SeamEventDescriptor[];
     triggerPools?: TriggerPoolDescriptor[];
     /** Per-player events, built with `players().on`. A level's entries belong to that level; an entry carrying `levels` is skipped with a warning (its siblings install). */
     playerEvents?: PlayerEventDescriptor[];
@@ -2625,6 +2687,7 @@ declare module "postretro" {
   export function defineReaction(tracer: (params: CrossingParams) => ReactionBody<CrossingParams>): Reaction<CrossingParams>;
   export function defineReaction(tracer: (params: TriggerEventParams) => ReactionBody<TriggerEventParams>): Reaction<TriggerEventParams>;
   export function defineReaction(tracer: (params: TeleportEventParams) => ReactionBody<TeleportEventParams>): Reaction<TeleportEventParams>;
+  export function defineReaction(tracer: (params: SeamEventParams) => ReactionBody<SeamEventParams>): Reaction<SeamEventParams>;
   export function defineReaction(tracer: (params: EmitterParams) => ReactionBody<EmitterParams>): Reaction<EmitterParams>;
   export function defineReaction(tracer: (params: PlayerEventParams) => ReactionBody<PlayerEventParams>): Reaction<PlayerEventParams>;
   /** Define a pure impact-policy descriptor. Omit `id` only in a TypeScript direct top-level binding declaration; scripts-build supplies that binding's name. Register it only by returning it through `events`. */
@@ -2641,6 +2704,7 @@ declare module "postretro" {
   export function defineReaction(name: string, tracer: (params: CrossingParams) => ReactionBody<CrossingParams>): Reaction<CrossingParams>;
   export function defineReaction(name: string, tracer: (params: TriggerEventParams) => ReactionBody<TriggerEventParams>): Reaction<TriggerEventParams>;
   export function defineReaction(name: string, tracer: (params: TeleportEventParams) => ReactionBody<TeleportEventParams>): Reaction<TeleportEventParams>;
+  export function defineReaction(name: string, tracer: (params: SeamEventParams) => ReactionBody<SeamEventParams>): Reaction<SeamEventParams>;
   export function defineReaction(name: string, tracer: (params: EmitterParams) => ReactionBody<EmitterParams>): Reaction<EmitterParams>;
   export function defineReaction(name: string, tracer: (params: PlayerEventParams) => ReactionBody<PlayerEventParams>): Reaction<PlayerEventParams>;
 
@@ -2662,7 +2726,7 @@ declare module "postretro" {
   /** One group command: a primitive descriptor carrying `kind` (and an optional `tag` filter) instead of a target. Legal both as a reaction body and directly as a sequence entry; the group resolves when the command takes effect, so NPCs spawned or players joined before then are included. */
   export type GroupCommand = { primitive: string; kind: GroupKind; tag?: string; args: Record<string, unknown> };
   /** The subject a token command addresses: this fire's activators, the volume that fired, or the event's player. */
-  export type SubjectTokenTarget = "@activators" | "@trigger" | "@teleporter" | "@player";
+  export type SubjectTokenTarget = "@activators" | "@trigger" | "@teleporter" | "@seam" | "@player";
   /** One subject-token command (`on.activators`, `on.trigger`, `on.teleporter`, `on.player`): a primitive descriptor whose `target` names the fire's subject. Legal both as a reaction body and directly as a sequence entry, but only before any `wait`, because the fire context does not survive one. */
   export type SubjectTokenCommand = { primitive: string; target: SubjectTokenTarget; args: Record<string, unknown> };
   /** Selects the NPCs a group command reaches. Omit `tag` for every NPC. */
@@ -2675,6 +2739,10 @@ declare module "postretro" {
     update(fields: NpcStateUpdateArgs): GroupCommand;
     /** Damage each NPC by a finite, non-negative amount. */
     damage(amount: number, options?: DamageOptions): GroupCommand;
+    /** Apply `status` to each NPC as `script.applyStatus`; one without health warns and is skipped. Host and single player only; applied at the next fixed tick when it fires outside one. */
+    applyStatus(status: Status): GroupCommand;
+    /** Remove every applier's instance of `status` from each NPC. Host and single player only. */
+    clearStatus(status: Status): GroupCommand;
   }
   /** Options for relocating a player to its seat placement on the next tick. `health` lies in (0, max] and defaults to the pawn's maximum; a value outside that range, or a non-finite one, warns and restores the maximum. `lifeState` names the state to enter at elapsed zero and defaults to the descriptor's `initial`. */
   export type RespawnOptions = { health?: number; lifeState?: string };
@@ -2692,6 +2760,10 @@ declare module "postretro" {
     grantAmmo(type: string, amount: number): GroupCommand;
     /** Refill `layer` on each player: omit `amount` to fill to capacity, or add a finite, non-negative `amount`, clamped to capacity. A player without that layer warns and is skipped. */
     grantLayer(layer: DefenseLayer, amount?: number): GroupCommand;
+    /** Apply `status` as `script.applyStatus`; a subject without health warns and is skipped. Host and single player only; applied at the next fixed tick when it fires outside one. */
+    applyStatus(status: Status): GroupCommand;
+    /** Remove every applier's instance of `status`. Host and single player only. */
+    clearStatus(status: Status): GroupCommand;
     /** Add `delta` to each player's value of a per-owner numeric slot. */
     addSlot(slot: StateRef<number>, delta: number): GroupCommand;
     /** Fire `fire` once per player whenever `edge`'s condition crosses for that player, or, for `assistReceived()` / `assistGiven()`, once per completed assist on its target or helper. Evaluated on the host (and in single player) once per authoritative tick, after the tick settles; a connected client registers nothing. Effective only when returned under a manifest's `playerEvents`; `options.levels` scopes a `ModManifest` entry. */
@@ -2838,6 +2910,63 @@ declare module "postretro" {
   /** Declare a damage type by its matrix. Omit `name` only in a TypeScript direct top-level binding declaration whose first argument is an object literal; scripts-build names it by its binding. Register it with `defineMod({ damageTypes: [type] })`. */
   export function defineDamageType(matrix: DamageTypeMatrix, options?: DamageTypeOptions): DamageType;
   export function defineDamageType(name: string, matrix: DamageTypeMatrix, options?: DamageTypeOptions): DamageType;
+
+  /** Input shape for `emitter()`. Required: `lifetime`, `velocity` and `sprite`; other fields fall back to the documented emitter defaults. */
+  export type EmitterProps = {
+    /** Starts this many particles every second. Omit for the default `0`; use `burst` for a one-off puff. Must be finite and ≥ 0. */
+    rate?: number;
+    /** Starts this many particles once, then clears itself. A whole number ≥ 0. */
+    burst?: number;
+    /** Widens particle directions around `velocity`, in radians. Finite and ≥ 0. Default: `0.2`. */
+    spread?: number;
+    /** How long each particle remains alive, in seconds. Finite and > 0. */
+    lifetime: number;
+    /** Starting movement as `[x, y, z]` metres per second (`y` is up). All three numbers finite. */
+    velocity: [number, number, number];
+    /** How gravity affects particles: `-1` falls normally, `0` floats, positive values rise. Default: `0.5`. */
+    buoyancy?: number;
+    /** How quickly motion slows, in 1/seconds. Finite and ≥ 0. Default: `0.5`. */
+    drag?: number;
+    /** Finite size multipliers sampled evenly from birth to death. Default: `[1]`. */
+    size_over_lifetime?: number[];
+    /** Finite opacity multipliers sampled evenly from birth to death. Default: `[1, 1, 0.8, 0]`. */
+    opacity_over_lifetime?: number[];
+    /** RGB tint, each in `[0, 1]`. Default: white. */
+    color?: [number, number, number];
+    /** Non-empty sprite or material name for the particle image, such as `"smoke"` or `"ember"`. */
+    sprite: string;
+    /** Billboard rotation speed in radians per second. Default: `0`. */
+    spin_rate?: number;
+  };
+  /** Build a `billboard_emitter` component value from `props`, validating them and filling defaults; throws naming the offending field. Use it in a component preset or a status's `presentation.emitter`. */
+  export function emitter(props: EmitterProps): { kind: "billboard_emitter" } & BillboardEmitterComponent;
+
+  /** How a repeat application by the same applier changes its instance: `"refresh"` resets time left; `"stack"` adds one stack up to `maxStacks`, resets time left, and each tick deals `damage × stacks`. */
+  export type StatusStacking = "refresh" | "stack";
+  /** What a status draws on each afflicted entity, on every machine: an `emitter()` that follows the entity while the status is live (never on the local player's own pawn), and a one-shot `tickSound` every `tickMs`. */
+  export type StatusPresentation = {
+    readonly emitter?: { kind: "billboard_emitter" } & BillboardEmitterComponent;
+    readonly tickSound?: string;
+  };
+  /** A status's literal parameters. `damage`: per tick per stack, in [0, 1e6]; `0` makes a marker that never enters the damage chokepoint. `type`: a registered damage type; omitted, ticks deal the mod's `defaultDamageType`. `tickMs` in [1, 60000] and `durationMs` in [`tickMs`, 600000], each rounded up to whole fixed ticks; omit `durationMs` to last until cleared. `maxStacks` a whole number in [1, 64], default 1. Any other key rejects load. */
+  export type StatusOptions = {
+    readonly damage: number;
+    readonly type?: DamageType;
+    readonly tickMs: number;
+    readonly durationMs?: number;
+    readonly stacking?: StatusStacking;
+    readonly maxStacks?: number;
+    readonly presentation?: StatusPresentation;
+  };
+  /** A registered status kind. It crosses the manifest as `{ kind, name }`. `active` reads whether the local player carries it (`player.status.<name>`): a local-only read with no `byPlayer`, which a player event rejects. */
+  export type Status = {
+    readonly kind: "status";
+    readonly name: string;
+    readonly active: ComputedRef<boolean>;
+  };
+  /** Declare a status kind. Omit `name` only in a TypeScript direct top-level binding declaration whose only argument is an object literal; scripts-build names it by its binding. Register it with `defineMod({ statuses: [status] })`. */
+  export function defineStatus(options: StatusOptions): Status;
+  export function defineStatus(name: string, options: StatusOptions): Status;
 
   /** A token's default budget on one target. `limit`: how much of it may be drawn on one target at once, an integer of at least 1 (default 3). `refreshMs`: how long a spent draw stays counted after its turn ends, a finite number of at least 0 (default 0). */
   export type AttackTokenBudget = { readonly limit?: number; readonly refreshMs?: number };
@@ -2991,7 +3120,7 @@ declare module "postretro" {
   export function defineFaction(name: string): FactionDescriptor;
   /** Build one directed relationship for `ModManifest.sentiment`; negative sentiment is hostile, zero neutral, and positive allied. Optional non-negative `decay` overrides the global return-to-baseline rate; zero holds the pair. */
   export function sentiment(fromFaction: string, toFaction: string, values: Pick<FactionSentimentDescriptor, "sentiment" | "tolerance" | "decay">): FactionSentimentDescriptor;
-  /** Pure identity builder for a fluid declaration in `ModManifest.fluids`. A map's `fluid_volume` names it through its `fluid` key; declaration order assigns its index. A field out of range, or a repeated name, is rejected with a warning naming the field, and the first declaration stands. */
+  /** Pure identity builder for a fluid declaration in `ModManifest.fluids`. A map's `fluid_volume` names it through its `fluid` key; declaration order assigns its index. A field out of range, or a repeated name, is rejected with a warning naming the field, and the first declaration stands. `status`, a status handle, is the exception: one naming a status `defineMod` does not register fails the load. */
   export function defineFluid(desc: FluidDescriptor): FluidDescriptor;
   /** Pure identity builder for a ghost style in `ModManifest.ghostStyles`. A map's `ghost_link` names it through its `ghost_style` key. Every field but `name` is optional and takes the floor style's value when omitted. A malformed field drops the whole style with a warning naming it, a repeated name is dropped and the first declaration stands, and a link naming no declared style uses the floor style. */
   export function defineGhostStyle(desc: GhostStyleDescriptor): GhostStyleDescriptor;
@@ -3163,7 +3292,7 @@ declare module "postretro" {
     readonly timeInActivityMs: RuntimeGuardNode;
     /** Milliseconds remaining on the selected offense action's named attack timer; zero with no action or a missing attack-map entry. Guard reads are pre-transition (number). */
     readonly attackCooldownMs: RuntimeGuardNode;
-    /** `true` on the think-stride ticks where acquisition is re-evaluated (boolean). */
+    /** `true` on the enemy's decide ticks, where acquisition is checked: 15 times a second in view or engaged, every 2 s dormant (boolean). */
     readonly acquisitionDue: RuntimeGuardNode;
     /** The enemy's current hit points (number). */
     readonly health: RuntimeGuardNode;
@@ -3205,6 +3334,8 @@ declare module "postretro" {
     readonly activityRoll: RuntimeGuardNode;
     /** Points drained from this enemy's defense layers and health since the currently-evaluated activity was entered, counting every damage producer, `applyDamage` included. Scope-relative like `timeInActivityMs`: each level, and its selectors, read their own sum, which resets to 0 when that level is entered (number). */
     readonly damageInActivity: RuntimeGuardNode;
+    /** Highest awareness of any candidate, 0 to 1; 1 once it has a target. A guard on a decide reads the value that decide's acquisition check produced (number). */
+    readonly awareness: RuntimeGuardNode;
   }
 
   /** Pre-wrapped guard input leaves for the fixed `@brain.*` namespace. */
@@ -3222,9 +3353,9 @@ declare module "postretro" {
     readonly died: RuntimeGuardNode;
     /** Directional sentiment from the evaluating faction toward this candidate: negative hostile, zero neutral, positive allied (number). */
     readonly sentiment: RuntimeGuardNode;
-    /** Accumulated positive damage this candidate has dealt to the evaluating enemy, or zero when it has not damaged that enemy (number). */
+    /** Accumulated positive damage this candidate has dealt to the evaluating enemy, or zero when it has not damaged that enemy since its latest respawn (number). */
     readonly damageDealtToMe: RuntimeGuardNode;
-    /** Milliseconds since this candidate last damaged the evaluating enemy, or `1e9` when it has not damaged that enemy (number). */
+    /** Milliseconds since this candidate last damaged the evaluating enemy, or `1e9` when it has not damaged that enemy since its latest respawn (number). */
     readonly timeSinceDamageFromCandidate: RuntimeGuardNode;
     /** Retaliation tolerance resolved from this enemy's archetype override, then its directed faction pair toward this candidate, or `f32::MAX` when unauthored (number). */
     readonly tolerance: RuntimeGuardNode;
@@ -3238,6 +3369,9 @@ declare module "postretro" {
 
   /** Read the brain entity's own defense layer as guard inputs, as `state(name)` reads its own state: `defense(armor).current.le(0)`. An entity without the layer reads `0`; a bad reference fails load. */
   export function defense(layer: DefenseLayer): Readonly<{ current: RuntimeGuardNode; capacity: RuntimeGuardNode }>;
+
+  /** `true` while the brain entity carries a live instance of `status`, from any applier: `{ to: "flee", when: hasStatus(burning) }`. A status `defineMod` does not register fails load. */
+  export function hasStatus(status: Status): RuntimeGuardNode;
 
   /** `true` while the enemy holds a turn for `attack`, one of its archetype's attacks, as of the previous tick. Naming another attack fails load; anything but an attack handle throws at the call. Reading it registers no attack. */
   export function attackTurnHeld(attack: Attack): RuntimeGuardNode;
@@ -3620,7 +3754,7 @@ declare module "postretro/ui" {
   export function deleteRun(index: number): SystemReactionStep;
   /** Select the character in slot `index` (0-based `forEach` row of `getGameState().saves.characters`). A save verb, frontend-only: refused with a warning inside a played level, on a connected client and while hosting. */
   export function selectCharacter(index: number): SystemReactionStep;
-  /** Create a character in empty slot `index` (0-based `forEach` row), named from `ui.textEntry`, and select it. Refused into an occupied slot. A save verb, frontend-only: refused with a warning inside a played level, on a connected client and while hosting. */
+  /** Create a character in empty slot `index` (0-based `forEach` row), named from `ui.textEntry` when this step fires, and select it; a later step that empties the entry keeps the name. Refused into an occupied slot. A save verb, frontend-only: refused with a warning inside a played level, on a connected client and while hosting. */
   export function createCharacter(index: number): SystemReactionStep;
   /** Delete the character in slot `index` (0-based `forEach` row). Permitted on an unreadable slot. A save verb, frontend-only: refused with a warning inside a played level, on a connected client and while hosting. */
   export function deleteCharacter(index: number): SystemReactionStep;

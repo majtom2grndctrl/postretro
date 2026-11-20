@@ -1,4 +1,4 @@
-// Streaming-hint rows: seams resolve against the runtime portals between
+// Streaming-hint rows: split regions resolve against the runtime portals between
 // occluder-tier cells, and hint volumes never shape those cells.
 // See: context/plans/done/occluder-first-partition/index.md §Acceptance
 
@@ -17,7 +17,7 @@ const HINTED_FIXTURES: [&str; 2] = [
 
 /// Brush classes peeled before the BSP that shape SH streaming only.
 const HINT_CLASSES: [&str; 3] = [
-    "streaming_seam_volume",
+    "stream_split_volume",
     "stream_resident_volume",
     "stream_priority_region",
 ];
@@ -70,7 +70,7 @@ fn hinted_fixtures_build_load_and_every_seam_matches_a_runtime_portal() {
     for name in HINTED_FIXTURES {
         let path = fixture_path(name);
         let cells = Cells::of_map_data(parse(&path));
-        let seams = &cells.map_data.streaming_seam_regions;
+        let seams = &cells.map_data.streaming_split_regions;
         assert!(!seams.is_empty(), "{name} places a seam");
         let (cell_section, portal_section, _) = cells.sections();
 
@@ -122,7 +122,7 @@ fn hinted_fixtures_cells_and_portals_match_the_maps_without_hints() {
         let path = fixture_path(name);
         let with = parse(&path);
         assert!(
-            !with.streaming_seam_regions.is_empty()
+            !with.streaming_split_regions.is_empty()
                 && !with.stream_resident_regions.is_empty()
                 && !with.stream_priority_regions.is_empty(),
             "{name} places every hint class"
@@ -133,7 +133,7 @@ fn hinted_fixtures_cells_and_portals_match_the_maps_without_hints() {
         std::fs::write(&stripped_path, without_hint_entities(&text)).expect("write stripped map");
         let without = parse(&stripped_path);
         assert!(
-            without.streaming_seam_regions.is_empty()
+            without.streaming_split_regions.is_empty()
                 && without.stream_resident_regions.is_empty()
                 && without.stream_priority_regions.is_empty(),
             "{name}: the stripped map places no hint"
@@ -179,14 +179,14 @@ fn seam_across_an_exempt_wall_fails_the_build_by_name() {
         .solid([250.0, 320.0, 0.0], [290.0, 328.0, 128.0])
         .solid([350.0, 320.0, 0.0], [390.0, 328.0, 128.0])
         .brush_entity(
-            "streaming_seam_volume",
+            "stream_split_volume",
             &[],
             &[([292.0, 316.0, 8.0], [348.0, 332.0, 120.0])],
         );
     let error = try_compile(&map).expect_err("a seam matching no runtime portal fails the build");
     let message = format!("{error:#}");
     assert!(
-        message.contains("streaming_seam_volume at (")
+        message.contains("stream_split_volume at (")
             && message.contains("matches no runtime portal"),
         "the error names the seam and where it stands: {message}"
     );

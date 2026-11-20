@@ -895,6 +895,10 @@ fn build_scripting_core(
         &mut sequence_registry,
         script_ctx.clone(),
     );
+    postretro_sim::seam_commands::register_sequenced_seam_primitives(
+        &mut sequence_registry,
+        script_ctx.clone(),
+    );
     postretro_sim::respawn_commands::register_sequenced_respawn_primitives(
         &mut sequence_registry,
         script_ctx.clone(),
@@ -920,6 +924,10 @@ fn build_scripting_core(
     register_emitter_reaction_primitives(&mut reaction_registry);
     register_npc_state_reaction_primitives(&mut reaction_registry);
     register_grant_reactions(&mut reaction_registry);
+    postretro_sim::status_commands::register_status_reactions(
+        &mut reaction_registry,
+        script_ctx.owner_slot_writes_enabled.clone(),
+    );
     register_fog_reaction_primitives(&mut reaction_registry);
     register_light_reaction_primitives(&mut reaction_registry);
     register_mover_reaction_primitives(
@@ -934,6 +942,10 @@ fn build_scripting_core(
         script_ctx.clone(),
     );
     postretro_sim::teleporter_commands::register_teleporter_reaction_primitives(
+        &mut reaction_registry,
+        script_ctx.clone(),
+    );
+    postretro_sim::seam_commands::register_seam_reaction_primitives(
         &mut reaction_registry,
         script_ctx.clone(),
     );
@@ -1014,6 +1026,19 @@ impl ScriptingCore {
             &mut self.impact_policy_runtime,
             registry,
         );
+    }
+
+    /// Frame-end script-impact pass (`scripting.md` §2, Impact-policy
+    /// evaluation): the host or single player evaluates script damage that
+    /// landed outside a tick, after republishing pawn health; a connected
+    /// client discards it unevaluated. Runs before the removal pass.
+    pub(crate) fn settle_frame_end_impacts(&mut self, connected_client: bool) {
+        if connected_client {
+            self.impact_policy_runtime.discard_client_pending();
+            return;
+        }
+        let registry = self.script_ctx.registry.clone();
+        self.evaluate_pending_in_tick_impacts(&mut registry.borrow_mut());
     }
 
     /// Hosted combat streams each original damage edge into the shared bounded

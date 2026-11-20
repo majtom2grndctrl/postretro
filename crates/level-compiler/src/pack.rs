@@ -52,6 +52,7 @@ use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
 use postretro_level_format::push_forces::PushForcesSection;
 use postretro_level_format::reflection_probes::ReflectionProbesSection;
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
+use postretro_level_format::seams::SeamsSection;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
 use postretro_level_format::teleporters::TeleportersSection;
@@ -502,6 +503,7 @@ pub fn pack_and_write_portals_with_billboard_scatter(
         &environment_volumes,
         &TeleportersSection::default(),
         &GhostLinksSection::default(),
+        &SeamsSection::default(),
         None,
         None,
         None,
@@ -558,6 +560,8 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
     teleporters: &TeleportersSection,
     // GhostLinks (id 56); written only when non-empty.
     ghost_links: &GhostLinksSection,
+    // Seams (id 61); written only when non-empty.
+    seams: &SeamsSection,
     // MoverProbeChannel (id 57), or `None` when no mover changes the probe
     // data.
     mover_probe_channel: Option<&MoverProbeChannelSection>,
@@ -729,6 +733,7 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
         environment_volumes,
         teleporters,
         ghost_links,
+        seams,
         mover_probe_channel,
         push_forces,
         reflection_probes,

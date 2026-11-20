@@ -126,6 +126,12 @@ local function playerVerbs(make)
     grantLayer = function(_self, layer, amount: number?)
       return make("grantLayer", { layer = layer, amount = amount })
     end,
+    applyStatus = function(_self, status)
+      return make("applyStatus", { status = status })
+    end,
+    clearStatus = function(_self, status)
+      return make("clearStatus", { status = status })
+    end,
     addSlot = function(_self, slot, delta: number)
       return make("addSlot", { slot = slot.slot, delta = delta })
     end,
@@ -154,6 +160,12 @@ function CommandsSdk.npcs(filter: NpcGroupFilter?): NpcGroup
     end,
     damage = function(_self, amount: number, options)
       return make("applyDamage", damageArgs(amount, options))
+    end,
+    applyStatus = function(_self, status)
+      return make("applyStatus", { status = status })
+    end,
+    clearStatus = function(_self, status)
+      return make("clearStatus", { status = status })
     end,
   })
 end
@@ -196,8 +208,15 @@ local TELEPORTER_TARGET = opaqueTarget("on.teleporter", {
   disarm = function(_self) return teleporterCommand("disarmTeleporter", {}) end,
 }, "@teleporter")
 
+local seamCommand = tokenCommand("@seam")
+local SEAM_TARGET = opaqueTarget("on.seam", {
+  arm = function(_self) return seamCommand("armSeam", {}) end,
+  disarm = function(_self) return seamCommand("disarmSeam", {}) end,
+}, "@seam")
+
 return {
   TELEPORTER_TARGET = TELEPORTER_TARGET,
+  SEAM_TARGET = SEAM_TARGET,
   builders = CommandsSdk,
   ACTIVATORS_TARGET = ACTIVATORS_TARGET,
   PLAYER_TARGET = PLAYER_TARGET,

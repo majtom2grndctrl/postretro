@@ -131,6 +131,7 @@ fn steady_turn_pass_allocates_nothing(
     let held = |slot: usize| HeldTurn {
         attack: 0,
         target: targets[slot % targets.len()],
+        target_life: 0,
         pool: AttackPoolId::Default,
         draws: kinds[slot % kinds.len()],
         until_cooldown: true,
@@ -156,11 +157,13 @@ fn steady_turn_pass_allocates_nothing(
                     draws: turn.draws,
                     marked: false,
                     target: turn.target,
+                    target_life: 0,
                     pool: AttackPoolId::Default,
                 });
                 turns.wait = Some(WaitClock {
                     since_tick: slot as u64 % 7,
                     target: turn.target,
+                    target_life: 0,
                 });
             }
             turns

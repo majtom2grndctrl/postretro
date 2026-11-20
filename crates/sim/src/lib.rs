@@ -25,7 +25,8 @@ pub use grant::validate_grant_layer_args;
 pub use health::reactions::validate_apply_damage_args;
 
 /// Check a reaction step's defense references against the committed
-/// vocabulary: `applyDamage`'s damage type and `grantLayer`'s layer. Other
+/// vocabulary: `applyDamage`'s damage type, `grantLayer`'s layer and the
+/// status verbs' status. Other
 /// primitives pass. The error names the primitive.
 pub fn validate_defense_reference_args(
     primitive: &str,
@@ -36,6 +37,9 @@ pub fn validate_defense_reference_args(
         "applyDamage" => validate_apply_damage_args(args, vocabulary)
             .map_err(|error| format!("applyDamage {error}")),
         "grantLayer" => validate_grant_layer_args(args, vocabulary),
+        status_commands::APPLY_STATUS | status_commands::CLEAR_STATUS => {
+            status_commands::validate_status_args(primitive, args, vocabulary)
+        }
         _ => Ok(()),
     }
 }
@@ -44,6 +48,8 @@ pub mod impact_policy;
 pub mod life_state_commands;
 pub mod mover_commands;
 pub mod nav;
+pub mod npc_perception;
+pub mod npc_tiers;
 pub mod particle_pool;
 pub mod placement_occupancy;
 pub mod player_events;
@@ -51,9 +57,13 @@ pub mod residual_drain;
 pub mod respawn_commands;
 pub mod scripting;
 pub mod scripting_systems;
+pub mod seam_commands;
+pub mod seam_stage;
+pub mod seam_system;
 pub mod sim;
 pub mod spawner;
 pub mod sprite_collection;
+pub mod status_commands;
 pub mod teleporter_commands;
 pub mod teleporter_system;
 pub mod traps;

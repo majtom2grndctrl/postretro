@@ -5,36 +5,42 @@ Brief · resumable · Epic 16 · reads: `context/lib/scripting.md` §2, §10.8, 
 Builds on `plans/done/E16--damage-types-and-defense-layers` (typed damage, layers, the reserved status doors) and `plans/done/E16--impact-policy-substrate` (the producer gate this brief retires).
 
 ## Problem
-The owner wants burn, shock and corrode effects, and lava and slime that hurt, all table stakes for the genre. None can be authored today, and damage that does not come from a weapon or AI hit skips authored consequences:
-- **No status mechanism exists.** The engine has no per-entity effect that deals damage over time, so DoT can only be faked with script `wait` loops.
+The owner wants lava and slime that hurt, and burn, shock and corrode effects, as genre table stakes. None can be authored today, and damage that does not come from a weapon or AI hit skips authored consequences:
+- **Script damage runs no impact policy.** The impact evaluator skips every impact the `applyDamage` reaction produces, by design of the v1 producer gate. An enemy killed by a scripted hurt volume or trap stays a zero-health corpse: no authored death, no despawn, no kill report. Set-pieces, a first-class PostRetro feature (`context/lib/index.md` §1), depend on that path.
 - **Fluids cannot hurt.** A fluid declaration has movement and presentation fields only; `plans/done/E24--water-and-environment-volumes` left fluid damage as "a later field" on the fluid's own data.
-- **Script damage runs no impact policy.** The impact evaluator skips every impact the `applyDamage` reaction produces, by design of the v1 producer gate. An enemy killed by a scripted hurt volume stays a zero-health corpse: no authored death animation, no despawn, no kill report.
+- **No status mechanism exists.** The engine has no per-entity effect that deals damage over time, so DoT can only be faked with script `wait` loops.
 
-When this is done, a mod declares statuses, applies them from impact policies, reactions and fluids, and every status tick drains layers and health through the damage chokepoint with a type and a source, runs impact policies, and credits whoever applied it. Players see a status on themselves through the HUD and on others through attached particles and sound, in co-op as well. Every impact runs its policies, whatever produced it.
+When this is done, every impact runs its policies, whatever produced it. A mod declares statuses and applies them from impact policies, reactions and fluids. Every damaging status tick drains layers and health through the damage chokepoint with a type and a source, runs impact policies, and credits whoever applied it. Enemies can react to their own statuses. Players see a status on themselves through the HUD and on others through attached particles and a per-tick sound, in co-op as well.
 
 ## Decisions
-- **A status is an engine-owned noun with author-named kinds,** following defense layers (`plans/done/E16--damage-types-and-defense-layers`, `scripting.md` §11: the engine ships the component and its per-tick system, the author ships the policy). `defineStatus` joins the binding-name sugar; `defineMod({ statuses: [...] })` registers kinds, a handle crosses as `{ kind: "status", name }`, and a bad reference fails where a bad damage-type reference fails on that surface. Load fails past 64 statuses in one mod.
-- **Parameters are literals:** `damage` per tick per stack [0, 1e6], `type` (a damage-type handle; omitted takes the mod's default type), `tickMs` [one fixed tick, 60000], `durationMs` [`tickMs`, 600000] or omitted for "until cleared", `stacking` and `maxStacks` [1, 64, default 1]. Expressions are a later axis; resistance already varies through the type matrix, because ticks are typed hits.
-- **An instance is keyed by status and applier.** The applier is the applying impact's damager; with no damager it is the applying source id (`fluid.<name>`, `script.applyStatus`). Separate appliers keep separate instances, so each tick credits the right player in co-op. An entity holds at most 16 instances; a new one when full replaces the instance with the least time left (`research.md` §Instance cap).
-- **Stacking is per instance:** `"refresh"` (default) resets remaining time; `"stack"` adds one stack up to `maxStacks` and resets remaining time, and a tick deals `damage × stacks`; `"ignore"` leaves a live instance untouched. All applications by one applier to one target on one fixed tick count as one, so eight shotgun pellets or a rocket's hit plus its splash apply once. This is the per-attack question `research/combat-events.md` §3 raised, settled without an aggregate moment.
-- **Tick timing:** an instance first deals damage `tickMs` after it is created, then every `tickMs`, on fixed-tick boundaries. Refresh and stack never move the tick phase, so a fluid refreshing every tick still ticks. A tick due on the tick the instance's time runs out still lands, then the instance ends.
-- **Ticks are host-authoritative in-tick hits:** a status stage runs after Weapons and before the death sweep (`entity_model.md` §5), so a lethal tick latches and credits on its own tick. Each tick enters the damage chokepoint with the status's type, the applier as damager and the applying hit's source id (`fluid.<name>` or `script.applyStatus` without one), so it drains layers, restarts layer delays, records the contributor, feeds brain damage memory and runs impact policies with `impact.source` as the applier. Clients predict no status and no tick (`networking.md` §Combat authority).
-- **Statuses clear when the death latch sets, on respawn, and on level change, same-map restart, rejoin and save:** they are transient, and the carry ledger records them as skipped. An entity at health ≤ 0 accepts no new instance. Hot reload keeps instances by status name, drops instances of removed kinds and applies changed parameters from the next tick; it never resets the tick phase.
-- **Every impact runs its policies, whatever produced it.** The v1 producer gate retires: script damage evaluates in landing order at the next evaluation point — the in-tick evaluation that follows it, else a host frame-end evaluation before the end-of-frame removal pass, which republishes the owning pawn's health first. In-tick evaluations stop dropping script impacts. Connected clients discard script impacts unevaluated, as their damage is not authoritative. Script damage has no damager, so its `impact.source` grants skip as an absent source already does.
-- **Fluids apply a status.** A fluid's optional `status` applies it every tick to each player pawn whose body is in that fluid at any depth, with applier `fluid.<name>` and no damager. The field is host-only gameplay data: it stays out of the replicated movement tuning, which clients need for prediction and this is not. Fluid damage is a short-duration status: lava with `durationMs` equal to `tickMs` stops one tick after the player leaves, slime with a long duration lingers.
-- **Fluid statuses reach player pawns only.** Agents and corpses resolve gravity, not fluid (`entity_model.md` §7, Who resolves what), and an enemy that resolved fluid would also need nav that avoids it, which Epic 10 owns. A mod hurts an enemy in a fluid with an authored trigger and `applyStatus`.
-- **Reads:** `impact.target.hasStatus(h)` and the brain-guard `hasStatus(h)` hold while any instance of `h` is live on that entity, mirroring `defense(h)` per scope as a Bool, as `impact.type(h)` is. `impact.status(h)` holds when this impact is a tick of `h`, so a policy that ignites on fire damage can refuse to re-ignite from its own burn ticks. `player.status.<name>` is an owner-private Number, the most time left across the pawn's instances of that kind in ms, absent when none; it changes the state-schema fingerprint, not `WIRE_VERSION`, as `player.defense.<name>` did.
+- **Every impact runs its policies, whatever produced it.** Script damage evaluates on the host in landing order at the next evaluation point: an in-tick evaluation, one just before each death sweep, one after each tick's player-event pass, or one at frame end before the end-of-frame removal pass. So a scripted lethal hit evaluates before its sweep whether or not another hit lands that tick. Connected clients discard script impacts unevaluated, as their damage is not authoritative.
+- **A status is an engine-owned noun with author-named kinds,** following defense layers (`plans/done/E16--damage-types-and-defense-layers`, `scripting.md` §11). `defineStatus` joins the binding-name sugar; `defineMod({ statuses: [...] })` registers kinds, a handle crosses as `{ kind: "status", name }`, and a bad reference fails where a bad damage-type reference fails on that surface. Load fails past 64 statuses in one mod.
+- **Parameters are literals:** `damage` per tick per stack [0, 1e6], `type` (a damage-type handle; omitted takes the mod's default type), `tickMs` [one fixed tick, 60000], `durationMs` [`tickMs`, 600000] or omitted for "until cleared", `stacking` and `maxStacks` [1, 64, default 1]. `tickMs` and `durationMs` round up to whole fixed ticks, as weapon activation timings do.
+- **A `damage: 0` status is a marker** ("wet", "oiled") that other policies read for combos. Its ticks never enter the chokepoint, so they run no policy.
+- **An instance is keyed by status and applier.** The applier is the applying impact's damager; with no damager it is the applying source id (`fluid.<name>`, `script.applyStatus`). Separate appliers keep separate instances, so each tick credits the right player in co-op, and `maxStacks` and time left are per applier: four players can each stack a target to the cap. An entity holds at most 16 instances; a new one when full replaces the instance with the least time left (`research.md` §Instance cap).
+- **Stacking is per instance:** `"refresh"` (default) resets time left; `"stack"` adds one stack up to `maxStacks` and resets time left, and a tick deals `damage × stacks`. All applications by one applier to one target on one fixed tick count as one, so eight shotgun pellets or a rocket's hit plus its splash apply once. This settles `research/combat-events.md` §3's per-attack question without an aggregate moment.
+- **Tick timing:** an instance first deals damage `tickMs` after it is created, then every `tickMs`. Refresh and stack never move the tick phase, so a fluid refreshing every tick still ticks. A tick due on the tick the instance's time runs out still lands, then the instance ends. An application made outside a fixed tick (a UI press, a `wait` tail, a frame-end policy) counts on the next fixed tick and applies before that tick's status stage, as trap requests latch.
+- **Ticks are host-authoritative in-tick hits:** a status stage runs after Weapons and before the death sweep (`entity_model.md` §5), so a lethal tick latches and credits on its own tick. Each damaging tick enters the damage chokepoint with the status's type, the applier as damager and the applying hit's source id, so it drains layers, restarts layer delays, records the contributor, feeds brain damage memory and runs impact policies with `impact.source` as the applier. A due tick whose target is already at health ≤ 0 is skipped, so another hit's authored death plays alone. Clients predict no status and no tick (`networking.md` §Combat authority).
+- **Statuses are transient:** they clear when the death latch sets, on respawn, and on level change, same-map restart, rejoin and save, and never enter carried state. An entity at health ≤ 0 accepts no new instance. Hot reload keeps instances by status name, drops instances of removed kinds and applies changed parameters from the next tick without moving the tick phase.
+- **Fluids apply a status.** A fluid's optional `status` applies it every tick to each player pawn whose body is in that fluid at any depth. The field is host-only gameplay data and stays out of the replicated movement tuning, which exists for client prediction. Lava with `durationMs` equal to `tickMs` stops one tick after the player leaves; slime with a long duration lingers.
+- **Fluid statuses reach player pawns only.** Agents and corpses resolve gravity, not fluid (`entity_model.md` §7, Who resolves what), and an enemy that resolved fluid would also need nav that avoids it, which Epic 10 owns. This matches the lineage: Doom's monsters ignore damaging floors. A mod hurts an enemy in a fluid with an authored trigger and `applyStatus`.
+- **Reads:** `impact.target.hasStatus(h)` and the brain-guard `hasStatus(h)` hold while any instance of `h` is live on that entity, as Bool reads beside `defense(h)` in each scope. `impact.status(h)` holds when this impact is a tick of `h`, so a policy that ignites on fire damage can refuse to re-ignite from its own ticks. `player.status.<name>` is a Bool read of the local pawn's presence: on the host and in single player from the live component, on a connected client from its own pawn's replicated presence. It is not a replicated slot, so the state-schema fingerprint never carries status names.
 - **Effects and verbs:** `impact.target.applyStatus(h)` and `impact.target.clearStatus(h)` join impact effects in the consequential lane; reaction subjects (`npcs()`, `players()`, `on.activators`, `on.player`) gain `.applyStatus(h)` and `.clearStatus(h)`, host-only like `.damage`. Clear removes every instance of that kind. A subject without health is skipped.
-- **A status may declare attached presentation:** `presentation: { emitter?, sound? }`, an emitter built with the SDK `emitter()` builder and a looping sound, both following the afflicted entity while any instance of that kind is live. The owning player's own pawn gets the sound, not the emitter, as its first-person view hides its own avatar. Presentation is local: each machine attaches it from status presence, never from replicated emitters.
-- **Status presence replicates per entity** as a bitset over the host's status declaration order, in a new entity component payload, so co-op clients attach presentation to enemies and teammates. It bumps `WIRE_VERSION` and `SNAPSHOT_VERSION` (`networking.md` §Version gates). The host sends its status names in declaration order with the tuning it already sends, and a client maps each bit to its own status by name, as fluids resolve presentation by name; a name the client does not declare shows nothing. Status names stay out of the mod compatibility digest: on a client a status is presentation only, and `networking.md` hashes only what cannot be replicated.
-- **The status stage's per-tick cost is bounded by construction:** it visits only entities carrying instances, allocates nothing per tick, and reports as its own CPU stage. A stress run proves the bound (Acceptance).
+- **A status may declare attached presentation:** `presentation: { emitter?, tickSound? }`. The emitter, built with the SDK `emitter()` builder, follows the afflicted entity while any instance of that kind is live; the owning player's own pawn gets no emitter, as its first-person view hides its avatar. `tickSound` is a one-shot sound at the entity every `tickMs` while presence holds, from when presence appears, played locally on every machine and not phase-locked to host ticks. Each machine attaches presentation from status presence, never from replicated emitters. The brief adds `emitter()` to the SDK type declarations, which lack it today.
+- **Status presence replicates per entity** in a new entity component payload, bumping `WIRE_VERSION` and `SNAPSHOT_VERSION` (`networking.md` §Version gates). A client maps it to its own statuses by the host's names, as fluids resolve presentation by name; a name the client does not declare shows nothing. Status names stay out of the mod compatibility digest: on a client a status is presentation only, and `networking.md` hashes only what cannot be replicated. After a host reload that reorders statuses, a client may show the wrong status until the new name table lands; the mis-map is cosmetic and brief.
+- **The status stage allocates nothing for its own bookkeeping per tick,** and an entity with no instances costs nothing. The chokepoint and policy cost of its ticks is measured and reported, not gated.
 - **Non-goals:**
   - `onDamage` per-attack aggregate: demand-gated until a mod needs a per-attack reduction; shot-id threading to the chokepoint belongs to `drafts/E10--stealth-opener`.
-  - Status parameters as expressions, status application chance, and a status that changes movement or fire (slow, stun, disarm). Damage over time is this brief's only effect; other effects are their own decisions.
-  - `impact.source.applyStatus` (thorns), overlay-callback status reads, and teammate status on the HUD.
-  - `.damage(amount, { status })` and `defineDamageType(matrix, { inflicts })`: those reserved doors stay reserved and empty. Application goes through one verb, `applyStatus`.
+  - Status parameters as expressions: resistance already varies through the type matrix, because ticks are typed hits.
+  - Application chance: the impact IR has no random source, and adding one is its own determinism decision.
+  - A status that changes movement or fire (slow, stun, disarm): each touches prediction, so each is its own decision.
+  - `impact.source.applyStatus` (thorns): `impact.target.applyStatus` covers every reported case; the source arm adds when a mod asks.
+  - Overlay-callback status reads: overlay callbacks bind Number roots only.
+  - Time left on the HUD and teammate status on the HUD: each needs a replicated value, which presence deliberately is not.
+  - An entity-attached looping sound: the audio core refuses looping sounds with an entity anchor; Epic 12 owns it.
+  - `.damage(amount, { status })` and `defineDamageType(matrix, { inflicts })`: those reserved doors stay reserved and empty (Path, Shape and rival).
   - Mesh tint for afflicted entities: no per-entity tint exists outside the ghost-link look.
-  - Fall damage and other environmental producers.
+  - Fall damage: the genre's lineage has none, and Epic 11's traversal argues against punishing falls.
 
 ### Scripting surface
 ```ts
@@ -48,15 +54,21 @@ import { acid, fire } from "./damage-types";
 export const burning = defineStatus({
   damage: 4, type: fire, tickMs: 500, durationMs: 3000,
   stacking: "stack", maxStacks: 3,
-  presentation: { emitter: emitter({ sprite: "ember", rate: 24, lifetime: 0.6, velocity: [0, 1.5, 0] }), sound: "burn_loop" },
+  presentation: {
+    emitter: emitter({ sprite: "ember", rate: 24, lifetime: 0.6, velocity: [0, 1.5, 0] }),
+    tickSound: "burn_tick",
+  },
 });
-export const scalding = defineStatus({ damage: 10, type: fire, tickMs: 250, durationMs: 250 });
+export const scalding = defineStatus({ damage: 10, type: fire, tickMs: 250, durationMs: 250, presentation: { tickSound: "sizzle" } });
 export const corroding = defineStatus({ damage: 2, type: acid, tickMs: 1000 }); // until cleared
+export const wet = defineStatus({ damage: 0, tickMs: 500, durationMs: 5000 }); // marker
 
 // scripts/combat.ts
 import { defineFluid, defineImpactEvent, defineMod, defineReaction, hasStatus, players } from "postretro";
 export const ignite = defineImpactEvent({ tag: "enemy" }, (impact) => [
-  { when: impact.type(fire).and(impact.status(burning).not()), do: [impact.target.applyStatus(burning)] },
+  { when: impact.type(fire).and(impact.status(burning).not()).and(impact.target.hasStatus(wet).not()),
+    do: [impact.target.applyStatus(burning)] },
+  { when: impact.type(acid), do: [impact.target.clearStatus(wet)] },
   { when: impact.status(burning).and(impact.target.healthAfter.le(0)), do: [impact.target.playAnim("burn_death")] },
 ]);
 export const cure = defineReaction("cure", [players().clearStatus(corroding)]);
@@ -64,77 +76,88 @@ export const cure = defineReaction("cure", [players().clearStatus(corroding)]);
 const panic = { to: "flee", when: hasStatus(burning) };
 
 export default defineMod({
+  name: "statuses-demo", id: "example.statuses", version: "1",
   damageTypes: [fire, acid],
-  statuses: [burning, scalding, corroding],
-  fluids: [defineFluid({ name: "lava", viscosity: 0.6, status: scalding })],
+  statuses: [burning, scalding, corroding, wet],
+  fluids: [defineFluid({ name: "lava", viscosity: 0.6, viewTint: [1, 0.35, 0.05, 0.8], muffle: 0.9, surfaceOpacity: 1, status: scalding })],
   events: [ignite],
+  reactions: [cure],
 });
-// HUD: read(player.status.burning) — ms left, absent when not burning
+// HUD: read(player.status.burning) — true while the local player burns
 ```
 Luau mirrors every name, passing the status name explicitly as it does for damage types: `Postretro.defineStatus("burning", { ... })`.
 
 ## Acceptance
 ### Automated
+**Script damage and policies**
+- [ ] An enemy killed by script `applyDamage` from a trigger, a player event, a crossing, a `wait` tail, a UI press and `levelLoad` each runs its death policy, despawns and reports the kill in the same frames an in-tick kill does; a `levelLoad` kill evaluates on the reveal frame against that level's policies (P15).
+- [ ] A trigger-bound lethal `applyDamage` with a `setHealth` recovery policy recovers before the sweep, with or without another hit on that tick, and `playerDied` never fires; a player-event script impact after tick N evaluates before tick N+1's sweep whether N+1 runs in the same frame or the next (P13, P14).
+- [ ] A script impact that lands before a weapon hit in the same tick evaluates before that hit's impact, in landing order, and is not dropped.
+- [ ] A frame-end policy on script damage to the local pawn reads `player.health` as post-damage health; an `impact.source.grantHealth` row on script damage grants nothing; a script-damaged enemy enters the damaged-enemy roster as an in-tick hit does (P16).
+- [ ] A connected client running a raw-tag `applyDamage` evaluates no policy (regression guard).
+
 **Ticks and credit**
 - [ ] A hit that applies `burning` produces its first tick `tickMs` later and then every `tickMs`; each tick drains layers before health by the type's matrix and restarts layer recharge delays.
 - [ ] A lethal tick latches death on its own tick and credits the applier: the contributor ledger names the applying hit's source id and the kill report credits the applier's player.
 - [ ] A tick runs impact policies with `impact.source` as the applier and `impact.status(burning)` true; an `impact.source.grantHealth` row on a burn tick heals the applier; a non-tick hit reads `impact.status(burning)` false.
 - [ ] Applier despawned before a tick: the tick still lands, credits the source id, and source grants skip.
+- [ ] A rocket kill and a due `burning` tick on one tick: the burn tick deals nothing and runs no policy, so the rocket's death policy alone plays (P6).
+- [ ] A `wet` (`damage: 0`) instance ticks without entering the chokepoint: no impact policy, no layer delay restart, no contributor; `hasStatus` and presence see it (P24).
+- [ ] A `burning` tick on an enemy updates its damage memory toward the applier, so a damage-recency guard holds and retaliation can select the applier.
 
 **Stacking, timing and lifecycle edges**
-- [ ] Eight pellets from one applier on one tick add one stack; two appliers on one tick create two instances that tick and credit independently.
-- [ ] `"refresh"` resets time left without moving the tick phase; `"stack"` caps at `maxStacks` and multiplies damage; `"ignore"` leaves a live instance unchanged.
+- [ ] Eight pellets from one applier on one tick add one stack; two appliers on one tick create two instances that tick, stack to `maxStacks` and credit independently.
+- [ ] `"refresh"` resets time left without moving the tick phase; `"stack"` caps at `maxStacks` and multiplies damage; a `"stack"` application at `maxStacks` adds nothing and still resets time left.
+- [ ] `tickMs` and `durationMs` round up to whole fixed ticks: an unrefreshed `burning` (500 / 3000) lands exactly six ticks, the last on its expiry tick; at 60 Hz `tickMs` 16 rejects load and 17 loads (P5).
 - [ ] A tick due on the expiry tick lands once, and no tick follows; a weapon hit that refreshes or stacks the instance on that same tick keeps it, lands that tick's damage at the phase it already had, and ticks on; an instance with `durationMs` omitted ticks until cleared (P2).
 - [ ] An unguarded `"refresh"` policy that reapplies `burning` from its own tick on the expiry tick keeps that instance, with its tick phase unmoved, and the next tick follows one `tickMs` later (P1).
 - [ ] Two appliers' `burning` instances both due on the lethal tick land in instance creation order; the first credits its applier's player (P7).
 - [ ] A tick's own policy changes the instance set at once: a `burning` tick that clears `burning` leaves none, one that applies `corroding` leaves a `corroding` instance that does not tick this tick, and a `corroding` instance cleared by an earlier tick's policy on the same tick does not land (P8).
+- [ ] Two `"stack"` applications from UI presses in two frames with no tick between add two stacks, each counted on the next fixed tick, and the instance's first tick lands `tickMs` after that tick (P10).
 - [ ] `durationMs` below `tickMs` or above 600000, `tickMs` below one fixed tick or above 60000, `damage` outside [0, 1e6], `maxStacks` outside [1, 64], a 65th status, an unknown key and a bad handle each reject load naming the key path; the boundary values load.
-- [ ] A status with `type` omitted ticks as the mod's `defaultDamageType`, or untyped ×1 when the mod declares none; a `"stack"` application at `maxStacks` adds nothing and still resets time left.
+- [ ] A status with `type` omitted ticks as the mod's `defaultDamageType`, or untyped ×1 when the mod declares none.
 - [ ] Clear removes every applier's instance. A trigger-bound `clearStatus` on the tick an instance is due removes it before its tick lands; a clear from a player event or a frame drain after that tick leaves the tick landed (P9).
 - [ ] Death latch (the in-tick sweep and the post-tick remote-hit sweep), respawn, level change, same-map restart, rejoin and save each leave no instance; an entity at health ≤ 0 refuses a new instance; a deferred `setHealth` recovery after the latch starts with none, while an immediate recovery before the sweep keeps its instances (P11, P12).
 - [ ] A 17th instance replaces the one with the least time left; among equals the oldest goes; an until-cleared instance counts as the most time left; the new instance always enters (P18).
 - [ ] Hot reload keeps live instances and their next due tick, drops a removed kind, and applies a changed `damage` or `type` from the next tick; a changed `tickMs` spaces the ticks after that next one; a changed `durationMs` leaves time left unchanged until the next application; a lowered `maxStacks` clamps stacks on the next tick (P19).
 
-**Script damage and policies**
-- [ ] An enemy killed by script `applyDamage` from a trigger, a player event, a crossing, a `wait` tail, a UI press and `levelLoad` each runs its death policy, despawns and reports the kill in the same frames an in-tick kill does; a `levelLoad` kill evaluates on the reveal frame against that level's policies (P15).
-- [ ] A script impact that lands before a weapon hit in the same tick evaluates before that hit's impact, in landing order, and is not dropped.
-- [ ] A connected client running a raw-tag `applyDamage` evaluates no policy (regression guard).
-- [ ] A frame-end policy on script damage to the local pawn reads `player.health` as post-damage health; an `impact.source.grantHealth` row on script damage grants nothing; a script-damaged enemy enters the damaged-enemy roster as an in-tick hit does (P16).
-
 **Fluids**
 - [ ] A player wading ankle-deep in `lava` takes `scalding` ticks; after leaving, exactly one more tick lands within `tickMs`, then none; standing exactly on the surface takes none; a fluid without `status` applies none; an enemy in the fluid takes none (P4).
 - [ ] A remote pawn in `lava` with no command for 30 ticks keeps taking `scalding` ticks; a pawn respawned out of lava takes none before its next command (P17).
-- [ ] The host's replicated fluid table carries name and viscosity only; a fluid `status` leaves the tuning payload unchanged.
+- [ ] The host's replicated fluid table carries name and viscosity only; a fluid `status` leaves the replicated movement tuning unchanged.
 
 **Reads, presentation and co-op**
-- [ ] `hasStatus` holds in an impact policy and a brain guard while any instance is live and not after it ends; `player.status.burning` reads the most time left and is absent when none.
-- [ ] Each snapshot's presence bits equal host status presence at the tick it serializes, so presence reaches a connected client within one snapshot of application and clears within one snapshot of the last instance ending; a status live for less than one snapshot interval may never show (P21). A client that declares the same statuses in a different order shows the host's status by name; a host status the client does not declare shows nothing; neither changes the compatibility digest, and a host hot reload that adds a status keeps every client participating.
+- [ ] `hasStatus` holds in an impact policy and a brain guard while any instance is live and not after it ends; `player.status.burning` is true while the local pawn has a live `burning` instance, on the host and on a connected client, and false after it ends.
+- [ ] Each snapshot's presence bits equal host status presence at the tick it serializes, so presence reaches a connected client within one snapshot of application and clears within one snapshot of the last instance ending; a status live for less than one snapshot interval may never show (P21).
+- [ ] A client that declares the same statuses in a different order shows the host's status by name; a host status the client does not declare shows nothing; declaring statuses changes neither the compatibility digest nor the state-schema fingerprint, and a host hot reload that adds a status keeps every client participating with its replicated state (P20).
 - [ ] A client joining while an enemy burns shows nothing for presence that arrives before its status name table installs, then shows the burn from the first snapshot after install (P22).
-- [ ] A `burning` tick on an enemy updates its damage memory toward the applier, so a damage-recency guard holds and retaliation can select the applier.
+- [ ] A peer one `WIRE_VERSION` behind is refused at handshake, a snapshot one `SNAPSHOT_VERSION` behind is rejected, and the tuning payload epoch advances.
 - [ ] A connected client creates no instance, lands no tick and applies no `applyStatus` or `clearStatus` from a UI press or crossing; its health moves only by snapshot.
 - [ ] `players().applyStatus` skips a subject without health and warns.
 - [ ] The scripting-reference recipe for an igniting policy guards with `impact.status(h)`, and its fixture shows that an unguarded `"refresh"` policy keeps one burn alive while a guarded one lets it expire.
-- [ ] The Scripting surface example installs as a `content/dev` script and its fixture passes in TS and Luau.
+- [ ] The Scripting surface example installs as a `content/dev` mod in TS and Luau, type-checks with `tsc --noEmit` including `emitter()`, and its fixture shows `burning`, `scalding`, `corroding` and `wet` behaving as declared.
 
 **Bounds**
-- [ ] Stress: 1024 entities each holding four live instances tick within the plan of record's measured budget with zero heap allocation across the status stage (`testing_guide.md` §Resource bounds); an entity with no instances costs nothing.
+- [ ] Stress: 1024 entities each holding four live instances; the status stage's own bookkeeping allocates nothing across the run, the stage reports as its own CPU stage, and the plan of record reports per-tick cost with ticks routed through the chokepoint and policies (`testing_guide.md` §Resource bounds); an entity with no instances costs nothing.
 
 ### Manual
-- [ ] Single player: ignite enemies with the dev incendiary weapon; burning embers and loop sound follow each one, stop on expiry, and a burn kill plays the authored death.
-- [ ] Walk into dev lava: health drops while in it and stops just after leaving; the HUD shows the status.
-- [ ] Co-op, two peers at the dev lag profile: the client sees host-ignited enemies and a burning teammate with embers and sound; the client's own burn shows on its HUD; kill credit goes to the player who ignited.
+- [ ] Single player: ignite enemies with the dev incendiary weapon; embers follow each one with a sound every tick, stop on expiry, and a burn kill plays the authored death.
+- [ ] Walk into dev lava: it sizzles every tick, health drops while in it and stops just after leaving; the HUD shows the status.
+- [ ] A dev trigger trap kills an enemy: the authored death plays and the corpse despawns.
+- [ ] Co-op, two peers at the dev lag profile: the client sees host-ignited enemies and a burning teammate with embers and tick sounds; the client's own burn shows on its HUD; kill credit goes to the player who ignited.
 
 ## Path
-- **Precedents.** Defense layers are the component template: `DefenseLayersComponent`, `recharge_defense_layers`, `for_each_defense_layers_lent`, the spawn, respawn, carry (`CarriedField` ledger in `crates/netcode/src/seat.rs`) and hot-reload hooks (`plan_defense_layers_refresh`). Reads follow `defense(h)` in each scope with Bool typing from `impact.type(h)` and `attackTurnHeld`. Effects follow `grantLayer` from SDK lowering to `bind_effect` and `apply_effect`. The handle kind joins `HandleRef`. Owner-private slots follow `player.defense.<name>` (`replace_player_defense_slots`, the client `Unset` arm). The replicated payload follows ghost links' entity component payload. `research.md` maps every file.
-- **Script-impact evaluation.** The in-tick takers (`evaluate_pending_in_registry[_with_overlay_sink]`) take the whole queue; make them evaluate script impacts instead of skipping them, and turn `discard_app_drain_pending` into a host-only evaluation that republishes pawn health. `research.md` §Script damage sites lists every site and its role.
-- **Fluid identity.** The movement resolve drops the fluid index for a wading pawn; carry it out of the tick-start resolve beside immersion so the status stage reads it.
-- **Shape and rival.** Chosen: the mod applies statuses through `applyStatus` in impact policies, reactions and fluids. Rival: the predecessor's sketch, `defineDamageType(matrix, { inflicts })`, where the engine applies a status on every hit of that type. Rejected because a policy can gate on anything the impact scope reads — target tag, `broke`, health, the tick-of read — while `inflicts` fixes one rule per type and would still need policies for every other case; it also builds the status-type cycle the predecessor flagged, since a status names its type. The cost of the chosen shape is that a naive "fire applies burning" policy reapplies itself from its own ticks; the `impact.status(h)` read is its guard, and the docs recipe shows it.
-- **First slice.** Script-damage policy evaluation. It is independent of statuses — status ticks and fluid applications are in-tick hits that never pass through it — needs no wire change, and fixes the live zero-health-corpse defect, so it lands as its own commit before any status work.
-- **Second slice.** `burning` applied by an impact policy, ticking through the chokepoint and killing with credit, single player. It falsifies the in-tick tick-and-credit premise before the surface, fluids, presentation and wire work.
+- **Slice order** follows distance from PostRetro's core: script damage, then fluid hazards, then elemental application.
+  - **First slice: script-damage evaluation.** Independent of statuses — status ticks and fluid applications are in-tick hits — with no wire change, it fixes the live zero-health-corpse defect and lands as its own commit. The in-tick takers (`evaluate_pending_in_registry[_with_overlay_sink]`) take the whole queue; make them evaluate script impacts instead of skipping them, add the sweep-adjacent and post-player-event host evaluation points, and turn `discard_app_drain_pending` into a host-only evaluation that republishes pawn health first, in both the frame loop and the headless driver (`observability/driver.rs`). `research.md` §Script damage sites lists every site and its role.
+  - **Second slice: status engine with `scalding` lava,** single player. The movement resolve drops the fluid index for a wading pawn; carry it out of the tick-start resolve beside immersion so the status stage reads it.
+  - **Third slice: `burning` applied by an impact policy,** ticking and killing with applier credit. `ImpactDispatch` carries the damager but not the source id today, so add the source id there for `applyStatus` to record.
+  - Then the surface, reads, presentation and wire work.
+- **Precedents.** Defense layers are the component template: `DefenseLayersComponent`, `recharge_defense_layers`, `for_each_defense_layers_lent` (it lends only `&EntityRegistry`, so a stage that runs damage and policies mid-walk needs its own shape), and the spawn, respawn and hot-reload hooks (`plan_defense_layers_refresh`). Reads follow `defense(h)` in each scope with Bool typing from `impact.type(h)` and `attackTurnHeld`. Effects follow `grantLayer` from SDK lowering to `bind_effect` and `apply_effect`. The handle kind joins `HandleRef`. The replicated payload follows ghost links' entity component payload; the name table follows the fluid and life-state tables in the tuning payload. The client-derived `player.status.<name>` read is new: no existing player read derives from replicated entity state rather than a slot. `research.md` maps every file.
+- **Shape and rival.** Chosen: the mod applies statuses through `applyStatus` in impact policies, reactions and fluids. Rival: the predecessor's sketch, `defineDamageType(matrix, { inflicts })`, where the engine applies a status on every hit of that type. Rejected because a policy can gate on anything the impact scope reads — target tag, `broke`, health, other statuses, the tick-of read — while `inflicts` fixes one rule per type and would still need policies for every other case; it also builds the status-type cycle the predecessor flagged, since a status names its type. The cost of the chosen shape is that a naive "fire applies burning" policy reapplies itself from its own ticks; the `impact.status(h)` read is its guard, and the docs recipe shows it.
 - Files past ~800 lines this extends (`crates/sim/src/impact_policy.rs`, `crates/sim/src/sim/mod.rs`, `sdk/lib/data_script.ts`): split first, behavior-preserving, own commit.
 
 ## Open questions
-- Exact placement of the attached emitter (entity origin vs. mesh center) and the sound's attenuation — **delegated**: the executor decides and reports it in the plan of record.
+- Exact placement of the attached emitter (entity origin vs. mesh center) and the tick sound's attenuation — **delegated**: the executor decides and reports it in the plan of record.
 - Whether status presence rides every replicated entity or only health-bearing ones — **delegated**.
 
 ### Boundary inventory
@@ -142,16 +165,17 @@ Luau mirrors every name, passing the status name explicitly as it does for damag
 |---|---|---|---|---|---|
 | status handle | `HandleRef::Status` | `{ "kind": "status", "name" }` | `defineStatus(opts)` / `defineStatus(name, opts)` | `Postretro.defineStatus(name, opts)` | n/a |
 | manifest list | manifest `statuses` | `"statuses"` | `statuses` | `statuses` | n/a |
+| presentation | status descriptor | `"presentation": { "emitter", "tickSound" }` | `presentation: { emitter, tickSound }` | `presentation = { emitter, tickSound }` | n/a |
 | fluid field | `FluidDescriptor.status` | `"status"` (handle) | `status` | `status` | n/a |
 | has-status read | entity/brain input | `@status.<name>` | `hasStatus(h)` | `hasStatus(h)` | n/a |
 | tick-of read | impact input | `@impact.status.<name>` | `impact.status(h)` | `impact.status(h)` | n/a |
 | effects / verbs | impact effect + reaction primitive | `"applyStatus"`, `"clearStatus"`, args `{ status }` | `.applyStatus(h)`, `.clearStatus(h)` | `:applyStatus(h)`, `:clearStatus(h)` | n/a |
-| HUD slot | owner-private slot family | `player.status.<name>` | `player.status.<name>` | `player.status.<name>` | n/a |
+| HUD read | client-derived Bool read | `player.status.<name>` | `player.status.<name>` | `player.status.<name>` | n/a |
 | source ids | ledger `source_id` | `fluid.<name>`, `script.applyStatus` | n/a | n/a | n/a |
 | presence payload | new component payload | `status_presence` | n/a | n/a | n/a |
-| host status name table | tuning payload entry | `status_names` | n/a | n/a | n/a |
+| host status name table | tuning payload entry | `statusNames` | n/a | n/a | n/a |
 
 Both TS and Luau ship.
 
 ### Wire format
-`status_presence` is one entity component payload in bitcode, as `WireMeshAnimationState` is: a single `u64`, bit *i* set while any instance of the *i*-th declared status is live. An entity with no live status sends no payload; removal follows the existing component-removal path. The host's status name table — names in declaration order, one length-prefixed UTF-8 string each — rides the tuning payload beside `FluidMovementTable`; bit *i* names the host's *i*-th entry, and an empty table means no statuses.
+`status_presence` is one entity component payload in bitcode, as `WireMeshAnimationState` is: a single `u64`, bit *i* set while any instance of the host's *i*-th declared status is live. An entity with no live status sends no payload; removal follows the existing component-removal path. The host's status name table rides the JSON tuning payload as `statusNames`, an array of strings in declaration order, beside the fluid table; an empty array means no statuses. Adding it advances the tuning payload epoch, as the fluid and life-state tables did. Bit *i* names the host's *i*-th entry.

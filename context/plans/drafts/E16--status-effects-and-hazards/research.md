@@ -57,9 +57,12 @@ Read at e7438238. Findings that inform the brief; the brief's Decisions conclude
 
 ## Lifecycle and replication
 - Death latch (`HealthComponent.death_handled`) clears nothing else today; recovery via `set_health_absolute` resets latch, credit and ledger.
-- Carry: `CarriedState` / `harvest_pawn_inner` ledger is exhaustive and wildcard-free, so statuses must be recorded as skipped. Save format `LoadoutRecord` and wire `CarriedLoadoutWire` are untouched.
+- Carry: `CarriedField` is exhaustive only over `CarriedState` fields (`crates/netcode/src/seat.rs`); statuses never enter `CarriedState`, so there is nothing to mark skipped. Save format `LoadoutRecord` and wire `CarriedLoadoutWire` are untouched.
 - Enemy overlay roster is capped, damage-driven and expiring: wrong home for persistent presence. `WireMeshAnimationState` reaches only animated meshes; `WirePlayerMovementState` only pawns. Ghost links added an entity component payload and bumped WIRE and SNAPSHOT; that is the precedent.
-- No entity-attached condition-held presentation exists. `BillboardEmitter` toggles by tag; looping `SoundRequest` with an entity anchor exists locally. Without attached presentation, replicated presence has no reader, so the brief ships both.
+- No entity-attached condition-held presentation exists. `BillboardEmitter` toggles by tag. The audio core drops a looping request that carries an anchor (`crates/audio/src/audio_core.rs`, pinned by a spatial test), so status sound is a one-shot per tick, which anchored requests allow. Without attached presentation, replicated presence has no reader, so the brief ships both.
+- Owner-private per-name slots enter the state-schema fingerprint (`compute_fingerprint`, `crates/netcode/src/state_slots.rs`); a fingerprint mismatch rejects whole state batches, health included (`networking.md` §Version gates). `player.status.<name>` therefore derives from replicated presence instead of being a slot, and carries no time left.
+- The tuning payload is JSON with its own epoch (`TUNING_PAYLOAD_EPOCH`); the fluid table and the life-state names each advanced it.
+- `emitter()` is exported at runtime (`sdk/lib/index.ts`) and declared in Luau, but missing from `sdk/types/postretro.d.ts`.
 - `mod_compatibility_digest` covers factions and trigger lanes only, which clients simulate against. A client uses status presence for presentation only, so it follows the fluid pattern instead: the host sends a name table and the client maps by name (`networking.md`: hash only what cannot be replicated). Digest gating would hold a client below participation over a cosmetic difference and demote every client on a host hot reload that adds a status.
 
 ## Instance cap
@@ -70,25 +73,31 @@ Read at e7438238. Findings that inform the brief; the brief's Decisions conclude
 |---|---|---|---|
 | P1 | Instance's own tick on its expiry tick; its policy reapplies it (`"refresh"`/`"stack"`) | Tick lands → its policies apply → expiry judged on the time left they leave | Instance survives with phase unmoved; next tick one `tickMs` later |
 | P2 | Weapon hit refreshes or stacks an instance on its expiry tick | Weapons (apply) → status stage (due tick, expiry) | Due tick lands at its old phase; instance continues |
-| P3 | `"ignore"` application on the instance's last tick | Application sees live instance → ignored → instance ends | Application lost; next application creates a new instance |
 | P4 | Fluid application vs due ticks on one tick | Status stage: this tick's fluid applications first, then due ticks and expiry | Re-entering lava on a lingering instance's last tick keeps it and its phase |
+| P5 | Quantization | `tickMs` and `durationMs` each round up to whole fixed ticks; counts follow ticks | `burning` 500/3000 lands 6 ticks; `tickMs` 16 rejects, 17 loads at 60 Hz |
+| P6 | Due tick on a target at health ≤ 0 before the latch | Status stage before sweep | Skipped: no chokepoint, no impact, no policy; the sweep clears the instance |
 | P7 | Several instances on one entity due the same tick | Creation order | First lethal tick credits its applier |
 | P8 | A tick's policy applies or clears statuses during the stage | Apply and clear take effect at once; each due tick re-checks its instance is live at its turn | Cleared instance does not land; a new instance does not tick this tick; dedupe counts it |
 | P9 | Clear and due tick on one tick | Trigger-bound clear (before stage) vs player-event or frame-drain clear (after) | Before: no tick. After: tick landed |
+| P10 | Application outside a tick (UI press, `wait` tail, frame-end policy, zero-tick frame) | Latched to the next fixed tick, applied before that tick's status stage | Two UI presses across tickless frames add two stacks; phase starts at that tick |
 | P11 | Lethal remote hit that waited on fire authorization | Post-tick remote-hit sweep latches → clears statuses → next tick's stage | No instance ticks after that latch |
 | P12 | Lethal hit and immediate `setHealth` recovery on one tick | Recovery before sweep: latch never sets | Instances survive; a recovery after the latch starts with none |
+| P13 | Script impact landing in a tick before its sweep, with or without a later in-tick hit | Host evaluation point just before each death sweep | Evaluates before that sweep either way |
+| P14 | Script impact from a player event after tick N; tick N+1 in the same frame or the next | Host evaluation point after each tick's player-event pass | Evaluates before tick N+1's sweep, independent of frame packing |
 | P15 | Script impact queued by `levelLoad` | Queued at install; level unload clears the queue | Evaluates at the reveal frame's first evaluation point against that level's policies; an abandoned load drops it |
 | P16 | Frame-end script-impact evaluation | Health republish → evaluate in landing order → overlay sink → removal pass, in both the frame loop and the headless driver (`observability/driver.rs`), which has its own removal pass | Policies read post-damage `player.health`; enemy enters damaged-enemy roster |
 | P17 | Remote pawn with no command this tick; respawn | Carried fluid persists until the next resolve; respawn resets it with immersion | Stalled pawn in lava keeps burning; respawned pawn out of lava takes none |
 | P18 | 17th instance; ties; until-cleared | Least time left goes; ties → oldest; until-cleared ranks most | New instance always enters |
 | P19 | Hot reload changes `tickMs`, `durationMs`, `maxStacks` | Next due tick kept; later spacing uses new `tickMs`; time left unchanged until next application; stacks clamp next tick | No tick skipped or doubled at reload |
+| P20 | Host reload reorders statuses; name table arrives after a snapshot | Presence mapped by the last installed table | Brief cosmetic mis-map, accepted; no revision stamp |
 | P21 | Status live less than one snapshot interval | Presence sampled at serialization | May never show on a client |
 | P22 | Client joins mid-burn | Presence before name table install | Shows nothing, then shows from first snapshot after install |
 | P23 | Applier rejoins (new pawn id) and reapplies | New id → new applier | Old instance credits its source id only; new instance is separate |
+| P24 | `damage: 0` (marker) status tick | Never enters the chokepoint | No impact, policy, layer restamp or contributor; instance stays live for reads and presence |
 
-Ids P5, P6, P10, P13, P14, P20, P24 and P25 are reserved for orderings awaiting owner decisions (review 1).
 
 ## Roadmap updates at promotion
+- E12: add an entity-attached looping sound (the audio core refuses anchored loops today); status presentation can adopt it later.
 - E16 Combat Feedback & Economy: replace "DoT / environmental death policy" with this brief; mark `onDamage` per-attack aggregate demand-gated, pointing shot-id threading to `drafts/E10--stealth-opener`.
 - E16 Damage & Defenses: "status effects / DoT" points to this brief.
 - Fix the dual-wield line's citation of an "activation-trigger fork" that `weapon-model.md` §9 does not contain.

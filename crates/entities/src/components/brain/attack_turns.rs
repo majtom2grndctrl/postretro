@@ -101,6 +101,8 @@ pub struct HeldTurn {
     /// The attack's index in the brain graph's `attacks` (name order).
     pub attack: u16,
     pub target: EntityId,
+    /// `target`'s life counter when stamped: its respawn ends this.
+    pub target_life: u32,
     /// The pool the turn counts in now: its holder's current pool.
     pub pool: AttackPoolId,
     /// The draws resolved at grant.
@@ -122,6 +124,8 @@ pub struct TurnRequest {
     /// a mark's lifetime, rather than by a ready fire step.
     pub marked: bool,
     pub target: EntityId,
+    /// `target`'s life counter when stamped: its respawn ends this.
+    pub target_life: u32,
     pub pool: AttackPoolId,
 }
 
@@ -131,6 +135,8 @@ pub struct TurnRequest {
 pub struct WaitClock {
     pub since_tick: u64,
     pub target: EntityId,
+    /// `target`'s life counter when stamped: its respawn ends this.
+    pub target_life: u32,
 }
 
 /// Every attack-turn fact one brain carries. Transient: a restored brain
@@ -140,9 +146,18 @@ pub struct AttackTurnState {
     held: [Option<HeldTurn>; MAX_HELD_TURNS + MAX_UNDRAWN_TURNS],
     pub request: Option<TurnRequest>,
     pub wait: Option<WaitClock>,
-    /// The last AI tick this brain was evaluated on. A gap means it left the
-    /// AI set, which drops every turn, request and clock.
+    /// The last AI tick this brain was evaluated on. A gap with no scheduled
+    /// skip means it left the AI set, which drops every turn, request and
+    /// clock.
     pub seen_tick: u64,
+    /// Ticks between this brain's latest decide and the one before: 1 when it
+    /// decides every tick, more on the decide cadence or after a scheduled
+    /// skip. A rest's queued row opens on a turn granted since its previous
+    /// decide. 0 reads as 1.
+    pub decide_span: u32,
+    /// The AI tick of this brain's latest decide. Between decides a turn
+    /// granted since then waits for the next decide to open its row.
+    pub last_decide_tick: u64,
 }
 
 impl AttackTurnState {
@@ -201,8 +216,12 @@ impl AttackTurnState {
     /// Drop every turn, the request and the wait clock.
     pub fn clear(&mut self) {
         let seen_tick = self.seen_tick;
+        let decide_span = self.decide_span;
+        let last_decide_tick = self.last_decide_tick;
         *self = Self {
             seen_tick,
+            decide_span,
+            last_decide_tick,
             ..Self::default()
         };
     }

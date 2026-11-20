@@ -32,7 +32,7 @@ pub(crate) fn apply_update_npc_state_to_brain(
         return;
     };
     if brain.aggro_armed != aggro {
-        brain.aggro_armed = aggro;
+        brain.set_aggro_armed(aggro);
         let _ = registry.set_component(entity, brain);
     }
 }
@@ -93,6 +93,7 @@ mod tests {
             .set_component(
                 brain,
                 BrainComponent::from_graph(&postretro_foundation::BehaviorGraphDescriptor {
+                    ai: Default::default(),
                     knockback: Default::default(),
                     envelope: postretro_foundation::BehaviorGraphEnvelope {
                         initial: "idle".to_string(),
@@ -146,5 +147,53 @@ mod tests {
                 .aggro_armed
         );
         assert!(registry.get_component::<BrainComponent>(non_brain).is_err());
+    }
+
+    // AC 7 (P41, P34): the gate empties its NPC's awareness meters at the
+    // close itself, even when it reopens before the NPC next runs.
+    #[test]
+    fn closing_the_gate_empties_the_awareness_meters_at_the_close() {
+        let graph: postretro_foundation::BehaviorGraphDescriptor =
+            serde_json::from_value(serde_json::json!({
+                "initial": "idle",
+                "moveSpeed": 1.0,
+                "activities": { "idle": { "animation": "idle", "motion": "hold" } },
+                "transitions": {},
+            }))
+            .unwrap();
+        let mut registry = EntityRegistry::new();
+        let player = registry.spawn(Transform::default());
+        let npc = registry.spawn(Transform::default());
+        let mut brain = BrainComponent::from_graph(&graph);
+        brain.awareness.record_hit(player, 5.0, 0);
+        registry.set_component(npc, brain).unwrap();
+        let mut reactions = ReactionPrimitiveRegistry::new();
+        register_npc_state_reaction_primitives(&mut reactions);
+        let meters = |registry: &EntityRegistry| {
+            registry
+                .get_component::<BrainComponent>(npc)
+                .unwrap()
+                .awareness
+        };
+        reactions
+            .dispatch(
+                "updateNpcState",
+                &mut registry,
+                &[npc],
+                &serde_json::json!({ "aggro": true }),
+            )
+            .unwrap();
+        assert_eq!(meters(&registry).value(player), 1.0, "opening keeps them");
+        for aggro in [false, true] {
+            reactions
+                .dispatch(
+                    "updateNpcState",
+                    &mut registry,
+                    &[npc],
+                    &serde_json::json!({ "aggro": aggro }),
+                )
+                .unwrap();
+            assert!(meters(&registry).is_empty(), "aggro {aggro}");
+        }
     }
 }

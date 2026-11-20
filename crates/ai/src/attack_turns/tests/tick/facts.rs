@@ -42,7 +42,7 @@ fn has_attack_turn_reads_the_previous_ticks_turns() {
         vec![("slam", contact(1.0, 100_000.0))],
     );
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, player_spot());
     let enemy = spawn_at(&mut reg, 0, &graph, "strike");
 
@@ -93,7 +93,7 @@ fn attack_turn_held_names_one_attack() {
         ],
     );
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     set_limits(&mut runtime, &[3, 2]);
     spawn_player(&mut reg, player_spot());
     let enemy = spawn_at(&mut reg, 0, &graph, "shoot");
@@ -124,7 +124,7 @@ fn attack_turn_free_reads_target_and_own_turns() {
         attacks(),
     );
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let lonely = spawn_at(&mut reg, 0, &probe, "probe");
     for _ in 0..5 {
         tick(&mut reg, &mut runtime);
@@ -156,7 +156,7 @@ fn attack_turn_free_reads_target_and_own_turns() {
         attacks(),
     );
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     set_limits(&mut runtime, &[3, 2]);
     spawn_player(&mut reg, player_spot());
     let enemy = spawn_at(&mut reg, 0, &graph, "strike");
@@ -194,7 +194,7 @@ fn attack_turn_free_leaves_out_the_readers_own_request() {
         ],
     );
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, player_spot());
     let x = spawn_at(&mut reg, 0, &striker(100_000.0), "strike");
     // The line forms first; the readers' guards start on the next tick.

@@ -26,7 +26,7 @@ fn held_world_participation_suspends_mixed_actor_and_retains_private_execution()
         .unwrap(),
     );
     let mut registry = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let holder = spawn_player(&mut registry, Vec3::X);
     let item = spawn_enemy(
         &mut registry,
@@ -163,7 +163,7 @@ fn held_world_participation_removes_retained_and_fresh_targets_until_drop() {
     registry.set_component(actor, brain).unwrap();
     hold(&mut registry, holder, target);
     assert!(target_candidate(&registry, target, Vec3::ZERO).is_none());
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     assert!(run_ai_tick(&mut registry, &mut runtime, 0.016).is_empty());
     assert_eq!(
         registry
@@ -222,7 +222,7 @@ fn held_world_participation_rechecks_later_actor_and_target_after_contact_callba
         let mut callbacks = 0;
         let result = run_ai_tick_with_navigation_and_impact(
             &mut registry,
-            &mut AiRuntime::new(),
+            &mut AiRuntime::deciding_every_tick(),
             0.016,
             AiTickInputs {
                 mover_nav: crate::nav::MoverNav::none(),
@@ -233,6 +233,7 @@ fn held_world_participation_rechecks_later_actor_and_target_after_contact_callba
                 factions: &FactionRegistry::default(),
                 faction_sentiment: &RefCell::new(FactionSentimentState::default()),
                 clips: None,
+                schedule: Default::default(),
                 cpu: None,
             },
             |registry| {

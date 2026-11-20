@@ -189,6 +189,7 @@ fn actual_movement_ai_mover_and_death_producers_select_frame_origins() {
         },
     };
     let graph = BehaviorGraphDescriptor {
+        ai: Default::default(),
         knockback: Default::default(),
         envelope: BehaviorGraphEnvelope {
             initial: "a".into(),
@@ -234,6 +235,7 @@ fn actual_movement_ai_mover_and_death_producers_select_frame_origins() {
         factions: &factions,
         faction_sentiment: &sentiment,
         clips: None,
+        schedule: Default::default(),
         cpu: None,
     };
     let _ =

@@ -98,8 +98,9 @@ pub enum BehaviorDrawSalt {
 impl BehaviorDrawSalt {
     /// One 64-bit word per salt. The top two bits keep the three kinds apart,
     /// so a spawner ordinal keeps its low 30 bits (below them); a level holds
-    /// far fewer entities than that.
-    const fn word(self) -> u64 {
+    /// far fewer entities than that. Also the NPC's schedule identity, which
+    /// staggers its decide and dormant phases.
+    pub const fn word(self) -> u64 {
         match self {
             BehaviorDrawSalt::Placement(ordinal) => ordinal as u64,
             BehaviorDrawSalt::Spawned { spawner, count } => {

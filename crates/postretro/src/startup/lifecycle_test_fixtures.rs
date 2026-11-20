@@ -56,6 +56,7 @@ pub(crate) fn test_app() -> App {
         window_modes: crate::app::window_modes::WindowModes::new(false),
         level: None,
         nav_graph: None,
+        npc_scheduler: None,
         map_path: None,
         content_root: PathBuf::from("content/dev"),
         baked_root: None,

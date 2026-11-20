@@ -48,6 +48,7 @@ fn level_with_gravity_volume(name: &str, level_gravity: f32, min: Vec3) -> Level
     let mut world = level_world(name, 1);
     world.environment_volumes = EnvironmentVolumesSection {
         level_gravity,
+        ai_wake_lead: None,
         volumes: vec![EnvironmentVolumeRecord {
             source_entity: 1,
             priority: 0,
@@ -220,6 +221,7 @@ fn level_install_seeds_script_gravity_from_the_environment_header() {
     let mut world = level_world("initial-gravity-only", 1);
     world.environment_volumes = EnvironmentVolumesSection {
         level_gravity: 4.0,
+        ai_wake_lead: None,
         volumes: Vec::new(),
     };
     app.install_level_payload(world, PathBuf::from("baked"))
@@ -313,6 +315,7 @@ fn level_with_fluid_volume(source_entity: u32, fluid: &str) -> LevelWorld {
     let mut world = level_world("fluid", 1);
     world.environment_volumes = EnvironmentVolumesSection {
         level_gravity: LEVEL_GRAVITY,
+        ai_wake_lead: None,
         volumes: vec![EnvironmentVolumeRecord {
             source_entity,
             priority: 0,

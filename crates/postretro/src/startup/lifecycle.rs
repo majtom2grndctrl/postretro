@@ -84,6 +84,21 @@ mod lifecycle_world_handles;
 #[cfg(test)]
 #[path = "save_verbs_tests.rs"]
 mod save_verbs_tests;
+#[cfg(test)]
+#[path = "seam_checkpoint_tests.rs"]
+mod seam_checkpoint_tests;
+#[cfg(test)]
+#[path = "seam_coop_tests.rs"]
+mod seam_coop_tests;
+#[cfg(test)]
+#[path = "seam_install_tests.rs"]
+mod seam_install_tests;
+#[cfg(test)]
+#[path = "seam_level_change_tests.rs"]
+mod seam_level_change_tests;
+#[cfg(test)]
+#[path = "seam_test_fixtures.rs"]
+mod seam_test_fixtures;
 #[path = "session_entry.rs"]
 pub(crate) mod session_entry;
 #[cfg(test)]

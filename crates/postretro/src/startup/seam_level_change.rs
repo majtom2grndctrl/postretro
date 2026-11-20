@@ -177,6 +177,7 @@ impl App {
                     )
                 })
             });
+        let mut released_start = false;
         if let (Some(pawn), Some((seam, motion))) = (local, arrival) {
             match crate::seam_crossing::arrive_pawn(
                 &mut registry,
@@ -189,6 +190,13 @@ impl App {
                 Ok((index, pose)) => {
                     first_spawn = Some((pose.body, Vec3::new(pose.view_pitch, pose.view_yaw, 0.0)));
                     self.seam_stage.queue_arrival(index, pawn);
+                    // An arrival holds no player start: the one this pawn
+                    // spawned on is free for joiners (pin P29).
+                    if let Some(seats) = session.seat_table.as_mut() {
+                        seats.release_placement(local_seat);
+                        seats.release_level_spawn_placement(pawn);
+                    }
+                    released_start = true;
                 }
                 Err(fallback) => crate::seam_crossing::warn_fallback(&seam, fallback, "the host"),
             }
@@ -225,6 +233,10 @@ impl App {
             }
         }
         self.spawn_poses.set_seam_offers(offers);
+        if released_start {
+            // Respawn's reservations no longer name seat 0's start.
+            self.refresh_respawn_placements();
+        }
         first_spawn
     }
 }

@@ -683,6 +683,12 @@ impl SeatTable {
         self.level_spawn_placements.insert(pawn, placement);
     }
 
+    /// Forget the spawn an install-time pawn took: it moved on to a pose no
+    /// placement backs (a seam arrival), so that start is free for joiners.
+    pub fn release_level_spawn_placement(&mut self, pawn: EntityId) {
+        self.level_spawn_placements.remove(&pawn);
+    }
+
     /// Preserve every carryable component currently present on this pawn.
     ///
     /// Lookup is by pawn identity, not current client binding: a same-poll

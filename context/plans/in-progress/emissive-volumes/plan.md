@@ -109,3 +109,7 @@ Automated rows are numbered in brief order. `prl-build` tests run as `--bin prl-
 | 8 | **Gates, content and measurement.** xtask grep gates (A1c, A1e, A12, A15). Extend combat-demo with a pulsing volume and a grey-`_e` lamp; extend the co-op fixture. Ms1, Ms2 and Ms4 runs on the Mac. | integrating executor | 5, 6, 7 | done except runs: xtask `emissive_gates` (A1c, A12, A15; planted-violation proven), combat-demo kept volumeless, demo breathe panel + red/green lamp cycle + README, co-op fixture sign/lamp, `emissive_update`/`emissive_uploaded` CPU rows, `materials.toml` and `Emissive Membership` summary rows, `gen_emissive_stress.py` + 4 stress maps, `measurement.md`; xtask 51 passed; clippy/fmt clean. Ms1, Ms2, Ms4 runs wait for an idle Mac and owner go-ahead |
 
 Tasks 5 and 7 may run concurrently in worktrees once 4 lands (disjoint files: sim/SDK vs render-cpu/frame loop). Task 6 follows 5 on the same primitive types. The integrating executor merges and runs `cargo check` and the focused tests.
+
+## Preflight
+
+At 14c635ed1: fmt ✓; clippy `-D warnings`, plain and `--features postretro/dev-tools` ✓; `cargo test --workspace --no-fail-fast` 16,991 passed, 2 failed, both `postretro --test telemetry_run`, which stalled on a sleeping display overnight and passed 2/2 when re-run with the display awake; `cargo test -p postretro --features dev-tools` ✓; `cargo check --release` ✓; crate-graph ✓; telemetry reducer ✓.

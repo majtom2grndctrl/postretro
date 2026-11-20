@@ -34,6 +34,8 @@ mod status_fluid_tests;
 #[cfg(test)]
 mod status_policy_tests;
 #[cfg(test)]
+mod status_stress_tests;
+#[cfg(test)]
 mod status_tick_tests;
 // Callers hand the CPU timing gate to the tick as a value.
 pub use postretro_stage_timing::TimingGate;

@@ -1,0 +1,8 @@
+# playback_trace fixture
+
+A slice of one real camera-route playback run with an attached Metal System Trace, for `test_playback_trace_reduce.py`.
+
+- **Source:** the first Mac run of camera-route playback. Its full tables live on branch `mac/camera-path-checkpoint` at 159f47d64, not on this branch. The run used campaign-test, a 40-step far-point route (1,746 poses), a 900-frame hold and vsync. Its record is from before the drain, cold and growth columns existed, so it has none of them.
+- **Rows kept:** record rows and the matching `metal-application-intervals` and `metal-gpu-intervals` rows for three frame ranges: hold frames around the trace's attach, the SH upload frames 1136–1139, and the lightmap drain at 1248. The test module's docstring lists the exact trace and record ranges and is the authority for them. There are also 8 `ioreg` polls and the export's TOC summary.
+- **Mark format:** the run predates the site tag, so its marks read `pr-frame <k>`, not `pr-frame <k> <site>`. wgpu relabelled the last command buffer of some submits "(wgpu internal) Signal", so frames 1136, 1139, 1141 and 1247 hold marked drain work the reducer cannot attribute; the tests assert those drains read `missing`. A slice from a newer run carries site tags and has none.
+- **Regenerating:** cut the same table slices from a newer full-record run, then re-derive the hand-checked numbers in `SampleTests`. The reducer joins a drain's GPU rows by command buffer id, so keep every GPU row of each marked drain command buffer, not only the marked encoder's. This slice has no unmarked encoder in a drain command buffer.

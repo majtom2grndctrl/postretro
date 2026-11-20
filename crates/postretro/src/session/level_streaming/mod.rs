@@ -3,7 +3,9 @@
 
 mod drain_cap;
 #[cfg(test)]
-mod drain_cap_tests;
+mod drain_cap_seed_tests;
+#[cfg(test)]
+pub(crate) mod drain_cap_tests;
 mod hooks;
 mod io;
 mod level_data;
@@ -20,6 +22,10 @@ use postretro_level_loader::{LightmapStreamManifest, ShDrainBatch};
 use postretro_stage_timing::StageFrame;
 use postretro_visibility::{VisibilityPath, VisibleCells};
 
+#[cfg(test)]
+pub(crate) use drain_cap::{PLAY_DRAIN_CAP_SEED_ENV, parse_cap_mib};
+#[cfg(any(test, feature = "dev-tools"))]
+pub(crate) use drain_cap::{PlayDrainCap, PlayDrainCapSource};
 pub(crate) use hooks::{PreparedLevelStreaming, prepare_level_streaming};
 pub(crate) use io::{LevelReadIssuer, StreamingRetirement, spawn_decode_pool};
 pub(crate) use level_data::{StreamingLevelData, StreamingLevelParts, decode_streaming_level_data};
@@ -31,7 +37,8 @@ use crate::cpu_timing::StreamingStage;
 use crate::streaming::cell_demand::CellDemand;
 use crate::streaming::cluster_hints::ClusterHints;
 use crate::streaming::issuer_busy::IssuerBusyLog;
-use crate::streaming::shared_drain::SharedDrain;
+use crate::streaming::request::StreamResource;
+use crate::streaming::shared_drain::{ResourceAdmission, SharedDrain};
 
 /// One frame's visibility, as every streamed resource reads it.
 #[derive(Debug, Clone, Copy)]
@@ -54,6 +61,25 @@ pub(crate) struct StreamingFrame<'a> {
     /// This frame's streaming CPU stages; the binary folds them under
     /// `render_prep`.
     pub(crate) cpu: &'a StageFrame<StreamingStage>,
+}
+
+/// What one frame's streaming step admitted against the shared per-drain
+/// budget, per resource: the items each takes into its batch and their
+/// decoded bytes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct DrainAdmission {
+    pub(crate) sh: ResourceAdmission,
+    pub(crate) lightmap: ResourceAdmission,
+}
+
+/// One frame's streaming step: SH's batch for the renderer's pre-compose
+/// drain, and what the step admitted.
+#[derive(Debug, Default)]
+pub(crate) struct LevelStreamingStep {
+    pub(crate) sh_batch: ShDrainBatch,
+    /// Read by camera-route playback's rows.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub(crate) admission: DrainAdmission,
 }
 
 /// Streaming state whose lifetime is one loaded level: the lightmap session,
@@ -90,6 +116,9 @@ pub(crate) struct LevelStreaming {
     /// lever, until set back.
     #[cfg(any(test, feature = "dev-tools"))]
     play_drain_cap_override: Option<std::num::NonZeroU64>,
+    /// Who set the override: the launch seed or a lever.
+    #[cfg(any(test, feature = "dev-tools"))]
+    play_drain_cap_source: PlayDrainCapSource,
 }
 
 impl LevelStreaming {
@@ -115,6 +144,21 @@ impl LevelStreaming {
             "a lightmap session is installed only after retirement"
         );
         self.lightmap = Some(session);
+    }
+
+    /// What the latest drain admitted, per resource; nothing after
+    /// [`Self::clear_admission`].
+    pub(crate) fn admission(&self) -> DrainAdmission {
+        DrainAdmission {
+            sh: self.drain.admission(StreamResource::Sh),
+            lightmap: self.drain.admission(StreamResource::LightmapBlock),
+        }
+    }
+
+    /// A frame that streams nothing admits nothing: the previous drain's
+    /// list must not read as this frame's.
+    pub(crate) fn clear_admission(&mut self) {
+        self.drain.begin();
     }
 
     /// Joins a predecessor's threads once they have all finished.

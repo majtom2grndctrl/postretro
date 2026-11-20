@@ -1,42 +1,57 @@
-//! The residency walks' seeded camera paths: cells, teleports, dwell, heading and eye points.
-//! See: context/lib/rendering_pipeline.md §4
+// The walk's steps resolved to cells, teleports, dwell, heading and eye points.
+// See: context/lib/rendering_pipeline.md §12
 
 use glam::Vec3;
 use postretro_level_loader::LevelWorld;
 
-use super::FRAME_SECONDS;
-use super::paths::{SplitMix64, WALK_SEED, WalkKind, camera_adjacency, walk_path};
+use crate::FRAME_SECONDS;
+use crate::path::{SplitMix64, WALK_SEED, WalkKind, camera_adjacency, walk_path};
 
 /// A brisk boomer-shooter run speed, metres per second.
-pub(super) const RUN_SPEED: f32 = 8.0;
-pub(super) const MAX_DWELL_FRAMES: u32 = 60;
-const EYE_TRIES: usize = 32;
+pub const RUN_SPEED: f32 = 8.0;
+pub const MAX_DWELL_FRAMES: u32 = 60;
+/// Eye draws per point before falling back to the cell's AABB centre.
+pub const EYE_TRIES: usize = 32;
+
+/// The level's camera cells (neither solid nor exterior, ascending id) and
+/// their portal adjacency, by index into the camera cells.
+pub fn camera_graph(world: &LevelWorld) -> (Vec<u32>, Vec<Vec<u32>>) {
+    let camera_cells: Vec<u32> = (0..world.cells.len() as u32)
+        .filter(|&cell| {
+            let data = &world.cells[cell as usize];
+            !data.is_solid && !data.is_exterior
+        })
+        .collect();
+    let adjacency = camera_adjacency(
+        world.cells.len(),
+        world.portals.iter().map(|p| (p.front_cell, p.back_cell)),
+        &camera_cells,
+    );
+    (camera_cells, adjacency)
+}
 
 /// One walk, resolved to cell ids, with its teleports marked and each step's
 /// dwell in frames.
-pub(super) struct Walk {
-    pub(super) kind: WalkKind,
-    pub(super) cells: Vec<u32>,
+pub struct Walk {
+    pub kind: WalkKind,
+    /// The path's seed; the eye stream is seeded from it (`EYE_STREAM_SALT`).
+    pub seed: u64,
+    pub cells: Vec<u32>,
     /// Step `i` arrived by teleport: not portal-adjacent to step `i - 1`.
-    pub(super) teleport: Vec<bool>,
-    pub(super) dwell: Vec<u32>,
-    pub(super) travel_yaw: Vec<f32>,
+    pub teleport: Vec<bool>,
+    pub dwell: Vec<u32>,
+    pub travel_yaw: Vec<f32>,
 }
 
 impl Walk {
-    pub(super) fn build(world: &LevelWorld, kind: WalkKind, steps: usize) -> Self {
-        let camera_cells: Vec<u32> = (0..world.cells.len() as u32)
-            .filter(|&cell| {
-                let data = &world.cells[cell as usize];
-                !data.is_solid && !data.is_exterior
-            })
-            .collect();
-        let adjacency = camera_adjacency(
-            world.cells.len(),
-            world.portals.iter().map(|p| (p.front_cell, p.back_cell)),
-            &camera_cells,
-        );
-        let (path, _) = walk_path(kind, &adjacency, steps, WALK_SEED);
+    /// The walk at the harness's seed, `WALK_SEED`.
+    pub fn build(world: &LevelWorld, kind: WalkKind, steps: usize) -> Self {
+        Self::build_seeded(world, kind, steps, WALK_SEED)
+    }
+
+    pub fn build_seeded(world: &LevelWorld, kind: WalkKind, steps: usize, seed: u64) -> Self {
+        let (camera_cells, adjacency) = camera_graph(world);
+        let (path, _) = walk_path(kind, &adjacency, steps, seed);
         let teleport = (0..path.len())
             .map(|i| {
                 i > 0
@@ -70,6 +85,7 @@ impl Walk {
         }
         Self {
             kind,
+            seed,
             cells,
             teleport,
             dwell,
@@ -77,19 +93,20 @@ impl Walk {
         }
     }
 
-    pub(super) fn teleports(&self) -> usize {
+    pub fn teleports(&self) -> usize {
         self.teleport.iter().filter(|&&t| t).count()
     }
 
-    pub(super) fn frames(&self) -> u64 {
+    pub fn frames(&self) -> u64 {
         self.dwell.iter().map(|&d| u64::from(d)).sum()
     }
 }
 
 /// A seeded eye point inside `cell` (10–90% of its AABB per axis, off the
 /// bake's sampling lattice), accepted only where the locator agrees; the
-/// AABB centre after `EYE_TRIES` misses.
-pub(super) fn eye_point(world: &LevelWorld, cell: u32, rng: &mut SplitMix64) -> Vec3 {
+/// AABB centre after `EYE_TRIES` misses. Each try draws x, y, z in that
+/// order: the draw order is the route's contract.
+pub fn eye_point(world: &LevelWorld, cell: u32, rng: &mut SplitMix64) -> Vec3 {
     let data = &world.cells[cell as usize];
     let extent = data.bounds_max - data.bounds_min;
     for _ in 0..EYE_TRIES {

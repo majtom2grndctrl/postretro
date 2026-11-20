@@ -1,6 +1,8 @@
 //! The budget each drain admits against, and the developer override of the
-//! play cap: one seam the dev-tools slider and the walk measurement both set.
-//! See: context/lib/rendering_pipeline.md §4 · context/lib/experimental_spikes.md §Tuning levers
+//! play cap: one seam the dev-tools slider, its launch seed and the walk
+//! measurement all set.
+//! See: context/lib/rendering_pipeline.md §4 · context/lib/experimental_spikes.md §Tuning levers ·
+//! context/lib/development_guide.md §6.4
 
 #[cfg(any(test, feature = "dev-tools"))]
 use std::num::NonZeroU64;
@@ -11,7 +13,70 @@ use crate::streaming::drain_budget::{
     SETTLING_INSTALL_DECODED_BYTES_PER_DRAIN,
 };
 
+/// The dev-tools slider's launch seed, in decoded MiB: the slider's unit.
+#[cfg(any(test, feature = "dev-tools"))]
+pub(crate) const PLAY_DRAIN_CAP_SEED_ENV: &str = "POSTRETRO_PLAY_DRAIN_CAP_MIB";
+
+#[cfg(any(test, feature = "dev-tools"))]
+const MIB: f64 = 1024.0 * 1024.0;
+
+/// The slider's span and step, in bytes: an eighth of production to four
+/// times it, in half-MiB steps from the low end. egui redraws a value outside
+/// the span or off the step grid as an edit, so a seed there would rewrite the
+/// cap and flip its source to the slider on the first draw of the Streaming
+/// tab. A dev-tools test pins these to the debug UI lever's own.
+#[cfg(any(test, feature = "dev-tools"))]
+pub(crate) const SEED_MIN_BYTES: u64 = MAX_INSTALL_DECODED_BYTES_PER_DRAIN / 8;
+#[cfg(any(test, feature = "dev-tools"))]
+pub(crate) const SEED_MAX_BYTES: u64 = MAX_INSTALL_DECODED_BYTES_PER_DRAIN * 4;
+#[cfg(any(test, feature = "dev-tools"))]
+pub(crate) const SEED_STEP_BYTES: u64 = 1024 * 1024 / 2;
+
+/// Who set the play cap a drain admits against.
+#[cfg(any(test, feature = "dev-tools"))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum PlayDrainCapSource {
+    /// No override: the production constant.
+    #[default]
+    Production,
+    /// [`PLAY_DRAIN_CAP_SEED_ENV`] at launch.
+    Seed,
+    /// The dev-tools slider, or the walk measurement in tests.
+    Slider,
+}
+
+/// The playback record's spelling.
+#[cfg(feature = "dev-tools")]
+impl PlayDrainCapSource {
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            Self::Production => "production",
+            Self::Seed => "seed",
+            Self::Slider => "slider",
+        }
+    }
+}
+
+/// The play cap in force and who set it, in the budget's own unit.
+#[cfg(any(test, feature = "dev-tools"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PlayDrainCap {
+    pub(crate) source: PlayDrainCapSource,
+    pub(crate) decoded_bytes_per_drain: u64,
+}
+
 impl LevelStreaming {
+    /// The session's streaming owner at launch: the production play cap, or
+    /// in a dev-tools build the slider's launch seed. A build without
+    /// dev-tools never reads the seed.
+    pub(crate) fn at_launch() -> Self {
+        #[cfg_attr(not(feature = "dev-tools"), allow(unused_mut))]
+        let mut level = Self::default();
+        #[cfg(feature = "dev-tools")]
+        level.seed_play_drain_cap_from_environment();
+        level
+    }
+
     /// Admits the drain's offered items once, against the settling budget
     /// while Settling and the play cap otherwise.
     pub(super) fn admit_offered(&mut self, settling: bool) -> Result<(), DrainBytesOverflow> {
@@ -40,12 +105,129 @@ impl LevelStreaming {
         self.play_drain_cap_override
     }
 
+    /// The play cap every later play drain admits against, and its source.
+    #[cfg(any(test, feature = "dev-tools"))]
+    pub(crate) fn play_drain_cap_in_force(&self) -> PlayDrainCap {
+        PlayDrainCap {
+            source: if self.play_drain_cap_override.is_some() {
+                self.play_drain_cap_source
+            } else {
+                PlayDrainCapSource::Production
+            },
+            decoded_bytes_per_drain: self.play_drain_cap(),
+        }
+    }
+
     /// Replaces the play cap for every later play drain; `None` restores
     /// production. Settling and the lightmap in-hand caps never read it.
+    /// `None` still stamps `Slider`, but reads as production whatever source
+    /// is stamped: `play_drain_cap_in_force` masks it.
     #[cfg(any(test, feature = "dev-tools"))]
     pub(crate) fn set_play_drain_cap_override(&mut self, cap: Option<NonZeroU64>) {
         self.play_drain_cap_override = cap;
+        self.play_drain_cap_source = PlayDrainCapSource::Slider;
     }
+
+    /// Seeds the slider from [`PLAY_DRAIN_CAP_SEED_ENV`]. The override lives
+    /// on the session's streaming owner and survives level changes, so the
+    /// seed holds for the whole session until the slider moves.
+    #[cfg(feature = "dev-tools")]
+    pub(crate) fn seed_play_drain_cap_from_environment(&mut self) {
+        self.apply_play_drain_cap_seed(std::env::var(PLAY_DRAIN_CAP_SEED_ENV));
+    }
+
+    /// Unset or empty leaves production; a malformed value, or one outside the
+    /// slider's range or step grid, warns once and leaves production. Never
+    /// fails the launch.
+    #[cfg(any(test, feature = "dev-tools"))]
+    pub(crate) fn apply_play_drain_cap_seed(&mut self, value: Result<String, std::env::VarError>) {
+        let value = match value {
+            Ok(value) if value.trim().is_empty() => return,
+            Ok(value) => value,
+            Err(std::env::VarError::NotPresent) => return,
+            Err(std::env::VarError::NotUnicode(raw)) => {
+                warn_malformed_seed(&format!(
+                    "{PLAY_DRAIN_CAP_SEED_ENV}={raw:?}: not valid Unicode"
+                ));
+                return;
+            }
+        };
+        match parse_cap_mib(
+            PLAY_DRAIN_CAP_SEED_ENV,
+            &value,
+            "a zero cap admits only each drain's first item; unset it for production",
+        ) {
+            Ok((mib, bytes)) => {
+                if let Err(why) = check_slider_reach(&value, bytes.get()) {
+                    warn_malformed_seed(&why);
+                    return;
+                }
+                self.play_drain_cap_override = Some(bytes);
+                self.play_drain_cap_source = PlayDrainCapSource::Seed;
+                log::info!(
+                    "[Streaming] play drain cap seeded from {PLAY_DRAIN_CAP_SEED_ENV}: {mib} MiB ({} decoded bytes per drain)",
+                    bytes.get(),
+                );
+            }
+            Err(why) => warn_malformed_seed(&why),
+        }
+    }
+}
+
+#[cfg(any(test, feature = "dev-tools"))]
+fn warn_malformed_seed(why: &str) {
+    log::warn!(
+        "[Streaming] ignoring malformed {PLAY_DRAIN_CAP_SEED_ENV} ({why}); play drains keep the production cap of {} MiB",
+        MAX_INSTALL_DECODED_BYTES_PER_DRAIN as f64 / MIB,
+    );
+}
+
+/// Refuses a seed the slider could not hold, naming the variable, the value
+/// and the allowed range.
+#[cfg(any(test, feature = "dev-tools"))]
+fn check_slider_reach(value: &str, bytes: u64) -> Result<(), String> {
+    let on_grid = (SEED_MIN_BYTES..=SEED_MAX_BYTES).contains(&bytes)
+        && (bytes - SEED_MIN_BYTES).is_multiple_of(SEED_STEP_BYTES);
+    if on_grid {
+        return Ok(());
+    }
+    Err(format!(
+        "{PLAY_DRAIN_CAP_SEED_ENV}={value:?}: outside the slider's range of {} to {} MiB in steps of {} MiB",
+        SEED_MIN_BYTES as f64 / MIB,
+        SEED_MAX_BYTES as f64 / MIB,
+        SEED_STEP_BYTES as f64 / MIB,
+    ))
+}
+
+/// `env`'s value as a positive decimal count of MiB (`4`, `16`, `0.5`) and
+/// its whole bytes. Zero (refused with `zero_why`), a negative, a non-number,
+/// a value past `u64` bytes and one rounding to zero bytes are refused by
+/// name, never clamped. The slider's seed and the walk's levers share it.
+#[cfg(any(test, feature = "dev-tools"))]
+pub(crate) fn parse_cap_mib(
+    env: &str,
+    value: &str,
+    zero_why: &str,
+) -> Result<(f64, NonZeroU64), String> {
+    let refuse = |why: &str| format!("{env}={value:?}: {why}");
+    let mib: f64 = value
+        .trim()
+        .parse()
+        .ok()
+        .filter(|mib: &f64| mib.is_finite())
+        .ok_or_else(|| refuse("not a number of MiB"))?;
+    if mib < 0.0 {
+        return Err(refuse("a cap is a positive number of MiB"));
+    }
+    if mib == 0.0 {
+        return Err(refuse(zero_why));
+    }
+    let bytes = (mib * MIB).round();
+    if bytes >= u64::MAX as f64 {
+        return Err(refuse("too large to represent in bytes"));
+    }
+    let bytes = NonZeroU64::new(bytes as u64).ok_or_else(|| refuse("rounds to zero bytes"))?;
+    Ok((mib, bytes))
 }
 
 /// The dev-tools Streaming tab's view of the override.

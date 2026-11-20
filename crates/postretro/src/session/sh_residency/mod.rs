@@ -346,6 +346,12 @@ impl ShStreamingSession {
         self.controller.settle_set_targets()
     }
 
+    /// Clusters the latest frame drew while not Sampleable.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub(crate) fn last_frame_drawn_not_resident(&self) -> u32 {
+        self.controller.last_frame_drawn_not_resident()
+    }
+
     /// The controller, read by the walk measurement's completion gate and
     /// report.
     #[cfg(test)]

@@ -20,6 +20,7 @@ members = [
     "crates/lighting",
     "crates/level-loader",
     "crates/visibility",
+    "crates/camera-route",
     "crates/level-compiler",
     "crates/script-compiler",
     "crates/net",
@@ -212,6 +213,7 @@ postretro-renderer = { path = "crates/renderer" }
 postretro-lighting = { path = "crates/lighting" }
 postretro-level-loader = { path = "crates/level-loader" }
 postretro-visibility = { path = "crates/visibility" }
+postretro-camera-route = { path = "crates/camera-route" }
 postretro-foundation = { path = "crates/foundation" }
 postretro-entities = { path = "crates/entities" }
 postretro-combat-model = { path = "crates/combat-model" }

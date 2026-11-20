@@ -710,7 +710,8 @@ fn skipped_level_frame(app: &mut App) {
                 cpu: &cpu,
             },
         )
-        .expect("the in-play streaming step runs");
+        .expect("the in-play streaming step runs")
+        .sh_batch;
     renderer.skip_next_surface_acquire();
     let result = renderer
         .render_frame_indirect(

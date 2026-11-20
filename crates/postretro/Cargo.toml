@@ -74,6 +74,12 @@ postretro-lighting = { workspace = true, features = ["script-ffi"] }
 postretro-stage-timing.workspace = true
 postretro-telemetry.workspace = true
 postretro-visibility = { workspace = true }
+# Pose files and the bake identity. Route generation runs only in the walk
+# harness (test code) and `postretro-tool`; the engine never calls it. The
+# dependency links unconditionally: the engine's only non-test users are the
+# dev-tools playback modules (pose-file parsing and the bake identity), so
+# player builds link a crate they never call.
+postretro-camera-route = { workspace = true }
 postretro-foundation = { workspace = true }
 postretro-entities = { workspace = true, features = ["script-ffi"] }
 postretro-combat-model = { workspace = true }

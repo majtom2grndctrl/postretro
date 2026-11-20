@@ -83,6 +83,16 @@ pub(crate) fn bc_gpu_or_skip(test: &str) -> Option<GpuCtx> {
     gpu_with_features_or_skip(test, wgpu::Features::TEXTURE_COMPRESSION_BC)
 }
 
+/// [`gpu_or_skip`] for an adapter with both timestamp features GPU timing
+/// uses: pass-descriptor and inside-encoder timestamps.
+#[cfg(feature = "dev-tools")]
+pub(crate) fn timestamp_gpu_or_skip(test: &str) -> Option<GpuCtx> {
+    gpu_with_features_or_skip(
+        test,
+        wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS,
+    )
+}
+
 fn gpu_with_features_or_skip(test: &str, required_features: wgpu::Features) -> Option<GpuCtx> {
     if let Some(ctx) = try_init_gpu_with_features(required_features) {
         return Some(ctx);

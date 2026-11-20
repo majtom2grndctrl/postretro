@@ -125,6 +125,15 @@ impl crate::session::Session {
             .map(|lightmap| lightmap.last_frame_drawn_not_resident())
     }
 
+    /// SH clusters the latest frame drew while not Sampleable; `None` when
+    /// the level's SH does not stream.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub(crate) fn last_frame_sh_misses(&self) -> Option<u32> {
+        self.sh_streaming
+            .as_ref()
+            .map(crate::session::sh_residency::ShStreamingSession::last_frame_drawn_not_resident)
+    }
+
     /// The one settle chokepoint. Asks each streamed resource whether the
     /// settle pose's set is usable: SH clusters Sampleable, lightmap blocks
     /// installed. Call only after the level's sessions exist (install creates

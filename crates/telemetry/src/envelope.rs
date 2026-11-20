@@ -46,10 +46,11 @@ pub enum Kind {
     GpuTimingWindow,
     BakeStage,
     BakeSummary,
+    PlaybackWindow,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 15] = [
+    pub const ALL: [Kind; 16] = [
         Kind::RunStart,
         Kind::ProducerState,
         Kind::RunEnd,
@@ -65,6 +66,7 @@ impl Kind {
         Kind::GpuTimingWindow,
         Kind::BakeStage,
         Kind::BakeSummary,
+        Kind::PlaybackWindow,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -84,6 +86,7 @@ impl Kind {
             Kind::GpuTimingWindow => "gpu_timing_window",
             Kind::BakeStage => "bake_stage",
             Kind::BakeSummary => "bake_summary",
+            Kind::PlaybackWindow => "playback_window",
         }
     }
 
@@ -223,6 +226,7 @@ mod tests {
             Kind::GpuTimingWindow => 12,
             Kind::BakeStage => 13,
             Kind::BakeSummary => 14,
+            Kind::PlaybackWindow => 15,
         }
     }
 

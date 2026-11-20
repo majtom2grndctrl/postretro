@@ -6,6 +6,7 @@
 //! atomically.
 
 use super::*;
+use crate::render::uploads::MarkSite;
 
 impl StreamingGpuPools {
     /// Replace the dense generation with one holding `needed_slots`, sized to
@@ -93,6 +94,9 @@ impl StreamingGpuPools {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Streamed SH Dense Atlas Growth Copy"),
         });
+        // Growth runs inside the SH drain, so a playback frame mark charges
+        // its copies to the frame's SH drain.
+        let marked = queue.open_frame_mark(&mut encoder, MarkSite::ShUploads);
         let old_extent = self.shape.extent();
         copy_texture(&mut encoder, &self.base, &replacement.base, old_extent);
         copy_texture(&mut encoder, &self.total, &replacement.total, old_extent);
@@ -163,6 +167,7 @@ impl StreamingGpuPools {
         let previous_active_capacity = self.active_capacity_bytes;
         self.active_capacity_bytes = replacement_active_capacity;
 
+        queue.close_frame_mark(&mut encoder, MarkSite::ShUploads, marked);
         queue.submit(std::iter::once(encoder.finish()));
         let complete = Arc::new(AtomicBool::new(false));
         let callback_complete = Arc::clone(&complete);
@@ -365,6 +370,7 @@ impl StreamingGpuPools {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Streamed SH Sparse Pool Growth Copy"),
         });
+        let marked = queue.open_frame_mark(&mut encoder, MarkSite::ShUploads);
         if let Some(replacement) = indirect_replacement.as_ref() {
             self.indirect_compose
                 .copy_retained_to(replacement, &mut encoder);
@@ -380,6 +386,7 @@ impl StreamingGpuPools {
                 direct.copy_to_sparse_replacement(replacement, &mut encoder);
             }
         }
+        queue.close_frame_mark(&mut encoder, MarkSite::ShUploads, marked);
         queue.submit(std::iter::once(encoder.finish()));
         let complete = Arc::new(AtomicBool::new(false));
         let callback_complete = Arc::clone(&complete);

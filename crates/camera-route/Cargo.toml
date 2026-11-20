@@ -1,0 +1,19 @@
+[package]
+name = "postretro-camera-route"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Seeded camera routes over a level's cells and portals, and the pose file that carries them"
+license.workspace = true
+
+[dependencies]
+# Cells, portals and the cell locator the routes walk; `load-prl` for the
+# id-51 residency set the bake identity hashes.
+postretro-level-loader = { workspace = true }
+postretro-level-format = { workspace = true }
+# `PORTAL_WALK_EPOCH`, recorded in the bake identity.
+postretro-visibility = { workspace = true }
+glam = { workspace = true }
+# Pose fingerprints and the id-51 hash in the bake identity.
+blake3 = { workspace = true }
+thiserror = { workspace = true }

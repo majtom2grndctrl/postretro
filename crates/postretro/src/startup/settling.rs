@@ -107,6 +107,13 @@ impl App {
         // not the camera's default aspect left by an unload.
         self.commit_render_extents();
         let view = self.presented_pose().held_view(self.camera.aspect());
+        // A camera route holds its first pose instead, at its own FOV; a
+        // route that does not match the level stops the run here, before any
+        // world frame.
+        #[cfg(feature = "dev-tools")]
+        let Some(view) = self.playback_settling_view(event_loop, view) else {
+            return false;
+        };
         let held = match self.prepare_held_level_frame(view) {
             Ok(held) => held,
             Err(err) => {
@@ -269,6 +276,9 @@ impl App {
             hold_marked = settle.hold_marked;
             self.settle_summary = Some(settle.log.finish(timed_out, settle.hold));
         }
+        // A camera route's record names how its Settling ended.
+        #[cfg(feature = "dev-tools")]
+        self.playback_level_revealed(matches!(release, SettleRelease::TimedOut(_)));
         // Line C's `reveal`: the deciding frame to this edge, a timed-out
         // reveal included. A hold no deciding frame closed (none in
         // production: a release is always decided first) is closed here.

@@ -355,9 +355,16 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // `cancelled` rides the captured-intent queue. While the
     // accessibility panel is the active tree, `nav.cancel` closes it
     // too.
+    #[cfg(feature = "dev-tools")]
+    let playback_holds_input = app.playback.captures_gameplay();
+    #[cfg(not(feature = "dev-tools"))]
+    let playback_holds_input = false;
     if app.pending_menu_toggle {
         app.pending_menu_toggle = false;
-        app.toggle_pause_menu();
+        // A playing camera route keeps the pause menu off its measured frames.
+        if !playback_holds_input {
+            app.toggle_pause_menu();
+        }
     } else if focus_result.cancelled && !text_entry_consumed_nav {
         let close_frontend_submenu = app.frontend_menu_is_present() && !app.frontend_menu_is_top();
         if let Some(session) = app.session.as_mut() {
@@ -375,7 +382,12 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
 
     let ui_captures_gameplay = {
         let session = app.session.as_ref().expect("running session installed");
-        gameplay_capture_gate_for_frame(ui_captured_gameplay_at_frame_start, &session.modal_stack)
+        // A playing camera route suspends gameplay input as Settling does:
+        // the sim ticks on neutral input, so nothing moves the pawn.
+        gameplay_capture_gate_for_frame(
+            ui_captured_gameplay_at_frame_start || playback_holds_input,
+            &session.modal_stack,
+        )
     };
 
     // drain_look_inputs() must precede snapshot(); both touch
@@ -1782,6 +1794,10 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     app.reconcile_ui_focus();
     app.apply_frontend_menu_camera_pose_if_present();
 
+    // Camera-route playback picks this world frame's pose and frame mark
+    // before the streaming step drains.
+    #[cfg(feature = "dev-tools")]
+    app.playback_begin_world_frame(now);
     // Gameplay rendering shares the pose used by post-loop shots.
     // A frontend menu opened by this frame's reactions has its own
     // camera hold, applied above after the command drains settle.
@@ -1813,27 +1829,39 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // read this one evaluated eye (`audio.md` §3). View feel only runs
     // when the camera-following pawn carries `view_feel`; another
     // pawn's preset must not leak onto the selected camera.
-    let view_feel_driver = frame_eye::view_feel_driver(
-        &script_ctx.registry.borrow(),
-        presented_eye.y,
-        app.camera.position.y,
-        tick_dt,
-        frame_result.alpha,
-    );
+    // A camera route draws its pose at its own FOV with no view feel, so the
+    // render eye is the pose's eye.
+    let playing_route_hfov = route_hfov(app);
+    let view_feel_driver = match playing_route_hfov {
+        Some(_) => None,
+        None => frame_eye::view_feel_driver(
+            &script_ctx.registry.borrow(),
+            presented_eye.y,
+            app.camera.position.y,
+            tick_dt,
+            frame_result.alpha,
+        ),
+    };
     let view_feel_scale = app
         .session
         .as_ref()
         .and_then(|session| session.options_bridge.resolved())
         .map(|resolved| resolved.presented_view_feel_scale())
         .unwrap_or(1.0);
+    let eye_inputs = presented_aim.frame_eye_inputs(
+        app.camera.aspect(),
+        playing_route_hfov.unwrap_or(crate::camera::HFOV),
+        view_feel_driver,
+        &pending_movement_edges,
+        frame_dt,
+        view_feel_scale,
+    );
+    // A camera-route recording holds this frame's view before view feel,
+    // stamped with the frame's start; its present decides whether it records.
+    #[cfg(feature = "dev-tools")]
+    app.playback_record_eye(now, &eye_inputs);
     let eye = frame_eye::assemble_frame_eye(
-        presented_aim.frame_eye_inputs(
-            app.camera.aspect(),
-            view_feel_driver,
-            &pending_movement_edges,
-            frame_dt,
-            view_feel_scale,
-        ),
+        eye_inputs,
         frame_eye::ViewFeelTracking {
             state: &mut app.view_feel_state,
             followed_pawn: &mut app.view_feel_followed_pawn,
@@ -2279,7 +2307,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         let streaming_cpu = postretro_stage_timing::StageFrame::<cpu_timing::StreamingStage>::new(
             app.cpu_timer.gate(),
         );
-        let sh_drain_batch = match session.run_level_streaming_step(
+        let streaming_step = match session.run_level_streaming_step(
             sh_stream_manifest.as_ref(),
             app.level.as_ref(),
             renderer,
@@ -2293,13 +2321,18 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 cpu: &streaming_cpu,
             },
         ) {
-            Ok(batch) => batch,
+            Ok(step) => step,
             Err(err) => {
                 app.exit_result = Err(err);
                 event_loop.exit();
                 return;
             }
         };
+        // A route frame that streamed and drained writes a row even when it
+        // then presents nothing (a no-draw row), carrying what it admitted.
+        #[cfg(feature = "dev-tools")]
+        app.playback.note_streamed(streaming_step.admission);
+        let sh_drain_batch = streaming_step.sh_batch;
         app.cpu_timer.nested_mut().extend_from(
             &streaming_cpu,
             Some(postretro_stage_timing::StageSet::label(
@@ -2681,6 +2714,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                     }
                     if drain_cap != drain_cap_before {
                         session.level_streaming.apply_drain_cap_lever(&drain_cap);
+                        app.playback
+                            .note_change(crate::playback::ChangeKind::DrainCap);
                     }
                     if let (Some(before), Some(after)) = (network_lag_before, network_lag)
                         && let Some(endpoint) = session.net_endpoint.as_mut()
@@ -2895,6 +2930,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         // time: the ghost look clamps, run before rendering, return to where
         // they began and carry its time forward, as the resolve's limiter does.
         let presented = present_handle.is_some();
+        #[cfg(feature = "dev-tools")]
+        app.playback.note_presented(presented);
         app.ghost_render.finish_presentation(presented);
         app.mover_ghost_render.finish_presentation(presented);
         app.billboard_ghost_render.finish_presentation(presented);
@@ -3037,4 +3074,20 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         crate::telemetry::emit_gpu_window(renderer);
     }
     postretro_stage_timing::mark_frame();
+    // Camera-route playback records the frame it presented, advances, and
+    // ends the run after its last pose.
+    #[cfg(feature = "dev-tools")]
+    app.playback_end_frame(event_loop);
+}
+
+/// The playing camera route's horizontal FOV this frame: none without a route,
+/// and always in a build without playback.
+fn route_hfov(app: &App) -> Option<f32> {
+    #[cfg(feature = "dev-tools")]
+    return app.playback.route_view().map(|view| view.hfov);
+    #[cfg(not(feature = "dev-tools"))]
+    {
+        let _ = app;
+        None
+    }
 }

@@ -15,7 +15,7 @@ Generate the full edge diagram on demand with `cargo run -p xtask -- crate-graph
 - **Layer 0 (leaves):** audio, collision, foundation, level-format, net, render-data, stage-timing, telemetry, test-log-capture, xtask
 - **Layer 1:** entities, level-loader, model, script-compiler
 - **Layer 2:** combat-model, physics, scripting-core, visibility
-- **Layer 3:** level-compiler, lighting, render-cpu, ui
+- **Layer 3:** camera-route, level-compiler, lighting, render-cpu, ui
 - **Layer 4:** renderer, sim, tool
 - **Layer 5:** ai, netcode
 - **Layer 6:** postretro
@@ -26,21 +26,22 @@ Crates ranked by how many workspace crates depend on them directly —
 the compile chokepoints. Changing a public type in a high-ranked crate
 recompiles every dependent.
 
+- **level-format** — 13 dependents (postretro, camera-route, level-compiler, level-loader, lighting, model, physics, render-cpu, renderer, script-compiler, scripting-core, sim, tool)
 - **foundation** — 12 dependents (postretro, ai, combat-model, entities, lighting, model, netcode, physics, renderer, script-compiler, scripting-core, sim)
-- **level-format** — 12 dependents (postretro, level-compiler, level-loader, lighting, model, physics, render-cpu, renderer, script-compiler, scripting-core, sim, tool)
 - **entities** — 11 dependents (postretro, ai, combat-model, lighting, netcode, physics, render-cpu, renderer, scripting-core, sim, ui)
-- **level-loader** — 8 dependents (postretro, level-compiler, lighting, physics, render-cpu, renderer, sim, visibility)
+- **level-loader** — 10 dependents (postretro, camera-route, level-compiler, lighting, physics, render-cpu, renderer, sim, tool, visibility)
 - **render-data** — 8 dependents (postretro, level-compiler, level-loader, lighting, model, render-cpu, renderer, sim)
 - **model** — 6 dependents (postretro, netcode, render-cpu, renderer, sim, tool)
 - **scripting-core** — 6 dependents (postretro, lighting, netcode, renderer, sim, ui)
 - **physics** — 5 dependents (postretro, ai, level-compiler, netcode, sim)
+- **visibility** — 5 dependents (postretro, camera-route, level-compiler, render-cpu, renderer)
 - **collision** — 4 dependents (postretro, netcode, physics, sim)
 - **net** — 4 dependents (postretro, combat-model, netcode, sim)
 - **stage-timing** — 4 dependents (postretro, renderer, sim, visibility)
-- **visibility** — 4 dependents (postretro, level-compiler, render-cpu, renderer)
 - **combat-model** — 3 dependents (postretro, netcode, sim)
 - **lighting** — 3 dependents (postretro, renderer, sim)
 - **sim** — 3 dependents (postretro, ai, netcode)
+- **camera-route** — 2 dependents (postretro, tool)
 - **render-cpu** — 2 dependents (postretro, renderer)
 - **telemetry** — 2 dependents (postretro, level-compiler)
 - **ui** — 2 dependents (postretro, renderer)

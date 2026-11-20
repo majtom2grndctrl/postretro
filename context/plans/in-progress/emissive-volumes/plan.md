@@ -57,7 +57,7 @@ Branch: `feature/emissive-volumes`. Source re-verified at 6e22d5262 by four read
 - Task 1: `level-compiler` no longer needs `postretro-render-data` as a normal dependency (dev-dependency only, for the agreement test). `crate-graph.md` regenerated.
 
 ## Delegated answers
-- **Split faces (BSP fragments, atlas sub-faces).** Membership follows the authored brush side. Each final Geometry face maps through `face_brushes`, remapped through the atlas cut, to its brush. Its side is found by plane and texture match, and that side's whole-polygon centroid is tested. One authored face stays whole across BSP fragments and atlas cuts (P29) with no new `Face` field. This avoids widening `Face`, which is spelled out in ~15 fixtures.
+- **Split faces (BSP fragments, atlas sub-faces).** ~~Membership follows the authored brush side.~~ **Owner ruling at review (2026-11-20): per final face.** Each BSP fragment tests its own centroid, so a glowing brush side spanning two volumes splits between them. Atlas sub-faces inherit their pre-cut fragment's membership through the cut's remap, so P29 holds. (The first build used authored-side centroids; review showed a side spanning two rooms went wholly to one.)
 - **Volume table: uniform, not storage.** Forward FRAGMENT storage is 8/8 and sampled is 16/16. Uniforms are 6/12, and 257 × vec4 is ~4 KiB against a 64 KiB binding. It is a new fragment-only binding in group 4 beside the animated-block table. Entry 0 is "no volume". The pinned binding-inventory test is updated.
 - **Value ceiling: 64.** That is 16× the migrated neon strength, so far above any look. A face at the ceiling inside a ceiling volume presents 64 × 64 = 4096, and bloom's pyramid sum of six levels stays under 65504 (P50). One constant serves `materials.toml` and the volume keys.
 
@@ -113,3 +113,14 @@ Tasks 5 and 7 may run concurrently in worktrees once 4 lands (disjoint files: si
 ## Preflight
 
 At 14c635ed1: fmt ✓; clippy `-D warnings`, plain and `--features postretro/dev-tools` ✓; `cargo test --workspace --no-fail-fast` 16,991 passed, 2 failed, both `postretro --test telemetry_run`, which stalled on a sleeping display overnight and passed 2/2 when re-run with the display awake; `cargo test -p postretro --features dev-tools` ✓; `cargo check --release` ✓; crate-graph ✓; telemetry reducer ✓.
+
+## Review panel (round 1)
+
+11 reviewers (5 tracers, 1 contract verifier, 3 adversarial testers on Opus; 2 hygiene+drift on Sonnet). Findings: 1 🔴 (limiter colour boost on non-neutral glow), 7 🟡 (co-op capture start inheritance, P6 settle-frame re-install, migration sibling-only bundles, bare-stem alias strength, registry-full volume glow, triangle-less face load refusal, oversized gate file), nits and doc drift.
+
+Owner rulings (2026-11-20):
+- Colour-only strobes stay with E23, at every strength (not only high strength). The clamp's strength input stays as the Decision states.
+- Multi-texture volumes (the brightest member is not the worst case under the dark-state rule) are recorded for E23.
+- The one-step luminance rise when a red hold releases on a saturated-red glow texture is recorded for E23.
+- Membership switches to per final face (see Delegated answers).
+- Not raised as a question; recorded as a clarification: a `null` clear followed by an identical install in one drain is a new run (P30's reasoning applied to `null`); fog keeps the start there.

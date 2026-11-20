@@ -1,6 +1,9 @@
 //! App bridge adapter for stable authored presentation identities.
 
-use super::{fog_volume_bridge::FogVolumeBridge, light_bridge::LightBridge};
+use super::{
+    emissive_volume_bridge::EmissiveVolumeBridge, fog_volume_bridge::FogVolumeBridge,
+    light_bridge::LightBridge,
+};
 use glam::Vec3;
 use postretro_entities::{
     Component, EntityId, EntityRegistry,
@@ -15,6 +18,7 @@ use postretro_level_format::map_entity::MapEntityRecord;
 pub(crate) struct PresentationBindings<'a> {
     pub(crate) lights: &'a LightBridge,
     pub(crate) fog: &'a FogVolumeBridge,
+    pub(crate) emissive: &'a EmissiveVolumeBridge,
     pub(crate) map_entities: &'a [MapEntityRecord],
 }
 
@@ -46,6 +50,10 @@ impl PresentationBindingResolver for PresentationBindings<'_> {
                 let id = self.fog.entity_for_map_index(index)?;
                 (id, self.fog.map_origin_for_entity(id)?)
             }
+            PresentationBindingKind::EmissiveVolume => {
+                let id = self.emissive.entity_for_map_index(index)?;
+                (id, self.emissive.map_origin_for_entity(id)?)
+            }
         };
         registry.exists(result.0).then_some(result)
     }
@@ -71,12 +79,18 @@ impl PresentationBindingResolver for PresentationBindings<'_> {
                     index as u32,
                     self.lights.map_origin_for_entity(entity)?,
                 )
-            } else {
-                let index = self.fog.map_index_for_entity(entity)?;
+            } else if let Some(index) = self.fog.map_index_for_entity(entity) {
                 (
                     PresentationBindingKind::FogVolume,
                     index as u32,
                     self.fog.map_origin_for_entity(entity)?,
+                )
+            } else {
+                let index = self.emissive.map_index_for_entity(entity)?;
+                (
+                    PresentationBindingKind::EmissiveVolume,
+                    index as u32,
+                    self.emissive.map_origin_for_entity(entity)?,
                 )
             };
         Some((PresentationBindingKey { kind, index }, origin))
@@ -99,6 +113,7 @@ fn is_map_placement(registry: &EntityRegistry, entity: EntityId) -> bool {
 pub(crate) struct PresentationBindingsMut<'a> {
     pub(crate) lights: &'a mut LightBridge,
     pub(crate) fog: &'a mut FogVolumeBridge,
+    pub(crate) emissive: &'a mut EmissiveVolumeBridge,
     pub(crate) emitters: &'a mut super::emitter_bridge::EmitterBridge,
     pub(crate) map_entities: &'a [MapEntityRecord],
 }
@@ -111,6 +126,7 @@ impl PresentationBindingResolver for PresentationBindingsMut<'_> {
         PresentationBindings {
             lights: self.lights,
             fog: self.fog,
+            emissive: self.emissive,
             map_entities: self.map_entities,
         }
         .resolve(registry, key)
@@ -123,6 +139,7 @@ impl PresentationBindingResolver for PresentationBindingsMut<'_> {
         PresentationBindings {
             lights: self.lights,
             fog: self.fog,
+            emissive: self.emissive,
             map_entities: self.map_entities,
         }
         .key_for_entity(registry, entity)
@@ -132,6 +149,14 @@ impl PresentationBindingResolver for PresentationBindingsMut<'_> {
     }
     fn seed_fog(&mut self, registry: &EntityRegistry, id: EntityId, start: Option<f64>) -> bool {
         self.fog.seed_replicated_state(registry, id, start)
+    }
+    fn seed_emissive(
+        &mut self,
+        registry: &EntityRegistry,
+        id: EntityId,
+        start: Option<f64>,
+    ) -> bool {
+        self.emissive.seed_replicated_state(registry, id, start)
     }
     fn seed_emitter(
         &mut self,
@@ -148,8 +173,20 @@ mod tests {
     use super::*;
     use postretro_entities::Transform;
     use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
+    use postretro_level_format::emissive::EmissiveVolumeRecord;
     use postretro_level_format::fog_volumes::FogVolumeRecord;
     use postretro_level_loader::{FalloffModel, LightType, MapLight, ShadowType};
+
+    fn emissive() -> EmissiveVolumeRecord {
+        EmissiveVolumeRecord {
+            min: 0.0,
+            max: 1.0,
+            color: [1.0; 3],
+            origin: [7.0, 8.0, 9.0],
+            faces: vec![],
+            tags: vec![],
+        }
+    }
 
     fn light() -> MapLight {
         MapLight {
@@ -200,8 +237,10 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut lights = LightBridge::new();
         let mut fog_bridge = FogVolumeBridge::new();
+        let mut emissive_bridge = EmissiveVolumeBridge::new();
         lights.populate_from_level(&[light()], &mut registry, 0);
         fog_bridge.populate_from_level(&mut registry, &[fog()]);
+        emissive_bridge.populate_from_level(&mut registry, &[emissive()]);
         let map_entities = [MapEntityRecord {
             origin: [4.0, 5.0, 6.0],
             classname: "light_only".into(),
@@ -238,6 +277,17 @@ mod tests {
         lights.absorb_dynamic_lights(&registry);
         let light_id = lights.entity_for_map_index(0).unwrap();
         let fog_id = fog_bridge.entity_for_map_index(0).unwrap();
+        let emissive_id = emissive_bridge.entity_for_map_index(0).unwrap();
+        // A moved volume entity still binds at its authored origin.
+        registry
+            .set_component(
+                emissive_id,
+                Transform {
+                    position: Vec3::splat(60.0),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         registry
             .set_component(
                 light_id,
@@ -259,6 +309,7 @@ mod tests {
         let resolver = PresentationBindings {
             lights: &lights,
             fog: &fog_bridge,
+            emissive: &emissive_bridge,
             map_entities: &map_entities,
         };
         for (entity, kind, origin) in [
@@ -268,6 +319,11 @@ mod tests {
                 Vec3::new(1.0, 2.0, 3.0),
             ),
             (fog_id, PresentationBindingKind::FogVolume, Vec3::ZERO),
+            (
+                emissive_id,
+                PresentationBindingKind::EmissiveVolume,
+                Vec3::new(7.0, 8.0, 9.0),
+            ),
             (
                 descriptor_light,
                 PresentationBindingKind::MapEntity,
@@ -295,21 +351,26 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut lights = LightBridge::new();
         let mut fog_bridge = FogVolumeBridge::new();
+        let mut emissive_bridge = EmissiveVolumeBridge::new();
         lights.populate_from_level(&[light()], &mut registry, 0);
         fog_bridge.populate_from_level(&mut registry, &[fog()]);
+        emissive_bridge.populate_from_level(&mut registry, &[emissive()]);
         let light_id = lights.entity_for_map_index(0).unwrap();
         let fog_id = fog_bridge.entity_for_map_index(0).unwrap();
+        let emissive_id = emissive_bridge.entity_for_map_index(0).unwrap();
         let map_id = registry.spawn(Transform::default());
         registry.set_component(map_id, MapOrdinal(0)).unwrap();
         let map_entities = [MapEntityRecord::default()];
         let resolver = PresentationBindings {
             lights: &lights,
             fog: &fog_bridge,
+            emissive: &emissive_bridge,
             map_entities: &map_entities,
         };
         for (id, kind) in [
             (light_id, PresentationBindingKind::MapLight),
             (fog_id, PresentationBindingKind::FogVolume),
+            (emissive_id, PresentationBindingKind::EmissiveVolume),
             (map_id, PresentationBindingKind::MapEntity),
         ] {
             registry.despawn(id).unwrap();
@@ -332,6 +393,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let lights = LightBridge::new();
         let fog = FogVolumeBridge::new();
+        let emissive = EmissiveVolumeBridge::new();
         let map_entities = [MapEntityRecord {
             classname: "presentation".into(),
             origin: [1.0, 2.0, 3.0],
@@ -340,6 +402,7 @@ mod tests {
         let resolver = PresentationBindings {
             lights: &lights,
             fog: &fog,
+            emissive: &emissive,
             map_entities: &map_entities,
         };
         let key = PresentationBindingKey {

@@ -247,6 +247,7 @@ impl Peer {
         let mut resolver = PresentationBindingsMut {
             lights: &mut session.light_bridge,
             fog: &mut session.fog_volume_bridge,
+            emissive: &mut session.emissive_volume_bridge,
             emitters: &mut session.emitter_bridge,
             map_entities: &world.map_entities,
         };
@@ -513,6 +514,7 @@ fn sample_deltas(app: &mut App, clock: f64, delta: f32, spin_delta: f32) -> Vec<
         .map(|u| u.effective_brightness.to_vec())
         .unwrap_or_default();
     session.fog_volume_bridge.tick(&mut registry, clock);
+    session.emissive_volume_bridge.update(&mut registry, clock);
     session.emitter_bridge.update(
         &mut registry,
         delta,
@@ -716,6 +718,7 @@ impl Harness {
         let resolver = PresentationBindings {
             lights: &session.light_bridge,
             fog: &session.fog_volume_bridge,
+            emissive: &session.emissive_volume_bridge,
             map_entities: &self.world.map_entities,
         };
         netcode::host_register_presentation_overrides(

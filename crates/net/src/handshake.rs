@@ -62,7 +62,10 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C47; // "PRLG"
 /// The roster entry's display name and status advance it to 40.
 /// The carried loadout on `JoinSeed` and `FinalCharacter` advances it to 41:
 /// both shipped messages changed layout.
-pub const WIRE_VERSION: u32 = 41;
+/// Emissive volumes advance it to 42 (`SNAPSHOT_VERSION` 26): component payloads
+/// gained the emissive presentation record (kind 29) and presentation bindings
+/// the emissive-volume kind 3.
+pub const WIRE_VERSION: u32 = 42;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -1284,7 +1287,7 @@ mod switch_tick_epoch_tests {
     fn assist_refuses_wire_38_peers_and_admits_wire_39() {
         const PRE_ASSIST_WIRE_VERSION: u32 = 38;
         const { assert!(WIRE_VERSION > PRE_ASSIST_WIRE_VERSION) };
-        assert_eq!(crate::wire::SNAPSHOT_VERSION, 25);
+        const { assert!(crate::wire::SNAPSHOT_VERSION >= 25) };
         const {
             assert!(
                 PROTOCOL_ID >= 0x_5052_4C43,
@@ -1311,6 +1314,43 @@ mod switch_tick_epoch_tests {
             transport_protocol_id(),
             ((PROTOCOL_ID as u64) << 32) | u64::from(PRE_ASSIST_WIRE_VERSION),
             "gate 1 refuses the pre-assist movement record before decode"
+        );
+    }
+
+    // A wire-41 peer knows no emissive presentation record (component kind 29)
+    // and no emissive binding kind 3, so it would refuse every snapshot naming
+    // one: both gates refuse it under the one bump; the vocabulary is unchanged.
+    #[test]
+    fn emissive_volumes_refuse_wire_41_peers_and_admit_current_wire() {
+        const PRE_EMISSIVE_WIRE_VERSION: u32 = 41;
+        const {
+            assert!(WIRE_VERSION > PRE_EMISSIVE_WIRE_VERSION);
+            assert!(crate::wire::SNAPSHOT_VERSION >= 26);
+            assert!(
+                PROTOCOL_ID >= 0x_5052_4C47,
+                "no vocabulary change at this bump: PRLG or later"
+            );
+        };
+        let old_peer = ProtocolVersion {
+            app_protocol_id: PROTOCOL_ID,
+            wire_version: PRE_EMISSIVE_WIRE_VERSION,
+        };
+        assert_eq!(
+            validate_handshake(protocol_version(), protocol_version()),
+            Ok(())
+        );
+        assert!(matches!(
+            validate_handshake(protocol_version(), old_peer),
+            Err(ClosingCause::Protocol { .. })
+        ));
+        assert!(matches!(
+            validate_handshake(old_peer, protocol_version()),
+            Err(ClosingCause::Protocol { .. })
+        ));
+        assert_ne!(
+            transport_protocol_id(),
+            ((PROTOCOL_ID as u64) << 32) | u64::from(PRE_EMISSIVE_WIRE_VERSION),
+            "gate 1 refuses the pre-emissive component payload before decode"
         );
     }
 
@@ -1599,7 +1639,7 @@ mod server_vocabulary_tests {
         );
 
         assert_eq!(PROTOCOL_ID, 0x_5052_4C47, "PROTOCOL_ID is still \"PRLG\"");
-        assert_eq!(WIRE_VERSION, 41);
-        assert_eq!(crate::wire::SNAPSHOT_VERSION, 25);
+        assert_eq!(WIRE_VERSION, 42);
+        assert_eq!(crate::wire::SNAPSHOT_VERSION, 26);
     }
 }

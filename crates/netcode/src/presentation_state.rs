@@ -5,11 +5,13 @@ use postretro_entities::components::fog_volume::FogAnimation;
 use postretro_entities::components::light::{LightAnimation, LightComponent};
 use postretro_entities::presentation_binding::PresentationBindingResolver;
 use postretro_entities::presentation_overrides::{PresentationComponent, PresentationOverride};
-use postretro_entities::{EntityId, EntityRegistry, FogVolumeComponent};
+use postretro_entities::{
+    EmissiveAnimation, EmissiveVolumeComponent, EntityId, EntityRegistry, FogVolumeComponent,
+};
 use postretro_foundation::Vec3Lit;
 use postretro_net::wire::{
-    ComponentPayload, WireEmitterState, WireFogAnimation, WireFogState, WireLightAnimation,
-    WireLightState, WireSpinAnimation,
+    ComponentPayload, WireEmissiveAnimation, WireEmissiveState, WireEmitterState, WireFogAnimation,
+    WireFogState, WireLightAnimation, WireLightState, WireSpinAnimation,
 };
 
 /// Convert the immutable post-write snapshot, using the same gate as receive.
@@ -81,6 +83,26 @@ pub fn presentation_override_payload(record: &PresentationOverride) -> Option<Co
             };
             state.validate().ok()?;
             ComponentPayload::EmitterState(state)
+        }
+        PresentationComponent::Emissive(volume) => {
+            // `brightness` is the component's value at the write: the written
+            // value, or the bridge's last sample for a colour write over a
+            // running curve or a `null` clear (P5, P33). The range stays local.
+            let state = WireEmissiveState {
+                brightness: volume.brightness,
+                color: volume.color,
+                animation: volume
+                    .animation
+                    .as_ref()
+                    .map(|animation| WireEmissiveAnimation {
+                        period_ms: animation.period_ms,
+                        play_count: animation.play_count,
+                        brightness: animation.brightness.clone(),
+                    }),
+                anim_start: record.anim_start,
+            };
+            state.validate().ok()?;
+            ComponentPayload::EmissiveState(state)
         }
     })
 }
@@ -207,6 +229,42 @@ pub(crate) fn apply_presentation_payload(
             }
             resolver.seed_emitter(registry, id, state.anim_start.map(age));
         }
+        ComponentPayload::EmissiveState(state) => {
+            if state.validate().is_err() {
+                return false;
+            }
+            let Ok(mut volume) = registry
+                .get_component::<EmissiveVolumeComponent>(id)
+                .cloned()
+            else {
+                return false;
+            };
+            volume.color = state.color;
+            match &state.animation {
+                // The host holds this brightness with no curve: drop any local
+                // one, the joiner's own `levelLoad` flicker included (P31, P32).
+                None => volume.hold_brightness(state.brightness),
+                Some(animation) => {
+                    volume.brightness = state.brightness;
+                    // Through the install path, so the local bridge sees a new
+                    // run unless this curve is the one already running; the
+                    // seed below places the run's start either way.
+                    volume.install_animation(EmissiveAnimation {
+                        period_ms: animation.period_ms,
+                        play_count: animation.play_count,
+                        brightness: animation.brightness.clone(),
+                    });
+                }
+            }
+            if registry.set_component(id, volume).is_err() {
+                return false;
+            }
+            resolver.seed_emissive(
+                registry,
+                id,
+                state.anim_start.map(|value| local_script_time - age(value)),
+            );
+        }
         _ => return false,
     }
     true
@@ -257,6 +315,20 @@ mod tests {
         ) -> bool {
             assert!(registry.get_component::<FogVolumeComponent>(id).is_ok());
             self.0.push((ComponentKind::FogVolume, id, start));
+            true
+        }
+        fn seed_emissive(
+            &mut self,
+            registry: &EntityRegistry,
+            id: EntityId,
+            start: Option<f64>,
+        ) -> bool {
+            assert!(
+                registry
+                    .get_component::<EmissiveVolumeComponent>(id)
+                    .is_ok()
+            );
+            self.0.push((ComponentKind::EmissiveVolume, id, start));
             true
         }
         fn seed_emitter(
@@ -343,6 +415,16 @@ mod tests {
             }),
         }
     }
+    fn emissive() -> EmissiveVolumeComponent {
+        let mut volume = EmissiveVolumeComponent::authored(0.5, 4.0, [1.0, 0.5, 0.25]);
+        volume.brightness = 0.6;
+        volume.install_animation(EmissiveAnimation {
+            period_ms: 166.0,
+            play_count: Some(2),
+            brightness: vec![0.3, 1.0],
+        });
+        volume
+    }
     fn record(component: PresentationComponent, anim_start: Option<f64>) -> PresentationOverride {
         PresentationOverride {
             component,
@@ -386,11 +468,16 @@ mod tests {
         registry.set_component(id, local_light.clone()).unwrap();
         registry.set_component(id, local_emitter.clone()).unwrap();
         registry.set_component(id, fog()).unwrap();
+        // The client's own copy keeps its authored range whatever the host's.
+        registry
+            .set_component(id, EmissiveVolumeComponent::authored(0.0, 9.0, [1.0; 3]))
+            .unwrap();
         let mut seeds = Seeds::default();
         for component in [
             PresentationComponent::Light(light()),
             PresentationComponent::Fog(fog()),
             PresentationComponent::Emitter(emitter()),
+            PresentationComponent::Emissive(emissive()),
         ] {
             let before = record(component, Some(8.0));
             assert!(validate_presentation_override(&before));
@@ -416,12 +503,18 @@ mod tests {
             .unwrap();
         assert_eq!(applied.sprite, "local");
         assert_eq!(applied.spread, 9.0);
+        let applied = registry
+            .get_component::<EmissiveVolumeComponent>(id)
+            .unwrap();
+        assert_eq!((applied.min, applied.max), (0.0, 9.0));
+        assert_eq!(applied.color, [1.0, 0.5, 0.25]);
         assert_eq!(
             seeds.0,
             vec![
                 (ComponentKind::Light, id, Some(18.0)),
                 (ComponentKind::FogVolume, id, Some(18.0)),
-                (ComponentKind::BillboardEmitter, id, Some(2.0))
+                (ComponentKind::BillboardEmitter, id, Some(2.0)),
+                (ComponentKind::EmissiveVolume, id, Some(18.0)),
             ]
         );
     }
@@ -433,12 +526,14 @@ mod tests {
         registry.set_component(id, light()).unwrap();
         registry.set_component(id, fog()).unwrap();
         registry.set_component(id, emitter()).unwrap();
+        registry.set_component(id, emissive()).unwrap();
         let mut seeds = Seeds::default();
         for start in [Some(12.0), None] {
             for component in [
                 PresentationComponent::Light(light()),
                 PresentationComponent::Fog(fog()),
                 PresentationComponent::Emitter(emitter()),
+                PresentationComponent::Emissive(emissive()),
             ] {
                 assert!(apply(
                     &mut registry,
@@ -452,7 +547,16 @@ mod tests {
         }
         assert_eq!(
             seeds.0.iter().map(|seed| seed.2).collect::<Vec<_>>(),
-            vec![Some(20.0), Some(20.0), Some(0.0), None, None, None]
+            vec![
+                Some(20.0),
+                Some(20.0),
+                Some(0.0),
+                Some(20.0),
+                None,
+                None,
+                None,
+                None
+            ]
         );
     }
 
@@ -601,6 +705,7 @@ mod tests {
             PresentationComponent::Light(light()),
             PresentationComponent::Fog(fog()),
             PresentationComponent::Emitter(emitter()),
+            PresentationComponent::Emissive(emissive()),
         ] {
             assert!(!apply(
                 &mut registry,
@@ -619,6 +724,11 @@ mod tests {
                 .get_component::<BillboardEmitterComponent>(id)
                 .is_err()
         );
+        assert!(
+            registry
+                .get_component::<EmissiveVolumeComponent>(id)
+                .is_err()
+        );
     }
 
     #[test]
@@ -635,10 +745,14 @@ mod tests {
         fog.animation = None;
         let mut emitter = emitter();
         emitter.spin_animation = None;
+        registry.set_component(id, emissive()).unwrap();
+        let mut held = emissive();
+        held.hold_brightness(0.0);
         for component in [
             PresentationComponent::Light(light.clone()),
             PresentationComponent::Fog(fog),
             PresentationComponent::Emitter(emitter),
+            PresentationComponent::Emissive(held),
         ] {
             assert!(apply(
                 &mut registry,
@@ -674,7 +788,7 @@ mod tests {
             registry.get_component::<LightComponent>(id).unwrap(),
             &light
         );
-        assert_eq!(seeds.0.len(), 3);
+        assert_eq!(seeds.0.len(), 4);
     }
 
     #[test]
@@ -732,5 +846,121 @@ mod tests {
             PresentationComponent::Emitter(source),
             None
         )));
+        let mut source = emissive();
+        source.animation.as_mut().unwrap().brightness = vec![0.5; MAX_WIRE_CURVE_KEYS + 1];
+        assert!(!validate_presentation_override(&record(
+            PresentationComponent::Emissive(source),
+            None
+        )));
+    }
+
+    // P31 and P32: a host record holding a brightness with no curve drops the
+    // client's running curve, its own `levelLoad` flicker included, and holds
+    // that brightness. A later record carrying a curve installs it as a new
+    // run seeded at the host's rebased start; P44's colour-only record keeps
+    // the curve's run.
+    #[test]
+    fn presentation_state_emissive_hold_drops_the_local_curve_and_a_curve_installs_a_new_run() {
+        let mut registry = EntityRegistry::new();
+        let id = spawn(&mut registry);
+        let local = emissive();
+        let local_serial = local.animation_serial;
+        registry.set_component(id, local.clone()).unwrap();
+        let mut seeds = Seeds::default();
+
+        let mut host = local.clone();
+        host.hold_brightness(0.0);
+        assert!(apply(
+            &mut registry,
+            id,
+            &record(PresentationComponent::Emissive(host.clone()), Some(9.0)),
+            20.0,
+            10.0,
+            &mut seeds
+        ));
+        let held = registry
+            .get_component::<EmissiveVolumeComponent>(id)
+            .unwrap();
+        assert_eq!((held.brightness, held.animation.as_ref()), (0.0, None));
+        assert_eq!(held.animation_serial, local_serial, "a hold starts no run");
+
+        // The same curve the client ran before the hold: a new run.
+        host.install_animation(local.animation.clone().unwrap());
+        host.color = [1.0, 0.05, 0.02];
+        assert!(apply(
+            &mut registry,
+            id,
+            &record(PresentationComponent::Emissive(host.clone()), Some(9.5)),
+            20.0,
+            10.0,
+            &mut seeds
+        ));
+        let running = registry
+            .get_component::<EmissiveVolumeComponent>(id)
+            .unwrap()
+            .clone();
+        assert_eq!(running.animation, local.animation);
+        assert_ne!(running.animation_serial, local_serial);
+        assert_eq!(running.color, [1.0, 0.05, 0.02]);
+        assert_eq!(
+            seeds.0.last(),
+            Some(&(ComponentKind::EmissiveVolume, id, Some(19.5)))
+        );
+
+        // A colour-only change re-sends the same curve and start: same run.
+        host.color = [0.0, 1.0, 0.0];
+        assert!(apply(
+            &mut registry,
+            id,
+            &record(PresentationComponent::Emissive(host), Some(9.5)),
+            21.0,
+            11.0,
+            &mut seeds
+        ));
+        let recoloured = registry
+            .get_component::<EmissiveVolumeComponent>(id)
+            .unwrap();
+        assert_eq!(recoloured.animation_serial, running.animation_serial);
+        assert_eq!(recoloured.color, [0.0, 1.0, 0.0]);
+    }
+
+    // A value no emissive primitive writes never reaches the component.
+    #[test]
+    fn presentation_state_emissive_out_of_range_receive_is_refused_without_mutation_or_seed() {
+        let mut registry = EntityRegistry::new();
+        let id = spawn(&mut registry);
+        registry.set_component(id, emissive()).unwrap();
+        let mut seeds = Seeds::default();
+        let ComponentPayload::EmissiveState(valid) = presentation_override_payload(&record(
+            PresentationComponent::Emissive(emissive()),
+            None,
+        ))
+        .unwrap() else {
+            unreachable!()
+        };
+        let corrupt: [fn(&mut WireEmissiveState); 3] = [
+            |state| state.brightness = 1.5,
+            |state| state.color[0] = f32::NAN,
+            |state| state.animation.as_mut().unwrap().play_count = Some(0),
+        ];
+        for corrupt in corrupt {
+            let mut invalid = valid.clone();
+            corrupt(&mut invalid);
+            assert!(!apply_presentation_payload(
+                &mut registry,
+                id,
+                &ComponentPayload::EmissiveState(invalid),
+                1.0,
+                1.0,
+                &mut seeds
+            ));
+        }
+        assert_eq!(
+            registry
+                .get_component::<EmissiveVolumeComponent>(id)
+                .unwrap(),
+            &emissive()
+        );
+        assert!(seeds.0.is_empty());
     }
 }

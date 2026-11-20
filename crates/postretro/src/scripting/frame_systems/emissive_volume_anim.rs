@@ -49,6 +49,24 @@ impl EmissiveAnimClock {
         });
     }
 
+    /// Keep volume `index`'s running start but adopt the component's current
+    /// run, curve and serial: a replicated record that names no start
+    /// continues the local clock, as fog's does. No animation drops the slot;
+    /// no slot leaves the run to start lazily at the next advance.
+    pub(super) fn adopt(&mut self, index: usize, volume: &EmissiveVolumeComponent) {
+        let Some(slot) = self.slots.get_mut(index) else {
+            return;
+        };
+        match (volume.animation.as_ref(), slot.as_mut()) {
+            (None, _) => *slot = None,
+            (Some(animation), Some(running)) => {
+                running.serial = volume.animation_serial;
+                running.animation.clone_from(animation);
+            }
+            (Some(_), None) => {}
+        }
+    }
+
     /// Advance volume `index` to `now_ms` on the freeze-aware script clock:
     /// write its animation's sample into `brightness`, or, once a finite run
     /// has played its count, write the last sample and clear the animation.

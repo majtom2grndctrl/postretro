@@ -20,6 +20,10 @@ pub(crate) struct EmissiveVolumeBridge {
     /// Id-60 record index → `EntityId`, fixed at level load. Co-op binds a
     /// volume by this index.
     entity_ids: Vec<EntityId>,
+    /// Each record's authored origin (its brushes' union AABB centre), in
+    /// record order: the co-op binding's 1 cm check. Kept here rather than read
+    /// off the entity transform, so nothing that moves the entity moves it.
+    origins: Vec<Vec3>,
     /// This frame's glow factor per volume, in record order. Sized at load;
     /// rewritten in place each frame.
     factors: Vec<[f32; 3]>,
@@ -33,17 +37,29 @@ impl EmissiveVolumeBridge {
     pub(crate) fn new() -> Self {
         Self {
             entity_ids: Vec::new(),
+            origins: Vec::new(),
             factors: Vec::new(),
             table: EmissiveVolumeTable::new(),
             clock: anim::EmissiveAnimClock::new(),
         }
     }
 
-    /// The entity spawned for id-60 record `map_index`. Test-only until the
-    /// co-op presentation binding reads it.
-    #[cfg(test)]
+    /// The entity spawned for id-60 record `map_index`: the co-op binding's
+    /// identity.
     pub(crate) fn entity_for_map_index(&self, map_index: usize) -> Option<EntityId> {
         self.entity_ids.get(map_index).copied()
+    }
+
+    /// The id-60 record index `entity` was spawned for.
+    pub(crate) fn map_index_for_entity(&self, entity: EntityId) -> Option<usize> {
+        self.entity_ids.iter().position(|id| *id == entity)
+    }
+
+    /// The authored origin of the record `entity` was spawned for.
+    pub(crate) fn map_origin_for_entity(&self, entity: EntityId) -> Option<Vec3> {
+        self.origins
+            .get(self.map_index_for_entity(entity)?)
+            .copied()
     }
 
     /// Spawn one entity per emissive volume record, in record order, at its
@@ -58,6 +74,7 @@ impl EmissiveVolumeBridge {
     ) {
         self.clear();
         self.entity_ids.reserve(records.len());
+        self.origins.reserve(records.len());
         for record in records {
             let transform = Transform {
                 position: Vec3::from(record.origin),
@@ -78,6 +95,7 @@ impl EmissiveVolumeBridge {
                 EmissiveVolumeComponent::authored(record.min, record.max, record.color),
             );
             self.entity_ids.push(id);
+            self.origins.push(transform.position);
         }
         self.factors.resize(self.entity_ids.len(), [0.0; 3]);
         self.clock.reset(self.entity_ids.len());
@@ -94,10 +112,42 @@ impl EmissiveVolumeBridge {
         }
     }
 
+    /// Seed `id`'s animation run from a replicated record, after co-op apply
+    /// has written the component and before this frame's [`Self::update`], so
+    /// the host's start survives the same-frame tick.
+    ///
+    /// `start` is the run's start on this machine's script clock (seconds),
+    /// rebased from the host's. With no host start, a running slot keeps its
+    /// local start and adopts the component's run; a new run starts lazily at
+    /// the next update. A record with no animation drops the slot. Returns
+    /// false for a non-finite start or an entity this bridge does not own.
+    pub(crate) fn seed_replicated_state(
+        &mut self,
+        registry: &EntityRegistry,
+        id: EntityId,
+        start: Option<f64>,
+    ) -> bool {
+        if start.is_some_and(|value| !value.is_finite() || !(value * 1000.0).is_finite()) {
+            return false;
+        }
+        let Some(index) = self.map_index_for_entity(id) else {
+            return false;
+        };
+        let Ok(volume) = registry.get_component::<EmissiveVolumeComponent>(id) else {
+            return false;
+        };
+        match start {
+            Some(start) => self.clock.seed(index, volume, start * 1000.0),
+            None => self.clock.adopt(index, volume),
+        }
+        true
+    }
+
     /// Drop per-level state. The table pends every entry, so the next level's
     /// first upload replaces anything this one left on the GPU.
     pub(crate) fn clear(&mut self) {
         self.entity_ids.clear();
+        self.origins.clear();
         self.factors.clear();
         self.table.reset();
         self.clock.reset(0);

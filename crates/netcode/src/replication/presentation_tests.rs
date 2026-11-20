@@ -897,3 +897,65 @@ fn presentation_descriptor_no_override_and_invalid_placement_capture() {
             ))
     );
 }
+
+// An emissive override binds as kind 3 at its record index and carries the
+// written state; the bridge sampling the component afterwards changes nothing
+// on the wire (payloads carry the write, never a sample).
+#[test]
+fn presentation_registration_emissive_record_binds_kind_3_and_carries_the_write() {
+    use postretro_entities::{EmissiveAnimation, EmissiveVolumeComponent};
+    let mut registry = EntityRegistry::new();
+    let id = registry.spawn(Transform::default());
+    let mut volume = EmissiveVolumeComponent::authored(0.0, 2.0, [1.0; 3]);
+    volume.install_animation(EmissiveAnimation {
+        period_ms: 166.0,
+        play_count: None,
+        brightness: vec![0.3, 1.0],
+    });
+    volume.hold_brightness(0.0);
+    volume.color = [1.0, 0.05, 0.02];
+    registry.set_component(id, volume.clone()).unwrap();
+    let mut overrides = PresentationOverrides::default();
+    write(&mut overrides, id, PresentationComponent::Emissive(volume));
+    let resolver = Resolver(
+        [(
+            id,
+            PresentationBindingKey {
+                kind: PresentationBindingKind::EmissiveVolume,
+                index: 5,
+            },
+        )]
+        .into(),
+    );
+    let mut allocator = NetworkIdAllocator::new();
+    let mut set = ReplicableSet::new();
+    let mut tracker = ServerReplication::new();
+    host_register_presentation_overrides(
+        &registry,
+        &mut overrides,
+        &resolver,
+        &mut allocator,
+        &mut set,
+        &mut tracker,
+    );
+    let first = produce(&registry, &set, &mut allocator, &overrides);
+    let [snapshot] = first.as_slice() else {
+        panic!("one bound emissive record: {first:?}");
+    };
+    let binding = snapshot.presentation_binding.unwrap();
+    assert_eq!((binding.kind, binding.index), (3, 5));
+    let [ComponentPayload::EmissiveState(state)] = snapshot.components.as_slice() else {
+        panic!("emissive state only: {:?}", snapshot.components);
+    };
+    assert_eq!(state.brightness, 0.0);
+    assert_eq!(state.color, [1.0, 0.05, 0.02]);
+    assert_eq!(state.animation, None);
+
+    let mut sampled = registry
+        .get_component::<EmissiveVolumeComponent>(id)
+        .unwrap()
+        .clone();
+    sampled.brightness = 0.7;
+    registry.set_component(id, sampled).unwrap();
+    assert_eq!(produce(&registry, &set, &mut allocator, &overrides), first);
+}

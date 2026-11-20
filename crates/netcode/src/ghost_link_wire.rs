@@ -128,6 +128,7 @@ mod tests {
             emitter: None,
             fog: None,
             ghost_link: Some(wire),
+            emissive: None,
         };
         let bytes = postretro_net::wire::encode(&raw);
         let decoded: RawComponentPayload = postretro_net::wire::decode(&bytes).unwrap();

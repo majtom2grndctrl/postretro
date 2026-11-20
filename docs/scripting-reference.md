@@ -4169,7 +4169,10 @@ World descriptor entities carrying a mesh, health, a touchable component, or ene
 reach connected clients automatically. Light-only and emitter-only descriptors
 stay local until a host-only reaction changes their presentation. Every light,
 fog or emitter change from a host-only source reaches clients; any change to the
-light or emitter of an already-networked world entity does too. A late joiner
+light or emitter of an already-networked world entity does too. Emissive volumes
+replicate as fog volumes do: a host-only brightness, colour or animation write
+reaches clients, and a brightness write clears a running animation on every
+machine, a joiner's own `levelLoad` animation included. A late joiner
 gets the current state. Finite animations resume at their current age and settle
 when finished; looping animations keep their phase. For co-op replication, keep
 each animation channel to 64 samples or fewer. A write that cannot be encoded

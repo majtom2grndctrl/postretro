@@ -899,6 +899,7 @@ fn payload_is_finite(payload: &ComponentPayload) -> bool {
         ComponentPayload::LightState(state) => state.validate().is_ok(),
         ComponentPayload::FogState(state) => state.validate().is_ok(),
         ComponentPayload::EmitterState(state) => state.validate().is_ok(),
+        ComponentPayload::EmissiveState(state) => state.validate().is_ok(),
     }
 }
 

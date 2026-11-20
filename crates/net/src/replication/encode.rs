@@ -340,7 +340,8 @@ impl MovementAuthority {
             ComponentPayload::KinematicMoverState(_)
             | ComponentPayload::LightState(_)
             | ComponentPayload::EmitterState(_)
-            | ComponentPayload::FogState(_) => false,
+            | ComponentPayload::FogState(_)
+            | ComponentPayload::EmissiveState(_) => false,
         });
 
         // `entity_class` is valid on any finite-Transform record; movement metadata is

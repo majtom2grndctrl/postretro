@@ -4716,6 +4716,7 @@ impl App {
                         scripting_systems::presentation_bindings::PresentationBindingsMut {
                             lights: &mut session.light_bridge,
                             fog: &mut session.fog_volume_bridge,
+                            emissive: &mut session.emissive_volume_bridge,
                             emitters: &mut session.emitter_bridge,
                             map_entities: self
                                 .level
@@ -5162,6 +5163,7 @@ impl App {
             let bindings = crate::scripting_systems::presentation_bindings::PresentationBindings {
                 lights: &session.light_bridge,
                 fog: &session.fog_volume_bridge,
+                emissive: &session.emissive_volume_bridge,
                 map_entities: self
                     .level
                     .as_ref()

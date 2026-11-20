@@ -528,3 +528,90 @@ fn an_animating_frame_allocates_nothing() {
     }
     assert_eq!(probe.allocs_since(), 0);
 }
+
+// ---------------------------------------------------------------------------
+// Co-op seeding
+// ---------------------------------------------------------------------------
+
+// The binding identity: record index and authored origin, whatever moves the
+// entity afterwards.
+#[test]
+fn binding_identity_is_the_record_index_and_its_authored_origin() {
+    let (mut registry, bridge) = populated(&two_volumes());
+    let id = bridge.entity_for_map_index(1).unwrap();
+    registry
+        .set_component(
+            id,
+            Transform {
+                position: Vec3::splat(50.0),
+                rotation: Quat::IDENTITY,
+                scale: Vec3::ONE,
+            },
+        )
+        .unwrap();
+    assert_eq!(bridge.map_index_for_entity(id), Some(1));
+    assert_eq!(
+        bridge.map_origin_for_entity(id),
+        Some(Vec3::new(1.0, 2.0, 3.0))
+    );
+    assert_eq!(bridge.entity_for_map_index(2), None);
+    let stranger = registry.spawn(Transform::default());
+    assert_eq!(bridge.map_index_for_entity(stranger), None);
+    assert_eq!(bridge.map_origin_for_entity(stranger), None);
+}
+
+// P21 at the bridge: a replicated run seeded at the host's rebased start
+// survives the same frame's update and a later colour-only record (no start),
+// and a start far enough back settles on the curve's last sample at once
+// (P22). Mirrors fog's `replicated_fog_seed_keeps_age_through_same_frame_tick`.
+#[test]
+fn replicated_emissive_seed_keeps_age_through_same_frame_update_and_colour_record() {
+    let (mut registry, mut bridge) = populated(&two_volumes());
+    let id = bridge.entity_for_map_index(0).unwrap();
+    write(&mut registry, id, |volume| {
+        volume.install_animation(curve(5000.0, Some(1), vec![0.0, 1.0]))
+    });
+    assert!(bridge.seed_replicated_state(&registry, id, Some(8.0)));
+    bridge.update(&mut registry, 10.0);
+    approx(brightness_of(&registry, id), 0.4);
+
+    write(&mut registry, id, |volume| volume.color = [1.0, 0.0, 0.0]);
+    assert!(bridge.seed_replicated_state(&registry, id, None));
+    bridge.update(&mut registry, 11.0);
+    approx(brightness_of(&registry, id), 0.6);
+
+    assert!(bridge.seed_replicated_state(&registry, id, Some(4.0)));
+    bridge.update(&mut registry, 11.0);
+    let settled = registry
+        .get_component::<EmissiveVolumeComponent>(id)
+        .unwrap();
+    assert_eq!(
+        (settled.brightness, settled.animation.as_ref()),
+        (1.0, None)
+    );
+}
+
+// A record that names no start leaves a new run to start at the next update;
+// a held record drops the slot; a non-finite start or a foreign entity is
+// refused.
+#[test]
+fn replicated_emissive_seed_without_start_is_lazy_and_bad_seeds_are_refused() {
+    let (mut registry, mut bridge) = populated(&two_volumes());
+    let id = bridge.entity_for_map_index(0).unwrap();
+    write(&mut registry, id, |volume| volume.install_animation(ramp()));
+    assert!(bridge.seed_replicated_state(&registry, id, None));
+    bridge.update(&mut registry, 20.0);
+    approx(brightness_of(&registry, id), 0.0);
+    bridge.update(&mut registry, 20.25);
+    approx(brightness_of(&registry, id), 0.25);
+
+    write(&mut registry, id, |volume| volume.hold_brightness(0.5));
+    assert!(bridge.seed_replicated_state(&registry, id, Some(1.0)));
+    bridge.update(&mut registry, 21.0);
+    approx(brightness_of(&registry, id), 0.5);
+
+    assert!(!bridge.seed_replicated_state(&registry, id, Some(f64::NAN)));
+    assert!(!bridge.seed_replicated_state(&registry, id, Some(f64::MAX)));
+    let stranger = registry.spawn(Transform::default());
+    assert!(!bridge.seed_replicated_state(&registry, stranger, None));
+}

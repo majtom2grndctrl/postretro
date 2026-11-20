@@ -40,8 +40,8 @@ pub const COMPONENT_KIND_GHOST_LINK: u16 = 26;
 pub const COMPONENT_KIND_DEFENSE_LAYERS: u16 = 27;
 /// Reserved discriminant; attack pools are host-only and never replicate.
 pub const COMPONENT_KIND_ATTACK_POOL: u16 = 28;
-/// Emissive volumes. Reserved until their presentation payload lands; no
-/// component payload carries it yet.
+/// Emissive volumes: written brightness, colour and animation, bound by
+/// emissive record index (`super::WireEmissiveState`).
 pub const COMPONENT_KIND_EMISSIVE_VOLUME: u16 = 29;
 
 /// Maximum key count in any replicated presentation animation channel.
@@ -620,6 +620,7 @@ pub struct RawComponentPayload {
     pub emitter: Option<WireEmitterState>,
     pub fog: Option<WireFogState>,
     pub ghost_link: Option<super::WireGhostLinkState>,
+    pub emissive: Option<super::WireEmissiveState>,
 }
 
 /// A validated component payload. Constructed only by [`RawComponentPayload::validate`],
@@ -635,6 +636,7 @@ pub enum ComponentPayload {
     EmitterState(WireEmitterState),
     FogState(WireFogState),
     GhostLinkState(super::WireGhostLinkState),
+    EmissiveState(super::WireEmissiveState),
 }
 
 impl ComponentPayload {
@@ -653,6 +655,7 @@ impl ComponentPayload {
             ComponentPayload::EmitterState(_) => COMPONENT_KIND_BILLBOARD_EMITTER,
             ComponentPayload::FogState(_) => COMPONENT_KIND_FOG_VOLUME,
             ComponentPayload::GhostLinkState(_) => COMPONENT_KIND_GHOST_LINK,
+            ComponentPayload::EmissiveState(_) => COMPONENT_KIND_EMISSIVE_VOLUME,
         }
     }
 }
@@ -674,7 +677,8 @@ impl RawComponentPayload {
             + usize::from(self.light.is_some())
             + usize::from(self.emitter.is_some())
             + usize::from(self.fog.is_some())
-            + usize::from(self.ghost_link.is_some());
+            + usize::from(self.ghost_link.is_some())
+            + usize::from(self.emissive.is_some());
 
         match self.component_kind {
             COMPONENT_KIND_GHOST_LINK => match self.ghost_link {
@@ -799,6 +803,18 @@ impl RawComponentPayload {
                     self.component_kind,
                 )),
             },
+            COMPONENT_KIND_EMISSIVE_VOLUME => match &self.emissive {
+                Some(state) if populated == 1 => {
+                    state.validate()?;
+                    Ok(ComponentPayload::EmissiveState(state.clone()))
+                }
+                Some(_) => Err(ValidationError::MismatchedComponentPayload(
+                    self.component_kind,
+                )),
+                None => Err(ValidationError::MissingComponentPayload(
+                    self.component_kind,
+                )),
+            },
             other => Err(ValidationError::UnknownComponentKind(other)),
         }
     }
@@ -874,6 +890,7 @@ mod tests {
             emitter: None,
             fog: None,
             ghost_link: None,
+            emissive: None,
         }
     }
 
@@ -1216,6 +1233,7 @@ mod tests {
                     teleporter: None,
                     fog: Some(fog_state()),
                     ghost_link: None,
+                    emissive: None,
                     ..empty_raw(COMPONENT_KIND_FOG_VOLUME)
                 },
             ),

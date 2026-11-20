@@ -1447,11 +1447,8 @@ impl ClientReplication {
         // Resolve without touching binding/rejection caches. The ordinary apply
         // path still performs all identity, origin and component validation.
         let target = if let Some(binding) = presentation_binding {
-            let kind = match binding.kind {
-                0 => PresentationBindingKind::MapLight,
-                1 => PresentationBindingKind::FogVolume,
-                2 => PresentationBindingKind::MapEntity,
-                _ => return false,
+            let Some(kind) = PresentationBindingKind::from_wire(binding.kind) else {
+                return false;
             };
             resolver
                 .resolve(
@@ -2326,7 +2323,8 @@ impl ClientReplication {
                 // binding and bridge-clock path is installed.
                 ComponentPayload::LightState(_)
                 | ComponentPayload::FogState(_)
-                | ComponentPayload::EmitterState(_) => {}
+                | ComponentPayload::EmitterState(_)
+                | ComponentPayload::EmissiveState(_) => {}
             }
         }
         if !record_has_transform

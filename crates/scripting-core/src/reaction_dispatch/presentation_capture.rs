@@ -4,7 +4,7 @@ use crate::registry::{ComponentKind, EntityId, EntityRegistry};
 use postretro_entities::FireOrigin;
 use postretro_entities::presentation_overrides::{PresentationComponent, PresentationOverride};
 
-pub const REPLICATED_PRESENTATION_PRIMITIVES: [&str; 9] = [
+pub const REPLICATED_PRESENTATION_PRIMITIVES: [&str; 12] = [
     "setLightAnimation",
     "setFogDensity",
     "setFogGlow",
@@ -14,6 +14,9 @@ pub const REPLICATED_PRESENTATION_PRIMITIVES: [&str; 9] = [
     "setFogAnimation",
     "setEmitterRate",
     "setSpinRate",
+    "setEmissiveBrightness",
+    "setEmissiveColor",
+    "setEmissiveAnimation",
 ];
 
 fn kind(primitive: &str) -> Option<ComponentKind> {
@@ -22,6 +25,9 @@ fn kind(primitive: &str) -> Option<ComponentKind> {
         "setFogDensity" | "setFogGlow" | "setFogEdgeSoftness" | "setFogFalloff"
         | "setFogParams" | "setFogAnimation" => Some(ComponentKind::FogVolume),
         "setEmitterRate" | "setSpinRate" => Some(ComponentKind::BillboardEmitter),
+        "setEmissiveBrightness" | "setEmissiveColor" | "setEmissiveAnimation" => {
+            Some(ComponentKind::EmissiveVolume)
+        }
         _ => None,
     }
 }
@@ -88,6 +94,8 @@ pub(super) fn after_apply(
         let anim_start = table.frame_start.get(&key).and_then(|baseline| {
             // LightBridge currently restarts on whole-component changes; the only
             // captured light writer changes animation alone. Keep future writers aligned.
+            // An emissive run also compares its install serial, so a curve a
+            // brightness write cleared and the drain re-installed restarts (P30).
             if component.same_animation(&baseline.component) {
                 baseline.anim_start
             } else {

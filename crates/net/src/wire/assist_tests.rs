@@ -43,6 +43,7 @@ fn movement_payload() -> RawComponentPayload {
         fog: None,
         ghost_link: None,
         status_presence: None,
+        emissive: None,
     }
 }
 

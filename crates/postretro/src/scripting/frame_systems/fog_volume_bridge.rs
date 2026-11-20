@@ -13,6 +13,8 @@ use postretro_level_format::fog_volumes::FogVolumeRecord;
 use postretro_level_loader::{LightType, MapLight};
 use postretro_render_cpu::fog_volume::{FogPointLight, FogVolume, MAX_FOG_POINT_LIGHTS};
 
+use crate::scripting_systems::curve_sample::sample_linear_curve;
+
 /// Authoring-time AABB and shape parameters cached alongside the entity. Not
 /// runtime-settable — these are baked at compile time and live in a side-table
 /// rather than the `FogVolumeComponent`.
@@ -545,7 +547,7 @@ fn sphere_intersects_any_aabb<'a>(
 fn sample_density_curve_at(animation: &FogAnimation, start_ms: f64, now_ms: f64) -> Option<f32> {
     let curve = animation.density.as_ref()?;
     let t = normalized_phase(animation, start_ms, now_ms);
-    Some(sample_density_curve(curve, t))
+    Some(sample_linear_curve(curve, t))
 }
 
 /// Sample `animation.saturation` at the current wall-clock time. Returns `None`
@@ -555,7 +557,7 @@ fn sample_density_curve_at(animation: &FogAnimation, start_ms: f64, now_ms: f64)
 fn sample_saturation_curve_at(animation: &FogAnimation, start_ms: f64, now_ms: f64) -> Option<f32> {
     let curve = animation.saturation.as_ref()?;
     let t = normalized_phase(animation, start_ms, now_ms);
-    Some(sample_density_curve(curve, t))
+    Some(sample_linear_curve(curve, t))
 }
 
 /// Sample `animation.min_brightness` at the current wall-clock time. Returns `None`
@@ -569,7 +571,7 @@ fn sample_min_brightness_curve_at(
 ) -> Option<f32> {
     let curve = animation.min_brightness.as_ref()?;
     let t = normalized_phase(animation, start_ms, now_ms);
-    Some(sample_density_curve(curve, t))
+    Some(sample_linear_curve(curve, t))
 }
 
 /// Sample `animation.light_range` at the current wall-clock time. Returns `None`
@@ -583,7 +585,7 @@ fn sample_light_range_curve_at(
 ) -> Option<f32> {
     let curve = animation.light_range.as_ref()?;
     let t = normalized_phase(animation, start_ms, now_ms);
-    Some(sample_density_curve(curve, t))
+    Some(sample_linear_curve(curve, t))
 }
 
 /// Compute the normalised `[0.0, 1.0)` phase for the current frame. Difference
@@ -595,30 +597,6 @@ fn normalized_phase(animation: &FogAnimation, start_ms: f64, now_ms: f64) -> f32
     let phase_offset = animation.phase.unwrap_or(0.0) as f64;
     let t = ((now_ms - start_ms) / period_ms + phase_offset).rem_euclid(1.0);
     t as f32
-}
-
-/// Linear interpolation across an N-sample density curve, where samples are
-/// uniformly spaced over `[0.0, 1.0]`. Deliberately simpler than the shader's
-/// Catmull-Rom path: fog density is a single scalar per frame and the visual
-/// difference at curve boundaries is imperceptible at the cadence reactions
-/// drive fog at.
-fn sample_density_curve(curve: &[f32], t: f32) -> f32 {
-    match curve.len() {
-        // Defensive: validation rejects empty curves at install time, so this
-        // arm is unreachable in practice. Return the no-fog identity rather
-        // than panicking from a hot path.
-        0 => 0.0,
-        1 => curve[0],
-        n => {
-            let pos = t * (n - 1) as f32;
-            let lo_idx = (pos as usize).min(n - 1);
-            let hi_idx = (lo_idx + 1).min(n - 1);
-            let frac = pos - lo_idx as f32;
-            let lo = curve[lo_idx];
-            let hi = curve[hi_idx];
-            lo + (hi - lo) * frac
-        }
-    }
 }
 
 /// Final values written back when a `play_count`-bounded animation settles.
@@ -1115,7 +1093,7 @@ mod tests {
         // Capture the expected value at t = 0.5 from the linear-interp sampler
         // — the same path the evaluator uses, so this is a self-consistency
         // check rather than a transcendental approximation.
-        let expected_at_half = sample_density_curve(&curve, 0.5);
+        let expected_at_half = sample_linear_curve(&curve, 0.5);
         install_fog_animation(
             &mut registry,
             id,
@@ -1148,7 +1126,7 @@ mod tests {
         // pos = 0.5 * 1 = 0.5, lo = 0.0, hi = 1.0, result = 0.0 + 0.5 = 0.5.
         // Pins the linear interpolation formula independently of the evaluator path.
         let two_sample_curve = [0.0_f32, 1.0_f32];
-        let hand_computed = sample_density_curve(&two_sample_curve, 0.5);
+        let hand_computed = sample_linear_curve(&two_sample_curve, 0.5);
         assert!(
             (hand_computed - 0.5_f32).abs() < 0.01,
             "linear interp of [0.0, 1.0] at t=0.5 must equal 0.5; got {hand_computed}"
@@ -1271,7 +1249,7 @@ mod tests {
             .unwrap()
             .density;
         let expected_first = new_curve[0];
-        let expected_old = sample_density_curve(&[0.0, 1.0], 0.3);
+        let expected_old = sample_linear_curve(&[0.0, 1.0], 0.3);
         assert!(
             (density - expected_first).abs() < 1e-4,
             "density should sample new curve at t=0 (~{expected_first}), \
@@ -1347,7 +1325,7 @@ mod tests {
         // Two-sample ramp: [0.0, 1.0]. At t=0.5 the linear interpolation
         // returns exactly 0.5 — hand-checkable without transcendental math.
         let curve = vec![0.0_f32, 1.0_f32];
-        let expected_at_half = sample_density_curve(&curve, 0.5);
+        let expected_at_half = sample_linear_curve(&curve, 0.5);
         install_fog_animation(
             &mut registry,
             id,
@@ -1439,7 +1417,7 @@ mod tests {
         // Two-sample ramp: [0.5, 1.5]. At t=0.25 → pos = 0.25, lo = 0.5,
         // hi = 1.5, result = 0.5 + 0.25 * 1.0 = 0.75.
         let curve = vec![0.5_f32, 1.5_f32];
-        let expected_at_quarter = sample_density_curve(&curve, 0.25);
+        let expected_at_quarter = sample_linear_curve(&curve, 0.25);
         install_fog_animation(
             &mut registry,
             id,

@@ -11,6 +11,7 @@ mod contributor_ledger;
 mod damage_perception;
 pub mod defense_layers;
 pub mod deferred_effect;
+pub mod emissive_volume;
 pub mod entity_state;
 pub mod fog_volume;
 pub mod ghost_link;

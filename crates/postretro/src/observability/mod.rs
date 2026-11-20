@@ -70,6 +70,7 @@ const ALL_KINDS: [ComponentKind; ComponentKind::COUNT] = [
     ComponentKind::AttackPool,
     ComponentKind::StatusPresence,
     ComponentKind::Seam,
+    ComponentKind::EmissiveVolume,
 ];
 
 /// Snake_case name for a component kind, matching `ComponentValue`'s serde
@@ -112,6 +113,7 @@ fn component_kind_snake(kind: ComponentKind) -> &'static str {
         ComponentKind::AttackPool => "attack_pool",
         ComponentKind::StatusPresence => "status_presence",
         ComponentKind::Seam => "seam",
+        ComponentKind::EmissiveVolume => "emissive_volume",
     }
 }
 
@@ -502,6 +504,9 @@ mod tests {
                 armed: true,
                 on_arrive: String::new(),
             }),
+            ComponentKind::EmissiveVolume => ComponentValue::EmissiveVolume(
+                postretro_entities::EmissiveVolumeComponent::authored(0.0, 1.0, [1.0, 0.5, 0.0]),
+            ),
             ComponentKind::Immersion => ComponentValue::Immersion(
                 postretro_entities::components::immersion::ImmersionComponent {
                     immersion: 0.5,

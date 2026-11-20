@@ -73,7 +73,6 @@ Example prefixes (illustrative, not exhaustive):
 | `metal` | Metal |
 | `concrete` | Concrete |
 | `grate` | Grate |
-| `neon` | Neon — shininess plus a static emissive multiplier for `_e` textures; planned audio/impact behaviors. Retiring (decided, not yet built): glow strength moves to `materials.toml` (§4.5). |
 | `glass` | Glass |
 | `wood` | Wood |
 
@@ -81,9 +80,9 @@ The material enum and prefix derivation are implemented. Behavior hooks are plan
 
 | Behavior | Status |
 |----------|--------|
-| **Emissive surfaces** | Implemented — world and kinematic-brush `_e` texels add static self-illumination to HDR scene color, scaled by the prefix-derived material multiplier. They never replace or inject into direct/indirect lighting; bright values bloom in the renderer compositor. A `light_area` face's glow follows its light instead (decided, not yet built). See §4.5. |
+| **Emissive surfaces** | Implemented — world and kinematic-brush `_e` texels add self-illumination to HDR scene color, scaled by a strength baked per texture from `materials.toml` (default 1.0 for any texture with an `_e` map, whatever its prefix), and on static world faces by an `emissive_volume`. They never replace or inject into direct/indirect lighting; bright values bloom in the renderer compositor. A `light_area` face's glow follows its light instead (decided, not yet built). See §4.5. |
 | **Shininess** | Implemented (Epic 5) — specular exponent on enum variant. Fallback for materials without a `_p` smoothness map (§4.7, decided, not yet built). |
-| **Surface Depth** | Implemented — per-prefix depth (each direction), terrace count, march step cap, and fade distance for the signed texel-space parallax march. `glass` resolves to flat by intent, not by omission; `neon` does until it retires (§4.5, decided, not yet built), after which a former `neon_` texture carves as Default. See §4.6. |
+| **Surface Depth** | Implemented — per-prefix depth (each direction), terrace count, march step cap, and fade distance for the signed texel-space parallax march. `glass` resolves to flat by intent, not by omission. See §4.6. |
 | **Footstep sounds** | Planned. |
 | **Bullet impact particles** | Planned. |
 | **Ricochet behavior** | Planned. |
@@ -94,7 +93,7 @@ Each behavior is a property of the material enum variant. Which prefixes carry w
 
 Mappers use the naming convention; no special tooling or workflow required on the authoring side.
 
-Unknown prefix maps to a default material. Engine logs a warning at load time identifying the unrecognized prefix and the texture name.
+Unknown prefix maps to a default material. Engine logs a warning at load time identifying the unrecognized prefix and the texture name. `neon` is no longer a prefix: a former `neon_` name derives Default (and carves as Default under an `_h` map), warning once per prefix. `tools/migrate_neon_prefix.py` renames such textures and carries their glow into `materials.toml` (§4.5).
 
 ---
 
@@ -142,16 +141,17 @@ Optional per-texture normal maps for fine surface detail.
 ### 4.5 Emissive Surfaces
 
 Optional emissive color maps add per-texel self-illumination to world and
-kinematic-brush surfaces, static except on `light_area` faces (Strength, below).
+kinematic-brush surfaces. Glow is static except on faces an `emissive_volume`
+holds, which scripts drive, and on `light_area` faces (Strength, below).
 They do not emit light into lightmaps, SH irradiance or neighboring surfaces,
 and do not create dynamic lights. Glow texels are excluded from the per-texture
 diffuse mean used by SH bounce when non-glowing texels remain; an all-glowing
 texture uses its full average (`build_pipeline.md` §Compiler pipeline). The
-mean's glow test follows the original material name, as prefix glow does at
-runtime; a `light_area` face's `_glow` never enters it. To light a scene, an
+mean's glow test is whether the texture has an `_e` map, whatever its strength
+(0 included); a `light_area` face's `_glow` never enters it. To light a scene, an
 author places a light entity. A `light_area` is such an entity: its `_e` faces
 form its emitter and glow with it, and its cast light takes the entity's `light`
-and `_color`, never the emissive map or prefix (decided, not yet built;
+and `_color`, never the emissive map or its strength (decided, not yet built;
 `build_pipeline.md` §Custom FGD).
 
 - **Naming:** `{name}_e.png` beside the diffuse texture.
@@ -159,31 +159,47 @@ and `_color`, never the emissive map or prefix (decided, not yet built;
   must match the diffuse texture; `prl-build` rejects a mismatch at compile time.
 - **Color space:** sRGB content. `prl-build` accepts `_e` regardless of its PNG
   color-space tag, so the untagged output from `tools/gen_emissive.py` is valid.
+  `_e` is an RGB color map; black is zero glow. Alpha is reserved for a future
+  per-texel channel: author it opaque. No shader reads it.
 - **Baking:** the fourth optional `.prm` slot (slot-mask bit 3), after diffuse,
   specular, and normal. It uses the same sRGB decode → linear filter → sRGB
   encode path as diffuse.
-- **Strength:** a prefix-derived `Material::emissive_strength()` multiplier scales
-  the sampled color. `neon_` is 4.0 so an authored bright texel exceeds the
-  renderer bloom threshold; other current material prefixes are zero until
-  content establishes a use for them. A `light_area` face (decided, not yet
-  built) instead takes its light's `_glow` × the light's live colour and
-  brightness, so its glow follows its light frame for frame. Every other face
-  has no per-surface runtime scalar.
-- **Strength and volumes (decided, not yet built):** brief
-  `plans/ready/emissive-volumes`.
-  - The `neon` prefix retires. Glow strength is content:
-    `<mod root>/materials.toml` sets `emissive` per normalized texture name, so
-    aliases share one; a texture with an `_e` map and no entry is 1.0. Only
-    prl-build reads the file; runtime reads only the baked value, so bake and
-    runtime see one number. The file is the home for content-owned material
-    properties.
-  - An `emissive_volume` brush scales and tints its static world faces: glow =
-    texture strength × (min + brightness × (max − min)) × color. The map owns
-    min, max and default color; scripts own brightness ([0, 1], 1 with no
-    script) and color, never the range. Movers and fluids take texture strength
-    only.
-  - `_e` stays an RGB color map; black is zero glow. Alpha is reserved for a
-    future per-texel channel: author it opaque.
+- **Strength:** content, never the prefix. prl-build bakes one strength per
+  texture into PRL id 60 (`build_pipeline.md` §PRL section IDs), beside the
+  linear mean of its non-black `_e` texels; the runtime reads only those baked
+  values and never opens the source file, so bake and runtime see one number.
+  - Source: `<mod root>/materials.toml`, one table per texture with an
+    `emissive` value. Only prl-build reads it. The file is the home for
+    content-owned material properties.
+  - Default: 1.0 for a texture with an `_e` map and no entry; 0 for one
+    without `_e`, which samples no emissive texture.
+  - Keys are texture names as TrenchBroom shows them (`collection/name`),
+    normalized as the material stage normalizes map texture names. A key
+    matches the texture a map face resolves to, whether the map names it
+    qualified or by bare stem, so aliases share one strength. Two keys that
+    normalize alike warn once, naming both lines; the later wins.
+  - A broken file never stops the compile. A syntax error warns, naming file
+    and line, and every texture takes its default; an unknown key warns and is
+    ignored; a non-number warns and reads its default. A negative value reads
+    0, a non-finite one its default, and one past the ceiling (64) the
+    ceiling, each warning. An entry for a texture with no `_e` map warns and
+    is ignored. A mod with no file compiles silently at defaults.
+  - A strength edit re-runs only reflection capture and id 60; lightmap, SH and
+    `.prm` caches stay warm.
+  - A `light_area` face (decided, not yet built) instead takes its light's
+    `_glow` × the light's live colour and brightness, so its glow follows its
+    light frame for frame.
+- **Emissive volumes:** an `emissive_volume` brush scales and tints the static
+  world faces it holds. Glow = texture strength × (min + brightness × (max −
+  min)) × color. Membership is per final face, fixed at compile time
+  (`build_pipeline.md` §Custom FGD).
+  - The map owns `emissive_min`, `emissive_max` and the default color; scripts
+    own brightness ([0, 1], 1 with no script) and color, never the range
+    (`scripting.md` §10.2a). Its keys take the same ceiling as strength.
+  - Faces outside every volume, movers and fluids take texture strength only.
+    Skinned models glow 0: they load only their diffuse slot.
+  - The photosensitivity limiter judges each volume by what it shows
+    (`rendering_pipeline.md` §7.8).
 - **Composite and fallback:** forward rendering writes `lit + emissive` into the
   renderer-owned HDR scene target. An absent `_e` uses a shared 1×1 black sRGB
   placeholder, an additive no-op. Bloom is a screen-space effect after this
@@ -245,7 +261,7 @@ rides in the **G channel of the specular slot**, which becomes a two-channel
   are derived from the material name **prefix**, exactly like `shininess`
   (`postretro-render-data::material::Material::surface_depth`). Surface Depth
   adds no author-facing material file: authoring is still "drop a
-  correctly-named PNG". `materials.toml` (§4.5, decided, not yet built) carries
+  correctly-named PNG". `materials.toml` (§4.5) carries
   glow strength, not depth. The four values ride in the per-material uniform's
   second 16-byte row. A material whose loaded specular slot has no height
   channel (`R8Unorm`) gets an all-zero row and skips the march entirely.
@@ -335,7 +351,7 @@ A reflection probe is a compile-time capture of the static world, stored for dis
 
 ### 5.2 Capture
 
-Captured in its own cached prl-build stage against the static world (`build_pipeline.md` §Compiler pipeline): movers never appear, `switch` brushes do, and small brushes may be excluded (Exclusion, below). Mover state lighting (`rendering_pipeline.md` §4) does not reach a capture, so water behind a closed mover door still mirrors the lit doorway; mover-aware captures are planned, not built. Load-time GPU capture would be runtime texture generation (§9). Shading is albedo × (direct + indirect) + emissive, as the runtime would draw it at a reference state: the static lightmap, every animated light's weight map, the SDF-shadowed lights the runtime's per-fragment selection picks at each hit, and SH indirect with every animated light's delta. An animated light enters at the cycle mean of its runtime clamped curve, a curveless one at its authored colour, whether or not it starts active. No specular, no dynamic lights. Decided, not yet built (§4.5): emissive enters at the no-script state, texture strength × the face's volume max × colour (strength alone outside a volume). Coupled to the renderer by parity: the indirect weight and emissive strengths must equal the renderer's production values, and the SDF light selection and shading mirror the forward pass's as drawn, quirks included: point and directional SDF lights draw at half brightness (a zero aim meets the cone term), and an animated SDF light's direct is static (only its delta SH animates). Tests pin each, so a runtime change there updates the capture and bumps the capture stage's cache epoch (`build_pipeline.md` §Build Cache); the key hashes no shader text, so without the bump warm builds keep stale tiles. A runtime-tuned dev indirect weight mismatches the bake. The SH depth visibility reads id 59 through the runtime's reference decode, and the key hashes id 59, so the capture loses a thin-wall leak exactly when the live view does (`rendering_pipeline.md` §4, Direction-aware probe visibility).
+Captured in its own cached prl-build stage against the static world (`build_pipeline.md` §Compiler pipeline): movers never appear, `switch` brushes do, and small brushes may be excluded (Exclusion, below). Mover state lighting (`rendering_pipeline.md` §4) does not reach a capture, so water behind a closed mover door still mirrors the lit doorway; mover-aware captures are planned, not built. Load-time GPU capture would be runtime texture generation (§9). Shading is albedo × (direct + indirect) + emissive, as the runtime would draw it at a reference state: the static lightmap, every animated light's weight map, the SDF-shadowed lights the runtime's per-fragment selection picks at each hit, and SH indirect with every animated light's delta. An animated light enters at the cycle mean of its runtime clamped curve, a curveless one at its authored colour, whether or not it starts active. No specular, no dynamic lights. Emissive enters at the no-script state: the baked texture strength (§4.5) × the face's volume max × its authored colour, strength alone outside a volume. Coupled to the renderer by parity: the indirect weight and the baked emissive strengths must equal the renderer's production values, and the SDF light selection and shading mirror the forward pass's as drawn, quirks included: point and directional SDF lights draw at half brightness (a zero aim meets the cone term), and an animated SDF light's direct is static (only its delta SH animates). Tests pin each, so a runtime change there updates the capture and bumps the capture stage's cache epoch (`build_pipeline.md` §Build Cache); the key hashes no shader text, so without the bump warm builds keep stale tiles. A runtime-tuned dev indirect weight mismatches the bake. The SH depth visibility reads id 59 through the runtime's reference decode, and the key hashes id 59, so the capture loses a thin-wall leak exactly when the live view does (`rendering_pipeline.md` §4, Direction-aware probe visibility).
 
 - **Colour tile.** BC6H, each texel the mean of four rotated-grid rays.
 - **Distance tile.** R16F, each texel the mean over the same rays of 1/|hit − capture point|₁. Inverse L1 is affine across an octahedral octant on a plane, so bilinear filtering reconstructs a wall exactly. 0 means the ray hit nothing, and no finite hit stores 0, so a later sky term can fill exactly the directions the capture saw nothing.

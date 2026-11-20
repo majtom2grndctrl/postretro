@@ -433,6 +433,8 @@ fn tile_texture_bytes_are_ledgered_while_installed_and_gone_after_unload() {
                 &LevelGeometry {
                     vertices: &[],
                     vertex_spec_owners: &[],
+                    vertex_emissive_volumes: &[],
+                    emissive_volumes: &[],
                     indices: &[],
                     bvh: &bvh,
                     lights: &[],
@@ -503,19 +505,25 @@ fn install_whole(
     tiles: &ProbeDepthTilesSection,
 ) {
     use crate::render::renderer_textures::tests::with_one_triangle;
-    use postretro_render_data::material::Material;
-    with_one_triangle(&[Material::Default], Some(sh), None, &[], |geometry| {
-        renderer
-            .install_level_geometry(
-                &crate::render::LevelGeometry {
-                    probe_depth_tiles: Some(tiles),
-                    sh_storage: crate::render::LevelGeometryShStorage::Legacy,
-                    ..*geometry
-                },
-                Default::default(),
-            )
-            .expect("level resources install")
-    });
+    use postretro_render_data::material::TextureMaterial;
+    with_one_triangle(
+        &[TextureMaterial::DEFAULT],
+        Some(sh),
+        None,
+        &[],
+        |geometry| {
+            renderer
+                .install_level_geometry(
+                    &crate::render::LevelGeometry {
+                        probe_depth_tiles: Some(tiles),
+                        sh_storage: crate::render::LevelGeometryShStorage::Legacy,
+                        ..*geometry
+                    },
+                    Default::default(),
+                )
+                .expect("level resources install")
+        },
+    );
 }
 
 /// Every texel of `level`'s whole-load moments texture, x fastest. The
@@ -687,7 +695,7 @@ fn a_rewritten_reference_stays_with_the_load_it_was_made_on() {
     use crate::render::level_build::{GeometryExtras, GeometryRest};
     use crate::render::level_resource_set::PreviousLevelSet;
     use crate::render::renderer_textures::tests::with_one_triangle;
-    use postretro_render_data::material::Material;
+    use postretro_render_data::material::TextureMaterial;
     let test = "a_rewritten_reference_stays_with_the_load_it_was_made_on";
     let Some(mut renderer) = offscreen_renderer_or_skip(test, 16, 16) else {
         return;
@@ -706,7 +714,7 @@ fn a_rewritten_reference_stays_with_the_load_it_was_made_on() {
     builder.geometry_from(
         Box::new(move |visit| {
             with_one_triangle(
-                &[Material::Default],
+                &[TextureMaterial::DEFAULT],
                 Some(&source_sh),
                 None,
                 &[],

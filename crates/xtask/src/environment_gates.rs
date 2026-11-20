@@ -3,8 +3,8 @@
 // the audio crate's public API (the muffle included) names no kira type, player
 // option names (reflections take no style option, only the cost tier), and the
 // world material inputs (material prefixes, texture suffixes, FGD classes and
-// keys take no reflection input). Run by preflight's `cargo test`, beside the
-// scripting surface gates.
+// keys take no reflection input; no prefix table names the retired `neon`).
+// Run by preflight's `cargo test`, beside the scripting surface gates.
 // See: context/lib/entity_model.md §7 (Environment Volumes) · context/lib/build_pipeline.md §Custom FGD · context/lib/audio.md §1 · context/lib/player_options.md §4
 
 use std::path::{Path, PathBuf};
@@ -89,7 +89,26 @@ const MATERIAL_RULE_FILES: &[&str] = &[
 // The material prefix table: its file, const name and the prefixes it holds.
 const MATERIAL_PREFIXES_FILE: &str = "crates/render-data/src/material.rs";
 const MATERIAL_PREFIXES_CONST: &str = "MATERIAL_PREFIXES";
-const MATERIAL_PREFIX_NAMES: &[&str] = &["metal", "concrete", "grate", "neon", "glass", "wood"];
+const MATERIAL_PREFIX_NAMES: &[&str] = &["metal", "concrete", "grate", "glass", "wood"];
+
+/// The retired material prefix: glow strength is per-texture content, never
+/// a texture-name prefix.
+const RETIRED_PREFIX: &str = "neon";
+/// The material enum variant the retired prefix named.
+const RETIRED_VARIANT: &str = "Neon";
+/// Rust prefix tables beside the engine's, as (file, const name): the texture
+/// tool's height terraces.
+const TOOL_PREFIX_TABLES: &[(&str, &str)] = &[(
+    "tools/texture-tool/src/lib.rs",
+    "HEIGHT_QUANTIZE_LEVELS_BY_PREFIX",
+)];
+/// Python tools whose tables key on material prefixes.
+const PYTHON_PREFIX_TOOLS: &[&str] = &[
+    "tools/gen_emissive.py",
+    "tools/gen_normal.py",
+    "tools/gen_specular.py",
+    "tools/migrate_neon_prefix.py",
+];
 // The sibling-suffix list: its file, const name and the suffixes it holds (the
 // bare diffuse is `""`).
 const BUNDLE_SUFFIXES_FILE: &str = "crates/level-compiler/src/texture_mips/resolution.rs";
@@ -730,6 +749,54 @@ fn no_world_material_fgd_key_or_texture_rule_takes_a_reflection_input() {
     assert!(
         violations.is_empty(),
         "a world material, texture rule or FGD key takes a reflection input:\n{}",
+        violations.join("\n")
+    );
+}
+
+// The `neon` prefix retired: glow strength is per-texture content, never a
+// name prefix. No prefix table, in the engine or a tool, names it again, and the
+// material enum has no variant for it.
+#[test]
+fn no_material_prefix_table_names_the_retired_neon_prefix() {
+    let root = workspace_root();
+    let read = |file: &str| {
+        std::fs::read_to_string(root.join(file))
+            .unwrap_or_else(|_| panic!("{file} moved; point this gate at it"))
+    };
+    let mut violations = Vec::new();
+
+    let material = strip_line_comments(&read(MATERIAL_PREFIXES_FILE));
+    for line in identifier_lines(&material, RETIRED_VARIANT) {
+        violations.push(format!(
+            "{MATERIAL_PREFIXES_FILE}:{line}: `{RETIRED_VARIANT}`"
+        ));
+    }
+    for (file, name) in std::iter::once((MATERIAL_PREFIXES_FILE, MATERIAL_PREFIXES_CONST))
+        .chain(TOOL_PREFIX_TABLES.iter().copied())
+    {
+        let found = const_named_literals(&strip_line_comments(&read(file)), name)
+            .unwrap_or_else(|| panic!("{file} declares no `const {name}`; update this gate"));
+        if found
+            .iter()
+            .any(|prefix| prefix.eq_ignore_ascii_case(RETIRED_PREFIX))
+        {
+            violations.push(format!("{file}: `{name}` holds `{RETIRED_PREFIX}`"));
+        }
+    }
+    for file in PYTHON_PREFIX_TOOLS {
+        let source = read(file).to_lowercase();
+        for (number, line) in source.lines().enumerate() {
+            let code = line.find('#').map_or(line, |at| &line[..at]);
+            for quote in ['"', '\''] {
+                if code.contains(&format!("{quote}{RETIRED_PREFIX}{quote}")) {
+                    violations.push(format!("{file}:{}: `{RETIRED_PREFIX}`", number + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "the retired `{RETIRED_PREFIX}` prefix is back in a prefix table:\n{}",
         violations.join("\n")
     );
 }

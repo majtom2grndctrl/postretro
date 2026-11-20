@@ -582,7 +582,7 @@ fn lightmap_sample_wgsl_address_constants_decode_the_block_table() {
 #[test]
 fn bgl_entries_pin_sampler_split() {
     let entries = bind_group_layout_entries();
-    assert_eq!(entries.len(), 8, "group-4 BGL must expose eight bindings");
+    assert_eq!(entries.len(), 9, "group-4 BGL must expose nine bindings");
 
     let tex_sample = |b: u32| {
         entries
@@ -661,6 +661,21 @@ fn bgl_entries_pin_sampler_split() {
             ty: wgpu::BufferBindingType::Uniform,
             ..
         }
+    ));
+    // The emissive volume table: fragment-only, and never bound shorter than
+    // the shader's 257-entry array.
+    let volume_table = entries
+        .iter()
+        .find(|entry| entry.binding == super::bindings::BIND_EMISSIVE_VOLUME_TABLE)
+        .expect("emissive volume table binding must exist");
+    assert_eq!(volume_table.visibility, wgpu::ShaderStages::FRAGMENT);
+    assert!(matches!(
+        volume_table.ty,
+        wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            min_binding_size: Some(size),
+            ..
+        } if size.get() == postretro_render_cpu::emissive_volume::EMISSIVE_TABLE_BYTES as u64
     ));
     // Two samplers: nearest at binding 2, linear at binding 4.
     assert_eq!(

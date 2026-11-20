@@ -17,7 +17,7 @@ use postretro_render_cpu::fluid_surface::prepared::PreparedFluidSurfaces;
 use postretro_render_cpu::lightmap_family::LightmapFamilyPlan;
 use postretro_render_cpu::sh_residency::ShResidencyPlan;
 use postretro_render_cpu::texture_prep::PreparedWorldTextures;
-use postretro_render_data::material::Material;
+use postretro_render_data::material::TextureMaterial;
 
 use super::model_cache::ModelCacheUse;
 use super::{LevelTiers, PrepKind};
@@ -60,8 +60,9 @@ pub(crate) struct PreparedLevel {
 pub(crate) struct PreparedGpuLevel {
     pub(crate) textures: PreparedWorldTextures,
     /// One material per world texture name: shininess and Surface Depth
-    /// inputs derived from the name, as the oracle derives them.
-    pub(crate) texture_materials: Vec<Material>,
+    /// inputs derived from the name, and the baked glow strength, as the
+    /// oracle derives them.
+    pub(crate) texture_materials: Vec<TextureMaterial>,
     /// Each bound world material slot's diffuse size (one placeholder slot
     /// for a level with no materials): what UV normalize and the fluid pack
     /// used.

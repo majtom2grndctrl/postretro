@@ -22,17 +22,19 @@ pub struct MaterialStats {
 }
 
 impl MaterialStats {
+    /// Glow texels (non-black `_e` RGB) leave the mean whenever the texture has
+    /// an `_e` slot, whatever its strength: strength is content the bake reads
+    /// from `materials.toml`, and it must reach no SH or lightmap key.
     pub fn from_slots(
         diffuse: Option<&PrmSlot>,
         emissive: Option<&PrmSlot>,
-        emissive_strength: f32,
         lut: &[f32; 256],
     ) -> Result<Self> {
         let Some(diffuse) = diffuse else {
             // No diffuse means no reflectance; do not inspect an orphan glow slot.
             return Ok(Self::default());
         };
-        let mean = mean_from_slots(diffuse, emissive, emissive_strength, lut)?;
+        let mean = mean_from_slots(diffuse, emissive, lut)?;
         Ok(Self {
             snapped_mean: Some(mean.map(linear_to_srgb_u8)),
         })
@@ -40,6 +42,52 @@ impl MaterialStats {
 
     pub fn snapped_mean(&self) -> Option<[u8; 3]> {
         self.snapped_mean
+    }
+}
+
+/// A glow texel: any non-zero `_e` RGB channel. Black is zero glow.
+fn is_glow_texel(rgba: &[u8]) -> bool {
+    rgba[..3].iter().any(|&channel| channel != 0)
+}
+
+/// A texture's `_e` facts the Emissive section (id 60) bakes: whether it has an
+/// `_e` slot, which sets its default strength, and the linear mean of its
+/// glow texels at full resolution, which stands in for its texels in the
+/// photosensitivity clamp. Taken for every texture, fluid-only ones included.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EmissiveGlow {
+    pub has_emissive: bool,
+    /// Zero without `_e` or with an all-black one.
+    pub mean_color: [f32; 3],
+}
+
+impl EmissiveGlow {
+    pub fn from_slot(emissive: Option<&PrmSlot>, lut: &[f32; 256]) -> Result<Self> {
+        let Some(emissive) = emissive else {
+            return Ok(Self::default());
+        };
+        let mut sum = [0.0_f64; 3];
+        let mut count = 0_u64;
+        for texel in mip_zero(emissive)?.as_chunks::<4>().0 {
+            if !is_glow_texel(texel) {
+                continue;
+            }
+            for channel in 0..3 {
+                sum[channel] += f64::from(lut[usize::from(texel[channel])]);
+            }
+            count += 1;
+        }
+        let mean_color = if count == 0 {
+            [0.0; 3]
+        } else {
+            // A mean of values in [0, 1] stays there; the clamp only absorbs
+            // f64 → f32 rounding, which the loader's range check would refuse.
+            sum.map(|value| ((value / count as f64) as f32).clamp(0.0, 1.0))
+        };
+        Ok(Self {
+            has_emissive: true,
+            mean_color,
+        })
     }
 }
 
@@ -84,7 +132,6 @@ fn mip_zero(slot: &PrmSlot) -> Result<&[u8]> {
 fn mean_from_slots(
     diffuse: &PrmSlot,
     emissive: Option<&PrmSlot>,
-    emissive_strength: f32,
     lut: &[f32; 256],
 ) -> Result<[f32; 3]> {
     let diffuse_texels = mip_zero(diffuse)?;
@@ -101,12 +148,7 @@ fn mean_from_slots(
     let mut non_glow = [0.0_f64; 3];
     let mut retained = 0_u64;
     for (index, texel) in diffuse_texels.as_chunks::<4>().0.iter().enumerate() {
-        let glowing = emissive_strength > 0.0
-            && emissive_texels.is_some_and(|bytes| {
-                bytes[index * 4..index * 4 + 3]
-                    .iter()
-                    .any(|&channel| channel != 0)
-            });
+        let glowing = emissive_texels.is_some_and(|bytes| is_glow_texel(&bytes[index * 4..]));
         for channel in 0..3 {
             let linear = f64::from(lut[usize::from(texel[channel])]);
             full[channel] += linear;
@@ -226,14 +268,8 @@ mod tests {
         }
     }
 
-    fn stats(diffuse: &PrmSlot, emissive: Option<&PrmSlot>, strength: f32) -> MaterialStats {
-        MaterialStats::from_slots(
-            Some(diffuse),
-            emissive,
-            strength,
-            &build_srgb_to_linear_lut(),
-        )
-        .unwrap()
+    fn stats(diffuse: &PrmSlot, emissive: Option<&PrmSlot>) -> MaterialStats {
+        MaterialStats::from_slots(Some(diffuse), emissive, &build_srgb_to_linear_lut()).unwrap()
     }
 
     fn albedo(record: MaterialStats, saturation: f32) -> Vec3 {
@@ -256,7 +292,7 @@ mod tests {
         diffuse.level_count = 2;
         diffuse.payload.extend_from_slice(&[255, 255, 255, 255]);
         let lut = build_srgb_to_linear_lut();
-        let raw = mean_from_slots(&diffuse, None, 0.0, &lut).unwrap();
+        let raw = mean_from_slots(&diffuse, None, &lut).unwrap();
         near(
             Vec3::from_array(raw),
             Vec3::new(0.5, 0.5, 0.0),
@@ -266,7 +302,7 @@ mod tests {
             (raw[0] - lut[128]).abs() > 0.2,
             "linear average differs from decoded sRGB average"
         );
-        let result = stats(&diffuse, None, 0.0);
+        let result = stats(&diffuse, None);
         assert_eq!(result.snapped_mean(), Some([188, 188, 0]));
         assert_eq!(
             albedo(result, 1.0).to_array().map(f32::to_bits),
@@ -309,48 +345,80 @@ mod tests {
                 .sum::<f64>()
                 / texels.len() as f64) as f32
         });
-        let raw = mean_from_slots(&diffuse, None, 0.0, &build_srgb_to_linear_lut()).unwrap();
+        let raw = mean_from_slots(&diffuse, None, &build_srgb_to_linear_lut()).unwrap();
         near(
             Vec3::from_array(raw),
             Vec3::from_array(expected),
             2.0 * f32::EPSILON,
         );
         assert_eq!(
-            stats(&diffuse, None, 0.0).snapped_mean(),
+            stats(&diffuse, None).snapped_mean(),
             Some(expected.map(linear_to_srgb_u8))
         );
     }
 
+    /// The glow test reads the `_e` slot alone: any non-black RGB texel leaves
+    /// the mean, whatever the texture's strength (an `emissive = 0` texture
+    /// still excludes its glow). An all-glow texture keeps its full average.
     #[test]
-    fn glow_mask_uses_rgb_and_per_name_strength_with_full_average_when_all_glow() {
+    fn glow_mask_uses_rgb_and_excludes_glow_whenever_an_emissive_slot_exists() {
         let diffuse = slot(2, 1, &[[32, 64, 96, 0], [255, 255, 255, 255]]);
         let mask = slot(2, 1, &[[0, 0, 0, 255], [1, 0, 0, 0]]);
-        let painted = stats(&diffuse, None, 0.0);
-        let neon = stats(&diffuse, Some(&mask), 4.0);
-        assert_eq!(neon.snapped_mean(), Some([32, 64, 96]));
-        // The same sidecar under a zero-strength name keeps its bright strip.
-        for strength in [0.0, 4.0, 0.0, 4.0] {
-            let actual = stats(&diffuse, Some(&mask), strength);
-            assert_eq!(
-                actual.snapped_mean(),
-                if strength > 0.0 {
-                    neon.snapped_mean()
-                } else {
-                    painted.snapped_mean()
-                }
-            );
-        }
+        let painted = stats(&diffuse, None);
+        let masked = stats(&diffuse, Some(&mask));
+        assert_eq!(masked.snapped_mean(), Some([32, 64, 96]));
+        assert_ne!(masked.snapped_mean(), painted.snapped_mean());
         let all_glow = slot(2, 1, &[[0, 1, 0, 0], [0, 0, 255, 255]]);
         assert_eq!(
-            stats(&diffuse, Some(&all_glow), 4.0).snapped_mean(),
+            stats(&diffuse, Some(&all_glow)).snapped_mean(),
             painted.snapped_mean()
         );
+        // An all-black `_e` marks no texel.
+        let black = slot(2, 1, &[[0, 0, 0, 255], [0, 0, 0, 0]]);
+        assert_eq!(
+            stats(&diffuse, Some(&black)).snapped_mean(),
+            painted.snapped_mean()
+        );
+    }
+
+    /// Id 60's glow colour: the linear mean of the non-black texels only.
+    #[test]
+    fn glow_colour_is_the_linear_mean_of_non_black_emissive_texels() {
+        let lut = build_srgb_to_linear_lut();
+        assert_eq!(
+            EmissiveGlow::from_slot(None, &lut).unwrap(),
+            EmissiveGlow::default()
+        );
+        // Black texels never enter the mean, and alpha is ignored.
+        let emissive = slot(
+            4,
+            1,
+            &[
+                [255, 0, 0, 0],
+                [0, 0, 0, 255],
+                [128, 255, 0, 255],
+                [0, 0, 0, 0],
+            ],
+        );
+        let glow = EmissiveGlow::from_slot(Some(&emissive), &lut).unwrap();
+        assert!(glow.has_emissive);
+        let expected = [(1.0 + lut[128]) / 2.0, 0.5, 0.0];
+        near(
+            Vec3::from_array(glow.mean_color),
+            Vec3::from_array(expected),
+            f32::EPSILON,
+        );
+        // An all-black `_e` still marks the texture as emissive, with colour 0.
+        let black = slot(2, 1, &[[0, 0, 0, 255], [0, 0, 0, 255]]);
+        let dark = EmissiveGlow::from_slot(Some(&black), &lut).unwrap();
+        assert!(dark.has_emissive);
+        assert_eq!(dark.mean_color, [0.0; 3]);
     }
 
     #[test]
     fn saturation_preserves_luminance_and_interpolates_colour() {
         assert!((0.0..=1.0).contains(&BOUNCE_SATURATION));
-        let red = stats(&slot(1, 1, &[[235, 47, 11, 255]]), None, 0.0);
+        let red = stats(&slot(1, 1, &[[235, 47, 11, 255]]), None);
         let full = albedo(red, 1.0);
         let neutral = albedo(red, 0.0);
         let half = albedo(red, 0.5);
@@ -395,7 +463,7 @@ mod tests {
             }
         }
         for rgb in coloured {
-            let record = stats(&slot(1, 1, &[[rgb[0], rgb[1], rgb[2], 255]]), None, 0.0);
+            let record = stats(&slot(1, 1, &[[rgb[0], rgb[1], rgb[2], 255]]), None);
             assert_eq!(record.snapped_mean(), Some(rgb));
             let ceiling = lut[usize::from(*rgb.iter().max().unwrap())];
             for saturation in [0.0, 0.5, 1.0] {
@@ -408,7 +476,7 @@ mod tests {
             }
         }
         for value in [0, 1, 64, 128, 200, 254, 255] {
-            let record = stats(&slot(1, 1, &[[value, value, value, 255]]), None, 0.0);
+            let record = stats(&slot(1, 1, &[[value, value, value, 255]]), None);
             let mean = lut[usize::from(value)];
             for saturation in [0.0, 0.5, 1.0] {
                 for channel in albedo(record, saturation).to_array() {
@@ -426,8 +494,7 @@ mod tests {
         let mut orphan = slot(1, 1, &[[255; 4]]);
         orphan.payload.clear();
         let unresolved =
-            MaterialStats::from_slots(None, Some(&orphan), 4.0, &build_srgb_to_linear_lut())
-                .unwrap();
+            MaterialStats::from_slots(None, Some(&orphan), &build_srgb_to_linear_lut()).unwrap();
         assert_eq!(unresolved.snapped_mean(), None);
         for saturation in [0.0, 0.5, 1.0] {
             let table = BounceMaterials::new(vec![unresolved], saturation).unwrap();
@@ -448,7 +515,7 @@ mod tests {
         for saturation in [-0.1, 1.1, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             assert!(validate_saturation(saturation).is_err());
             assert!(BounceMaterials::new(Vec::new(), saturation).is_err());
-            assert!(BounceMaterials::new(vec![stats(&diffuse, None, 0.0)], saturation).is_err());
+            assert!(BounceMaterials::new(vec![stats(&diffuse, None)], saturation).is_err());
         }
         let mut malformed = vec![diffuse.clone(); 5];
         malformed[0].format = PrmFormat::Rgba8Unorm;
@@ -457,11 +524,11 @@ mod tests {
         malformed[3].level_count = 0;
         malformed[4].payload.pop();
         for slot in &malformed {
-            assert!(MaterialStats::from_slots(Some(slot), None, 0.0, &lut).is_err());
-            assert!(MaterialStats::from_slots(Some(&diffuse), Some(slot), 4.0, &lut).is_err());
+            assert!(MaterialStats::from_slots(Some(slot), None, &lut).is_err());
+            assert!(MaterialStats::from_slots(Some(&diffuse), Some(slot), &lut).is_err());
         }
         let mismatch = slot(2, 1, &[[0; 4], [0; 4]]);
-        assert!(MaterialStats::from_slots(Some(&diffuse), Some(&mismatch), 4.0, &lut).is_err());
+        assert!(MaterialStats::from_slots(Some(&diffuse), Some(&mismatch), &lut).is_err());
     }
 
     fn geometry(indices: &[u32]) -> GeometryResult {
@@ -499,8 +566,8 @@ mod tests {
 
     #[test]
     fn keys_fold_every_used_index_once_and_ignore_mover_fluid_means_and_name_order() {
-        let red = stats(&slot(1, 1, &[[255, 0, 0, 255]]), None, 0.0);
-        let blue = stats(&slot(1, 1, &[[0, 0, 255, 255]]), None, 0.0);
+        let red = stats(&slot(1, 1, &[[255, 0, 0, 255]]), None);
+        let blue = stats(&slot(1, 1, &[[0, 0, 255, 255]]), None);
         let table = vec![red; 4];
         let base = key(table.clone(), 1.0, &geometry(&[0, 1, 0]));
         assert_eq!(base, key(table.clone(), 1.0, &geometry(&[1, 0])));

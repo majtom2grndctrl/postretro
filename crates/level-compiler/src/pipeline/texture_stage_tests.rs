@@ -11,6 +11,10 @@ use postretro_level_format::{SectionId, read_container, read_section_data};
 use postretro_test_log_capture::LogCapture;
 use std::collections::BTreeSet;
 
+fn no_materials_toml() -> MaterialsToml {
+    MaterialsToml::empty(Path::new("materials.toml").to_path_buf())
+}
+
 #[test]
 fn material_stage_rejects_bad_saturation_before_baking_any_texture() {
     let root = tempfile::tempdir().unwrap();
@@ -22,9 +26,15 @@ fn material_stage_rejects_bad_saturation_before_baking_any_texture() {
     let prm_root = root.path().join("materials");
     for names in [Vec::new(), vec!["panels/red".to_owned()]] {
         for saturation in [-0.1, 1.1, f32::NAN, f32::INFINITY] {
-            let error = bake_world_materials_at(&names, &textures, &prm_root, saturation)
-                .err()
-                .expect("invalid saturation must fail the material stage");
+            let error = bake_world_materials_at(
+                &names,
+                &textures,
+                &prm_root,
+                no_materials_toml(),
+                saturation,
+            )
+            .err()
+            .expect("invalid saturation must fail the material stage");
             assert!(error.to_string().contains("saturation"));
             assert!(
                 !prm_root.exists(),
@@ -32,7 +42,14 @@ fn material_stage_rejects_bad_saturation_before_baking_any_texture() {
             );
         }
     }
-    bake_world_materials_at(&["panels/red".to_owned()], &textures, &prm_root, 1.0).unwrap();
+    bake_world_materials_at(
+        &["panels/red".to_owned()],
+        &textures,
+        &prm_root,
+        no_materials_toml(),
+        1.0,
+    )
+    .unwrap();
     assert!(
         prm_root.exists(),
         "the same names bake at a valid saturation"
@@ -59,8 +76,8 @@ fn material_stage_gives_a_texture_the_same_mean_whatever_its_neighbours() {
     });
     paint("panels/red", |_| [255, 0, 0, 255]);
     paint("panels/green", |_| [0, 255, 0, 255]);
-    paint("panels/neon_blue", |_| [0, 0, 255, 255]);
-    paint("panels/neon_blue_e", |x| {
+    paint("panels/glow_blue", |_| [0, 0, 255, 255]);
+    paint("panels/glow_blue_e", |x| {
         if x == 0 { [255; 4] } else { [0, 0, 0, 255] }
     });
     // Two maps sharing one baked root: the first bakes the shared texture
@@ -69,13 +86,22 @@ fn material_stage_gives_a_texture_the_same_mean_whatever_its_neighbours() {
     let first_names = ["panels/shared", "panels/red"].map(str::to_owned);
     let second_names = [
         "panels/green",
-        "panels/neon_blue",
+        "panels/glow_blue",
         "panels/missing",
         "panels/shared",
     ]
     .map(str::to_owned);
-    let first = bake_world_materials_at(&first_names, &textures, &prm_root, 1.0).unwrap();
-    let second = bake_world_materials_at(&second_names, &textures, &prm_root, 1.0).unwrap();
+    let first =
+        bake_world_materials_at(&first_names, &textures, &prm_root, no_materials_toml(), 1.0)
+            .unwrap();
+    let second = bake_world_materials_at(
+        &second_names,
+        &textures,
+        &prm_root,
+        no_materials_toml(),
+        1.0,
+    )
+    .unwrap();
     let albedo = |stage: &MaterialStageResult, index: u32| {
         stage
             .bounce_materials
@@ -243,4 +269,233 @@ fn pipeline_bakes_shared_and_mover_names_once_and_tails_only_fluid_only_names() 
         ["bounce/lift", "bounce/red", "bounce/water", "bounce/white"],
         "each bundle charged once, under its world, mover or fluid name"
     );
+}
+
+// Pin P46: a map naming `signs/bar` and the bare `bar` (and a stale
+// collection, `oldcoll/bar`) reaches one bundle through the bare-stem alias,
+// so every spelling reads `["signs/bar"]` and packs its strength.
+#[test]
+fn a_bare_stem_alias_packs_its_bundles_materials_toml_strength() {
+    let root = tempfile::tempdir().unwrap();
+    let textures = root.path().join("textures");
+    std::fs::create_dir_all(textures.join("signs")).unwrap();
+    for (stem, pixel) in [("bar", [90, 20, 20, 255]), ("bar_e", [255, 128, 0, 255])] {
+        image::RgbaImage::from_pixel(2, 2, image::Rgba(pixel))
+            .save(textures.join(format!("signs/{stem}.png")))
+            .unwrap();
+    }
+    let prm_root = root.path().join("materials");
+    let names = ["signs/bar", "bar", "oldcoll/bar"].map(str::to_owned);
+    let toml = MaterialsToml::parse(
+        root.path().join("materials.toml"),
+        "[\"signs/bar\"]\nemissive = 4\n",
+    );
+    let logs = LogCapture::start();
+    let mut stage = bake_world_materials_at(&names, &textures, &prm_root, toml, 1.0).unwrap();
+    let emissive = bake_remaining_textures(
+        &root.path().join("maps/bar.map"),
+        &names,
+        &[],
+        &textures,
+        &prm_root,
+        &mut stage,
+    )
+    .unwrap();
+    let strengths: Vec<f32> = emissive.iter().map(|texture| texture.strength).collect();
+    assert_eq!(strengths, [4.0; 3], "{names:?}");
+    assert!(
+        emissive.iter().all(|texture| texture.glow_color[0] > 0.9),
+        "every spelling resolved the `_e` map"
+    );
+    for record in logs.records() {
+        assert!(
+            !(record.level <= log::Level::Warn && record.message.contains("materials.toml")),
+            "a resolved alias warns nothing: {}",
+            record.message
+        );
+    }
+}
+
+/// Compile the shared-name room (world `bounce/red` and `bounce/white`, mover
+/// `bounce/lift`, fluid-only `bounce/water`) under `root`; the PRL path.
+fn compile_shared_name_room(root: &Path) -> std::path::PathBuf {
+    std::fs::create_dir_all(root.join("maps")).unwrap();
+    let map = root.join("maps/shared.map");
+    std::fs::write(&map, shared_name_room_map()).unwrap();
+    let output = root.join("shared.prl");
+    let path = |path: &Path| path.to_string_lossy().into_owned();
+    let args = crate::parse_args_from(
+        [
+            path(&map),
+            "-o".to_owned(),
+            path(&output),
+            "--baked-root".to_owned(),
+            path(&root.join("baked")),
+            "--no-cache".to_owned(),
+            "--jobs".to_owned(),
+            "1".to_owned(),
+            "--lightmap-density".to_owned(),
+            "0.25".to_owned(),
+        ]
+        .into_iter(),
+    )
+    .unwrap();
+    let started = std::time::Instant::now();
+    let reporter: std::sync::Arc<dyn crate::reporter::Reporter> = std::sync::Arc::new(
+        crate::reporter::PlainReporter::new(started, crate::logger::LogSink::default()),
+    );
+    crate::pipeline::run(
+        &args,
+        None,
+        started,
+        reporter,
+        std::sync::Arc::new(crate::governor::Governor::new(1, false)),
+    )
+    .expect("fixture compiles");
+    output
+}
+
+// Acceptance A1b/A1c: one `materials.toml` strength reaches world faces, a
+// mover and a fluid-only texture, warning nothing; and the bake's capture
+// term, the section the loader carries and the runtime material uniform all
+// read that one number. Pins P46 (an alias key) and P47 (fluid-only).
+#[test]
+fn materials_toml_strength_reaches_id_60_capture_and_runtime_uniform_alike() {
+    use crate::surface_materials::SurfaceMaterials;
+    use postretro_level_format::emissive::EmissiveSection;
+    use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
+    use postretro_render_cpu::material_plan::MaterialUniformPlan;
+    use postretro_render_cpu::surface_depth::{SurfaceDepthQuality, SurfaceReliefLevels};
+
+    let root = tempfile::tempdir().unwrap();
+    write_textures(root.path());
+    write_texture(root.path(), "lift", [40, 160, 40]);
+    for glow in ["red_e", "lift_e", "water_e"] {
+        write_texture(root.path(), glow, [255, 128, 0]);
+    }
+    std::fs::write(
+        root.path().join("materials.toml"),
+        "[\"bounce/red\"]\nemissive = 4.0\n\n\
+         [\"textures/BOUNCE/lift\"]\nemissive = 4\n\n\
+         [\"bounce/water\"]\nemissive = 4.0\n",
+    )
+    .unwrap();
+    let logs = LogCapture::start();
+    let output = compile_shared_name_room(root.path());
+    for record in logs.records() {
+        assert!(
+            !(record.level <= log::Level::Warn && record.message.contains("materials.toml")),
+            "a valid entry warns nothing: {}",
+            record.message
+        );
+    }
+
+    let mut reader = std::io::Cursor::new(std::fs::read(&output).unwrap());
+    let metadata = read_container(&mut reader).unwrap();
+    let mut section = |id: SectionId| {
+        read_section_data(&mut reader, &metadata, id as u32)
+            .unwrap()
+            .unwrap_or_else(|| panic!("{id:?} section"))
+    };
+    let names = TextureNamesSection::from_bytes(&section(SectionId::TextureNames))
+        .unwrap()
+        .names;
+    let keys = TextureCacheKeysSection::from_bytes(&section(SectionId::TextureCacheKeys)).unwrap();
+    let emissive = EmissiveSection::from_bytes(&section(SectionId::Emissive)).unwrap();
+    assert_eq!(emissive.textures.len(), names.len(), "one record per name");
+    assert!(emissive.volumes.is_empty());
+    let index = |name: &str| names.iter().position(|n| n == name).unwrap();
+    // Independent sRGB decode of the `_e` texel (255, 128, 0).
+    let half = ((128.0f64 / 255.0 + 0.055) / 1.055).powf(2.4) as f32;
+    let glow = [1.0, half, 0.0];
+    for name in ["bounce/red", "bounce/lift", "bounce/water"] {
+        let record = emissive.textures[index(name)];
+        assert_eq!(record.strength, 4.0, "{name}");
+        for (actual, expected) in record.glow_color.iter().zip(glow) {
+            assert!(
+                (actual - expected).abs() < 1e-6,
+                "{name}: {:?}",
+                record.glow_color
+            );
+        }
+    }
+    assert_eq!(
+        emissive.textures[index("bounce/white")],
+        postretro_level_format::emissive::EmissiveTexture::DARK,
+        "no _e map"
+    );
+
+    // The capture's emissive term is the `_e` texel times that strength.
+    let red = index("bounce/red");
+    let key_map: HashMap<String, [u8; 32]> = names
+        .iter()
+        .cloned()
+        .zip(keys.keys.iter().copied())
+        .collect();
+    let prm_root = root.path().join("baked/materials");
+    let materials = SurfaceMaterials::new(&names, &key_map, &emissive.textures, &prm_root);
+    let term = materials.sample(red as u32, [0.5, 0.5], 1.0).emissive;
+    for (channel, value) in term.to_array().into_iter().enumerate() {
+        assert!(
+            (value - glow[channel] * 4.0).abs() < 1e-5,
+            "capture term {term}"
+        );
+    }
+
+    // The runtime reads the same record and packs it into the uniform.
+    let world = postretro_level_loader::load_prl(output.to_str().unwrap()).unwrap();
+    assert_eq!(world.emissive, emissive);
+    let plan = MaterialUniformPlan::new(
+        postretro_render_data::material::Material::Default,
+        world.emissive.texture_strength(red),
+        false,
+        1,
+        SurfaceReliefLevels::FLAT,
+    );
+    assert_eq!(
+        plan.uniform_bytes(SurfaceDepthQuality::On)[4..8],
+        4.0f32.to_le_bytes()
+    );
+}
+
+// Acceptance A1a/A1b: no `materials.toml` compiles silently at defaults: 1
+// with an `_e` map, 0 without.
+#[test]
+fn a_mod_without_materials_toml_compiles_silently_at_default_strengths() {
+    let root = tempfile::tempdir().unwrap();
+    write_textures(root.path());
+    write_texture(root.path(), "lift", [40, 160, 40]);
+    write_texture(root.path(), "red_e", [255, 255, 255]);
+    let logs = LogCapture::start();
+    let output = compile_shared_name_room(root.path());
+    for record in logs.records() {
+        assert!(
+            !record.message.contains("materials.toml"),
+            "an absent file is silent: {}",
+            record.message
+        );
+    }
+    let mut reader = std::io::Cursor::new(std::fs::read(&output).unwrap());
+    let metadata = read_container(&mut reader).unwrap();
+    let mut section = |id: SectionId| {
+        read_section_data(&mut reader, &metadata, id as u32)
+            .unwrap()
+            .unwrap_or_else(|| panic!("{id:?} section"))
+    };
+    let names = TextureNamesSection::from_bytes(&section(SectionId::TextureNames))
+        .unwrap()
+        .names;
+    let emissive = postretro_level_format::emissive::EmissiveSection::from_bytes(&section(
+        SectionId::Emissive,
+    ))
+    .unwrap();
+    let strengths: HashMap<&str, f32> = names
+        .iter()
+        .map(String::as_str)
+        .zip(emissive.textures.iter().map(|texture| texture.strength))
+        .collect();
+    assert_eq!(strengths["bounce/red"], 1.0);
+    for name in ["bounce/white", "bounce/lift", "bounce/water"] {
+        assert_eq!(strengths[name], 0.0, "{name} has no _e map");
+    }
 }

@@ -124,6 +124,11 @@ pub(super) struct Extras {
     pub alpha_lights: AlphaLightsSection,
     pub chunk_list: ChunkLightListSection,
     pub authored: Vec<MapReflectionVolume>,
+    /// Id 60's texture records; empty reads every texture at strength 0.
+    pub emissive: Vec<postretro_level_format::emissive::EmissiveTexture>,
+    /// Id 60's volume records; empty leaves every face at its texture's
+    /// strength.
+    pub emissive_volumes: Vec<postretro_level_format::emissive::EmissiveVolumeRecord>,
 }
 
 impl Default for Extras {
@@ -137,6 +142,8 @@ impl Default for Extras {
             alpha_lights: AlphaLightsSection::default(),
             chunk_list: ChunkLightListSection::placeholder(),
             authored: Vec::new(),
+            emissive: Vec::new(),
+            emissive_volumes: Vec::new(),
         }
     }
 }
@@ -235,6 +242,8 @@ pub(super) fn with_inputs<R>(
         alpha_lights: &extras.alpha_lights,
         chunk_light_list: &extras.chunk_list,
         texture_keys: &room.keys,
+        emissive_textures: &extras.emissive,
+        emissive_volumes: &extras.emissive_volumes,
         prm_root: room.prm_dir.path(),
     })
 }
@@ -679,6 +688,40 @@ fn cache_key_misses_on_every_input_the_capture_reads_and_hits_otherwise() {
     expect_miss(&room, &environment, "albedo or emissive texture");
     room.keys.insert("floor".to_string(), [1; 32]);
 
+    // Id 60's strength of a texture a static-world face shows re-keys the
+    // capture, which shades its emissive at that strength. Its glow colour,
+    // which the capture never reads, keeps the key.
+    {
+        use postretro_level_format::emissive::EmissiveTexture;
+        let lit = |strength| EmissiveTexture {
+            strength,
+            glow_color: [0.5; 3],
+        };
+        room.extras.emissive = vec![lit(4.0), EmissiveTexture::DARK];
+        expect_miss(&room, &environment, "static-world texture strength");
+        let at_four = stage_key(&room, &environment);
+        room.extras.emissive[0].glow_color = [1.0, 0.0, 0.0];
+        assert_eq!(at_four, stage_key(&room, &environment), "glow colour");
+        // Pin P47: a texture only a fluid shows is no static-world face's,
+        // so its strength never keys the capture.
+        room.extras.emissive = vec![EmissiveTexture::DARK; 2];
+        let names = room.geometry.texture_names.names.clone();
+        room.geometry
+            .texture_names
+            .names
+            .push("fluid_only".to_string());
+        room.extras.emissive.push(lit(1.0));
+        let fluid_one = stage_key(&room, &environment);
+        room.extras.emissive[2].strength = 4.0;
+        assert_eq!(
+            fluid_one,
+            stage_key(&room, &environment),
+            "fluid-only strength"
+        );
+        room.geometry.texture_names.names = names;
+        room.extras.emissive = Vec::new();
+    }
+
     let sh = room.extras.sh.clone();
     room.extras.sh = room_sh(0.5);
     room.extras.sh.animation_descriptors = sh.animation_descriptors.clone();
@@ -802,7 +845,7 @@ fn cache_key_misses_on_every_input_the_capture_reads_and_hits_otherwise() {
         room.extras.authored.clear();
         stage_key(&room, &environment)
     });
-    assert_eq!(misses, 13);
+    assert_eq!(misses, 14);
 }
 
 #[test]
@@ -896,5 +939,155 @@ fn a_non_identity_descriptor_table_in_either_delta_section_refuses_the_build() {
     assert!(
         message.contains("DeltaShVolumes (id 27) maps animated light 0 to descriptor 1"),
         "{message}"
+    );
+}
+
+/// A 4×4 `.prm` of one sRGB diffuse and one sRGB emissive colour, at `key`.
+fn write_glowing_prm(dir: &Path, key: [u8; 32], diffuse: [u8; 4], emissive: [u8; 4]) {
+    let slot = |rgba: [u8; 4]| {
+        let mut payload = Vec::new();
+        for texels in [16, 4, 1] {
+            for _ in 0..texels {
+                payload.extend_from_slice(&rgba);
+            }
+        }
+        PrmSlot {
+            format: PrmFormat::Rgba8UnormSrgb,
+            width: 4,
+            height: 4,
+            level_count: 3,
+            payload,
+        }
+    };
+    let prm = PrmFile {
+        header: PrmHeader {
+            stage_version: STAGE_VERSION,
+            slot_mask: PrmSlots::DIFFUSE | PrmSlots::EMISSIVE,
+            bundle_hash: [0; 32],
+            total_body_bytes: 0,
+            layer_count: 1,
+        },
+        slots: [Some(slot(diffuse)), None, None, Some(slot(emissive))],
+    };
+    std::fs::write(
+        dir.join(format!("{}.prm", cache_filename_for_key(&key))),
+        prm.to_bytes().unwrap(),
+    )
+    .unwrap();
+}
+
+/// An emissive volume record over `faces` at `max` and `color`.
+fn emissive_volume(
+    faces: Vec<u32>,
+    max: f32,
+    color: [f32; 3],
+) -> postretro_level_format::emissive::EmissiveVolumeRecord {
+    postretro_level_format::emissive::EmissiveVolumeRecord {
+        min: 0.0,
+        max,
+        color,
+        origin: [0.0; 3],
+        faces,
+        tags: Vec::new(),
+    }
+}
+
+// Acceptance A9: reflection capture shades a member face at texture strength
+// × max × colour, its no-script reference state, and a face in no volume at
+// its strength alone.
+#[test]
+fn capture_shades_a_member_face_at_strength_times_max_times_colour() {
+    use postretro_level_format::emissive::EmissiveTexture;
+    // A black floor whose `_e` texel is sRGB 188, about linear 0.5: the
+    // floor reflects only its glow.
+    let mut room = lit_floor_room([0, 0, 0, 255]);
+    write_glowing_prm(
+        room.prm_dir.path(),
+        [1; 32],
+        [0, 0, 0, 255],
+        [188, 188, 188, 255],
+    );
+    // Independent sRGB decode of 188.
+    let texel = ((188.0f32 / 255.0 + 0.055) / 1.055).powf(2.4);
+    room.extras.emissive = vec![
+        EmissiveTexture {
+            strength: 2.0,
+            glow_color: [texel; 3],
+        },
+        EmissiveTexture::DARK,
+    ];
+    let down = |room: &LitFloorRoom| {
+        let section = bake(room, &pool()).expect("the pool keeps its probe");
+        tile_texel(&section, 0, Vec3::NEG_Y)
+    };
+    let close = |actual: Vec3, expected: Vec3| {
+        let error = ((actual - expected).abs() / expected.max(Vec3::splat(1e-3))).max_element();
+        assert!(error < 0.03, "{actual} vs {expected}");
+    };
+
+    // Outside any volume: strength alone.
+    close(down(&room), Vec3::splat(texel * 2.0));
+
+    // In a volume of max 3 and an orange colour: strength × max × colour,
+    // whatever its min (no script is brightness 1).
+    let color = [1.0, 0.5, 0.25];
+    room.extras.emissive_volumes = vec![emissive_volume(vec![FLOOR as u32], 3.0, color)];
+    room.extras.emissive_volumes[0].min = 0.5;
+    close(down(&room), Vec3::from(color) * texel * 2.0 * 3.0);
+
+    // A volume the floor is not in leaves it at its strength.
+    room.extras.emissive_volumes = vec![emissive_volume(vec![CEILING as u32], 3.0, color)];
+    close(down(&room), Vec3::splat(texel * 2.0));
+}
+
+// Acceptance A9: a volume's max, colour or membership re-keys the capture;
+// its min, tags, and the values of a volume holding no face do not.
+#[test]
+fn cache_key_follows_emissive_volume_max_colour_and_membership_but_not_min() {
+    let mut room = every_term_room();
+    let environment = pool();
+    room.extras.emissive_volumes = vec![
+        emissive_volume(vec![FLOOR as u32], 1.0, [1.0; 3]),
+        emissive_volume(Vec::new(), 1.0, [1.0; 3]),
+    ];
+    let base = stage_key(&room, &environment);
+
+    let mut edited =
+        |edit: &dyn Fn(&mut Vec<postretro_level_format::emissive::EmissiveVolumeRecord>)| {
+            let saved = room.extras.emissive_volumes.clone();
+            edit(&mut room.extras.emissive_volumes);
+            let key = stage_key(&room, &environment);
+            room.extras.emissive_volumes = saved;
+            key
+        };
+    assert_ne!(base, edited(&|volumes| volumes[0].max = 2.0), "max");
+    assert_ne!(
+        base,
+        edited(&|volumes| volumes[0].color = [1.0, 0.0, 0.0]),
+        "colour"
+    );
+    assert_ne!(
+        base,
+        edited(&|volumes| volumes[0].faces = vec![CEILING as u32]),
+        "membership"
+    );
+    assert_ne!(
+        base,
+        edited(&|volumes| volumes[0].faces = vec![FLOOR as u32, CEILING as u32]),
+        "a face joins"
+    );
+    assert_eq!(base, edited(&|volumes| volumes[0].min = 0.75), "min");
+    assert_eq!(
+        base,
+        edited(&|volumes| volumes[0].tags = vec!["sign".to_string()]),
+        "tags"
+    );
+    assert_eq!(
+        base,
+        edited(&|volumes| {
+            volumes[1].max = 9.0;
+            volumes[1].color = [0.0, 1.0, 0.0];
+        }),
+        "an emptied volume's values"
     );
 }

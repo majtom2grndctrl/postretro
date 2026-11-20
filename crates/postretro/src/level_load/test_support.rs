@@ -441,6 +441,11 @@ pub(crate) fn write_textured_level() -> (
                 }
                 .to_bytes(),
             );
+            replace(
+                sections,
+                SectionId::Emissive,
+                postretro_level_format::emissive::EmissiveSection::dark(1).to_bytes(),
+            );
         },
     );
     let prm_root = tempfile::tempdir().unwrap();

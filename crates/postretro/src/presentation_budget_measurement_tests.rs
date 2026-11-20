@@ -274,6 +274,7 @@ fn presentation_budget_fresh_stress_map_cpu_install_and_host_capture_measurement
     let resolver = PresentationBindings {
         lights: &session.light_bridge,
         fog: &session.fog_volume_bridge,
+        emissive: &session.emissive_volume_bridge,
         map_entities: &world.map_entities,
     };
     host_register_presentation_overrides(

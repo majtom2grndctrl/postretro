@@ -5,7 +5,7 @@
 -- arrays the author inspects.
 --
 -- `wrapTeleporterEntity`, `wrapGhostLinkEntity`, `wrapLightEntity`,
--- `wrapFogVolumeEntity`, `wrapMoverEntity`, `wrapTriggerVolumeEntity`,
+-- `wrapFogVolumeEntity`, `wrapEmissiveVolumeEntity`, `wrapMoverEntity`, `wrapTriggerVolumeEntity`,
 -- `wrapSpawnerEntity`, `wrapTrapEntity`, `wrapAttackPoolEntity` and
 -- `wrapSeamEntity` are installed as temporary globals
 -- by the prelude evaluator before this module evaluates, captured below, and
@@ -14,7 +14,7 @@
 
 --- Map-placed kinds `getMapEntities` accepts. NPCs and players are groups
 --- (`npcs`, `players`), not members.
-export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap" | "attackPool" | "seam"
+export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emissive" | "emitter" | "spawner" | "trap" | "attackPool" | "seam"
 
 --- Narrows a member query to instances carrying `tag`.
 export type MapEntityFilter = { tag: string? }
@@ -23,6 +23,7 @@ local wrapTeleporterEntity = wrapTeleporterEntity
 local wrapGhostLinkEntity = wrapGhostLinkEntity
 local wrapLightEntity = wrapLightEntity
 local wrapFogVolumeEntity = wrapFogVolumeEntity
+local wrapEmissiveVolumeEntity = wrapEmissiveVolumeEntity
 local wrapMoverEntity = wrapMoverEntity
 local wrapTriggerVolumeEntity = wrapTriggerVolumeEntity
 local wrapSpawnerEntity = wrapSpawnerEntity
@@ -47,13 +48,14 @@ local MAP_KINDS: { [string]: { component: string, wrap: (any) -> any } } = {
   ghostLink = { component = "ghost_link", wrap = wrapGhostLinkEntity },
   light = { component = "light", wrap = wrapLightEntity },
   fog = { component = "fog_volume", wrap = wrapFogVolumeEntity },
+  emissive = { component = "emissive_volume", wrap = wrapEmissiveVolumeEntity },
   emitter = { component = "emitter", wrap = projectEmitter },
   spawner = { component = "spawner", wrap = wrapSpawnerEntity },
   trap = { component = "projectile_trap", wrap = wrapTrapEntity },
   attackPool = { component = "attack_pool", wrap = wrapAttackPoolEntity },
   seam = { component = "seam", wrap = wrapSeamEntity },
 }
-local KIND_NAMES = '"mover", "trigger", "teleporter", "ghostLink", "light", "fog", "emitter", "spawner", "trap", "attackPool", "seam"'
+local KIND_NAMES = '"mover", "trigger", "teleporter", "ghostLink", "light", "fog", "emissive", "emitter", "spawner", "trap", "attackPool", "seam"'
 
 local MapEntitiesSdk = {}
 

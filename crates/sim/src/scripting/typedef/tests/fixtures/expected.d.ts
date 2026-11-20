@@ -191,6 +191,39 @@ declare module "postretro" {
     component: FogVolumeComponent;
   };
 
+  /** Brightness animation installed on an emissive volume by the `setEmissiveAnimation` reaction primitive, or by an `EmissiveVolumeHandle`'s `pulse` / `fade` / `flicker`. Samples are brightness in `[0, 1]` across the volume's authored `emissive_min`..`emissive_max`; out-of-range samples clamp. `periodMs` must be finite and > 0 and the curve non-empty, or the install is skipped with a warning and the prior state stands. `playCount = null` loops forever; a finite count settles on the last sample, which becomes the held `brightness`. Re-installing the running curve keeps its start time; any other install, including one after a `setEmissiveBrightness` cleared the curve, starts from its first sample. */
+  export type EmissiveAnimation = {
+    /** Total period of the loop, in milliseconds. */
+    periodMs: number;
+    /** Total full periods to play; null loops forever. 0 reads 1, with a warning. */
+    playCount?: number | null;
+    /** Brightness samples in `[0, 1]`, evenly spaced over one period and linearly interpolated. */
+    brightness: ReadonlyArray<number>;
+  };
+
+  /** Script-facing emissive-volume snapshot. A member face glows at its texture strength × (min + brightness × (max − min)) × color. The map owns `min` and `max`; scripts own `brightness` and `color` through `setEmissiveBrightness`, `setEmissiveColor` and `setEmissiveAnimation`. */
+  export type EmissiveVolumeComponent = {
+    /** Authored glow multiplier at brightness 0 (`emissive_min`). Read-only: no primitive writes it. */
+    min: number;
+    /** Authored glow multiplier at brightness 1 and with no script (`emissive_max`), at least `min`. Read-only: no primitive writes it. */
+    max: number;
+    /** Scripted position in the authored range, `[0, 1]`; 1 with no script. While an animation runs, its current sample. */
+    brightness: number;
+    /** Scripted linear tint, channels in `[0, 1]`; the authored `emissive_color` until a script writes one. */
+    color: readonly [number, number, number];
+  };
+
+  /** Emissive-volume snapshot that `getMapEntities("emissive")` wraps into an `EmissiveVolumeHandle`. */
+  export type EmissiveVolumeEntity = {
+    id: EntityId;
+    /** Centre of the volume's brush bounds, baked at compile time. */
+    position: Vec3;
+    /** The entity's tags at query time. Empty array if untagged. */
+    tags: ReadonlyArray<string>;
+    /** Emissive-volume snapshot at query time. */
+    component: EmissiveVolumeComponent;
+  };
+
   /** Posture imposed by a player life state. Omission leaves crouch under input control. Valid values: `stand`, `crouch`. */
   export type LifeStatePosture =
     /** Normal crouch input control; the default. */
@@ -2035,6 +2068,9 @@ declare module "postretro" {
     sweep(opts: { values: Vec3[]; periodMs: number }): SequenceStep[];
   }
 
+  /** Emissive member returned by `getMapEntities("emissive")`. Composes the brightness scalar capability: `pulse`, `fade` and `flicker` take brightness in [0, 1] across the volume's authored `emissive_min`..`emissive_max`, unlike lights and fog, whose methods take absolute values. Out-of-range values clamp. */
+  export interface EmissiveVolumeHandle extends EmissiveVolumeEntity, AnimatableScalar<"brightness"> {}
+
   /** Fog member returned by `getMapEntities("fog")`. Composes the density scalar capability with secondary saturation methods declared directly. */
   export interface FogVolumeHandle extends FogVolumeEntity, AnimatableScalar<"density"> {
     /** Looping sine pulse on the `saturation` channel. */
@@ -2158,7 +2194,7 @@ declare module "postretro" {
   }
 
   /** Map-placed kinds `getMapEntities` accepts. NPCs and players are groups (`npcs`, `players`), not members. */
-  export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap" | "attackPool" | "seam";
+  export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emissive" | "emitter" | "spawner" | "trap" | "attackPool" | "seam";
 
   /** The member handle each map kind yields. `"emitter"` yields the snapshot only (id, position, tags, and the `BillboardEmitterComponent` under `component`); it has no verbs. */
   export type MapEntityForKind<K extends MapEntityKind> =
@@ -2168,6 +2204,7 @@ declare module "postretro" {
     K extends "ghostLink" ? GhostLinkHandle :
     K extends "light" ? LightEntityHandle :
     K extends "fog" ? FogVolumeHandle :
+    K extends "emissive" ? EmissiveVolumeHandle :
     K extends "emitter" ? EmitterEntity :
     K extends "spawner" ? SpawnerEntityHandle :
     K extends "trap" ? TrapEntityHandle :
@@ -2298,6 +2335,27 @@ declare module "postretro" {
     args: FogAnimation | null;
   };
 
+  /** Sequence step that holds a brightness in [0, 1] on a single emissive volume, clearing any running brightness animation. Out-of-range values clamp. */
+  export type SetEmissiveBrightnessStep = {
+    id: EntityId;
+    primitive: "setEmissiveBrightness";
+    args: { brightness: number };
+  };
+
+  /** Sequence step that sets a single emissive volume's linear tint. Channels clamp to [0, 1]. Brightness and any running animation are left alone. */
+  export type SetEmissiveColorStep = {
+    id: EntityId;
+    primitive: "setEmissiveColor";
+    args: { color: readonly [number, number, number] };
+  };
+
+  /** Sequence step that installs (or clears, when `args` is `null`) a brightness animation on a single emissive volume. Clearing holds the last sampled brightness. `EmissiveVolumeHandle`'s `pulse`, `fade` and `flicker` emit it. */
+  export type SetEmissiveAnimationStep = {
+    id: EntityId;
+    primitive: "setEmissiveAnimation";
+    args: EmissiveAnimation | null;
+  };
+
   /** Sequence step that resumes a kinematic mover. */
   export type MoverStartStep = { id: EntityId; primitive: "moverStart"; args: Record<string, never> };
   /** Sequence step that stops a kinematic mover. */
@@ -2367,6 +2425,9 @@ declare module "postretro" {
     | SetFogFalloffStep
     | SetFogParamsStep
     | SetFogAnimationStep
+    | SetEmissiveBrightnessStep
+    | SetEmissiveColorStep
+    | SetEmissiveAnimationStep
     | MoverStartStep
     | MoverStopStep
     | MoverReverseStep

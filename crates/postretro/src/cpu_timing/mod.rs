@@ -220,6 +220,40 @@ impl StageSet for ParticleStage {
     }
 }
 
+/// The emissive volume step inside the render-prep stage: one root under
+/// `render_prep`, with the entries it sent beside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EmissiveStage {
+    /// The emissive bridge over every volume: brightness curve sampling,
+    /// the flash limiter and table packing, then sending the changed runs.
+    Update,
+    /// Volume-table entries sent to the GPU this frame, zero included: zero
+    /// on a frame where no volume changed.
+    Uploaded,
+}
+
+impl StageSet for EmissiveStage {
+    const ALL: &'static [Self] = &[Self::Update, Self::Uploaded];
+
+    fn index(self) -> usize {
+        self as usize
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Update => "emissive_update",
+            Self::Uploaded => "emissive_uploaded",
+        }
+    }
+
+    fn kind(self) -> StageKind {
+        match self {
+            Self::Update => StageKind::Time,
+            Self::Uploaded => StageKind::Count,
+        }
+    }
+}
+
 /// Labels of the frame split the binary derives at commit. `total` and `work`
 /// are aggregates; `wait` and `unattributed` sit beside the top-level stages
 /// and together with them sum to `total`.

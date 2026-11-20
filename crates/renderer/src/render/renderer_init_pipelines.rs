@@ -133,6 +133,19 @@ pub(crate) fn build_renderer_pipelines(
                         },
                     ],
                 }),
+                // Slot 2: the forward-only emissive volume id, one `Uint32`
+                // per world vertex (volume index + 1, 0 = none). Depth,
+                // mover and fluid pipelines never bind it.
+                Some(wgpu::VertexBufferLayout {
+                    array_stride: super::emissive_volumes::EMISSIVE_VOLUME_STRIDE
+                        as wgpu::BufferAddress,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[wgpu::VertexAttribute {
+                        offset: 0,
+                        shader_location: super::emissive_volumes::EMISSIVE_VOLUME_SHADER_LOCATION,
+                        format: wgpu::VertexFormat::Uint32,
+                    }],
+                }),
             ],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },

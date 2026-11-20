@@ -216,11 +216,11 @@ fn mean_edits_rekey_every_sh_entry_but_auxiliary_and_fluid_edits_hit() {
 #[ignore = "focused cold-bake/glow-cache integration gate"]
 fn glow_mask_changes_rekey_but_nonzero_emissive_intensity_changes_hit() {
     let fixture = Fixture::red_wall();
-    fixture.edit_map(|map| map.replace("bounce/red", "bounce/neon_panel"));
-    write_png(&fixture.texture("neon_panel"), |i| {
+    fixture.edit_map(|map| map.replace("bounce/red", "bounce/glow_panel"));
+    write_png(&fixture.texture("glow_panel"), |i| {
         if i < 128 { [255; 4] } else { [64, 16, 16, 255] }
     });
-    write_png(&fixture.texture("neon_panel_e"), |i| {
+    write_png(&fixture.texture("glow_panel_e"), |i| {
         if i < 128 {
             [1, 0, 0, 255]
         } else {
@@ -229,7 +229,7 @@ fn glow_mask_changes_rekey_but_nonzero_emissive_intensity_changes_hit() {
     });
     let first = bake(&fixture, true, 1);
     all_miss(&first, None);
-    write_png(&fixture.texture("neon_panel_e"), |i| {
+    write_png(&fixture.texture("glow_panel_e"), |i| {
         if i < 128 {
             [255, 120, 20, 255]
         } else {
@@ -241,7 +241,7 @@ fn glow_mask_changes_rekey_but_nonzero_emissive_intensity_changes_hit() {
     assert_eq!(lighting(&first), lighting(&brighter));
     assert_ne!(first.sidecars, brighter.sidecars);
     // One extra marked dark texel leaves the retained constant colour unchanged.
-    write_png(&fixture.texture("neon_panel_e"), |i| {
+    write_png(&fixture.texture("glow_panel_e"), |i| {
         if i <= 128 {
             [255, 120, 20, 255]
         } else {
@@ -251,10 +251,108 @@ fn glow_mask_changes_rekey_but_nonzero_emissive_intensity_changes_hit() {
     let unchanged_mean = bake(&fixture, true, 1);
     all_hit(&unchanged_mean, &brighter);
     assert_eq!(lighting(&brighter), lighting(&unchanged_mean));
-    write_png(&fixture.texture("neon_panel_e"), |_| [0, 0, 0, 255]);
+    write_png(&fixture.texture("glow_panel_e"), |_| [0, 0, 0, 255]);
     let unmasked = bake(&fixture, true, 1);
     all_miss(&unmasked, Some(&first));
     assert_ne!(unmasked.sections[&27], first.sections[&27]);
+}
+
+/// Id 60's records, by texture name.
+fn emissive_strengths(bake: &Bake) -> BTreeMap<String, f32> {
+    let section = postretro_level_format::emissive::EmissiveSection::from_bytes(
+        bake.section(postretro_level_format::SectionId::Emissive),
+    )
+    .unwrap();
+    bake.names()
+        .into_iter()
+        .zip(section.textures.iter().map(|texture| texture.strength))
+        .collect()
+}
+
+/// Every cached stage but reflection capture reuses every entry, and
+/// reflection capture misses: the build re-ran only what reads strength.
+fn only_capture_misses(bake: &Bake, case: &str) {
+    assert_eq!(
+        tally(&bake.log, "reflection_probes"),
+        (0, 1),
+        "{case}: reflection capture must miss:\n{}",
+        bake.log
+    );
+    for (stage, (_, misses)) in cache_tally(&bake.log) {
+        if stage == "reflection_probes" {
+            assert!(
+                misses > 0,
+                "{case}: reflection capture must miss:\n{}",
+                bake.log
+            );
+        } else {
+            assert_eq!(misses, 0, "{case}: {stage} must stay warm:\n{}", bake.log);
+        }
+    }
+}
+
+// Acceptance A1d and pin P53: a strength edit on a texture a static-world face
+// shows re-runs only reflection capture and id 60; lightmap, SH and `.prm`
+// caches stay warm, and `emissive = 0` leaves the bounce mean (and so every
+// SH key) where it was. A syntax error after a good build reads defaults and
+// no earlier strength survives the warm cache.
+#[test]
+#[ignore = "focused materials.toml strength warm/cold cache gate"]
+fn strength_edits_miss_only_reflection_capture_and_a_syntax_error_reads_defaults() {
+    let mut fixture = Fixture::red_wall();
+    // Tallies the lightmap stages' own cache lines too.
+    fixture.reach_verify = false;
+    write_png(&fixture.texture("red_e"), |i| {
+        if i < 128 {
+            [255, 128, 0, 255]
+        } else {
+            [0, 0, 0, 255]
+        }
+    });
+    let toml = fixture.root().join("materials.toml");
+    std::fs::write(&toml, "[\"bounce/red\"]\nemissive = 4\n").unwrap();
+    let first = bake(&fixture, true, 1);
+    assert_eq!(emissive_strengths(&first)["bounce/red"], 4.0);
+    assert_eq!(emissive_strengths(&first)["bounce/white"], 0.0);
+
+    for (strength, case) in [(2.0, "edited strength"), (0.0, "emissive = 0")] {
+        std::fs::write(&toml, format!("[\"bounce/red\"]\nemissive = {strength}\n")).unwrap();
+        let edited = bake(&fixture, true, 1);
+        only_capture_misses(&edited, case);
+        all_hit(&edited, &first);
+        assert_eq!(lighting(&edited), lighting(&first), "{case}");
+        assert_eq!(
+            edited.sidecars, first.sidecars,
+            "{case}: .prm sidecars reused"
+        );
+        assert_eq!(
+            emissive_strengths(&edited)["bounce/red"],
+            strength,
+            "{case}"
+        );
+        assert_ne!(
+            edited.section(postretro_level_format::SectionId::Emissive),
+            first.section(postretro_level_format::SectionId::Emissive),
+            "{case}: id 60 is rewritten"
+        );
+    }
+
+    std::fs::write(&toml, "[\"bounce/red\"\nemissive = 4\n").unwrap();
+    let broken = bake(&fixture, true, 1);
+    assert!(
+        broken
+            .log
+            .contains(&format!("{}:1: syntax error:", toml.display())),
+        "the syntax error names file and line:\n{}",
+        broken.log
+    );
+    only_capture_misses(&broken, "syntax error");
+    all_hit(&broken, &first);
+    assert_eq!(
+        emissive_strengths(&broken)["bounce/red"],
+        1.0,
+        "every texture reads its default; no earlier strength survives"
+    );
 }
 
 #[test]

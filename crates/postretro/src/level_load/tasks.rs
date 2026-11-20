@@ -5,6 +5,7 @@
 
 use std::path::Path;
 
+use postretro_level_format::emissive::EmissiveSection;
 use postretro_level_loader::{
     CompleteHandOuts, GeometryHandOut, GpuLightingPayloads, LevelWorld, ShManifestMetadata,
     ShStreamingMode, SpatialHandOut, assemble,
@@ -18,7 +19,7 @@ use postretro_render_cpu::sh_residency::{ShResidencyPlan, plan_sh_residency_part
 use postretro_render_cpu::sh_volume::{animated_light_count, sh_sampler_lattice, usable_sh_volume};
 use postretro_render_cpu::texture_prep::{PreparedWorldTextures, prepare_world_textures};
 use postretro_render_cpu::uv_normalize::{diffuse_dims, normalize_world_uvs_with_dims};
-use postretro_render_data::material::Material;
+use postretro_render_data::material::{Material, TextureMaterial};
 
 use postretro_audio::DecodedLevelSounds;
 use postretro_level_format::map_entity::MapEntityRecord;
@@ -36,7 +37,7 @@ use crate::session::level_streaming::{
 pub(super) struct TexturePrep {
     /// The CPU pass; `None` once handed to the load's set builder.
     pub(super) textures: Option<PreparedWorldTextures>,
-    pub(super) materials: Vec<Material>,
+    pub(super) materials: Vec<TextureMaterial>,
     pub(super) dims: Vec<(u32, u32)>,
 }
 
@@ -51,20 +52,26 @@ pub(super) fn prep_textures(geometry: &GeometryHandOut, prm_cache_root: &Path) -
     );
     let dims = diffuse_dims(&textures);
     TexturePrep {
-        materials: level_texture_materials(&geometry.texture_names),
+        materials: level_texture_materials(&geometry.texture_names, &geometry.emissive),
         textures: Some(textures),
         dims,
     }
 }
 
-/// Each world texture's material, derived from its name; an unknown prefix
-/// warns once and takes the default. The oracle install's renderer stage and
-/// prep both build the table here.
-pub(crate) fn level_texture_materials(texture_names: &[String]) -> Vec<Material> {
+/// Each world texture's material, derived from its name, and its baked glow
+/// strength from the level's Emissive section (id 60), which the loader
+/// checked holds one record per name. An unknown prefix warns once and takes
+/// the default. The oracle install's renderer stage and prep both build the
+/// table here.
+pub(crate) fn level_texture_materials(
+    texture_names: &[String],
+    emissive: &EmissiveSection,
+) -> Vec<TextureMaterial> {
     let mut warned = std::collections::HashSet::new();
     texture_names
         .iter()
-        .map(|name| {
+        .enumerate()
+        .map(|(index, name)| {
             let warned_count = warned.len();
             let material = postretro_render_data::material::derive_material(name, &mut warned);
             let prefix = postretro_render_data::material::parse_prefix(name);
@@ -73,7 +80,10 @@ pub(crate) fn level_texture_materials(texture_names: &[String]) -> Vec<Material>
                     "[Material] Unknown prefix '{prefix}' in texture '{name}' — using default material",
                 );
             }
-            material
+            TextureMaterial {
+                material,
+                emissive_strength: emissive.texture_strength(index),
+            }
         })
         .collect()
 }
@@ -230,4 +240,55 @@ pub(super) fn predict_models(
     inputs: &ModelPredictionInputs,
 ) -> Vec<String> {
     predict_level_models(map_entities, inputs)
+}
+
+#[cfg(test)]
+mod material_table_tests {
+    use log::Level;
+    use postretro_level_format::emissive::EmissiveSection;
+    use postretro_render_cpu::material_plan::MaterialUniformPlan;
+    use postretro_render_cpu::surface_depth::{
+        SurfaceDepthQuality, SurfaceRelief, SurfaceReliefLevels,
+    };
+    use postretro_render_data::material::Material;
+    use postretro_test_log_capture::LogCapture;
+
+    use super::level_texture_materials;
+
+    // The `neon` prefix retired: a name still carrying it is an unknown prefix
+    // like any other, warned once per prefix however many textures share it.
+    #[test]
+    fn a_former_neon_name_derives_default_and_warns_once() {
+        let names = vec![
+            "neon/neon_glow_panel".to_owned(),
+            "neon/neon_dim_panel".to_owned(),
+        ];
+        let capture = LogCapture::start();
+        let materials = level_texture_materials(&names, &EmissiveSection::dark(names.len()));
+        assert!(
+            materials.iter().all(|m| m.material == Material::Default),
+            "{materials:?}",
+        );
+        capture.assert_logged_once(Level::Warn, "Unknown prefix 'neon'");
+    }
+
+    // With an `_h` map a former `neon_` texture carves as Default does; the
+    // prefix's old flat depth is gone.
+    #[test]
+    fn a_former_neon_texture_with_a_height_map_carves_as_default() {
+        let names = vec!["neon/neon_panel".to_owned()];
+        let _capture = LogCapture::start();
+        let material = level_texture_materials(&names, &EmissiveSection::dark(1))[0].material;
+        let relief = SurfaceReliefLevels::splat(SurfaceRelief::FULL_RANGE);
+        let plan = |material| MaterialUniformPlan::new(material, 0.0, true, 11, relief);
+        let carved = plan(material).surface_depth_uniform(SurfaceDepthQuality::On);
+        assert_eq!(
+            carved,
+            plan(Material::Default).surface_depth_uniform(SurfaceDepthQuality::On)
+        );
+        assert_ne!(
+            carved,
+            postretro_render_cpu::surface_depth::SurfaceDepthUniform::FLAT
+        );
+    }
 }

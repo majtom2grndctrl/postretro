@@ -31,7 +31,8 @@ const PRLE_39: u64 = (0x_5052_4C45_u64 << 32) | 39;
 const PRLE_40: u64 = (0x_5052_4C45_u64 << 32) | 40;
 /// The build before the carried loadout on the wire: PRLF / wire 40.
 const PRLF_40: u64 = (0x_5052_4C46_u64 << 32) | 40;
-/// A PRLG / wire-41 peer predates the status-presence component payload.
+/// The build before the status-presence component payload and the emissive
+/// presentation record: PRLG / wire 41.
 const PRLG_41: u64 = (0x_5052_4C47_u64 << 32) | 41;
 
 const STEP: Duration = Duration::from_millis(16);
@@ -202,13 +203,13 @@ fn netcode_handshake_refuses_stale_protocol_clients_and_connects_a_matching_one(
 }
 
 // The same gate from the other side: this build's client never connects to a
-// PRLB / 32, PRLC / 33 to 39, PRLD / 39, PRLE / 39 or 40 or PRLF / 40 host, while
+// PRLB / 32, PRLC / 33 to 39, PRLD / 39, PRLE / 39 or 40, PRLF / 40 or PRLG / 41 host, while
 // that build's own client does.
 #[test]
 fn netcode_handshake_never_connects_to_a_stale_pair_host() {
     for stale in [
         PRLB_32, PRLC_33, PRLC_34, PRLC_35, PRLC_36, PRLC_37, PRLC_38, PRLC_39, PRLD_39, PRLE_39,
-        PRLE_40, PRLF_40,
+        PRLE_40, PRLF_40, PRLG_41,
     ] {
         let mut host = RawServer::new(stale);
         let mut current = NetClient::new(

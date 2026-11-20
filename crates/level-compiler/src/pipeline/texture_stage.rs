@@ -2,35 +2,68 @@
 // See: context/lib/build_pipeline.md §Compiler pipeline, §Baked texture mips
 
 use super::*;
-use crate::surface_materials::stats::{BOUNCE_SATURATION, BounceMaterials, validate_saturation};
+use crate::emissive_textures::build_emissive_textures;
+use crate::materials_toml::MaterialsToml;
+use crate::surface_materials::stats::{
+    BOUNCE_SATURATION, BounceMaterials, EmissiveGlow, validate_saturation,
+};
+use postretro_level_format::emissive::EmissiveTexture;
 use std::path::Path;
 
 pub(super) struct MaterialStageResult {
     pub name_to_key: HashMap<String, [u8; 32]>,
     pub texture_bytes: texture_mips::StageTextureBytes,
     pub bounce_materials: BounceMaterials,
+    /// The mod's `materials.toml`, read once at this stage; its strengths
+    /// resolve after the fluid tail, when TextureNames is complete.
+    materials_toml: MaterialsToml,
+    /// Per-name `_e` facts, world names first, fluid-only names appended.
+    glow: Vec<EmissiveGlow>,
+    /// Per-name qualified bundle that resolved, aligned with `glow`: the
+    /// name its `materials.toml` entry is read by.
+    bundles: Vec<Option<String>>,
     world_name_count: usize,
+}
+
+impl MaterialStageResult {
+    /// Whether each TextureNames entry has an `_e` map, fluid-only names
+    /// included once the fluid tail has baked.
+    pub(super) fn has_emissive_maps(&self) -> Vec<bool> {
+        self.glow.iter().map(|glow| glow.has_emissive).collect()
+    }
 }
 
 pub(super) fn bake_world_materials(
     names: &[String],
     texture_root: &Path,
     prm_root: &Path,
+    materials_toml: MaterialsToml,
 ) -> anyhow::Result<MaterialStageResult> {
-    bake_world_materials_at(names, texture_root, prm_root, BOUNCE_SATURATION)
+    bake_world_materials_at(
+        names,
+        texture_root,
+        prm_root,
+        materials_toml,
+        BOUNCE_SATURATION,
+    )
 }
 
 fn bake_world_materials_at(
     names: &[String],
     texture_root: &Path,
     prm_root: &Path,
+    materials_toml: MaterialsToml,
     saturation: f32,
 ) -> anyhow::Result<MaterialStageResult> {
     // Validate even an empty material stage before walking the texture root.
     validate_saturation(saturation)?;
     let mut texture_bytes = texture_mips::StageTextureBytes::new();
-    let (name_to_key, stats) =
-        texture_mips::bake_materials_into(names, texture_root, prm_root, &mut texture_bytes, true)?;
+    let texture_mips::MaterialBake {
+        keys: name_to_key,
+        stats,
+        glow,
+        bundles,
+    } = texture_mips::bake_materials_into(names, texture_root, prm_root, &mut texture_bytes, true)?;
     // SH hits index the table by texture index, so one record per name is the contract.
     anyhow::ensure!(
         stats.len() == names.len(),
@@ -42,10 +75,15 @@ fn bake_world_materials_at(
         name_to_key,
         texture_bytes,
         bounce_materials: BounceMaterials::new(stats, saturation)?,
+        materials_toml,
+        glow,
+        bundles,
         world_name_count: names.len(),
     })
 }
 
+/// Bake the fluid, model and sprite tail, then resolve every TextureNames
+/// entry's glow strength and colour for the Emissive section.
 pub(super) fn bake_remaining_textures(
     input: &Path,
     texture_names: &[String],
@@ -53,7 +91,7 @@ pub(super) fn bake_remaining_textures(
     texture_root: &Path,
     prm_root: &Path,
     materials: &mut MaterialStageResult,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<EmissiveTexture>> {
     // Fluid names append after every world/mover name, so existing indices and
     // first-name byte-report ownership survive the split.
     debug_assert!(
@@ -62,14 +100,16 @@ pub(super) fn bake_remaining_textures(
     );
     let fluid_names = &texture_names[materials.world_name_count..];
     if !fluid_names.is_empty() {
-        let (keys, _) = texture_mips::bake_materials_into(
+        let fluid = texture_mips::bake_materials_into(
             fluid_names,
             texture_root,
             prm_root,
             &mut materials.texture_bytes,
             false,
         )?;
-        materials.name_to_key.extend(keys);
+        materials.name_to_key.extend(fluid.keys);
+        materials.glow.extend(fluid.glow);
+        materials.bundles.extend(fluid.bundles);
     }
     let content_root = resolve_content_root(input);
     bake_model_textures(
@@ -87,7 +127,20 @@ pub(super) fn bake_remaining_textures(
     // Flush once, after world, fluid, model and sprite bundles are all charged:
     // the report describes the level's whole texture cost, deduplicated.
     texture_mips::log_texture_byte_summary(materials.texture_bytes.summary());
-    Ok(())
+    anyhow::ensure!(
+        materials.glow.len() == texture_names.len()
+            && materials.bundles.len() == texture_names.len(),
+        "material bakes produced {} glow records and {} bundle names for {} texture names",
+        materials.glow.len(),
+        materials.bundles.len(),
+        texture_names.len()
+    );
+    Ok(build_emissive_textures(
+        texture_names,
+        &materials.glow,
+        &materials.bundles,
+        &materials.materials_toml,
+    ))
 }
 
 #[cfg(test)]

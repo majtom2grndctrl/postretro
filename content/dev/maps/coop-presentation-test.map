@@ -106,6 +106,23 @@
 ( 416 480 0 ) ( 352 480 2 ) ( 352 480 0 ) DebugTextures/debug_floor_blue 0 0 0 1 1
 ( 416 416 0 ) ( 416 480 2 ) ( 416 480 0 ) DebugTextures/debug_floor_blue 0 0 0 1 1
 }
+// Emissive sign and lamp on the north wall, facing the green atmosphere plate.
+{
+( 320 744 96 ) ( 320 752 144 ) ( 320 752 96 ) metal/metal_rough_046a 0 0 0 1 1
+( 192 752 96 ) ( 192 744 144 ) ( 192 744 96 ) metal/metal_rough_046a 0 0 0 1 1
+( 320 752 96 ) ( 192 752 144 ) ( 192 752 96 ) metal/metal_rough_046a 0 0 0 1 1
+( 192 744 96 ) ( 320 744 144 ) ( 320 744 96 ) neon/glow_panel 0 0 0 1 1
+( 192 752 144 ) ( 320 744 144 ) ( 192 744 144 ) metal/metal_rough_046a 0 0 0 1 1
+( 192 744 96 ) ( 320 752 96 ) ( 192 752 96 ) metal/metal_rough_046a 0 0 0 1 1
+}
+{
+( 384 744 104 ) ( 384 752 136 ) ( 384 752 104 ) metal/metal_rough_046a 0 0 0 1 1
+( 352 752 104 ) ( 352 744 136 ) ( 352 744 104 ) metal/metal_rough_046a 0 0 0 1 1
+( 384 752 104 ) ( 352 752 136 ) ( 352 752 104 ) metal/metal_rough_046a 0 0 0 1 1
+( 352 744 104 ) ( 384 744 136 ) ( 384 744 104 ) neon/status_lamp 0 0 0 1 1
+( 352 752 136 ) ( 384 744 136 ) ( 352 744 136 ) metal/metal_rough_046a 0 0 0 1 1
+( 352 744 104 ) ( 384 752 104 ) ( 352 752 104 ) metal/metal_rough_046a 0 0 0 1 1
+}
 }
 {
 "classname" "player_spawn"
@@ -169,6 +186,37 @@
 ( 192 288 16 ) ( 320 160 16 ) ( 192 160 16 ) concrete_pavement_036 0 0 0 1 1
 ( 320 288 0 ) ( 192 288 16 ) ( 192 288 0 ) concrete_pavement_036 0 0 0 1 1
 ( 320 160 0 ) ( 320 288 16 ) ( 320 288 0 ) concrete_pavement_036 0 0 0 1 1
+}
+}
+// The sign and lamp glow ranges: the atmosphere plate dims the sign and
+// turns the green lamp red.
+{
+"classname" "emissive_volume"
+"emissive_min" "0"
+"emissive_max" "1"
+"_tags" "coop_sign"
+{
+( 328 736 88 ) ( 328 746 152 ) ( 328 746 88 ) trigger 0 0 0 1 1
+( 184 746 88 ) ( 184 736 152 ) ( 184 736 88 ) trigger 0 0 0 1 1
+( 328 746 88 ) ( 184 746 152 ) ( 184 746 88 ) trigger 0 0 0 1 1
+( 184 736 88 ) ( 328 736 152 ) ( 328 736 88 ) trigger 0 0 0 1 1
+( 184 746 152 ) ( 328 736 152 ) ( 184 736 152 ) trigger 0 0 0 1 1
+( 184 736 88 ) ( 328 746 88 ) ( 184 746 88 ) trigger 0 0 0 1 1
+}
+}
+{
+"classname" "emissive_volume"
+"emissive_min" "0"
+"emissive_max" "1"
+"emissive_color" "40 255 60"
+"_tags" "coop_lamp"
+{
+( 392 736 96 ) ( 392 746 144 ) ( 392 746 96 ) trigger 0 0 0 1 1
+( 344 746 96 ) ( 344 736 144 ) ( 344 736 96 ) trigger 0 0 0 1 1
+( 392 746 96 ) ( 344 746 144 ) ( 344 746 96 ) trigger 0 0 0 1 1
+( 344 736 96 ) ( 392 736 144 ) ( 392 736 96 ) trigger 0 0 0 1 1
+( 344 746 144 ) ( 392 736 144 ) ( 344 736 144 ) trigger 0 0 0 1 1
+( 344 736 96 ) ( 392 746 96 ) ( 344 746 96 ) trigger 0 0 0 1 1
 }
 }
 // South plate: durable atmosphere/props and the positioned-sound door.

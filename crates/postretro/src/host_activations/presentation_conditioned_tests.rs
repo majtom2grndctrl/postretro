@@ -1947,3 +1947,9 @@ fn conditioned_client_dummy_hit_commits_host_damage_owner_credit_and_despawn() {
     assert_eq!(count(&h.peers[0].commands, 400), 0);
     assert_eq!(count(&h.peers[1].commands, 400), 0);
 }
+
+#[path = "presentation_parity_tests.rs"]
+mod parity;
+
+#[path = "presentation_emissive_coop_tests.rs"]
+mod emissive_coop;

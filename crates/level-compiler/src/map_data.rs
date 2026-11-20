@@ -275,6 +275,47 @@ pub struct MapReflectionVolume {
     pub capture_offset: Option<[f32; 2]>,
 }
 
+/// One `emissive_volume` brush entity in canonical terms: the multiplier range
+/// and tint it gives the glow of the static world faces it holds, and the
+/// convex hulls that select them. Like [`MapEnvironmentVolume`], it retains no
+/// [`BrushVolume`] in the static world set, so its brushes never render,
+/// collide or bake. Membership is per BSP fragment, listed on the final faces
+/// after the atlas cut (`emissive_membership`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MapEmissiveVolume {
+    /// Source map entity index, for diagnostics.
+    pub source_entity: u32,
+    /// Adapter-written diagnostic name, in the source format's vocabulary.
+    /// Shared stages print it verbatim and never parse it.
+    pub source_label: String,
+    /// Multiplier range, after the adapter's per-key fixes and swap:
+    /// finite, in `[0, EMISSIVE_VALUE_CEILING]`, `min <= max`.
+    pub min: f32,
+    pub max: f32,
+    /// Linear tint, each channel in `[0, 1]`.
+    pub color: [f32; 3],
+    /// One convex hull per authored brush. A face joins when its BSP
+    /// fragment's centroid lies in any of them.
+    pub hulls: Vec<MapEmissiveHull>,
+    /// Sum of the hulls' volumes, m³: the overlap rule's size.
+    pub summed_volume: f64,
+    /// Centre of the hulls' union AABB, engine meters: the co-op binding
+    /// check, kept even when the volume ends with no member face.
+    pub origin: [f32; 3],
+    /// Author-supplied script tags (FGD `_tags`, pre-split on whitespace).
+    pub tags: Vec<String>,
+}
+
+/// One brush of an [`MapEmissiveVolume`], engine space.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MapEmissiveHull {
+    pub min: DVec3,
+    pub max: DVec3,
+    /// Outward planes: `p` is inside when `normal · p - distance <= 0` for
+    /// every plane.
+    pub planes: Vec<(DVec3, f64)>,
+}
+
 /// One canonical environment volume: a static region that overrides gravity,
 /// adds a push, or holds a fluid. Format adapters translate their authoring
 /// vocabulary into this record with only the fields the source entity sets;
@@ -728,6 +769,9 @@ pub struct MapData {
     /// Authored reflection-probe boxes in source map entity order, the
     /// binding tiebreak and id 54's authored probe order.
     pub reflection_volumes: Vec<MapReflectionVolume>,
+    /// `emissive_volume` brush entities in source map entity order: id 60's
+    /// volume order, and the overlap rule's tie-break (the later wins).
+    pub emissive_volumes: Vec<MapEmissiveVolume>,
     /// Predictive teleporter records, in source entity order.
     pub teleporters: postretro_level_format::teleporters::TeleportersSection,
     /// Ghost-link records (id 56), in source entity order. Presentation only.

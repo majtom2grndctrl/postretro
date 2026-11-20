@@ -836,6 +836,7 @@ pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
         ComponentKind::AttackPool => postretro_net::wire::COMPONENT_KIND_ATTACK_POOL,
         ComponentKind::StatusPresence => postretro_net::wire::COMPONENT_KIND_STATUS_PRESENCE,
         ComponentKind::Seam => postretro_net::wire::COMPONENT_KIND_SEAM,
+        ComponentKind::EmissiveVolume => postretro_net::wire::COMPONENT_KIND_EMISSIVE_VOLUME,
     }
 }
 
@@ -901,6 +902,7 @@ fn payload_is_finite(payload: &ComponentPayload) -> bool {
         ComponentPayload::LightState(state) => state.validate().is_ok(),
         ComponentPayload::FogState(state) => state.validate().is_ok(),
         ComponentPayload::EmitterState(state) => state.validate().is_ok(),
+        ComponentPayload::EmissiveState(state) => state.validate().is_ok(),
     }
 }
 
@@ -7398,7 +7400,8 @@ mod tests {
                 ComponentKind::DefenseLayers => Some(ComponentKind::AttackPool),
                 ComponentKind::AttackPool => Some(ComponentKind::StatusPresence),
                 ComponentKind::StatusPresence => Some(ComponentKind::Seam),
-                ComponentKind::Seam => None,
+                ComponentKind::Seam => Some(ComponentKind::EmissiveVolume),
+                ComponentKind::EmissiveVolume => None,
             }
         }
 

@@ -52,6 +52,9 @@ pub struct WireStatusPresence {
 }
 /// Reserved discriminant; level seams are host-only and never replicate.
 pub const COMPONENT_KIND_SEAM: u16 = 30;
+/// Emissive volumes: written brightness, colour and animation, bound by
+/// emissive record index (`super::WireEmissiveState`).
+pub const COMPONENT_KIND_EMISSIVE_VOLUME: u16 = 31;
 
 /// Maximum key count in any replicated presentation animation channel.
 pub const MAX_WIRE_CURVE_KEYS: usize = 64;
@@ -630,6 +633,7 @@ pub struct RawComponentPayload {
     pub fog: Option<WireFogState>,
     pub ghost_link: Option<super::WireGhostLinkState>,
     pub status_presence: Option<WireStatusPresence>,
+    pub emissive: Option<super::WireEmissiveState>,
 }
 
 /// A validated component payload. Constructed only by [`RawComponentPayload::validate`],
@@ -646,6 +650,7 @@ pub enum ComponentPayload {
     FogState(WireFogState),
     GhostLinkState(super::WireGhostLinkState),
     StatusPresence(WireStatusPresence),
+    EmissiveState(super::WireEmissiveState),
 }
 
 impl ComponentPayload {
@@ -665,6 +670,7 @@ impl ComponentPayload {
             ComponentPayload::FogState(_) => COMPONENT_KIND_FOG_VOLUME,
             ComponentPayload::GhostLinkState(_) => COMPONENT_KIND_GHOST_LINK,
             ComponentPayload::StatusPresence(_) => COMPONENT_KIND_STATUS_PRESENCE,
+            ComponentPayload::EmissiveState(_) => COMPONENT_KIND_EMISSIVE_VOLUME,
         }
     }
 }
@@ -687,7 +693,8 @@ impl RawComponentPayload {
             + usize::from(self.emitter.is_some())
             + usize::from(self.fog.is_some())
             + usize::from(self.ghost_link.is_some())
-            + usize::from(self.status_presence.is_some());
+            + usize::from(self.status_presence.is_some())
+            + usize::from(self.emissive.is_some());
 
         match self.component_kind {
             // An empty presence is never sent: no live status sends no payload.
@@ -825,6 +832,18 @@ impl RawComponentPayload {
                     self.component_kind,
                 )),
             },
+            COMPONENT_KIND_EMISSIVE_VOLUME => match &self.emissive {
+                Some(state) if populated == 1 => {
+                    state.validate()?;
+                    Ok(ComponentPayload::EmissiveState(state.clone()))
+                }
+                Some(_) => Err(ValidationError::MismatchedComponentPayload(
+                    self.component_kind,
+                )),
+                None => Err(ValidationError::MissingComponentPayload(
+                    self.component_kind,
+                )),
+            },
             other => Err(ValidationError::UnknownComponentKind(other)),
         }
     }
@@ -901,6 +920,7 @@ mod tests {
             fog: None,
             ghost_link: None,
             status_presence: None,
+            emissive: None,
         }
     }
 
@@ -1244,6 +1264,7 @@ mod tests {
                     fog: Some(fog_state()),
                     ghost_link: None,
                     status_presence: None,
+                    emissive: None,
                     ..empty_raw(COMPONENT_KIND_FOG_VOLUME)
                 },
             ),

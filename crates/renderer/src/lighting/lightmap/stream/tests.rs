@@ -165,6 +165,12 @@ fn level_resources(
         &view,
         &view,
         &animated_block_table_bytes(None).expect("the empty table always builds"),
+        &ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Test Emissive Volume Table"),
+            size: postretro_render_cpu::emissive_volume::EMISSIVE_TABLE_BYTES as u64,
+            usage: wgpu::BufferUsages::UNIFORM,
+            mapped_at_creation: false,
+        }),
         floor,
     )
 }

@@ -21,16 +21,18 @@ fn world_material_uniform_mirrors_shininess_and_emissive_strength_packing() {
 fn zero_strength_materials_skip_emissive_texture_sampling() {
     let forward = include_str!("../../shaders/forward.wgsl");
     let kinematic = include_str!("../../shaders/kinematic_brush.wgsl");
-    for (label, shader, sample) in [
+    for (label, shader, sample, additive) in [
         (
             "forward",
             forward,
             "emissive = sample_color(emissive_texture",
+            "base_color.rgb * total_light + emissive;",
         ),
         (
             "kinematic",
             kinematic,
             "emissive = sample_post_retro(emissive_texture",
+            "+ emissive * material.emissive_strength",
         ),
     ] {
         let derivatives = shader
@@ -46,7 +48,7 @@ fn zero_strength_materials_skip_emissive_texture_sampling() {
             .find(sample)
             .unwrap_or_else(|| panic!("{label} shader must retain positive emissive sampling"));
         let additive = shader
-            .find("+ emissive * material.emissive_strength")
+            .find(additive)
             .unwrap_or_else(|| panic!("{label} shader must retain additive HDR emissive"));
 
         assert!(
@@ -54,6 +56,76 @@ fn zero_strength_materials_skip_emissive_texture_sampling() {
             "{label} shader must derive gradients, initialize black, guard sampling, then add emissive",
         );
     }
+}
+
+// A1a: the forward shader reads the emissive volume table, and the face's
+// volume id, only inside the `emissive_strength > 0` branch, so a face whose
+// texture does not glow pays nothing for volumes. The factor multiplies the
+// sampled glow and the texture strength. Movers and fluids take texture
+// strength alone and declare no table.
+#[test]
+fn forward_reads_the_emissive_volume_table_only_inside_the_glow_branch() {
+    use crate::render::gpu_test_harness::{wgsl_function, wgsl_item};
+
+    let forward = include_str!("../../shaders/forward.wgsl");
+    let code: String = forward
+        .lines()
+        .map(|line| line.split("//").next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let fs_main = wgsl_function(&code, "fs_main");
+    let branch = wgsl_item(fs_main, "if material.emissive_strength > 0.0 {");
+    assert!(
+        branch
+            .contains("let volume_factor = emissive_volume_table.entries[in.emissive_volume].rgb;"),
+        "the branch reads the face's table entry: {branch}"
+    );
+    assert!(
+        branch.contains("* material.emissive_strength") && branch.contains("* volume_factor;"),
+        "glow = sample × texture strength × volume factor: {branch}"
+    );
+    let outside = fs_main.replacen(branch, "", 1);
+    for name in [
+        "emissive_volume_table",
+        "in.emissive_volume",
+        "volume_factor",
+    ] {
+        assert!(
+            !outside.contains(name),
+            "fs_main reads `{name}` outside the glow branch"
+        );
+    }
+    let declaration = "@group(4) @binding(8) var<uniform> emissive_volume_table";
+    assert_eq!(
+        code.matches("emissive_volume_table").count(),
+        2,
+        "declaration and branch only"
+    );
+    assert!(code.contains(declaration));
+    for other in [
+        include_str!("../../shaders/kinematic_brush.wgsl"),
+        include_str!("../../shaders/depth_prepass.wgsl"),
+    ] {
+        assert!(!other.contains("emissive_volume"));
+    }
+}
+
+// The shader's table and the CPU pack are one size: 256 volumes plus the
+// "no volume" entry, within the default uniform binding limit.
+#[test]
+fn emissive_volume_table_length_matches_the_cpu_pack() {
+    use postretro_render_cpu::emissive_volume::{EMISSIVE_TABLE_BYTES, EMISSIVE_TABLE_ENTRIES};
+
+    let forward = include_str!("../../shaders/forward.wgsl");
+    let declared = forward
+        .split("entries: array<vec4<f32>, ")
+        .nth(1)
+        .and_then(|rest| rest.split('>').next())
+        .and_then(|len| len.trim().parse::<usize>().ok())
+        .expect("forward.wgsl declares the emissive volume table");
+    assert_eq!(declared, EMISSIVE_TABLE_ENTRIES);
+    assert_eq!(declared * 16, EMISSIVE_TABLE_BYTES);
+    assert!(EMISSIVE_TABLE_BYTES as u64 <= wgpu::Limits::default().max_uniform_buffer_binding_size);
 }
 
 /// Regression: every storage/uniform buffer binding in `forward.wgsl` must

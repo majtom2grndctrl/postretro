@@ -23,9 +23,13 @@ mod world;
 #[cfg(test)]
 mod world_tests;
 // The binary pipeline consumes this export; the helper library omits it.
-#[allow(unused_imports)]
-pub(crate) use world::bake_materials_into;
 pub use world::bake_world_texture_mips;
+#[allow(unused_imports)]
+pub(crate) use world::{MaterialBake, bake_materials_into};
+// `materials.toml` keys match texture names as source lookup normalizes them.
+// The binary reads it; the helper library omits it.
+#[allow(unused_imports)]
+pub(crate) use resolution::normalize_map_texture_name;
 
 use bake::{
     build_diffuse_chain, build_normal_bc5_chain, build_specular_chain, build_surface_chain,
@@ -33,9 +37,7 @@ use bake::{
 use cache::{
     SLOT_MASK_BITS, bundle_hash_for, cache_entry_has_valid_declared_slots, filename_key_for,
 };
-use resolution::{
-    build_name_to_path_map, normalize_map_texture_name, resolve_texture_bundle_paths,
-};
+use resolution::{build_name_to_path_map, resolve_texture_bundle_paths};
 
 // -- Gamma helpers --------------------------------------------------------
 
@@ -1926,15 +1928,19 @@ mod tests {
     fn bake_emissive_sibling_writes_srgb_fourth_slot_and_changes_bundle_hash() {
         let root = unique_temp_dir("emissive-slot");
         let texture_root = root.join("textures");
-        let collection = texture_root.join("neon");
+        let collection = texture_root.join("signs");
         let cache_root = root.join("cache");
         std::fs::create_dir_all(&collection).unwrap();
-        std::fs::write(collection.join("neon_panel.png"), png_bytes(4, 4)).unwrap();
-        std::fs::write(collection.join("neon_panel_e.png"), png_bytes(4, 4)).unwrap();
+        std::fs::write(collection.join("glow_panel.png"), png_bytes(4, 4)).unwrap();
+        std::fs::write(collection.join("glow_panel_e.png"), png_bytes(4, 4)).unwrap();
 
-        let keys = bake_texture_mips(&["neon/neon_panel".to_string()], &texture_root, &cache_root)
-            .unwrap();
-        let key = keys["neon/neon_panel"];
+        let keys = bake_texture_mips(
+            &["signs/glow_panel".to_string()],
+            &texture_root,
+            &cache_root,
+        )
+        .unwrap();
+        let key = keys["signs/glow_panel"];
         let bytes = std::fs::read(cache_root.join(format!("{}.prm", cache_filename_for_key(&key))))
             .unwrap();
         let (header, slots) = PrmFile::from_bytes_partial(&bytes);
@@ -1945,8 +1951,8 @@ mod tests {
             PrmFormat::Rgba8UnormSrgb,
         );
 
-        let diffuse = std::fs::read(collection.join("neon_panel.png")).unwrap();
-        let emissive = std::fs::read(collection.join("neon_panel_e.png")).unwrap();
+        let diffuse = std::fs::read(collection.join("glow_panel.png")).unwrap();
+        let emissive = std::fs::read(collection.join("glow_panel_e.png")).unwrap();
         assert_ne!(
             header.bundle_hash,
             bundle_hash_for(Some(&diffuse), None, None, None, None),
@@ -2063,13 +2069,13 @@ mod tests {
     fn emissive_dimensions_must_match_diffuse_at_compile_time() {
         let root = unique_temp_dir("emissive-dimension-mismatch");
         let texture_root = root.join("textures");
-        let collection = texture_root.join("neon");
+        let collection = texture_root.join("signs");
         let cache_root = root.join("cache");
         std::fs::create_dir_all(&collection).unwrap();
         std::fs::write(collection.join("panel.png"), png_bytes(4, 4)).unwrap();
         std::fs::write(collection.join("panel_e.png"), png_bytes(2, 4)).unwrap();
 
-        let error = bake_texture_mips(&["neon/panel".to_string()], &texture_root, &cache_root)
+        let error = bake_texture_mips(&["signs/panel".to_string()], &texture_root, &cache_root)
             .expect_err("mismatched emissive dimensions must fail the map build");
         let message = error.to_string();
         assert!(message.contains("panel_e.png"));
@@ -2105,6 +2111,7 @@ mod tests {
         let paths = resolve_texture_bundle_paths(&map, "alpha/cobble");
         assert_eq!(paths.height, Some(alpha.join("cobble_h.png")));
         assert_eq!(paths.diffuse, None, "the bare-stem fallback must stay off");
+        assert_eq!(paths.bundle.as_deref(), Some("alpha/cobble"));
 
         let keys =
             bake_texture_mips(&["alpha/cobble".to_string()], &texture_root, &cache_root).unwrap();
@@ -2664,7 +2671,19 @@ mod tests {
                 Some(&height),
                 "height sibling for '{incoming}' should resolve from the same collection"
             );
+            // The bundle that resolved names its collection, whichever key
+            // found it: `materials.toml` looks the entry up by it (pin P46).
+            assert_eq!(
+                paths.bundle.as_deref(),
+                Some("50-free-textures/concrete_pavement_036"),
+                "'{incoming}'"
+            );
         }
+        assert_eq!(
+            resolve_texture_bundle_paths(&map, "missing").bundle,
+            None,
+            "nothing resolved"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

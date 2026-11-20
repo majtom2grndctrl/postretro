@@ -4,7 +4,8 @@
 use std::collections::HashSet;
 
 /// Surface material type derived from texture name prefix.
-/// Rendering consumes each variant's shininess and emissive strength.
+/// Rendering consumes each variant's shininess and Surface Depth. Glow strength
+/// is not a prefix property: it is baked per texture ([`TextureMaterial`]).
 /// Gameplay and audio hooks such as footsteps, impacts, ricochets, and decals
 /// remain future consumers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,10 +13,27 @@ pub enum Material {
     Metal,
     Concrete,
     Grate,
-    Neon,
     Glass,
     Wood,
     Default,
+}
+
+/// One world texture as the renderer binds it: the material its name's prefix
+/// derives, and the glow strength the level baked for it (PRL Emissive, id 60;
+/// `resource_management.md` §4.5). Strength never derives from the name: the
+/// bake and the runtime read one baked number.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextureMaterial {
+    pub material: Material,
+    pub emissive_strength: f32,
+}
+
+impl TextureMaterial {
+    /// The default material, glowing nothing: a texture past the level's table.
+    pub const DEFAULT: Self = Self {
+        material: Material::Default,
+        emissive_strength: 0.0,
+    };
 }
 
 /// Per-material property flags. Later phases consume these to drive
@@ -29,9 +47,7 @@ pub struct MaterialProperties {
 
 /// Surface Depth (texel-space parallax) tuning for one material prefix.
 ///
-/// Prefix-driven exactly like [`Material::shininess`] and
-/// [`Material::emissive_strength`]: this engine has no author-facing material
-/// descriptor file and this feature deliberately does not introduce one.
+/// Prefix-driven exactly like [`Material::shininess`].
 ///
 /// `depth_meters` carries whichever unit [`SURFACE_DEPTH_TEXEL_MODE`] selects,
 /// and the two readings trade against each other rather than one being right.
@@ -165,7 +181,6 @@ impl Material {
         match self {
             Material::Metal => 64.0,
             Material::Glass => 96.0,
-            Material::Neon => 32.0,
             Material::Wood => 16.0,
             Material::Concrete => 4.0,
             Material::Grate => 8.0,
@@ -173,28 +188,12 @@ impl Material {
         }
     }
 
-    /// Static emissive multiplier for this material prefix. The texture carries
-    /// the per-texel pattern; this keeps v1 authoring prefix-driven like
-    /// `shininess()` without introducing gameplay material properties.
-    pub fn emissive_strength(self) -> f32 {
-        match self {
-            Material::Neon => 4.0,
-            Material::Metal
-            | Material::Concrete
-            | Material::Grate
-            | Material::Glass
-            | Material::Wood
-            | Material::Default => 0.0,
-        }
-    }
-
     /// Surface Depth tuning for this material prefix.
     ///
     /// Depths are chosen against the aesthetic, not a measurement: cobblestone
     /// and pavement (`concrete`) reach the furthest because that is the look the
-    /// feature exists for; panel and plank seams are shallow; `glass` and
-    /// `neon` are flat because a relief on a light source or pane reads as a
-    /// defect.
+    /// feature exists for; panel and plank seams are shallow; `glass` is flat
+    /// because a relief on a pane reads as a defect.
     ///
     /// Every `max_steps` is sized for the signed span: the depth applies in
     /// each direction, so a full-range map spans twice its depth, and its
@@ -255,7 +254,7 @@ impl Material {
                 max_steps: 32,
                 fade_distance_meters: 10.0,
             },
-            Material::Glass | Material::Neon => SurfaceDepth::FLAT,
+            Material::Glass => SurfaceDepth::FLAT,
             Material::Default => SurfaceDepth {
                 depth_meters: 3.0,
                 quantize_levels: 3,
@@ -299,7 +298,7 @@ impl Material {
                 fade_distance_meters: 10.0,
             },
             // Flat by intent, not by omission.
-            Material::Glass | Material::Neon => SurfaceDepth::FLAT,
+            Material::Glass => SurfaceDepth::FLAT,
             // Unknown prefixes get a conservative carve rather than nothing, so
             // a modder's `_h.png` shows up without needing an engine change.
             Material::Default => SurfaceDepth {
@@ -316,8 +315,7 @@ impl Material {
     pub fn properties(self) -> MaterialProperties {
         match self {
             Material::Metal => MaterialProperties { ricochet: true },
-            Material::Neon
-            | Material::Concrete
+            Material::Concrete
             | Material::Grate
             | Material::Glass
             | Material::Wood
@@ -356,11 +354,10 @@ pub fn parse_prefix(texture_name: &str) -> &str {
 /// [`Material::Default`]. `tools/texture-tool` derives its default height
 /// terraces from the same prefixes; a test in this crate keeps the two tables
 /// in step.
-pub const MATERIAL_PREFIXES: [(&str, Material); 6] = [
+pub const MATERIAL_PREFIXES: [(&str, Material); 5] = [
     ("metal", Material::Metal),
     ("concrete", Material::Concrete),
     ("grate", Material::Grate),
-    ("neon", Material::Neon),
     ("glass", Material::Glass),
     ("wood", Material::Wood),
 ];
@@ -483,12 +480,6 @@ mod tests {
     }
 
     #[test]
-    fn derive_material_maps_neon_prefix() {
-        let mut warned = HashSet::new();
-        assert_eq!(derive_material("neon_sign_01", &mut warned), Material::Neon);
-    }
-
-    #[test]
     fn derive_material_maps_grate_prefix() {
         let mut warned = HashSet::new();
         assert_eq!(
@@ -531,7 +522,10 @@ mod tests {
             derive_material("Metal_floor_01", &mut warned),
             Material::Metal
         );
-        assert_eq!(derive_material("NEON_sign_01", &mut warned), Material::Neon);
+        assert_eq!(
+            derive_material("GLASS_pane_01", &mut warned),
+            Material::Glass
+        );
     }
 
     #[test]
@@ -627,7 +621,6 @@ mod tests {
             Material::Grate,
             Material::Wood,
             Material::Glass,
-            Material::Neon,
             Material::Default,
         ] {
             let meters = mat.surface_depth_meters();
@@ -669,11 +662,9 @@ mod tests {
     }
 
     #[test]
-    fn glass_and_neon_are_deliberately_flat() {
-        for mat in [Material::Glass, Material::Neon] {
-            assert_eq!(mat.surface_depth(), SurfaceDepth::FLAT);
-            assert!(!mat.surface_depth().is_enabled());
-        }
+    fn glass_is_deliberately_flat() {
+        assert_eq!(Material::Glass.surface_depth(), SurfaceDepth::FLAT);
+        assert!(!Material::Glass.surface_depth().is_enabled());
     }
 
     /// Both tables, not just the active one. The inactive table is invisible to
@@ -702,7 +693,6 @@ mod tests {
                 Material::Grate,
                 Material::Wood,
                 Material::Glass,
-                Material::Neon,
                 Material::Default,
             ] {
                 let depth = table(mat);
@@ -762,7 +752,6 @@ mod tests {
             Material::Grate,
             Material::Wood,
             Material::Glass,
-            Material::Neon,
             Material::Default,
         ] {
             let depth = mat.surface_depth();
@@ -805,7 +794,6 @@ mod tests {
     #[test]
     fn non_metal_materials_do_not_ricochet() {
         for mat in [
-            Material::Neon,
             Material::Concrete,
             Material::Grate,
             Material::Glass,

@@ -33,6 +33,8 @@ pub mod delta_sections;
 pub mod delta_sh_bake;
 pub mod delta_sh_cache;
 pub mod direct_sh_bake;
+pub(crate) mod emissive_membership;
+pub(crate) mod emissive_textures;
 pub mod entity_shadow_select;
 pub mod environment_volumes;
 #[cfg(test)]
@@ -54,6 +56,7 @@ mod lightmap_residency_dry_run;
 pub mod logger;
 pub mod map_data;
 pub mod map_format;
+pub(crate) mod materials_toml;
 pub(crate) mod mover_light_gate;
 pub(crate) mod mover_pose;
 pub(crate) mod mover_probe_channel;

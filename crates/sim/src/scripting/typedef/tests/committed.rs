@@ -508,9 +508,10 @@ fn raw_world_query_is_hidden_and_get_map_entities_selects_member_handles() {
             && ts.contains("K extends \"spawner\" ? SpawnerEntityHandle :")
             && ts.contains("K extends \"trap\" ? TrapEntityHandle :")
             && ts.contains("K extends \"attackPool\" ? AttackPoolEntityHandle :")
+            && ts.contains("K extends \"emissive\" ? EmissiveVolumeHandle :")
             && ts.contains("K extends \"seam\" ? SeamHandle :")
             && ts.contains(
-                "export type MapEntityKind = \"mover\" | \"trigger\" | \"teleporter\" | \"ghostLink\" | \"light\" | \"fog\" | \"emitter\" | \"spawner\" | \"trap\" | \"attackPool\" | \"seam\";"
+                "export type MapEntityKind = \"mover\" | \"trigger\" | \"teleporter\" | \"ghostLink\" | \"light\" | \"fog\" | \"emissive\" | \"emitter\" | \"spawner\" | \"trap\" | \"attackPool\" | \"seam\";"
             ),
         "TypeScript must select each member handle by map kind:\n{ts}"
     );
@@ -530,6 +531,9 @@ fn raw_world_query_is_hidden_and_get_map_entities_selects_member_handles() {
             && luau.contains("((kind: \"trap\", filter: MapEntityFilter?) -> {TrapEntityHandle})")
             && luau.contains(
                 "((kind: \"attackPool\", filter: MapEntityFilter?) -> {AttackPoolEntityHandle})"
+            )
+            && luau.contains(
+                "((kind: \"emissive\", filter: MapEntityFilter?) -> {EmissiveVolumeHandle})"
             )
             && luau.contains("((kind: \"seam\", filter: MapEntityFilter?) -> {SeamHandle})"),
         "Luau must select each member handle by map kind:\n{luau}"

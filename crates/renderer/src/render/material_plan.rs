@@ -118,7 +118,7 @@ pub(crate) fn build_material_bind_group(
     texture_bind_group_layout: &wgpu::BindGroupLayout,
     loaded: &LoadedTexture,
     material_sampler: &wgpu::Sampler,
-    material: Material,
+    material: TextureMaterial,
     surface_depth_quality: SurfaceDepthQuality,
     label_prefix: &str,
 ) -> MaterialBinding {
@@ -134,7 +134,8 @@ pub(crate) fn build_material_bind_group(
     // Both facts are recorded in the retained plan rather than folded away, so
     // a later quality rewrite re-derives from the same loaded truth.
     let uniform_plan = MaterialUniformPlan::new(
-        material,
+        material.material,
+        material.emissive_strength,
         specular_slot_is_surface_map(loaded.specular_texture.format()),
         loaded.specular_texture.mip_level_count(),
         // Measured at load from the bytes uploaded to that slot, every mip.

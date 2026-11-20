@@ -1,0 +1,12 @@
+# Per-texture material values for the dev mod, read only by prl-build.
+# Keys are texture names as TrenchBroom shows them (`collection/name`).
+# `emissive` scales a texture's `_e` glow map: 1.0 with no entry, 0 without `_e`.
+
+# combat-demo's bloom A/B panels: 4.0, the strength the retired `neon_` prefix
+# gave them. The bright panel's `_e` peak clears the bloom threshold at 4.0; the
+# dim panel's stays just under it.
+["neon/glow_panel"]
+emissive = 4.0
+
+["neon/dim_panel"]
+emissive = 4.0

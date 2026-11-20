@@ -9,17 +9,19 @@ impl Renderer {
     /// Builds one load's material bind groups from baked `.prm` mip sidecars
     /// and stages them for the next `install_level_geometry`, which takes
     /// them into the level set it publishes.
-    /// `texture_materials` must be parallel to `texture_names`; entries beyond
-    /// its length fall back to `Material::Default`. Caller drives the order:
-    /// `install_textures` runs before `install_level_geometry` because the
-    /// uploaded diffuse dimensions feed `normalize_world_uvs`.
+    /// `texture_materials` must be parallel to `texture_names`: each texture's
+    /// prefix material and baked glow strength (id 60). Entries beyond its
+    /// length fall back to [`TextureMaterial::DEFAULT`], which glows nothing.
+    /// Caller drives the order: `install_textures` runs before
+    /// `install_level_geometry` because the uploaded diffuse dimensions feed
+    /// `normalize_world_uvs`.
     /// See: context/lib/boot_sequence.md §3 (Level Install Order) · context/lib/build_pipeline.md
     pub fn install_textures(
         &mut self,
         texture_names: &[String],
         texture_cache_keys: &TextureCacheKeysSection,
         prm_cache_root: &Path,
-        texture_materials: &[Material],
+        texture_materials: &[TextureMaterial],
     ) {
         let install_started = std::time::Instant::now();
         let surface_depth_quality = self.surface_depth_quality;
@@ -89,7 +91,7 @@ fn bind_loaded_textures(
     surface_depth_quality: postretro_render_cpu::surface_depth::SurfaceDepthQuality,
     loaded: Vec<LoadedTexture>,
     load_timing: &TextureLoadTiming,
-    texture_materials: &[Material],
+    texture_materials: &[TextureMaterial],
     before_bind_groups: std::time::Duration,
 ) {
     let bind_groups_started = std::time::Instant::now();
@@ -118,7 +120,7 @@ pub(in crate::render) fn build_level_textures(
     queue: &dyn crate::render::queue_writes::QueueWrites,
     bind: &MaterialBindContext<'_>,
     loaded: Vec<LoadedTexture>,
-    texture_materials: &[Material],
+    texture_materials: &[TextureMaterial],
 ) -> LevelTextures {
     let mut samplers = SamplerMaps::default();
     let mut gpu_textures: Vec<GpuTexture> = Vec::with_capacity(loaded.len());
@@ -127,7 +129,7 @@ pub(in crate::render) fn build_level_textures(
         let material = texture_materials
             .get(idx)
             .copied()
-            .unwrap_or(postretro_render_data::material::Material::Default);
+            .unwrap_or(TextureMaterial::DEFAULT);
         let binding = build_material_bind_group(
             device,
             bind.texture_bgl,
@@ -176,7 +178,7 @@ pub(in crate::render) fn placeholder_level_textures(
         bind.texture_bgl,
         &placeholder,
         aniso_sampler,
-        postretro_render_data::material::Material::Default,
+        TextureMaterial::DEFAULT,
         bind.surface_depth_quality,
         "Placeholder Material",
     );

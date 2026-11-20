@@ -381,7 +381,7 @@ pub(super) fn extracted_room() -> (GeometryResult, Vec<Option<u32>>, usize) {
     )
     .expect("charts plan");
     let brushes = match &cut.face_remap {
-        Some(remap) => crate::geometry::remap_face_brushes(&brushes, remap),
+        Some(remap) => crate::geometry::remap_per_face(&brushes, remap),
         None => brushes,
     };
     let added = geometry.face_index_ranges.len() - before;

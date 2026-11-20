@@ -35,6 +35,7 @@ use postretro_level_format::data_script::DataScriptSection;
 use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSection};
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
+use postretro_level_format::emissive::EmissiveSection;
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::fog_cell_masks::FogCellMasksSection;
@@ -467,6 +468,9 @@ pub fn pack_and_write_portals_with_billboard_scatter(
     // This standalone helper has no parsed map, so it writes the always-present
     // environment section with no volumes at the default level gravity.
     let environment_volumes = EnvironmentVolumesSection::default();
+    // Nor a material stage: no texture is known to have an `_e` map, so every
+    // texture packs no glow.
+    let emissive = EmissiveSection::dark(geo_result.texture_names.names.len());
     pack_and_write_portals_with_billboard_scatter_finalized(
         output,
         geo_result,
@@ -496,6 +500,7 @@ pub fn pack_and_write_portals_with_billboard_scatter(
         map_entities,
         fog_volumes,
         fog_cell_masks,
+        &emissive,
         sdf_atlas,
         navmesh,
         kinematic_geometry,
@@ -552,6 +557,8 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
     map_entities: Option<&MapEntitySection>,
     fog_volumes: &FogVolumesSection,
     fog_cell_masks: Option<&FogCellMasksSection>,
+    // Emissive (id 60), written for every map.
+    emissive: &EmissiveSection,
     sdf_atlas: Option<&SdfAtlasSection>,
     navmesh: Option<&NavMeshSection>,
     kinematic_geometry: Option<&KinematicGeometrySection>,
@@ -726,6 +733,7 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
         map_entities,
         fog_volumes,
         fog_cell_masks,
+        emissive,
         sdf_atlas,
         navmesh,
         kinematic_geometry,
@@ -1497,13 +1505,14 @@ mod tests {
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
         // Baseline modern sections plus CellVisibility, section 45,
-        // always-emitted FogVolumes and EnvironmentVolumes, the required
-        // CellDrawIndex, and ProbeDepthTiles beside id 34.
-        assert_eq!(meta.header.section_count, 19);
+        // always-emitted FogVolumes, EnvironmentVolumes and Emissive, the
+        // required CellDrawIndex, and ProbeDepthTiles beside id 34.
+        assert_eq!(meta.header.section_count, 20);
         assert!(
             meta.find_section(SectionId::EnvironmentVolumes as u32)
                 .is_some()
         );
+        assert!(meta.find_section(SectionId::Emissive as u32).is_some());
         assert!(
             meta.find_section(SectionId::ClusterDirectory as u32)
                 .is_some()
@@ -2589,10 +2598,10 @@ mod tests {
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
 
-        // Baseline modern sections plus always-emitted FogVolumes and
-        // EnvironmentVolumes, required CellDrawIndex, and ProbeDepthTiles
-        // beside id 34.
-        assert_eq!(meta.header.section_count, 17);
+        // Baseline modern sections plus always-emitted FogVolumes,
+        // EnvironmentVolumes and Emissive, required CellDrawIndex, and
+        // ProbeDepthTiles beside id 34.
+        assert_eq!(meta.header.section_count, 18);
         assert!(
             meta.find_section(SectionId::EnvironmentVolumes as u32)
                 .is_some()

@@ -122,7 +122,7 @@ impl PreparedCapture {
         }
         renderer.set_cpu_timing(crate::cpu_timing::gate_from_env());
 
-        let texture_materials = derive_texture_materials(&world.texture_names);
+        let texture_materials = derive_texture_materials(&world);
         let content_root = content_root_from_map(Some(&scene.map));
         let prm_cache_root = derive_prm_root_dev_layout(&content_root);
         renderer.install_textures(

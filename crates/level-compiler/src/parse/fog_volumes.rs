@@ -15,7 +15,7 @@ use postretro_level_format::fog_volumes::MAX_PLANES_PER_VOLUME;
 
 /// Parse a `tint` color255 string like "255 128 64" into a linear [0,1] float triple.
 /// Values outside 0-255 are rejected; missing or malformed values return `None`.
-fn parse_fog_tint(s: &str) -> Option<[f32; 3]> {
+pub(super) fn parse_fog_tint(s: &str) -> Option<[f32; 3]> {
     let parts: Vec<&str> = s.split_whitespace().collect();
     if parts.len() != 3 {
         return None;

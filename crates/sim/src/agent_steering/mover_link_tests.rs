@@ -1130,13 +1130,14 @@ fn a_dormant_boarder_lands_on_its_boarding_point_and_rides() {
 
 // Regression: the ride's airborne grace counted steps against the current
 // step's span, so a rider airborne through a whole dormant step kept its ride
-// for most of the grace again once back at 60 Hz.
+// for most of the grace again once back at 60 Hz; then it was checked before
+// the step counted its own span, so the ride outlived the grace by a step.
 #[test]
 fn a_rider_airborne_through_a_dormant_step_has_spent_the_grace() {
     let mut rig = Rig::new(LiftSpec::shuttle(6000.0));
     let id = rig.boarded();
-    // High over the deck: airborne through a whole 0.5 s step, which falls
-    // about g·dt² (some 5 m) in one explicit step.
+    // High over the deck: a step that finds it airborne found it airborne for
+    // its whole 0.5 s span.
     let mut agent = rig.state(id).clone();
     agent.ground = GroundRef::Airborne;
     agent.velocity = Vec3::ZERO;
@@ -1148,18 +1149,7 @@ fn a_rider_airborne_through_a_dormant_step_has_spent_the_grace() {
     let dormant = |_: EntityId| AgentStep::Ticks(30);
     rig.tick_with(AgentSteps::scheduled(&dormant));
     assert!(
-        rig.state(id).ride.is_some(),
-        "the step began inside the grace"
-    );
-    assert_eq!(
-        rig.state(id).ground,
-        GroundRef::Airborne,
-        "still in the air"
-    );
-
-    rig.tick();
-    assert!(
         rig.state(id).ride.is_none(),
-        "0.5 s in the air is past the 150 ms grace"
+        "0.5 s in the air is past the 150 ms grace at the step that finds it"
     );
 }

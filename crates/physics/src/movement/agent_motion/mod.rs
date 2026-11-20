@@ -24,7 +24,9 @@ use crate::movement::mover_carry::{
 };
 use crate::movement::overlap_check::check_own_movement;
 use crate::movement::substrate::cast_capsule_query;
-use crate::movement::swept::{StepParams, floor_below, ground_stick_reach, snap_to_floor, step_up};
+use crate::movement::swept::{
+    StepParams, floor_below, ground_stick_reach, resting_floor, snap_to_floor, step_up,
+};
 use postretro_collision::{EnvironmentView, resolve_gravity};
 use postretro_foundation::GroundRef;
 
@@ -365,10 +367,9 @@ pub fn settle_corpse(
 /// and release wait for that step, so a mover that leaves it between steps
 /// releases it there.
 ///
-/// A body this tick's carry would leave on no walkable face of its mover (a
-/// trapdoor or drawbridge tilting past the walkable slope) is not carried,
-/// only displaced: a 60 Hz rider's own sweep finds no ground there and stops
-/// riding.
+/// A body this tick's carry would leave on no walkable mover face (a trapdoor
+/// or drawbridge tilting past the walkable slope) is not carried, only
+/// displaced: a 60 Hz rider's own sweep finds no ground there and stops riding.
 pub fn carry_without_step(
     collision: &CombinedCollisionWorld<'_>,
     capsule: &AgentCapsule,
@@ -388,10 +389,12 @@ pub fn carry_without_step(
     )
 }
 
-/// Whether the mover `previous_ground` names still holds the body on a walkable
-/// face once this tick's carry moves it: the floor below its carried pose is
-/// that mover, inside the walkable slope. Any other ground, and a mover that
-/// did not move this tick, need no probe.
+/// Whether a mover still holds the body on a walkable face once this tick's
+/// carry moves it: its carried pose rests on a mover, classified as the 60 Hz
+/// ground-stick classifies it ([`resting_floor`]), so a body perched on the
+/// deck's rim is held and one across the seam of two movers moving together is
+/// held by either. No floor in reach, or none walkable, holds it. Any other
+/// ground, and a mover that did not move this tick, need no probe.
 fn still_held_by_mover(
     collision: &CombinedCollisionWorld<'_>,
     capsule: &AgentCapsule,
@@ -405,14 +408,14 @@ fn still_held_by_mover(
     if carried == position {
         return true;
     }
-    floor_below(
+    resting_floor(
         collision,
         capsule.collision_shape(),
         carried,
         ground_stick_reach(capsule.step_params()),
         COS_WALKABLE,
     )
-    .is_some_and(|floor| floor.ground == previous_ground)
+    .is_some_and(|floor| matches!(floor.ground, GroundRef::Mover(_)))
 }
 
 /// The tick's mover carry, then displacement out of any mover it left the body

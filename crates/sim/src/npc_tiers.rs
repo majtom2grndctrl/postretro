@@ -168,10 +168,10 @@ impl NpcTiers {
             let always_active = brain.always_active.resolve(archetype);
             let engaged = brain.acquired_target.is_some();
             // A hit since its last run: the AI zeroes the clock at the hit and
-            // ages it only when the brain runs. A fresh entry runs its first
-            // tick anyway, so neither stimulus counts for it: a revived NPC's
-            // clock still reads its lethal hit, never aged while it was dead.
-            let damaged = !fresh && brain.time_since_damage_ms == 0.0;
+            // ages it only when the brain runs. A revive restarts the clock, so
+            // a zero on a fresh entry is a hit too and holds it idle. A fresh
+            // entry's gate has no earlier state to open from.
+            let damaged = brain.time_since_damage_ms == 0.0;
             let aggro_opened = !fresh && brain.aggro_armed && !entry.aggro_armed;
             entry.aggro_armed = brain.aggro_armed;
             if perceived || always_active || engaged || damaged || aggro_opened {

@@ -1613,6 +1613,30 @@ fn a_hit_between_the_respawn_and_the_npcs_run_sets_the_attackers_meter() {
     assert_eq!(watch.target(npc), Some(teammate), "acquired once seen");
 }
 
+// Regression: the hit-time respawn check read a despawned pawn's life as 0, so
+// a target acquired after its pawn's respawn read as stale once the pawn
+// despawned, and a hit set a meter on an NPC still holding it. The AI's
+// respawn drop holds a target that is no pawn, so the hit agrees with it.
+#[test]
+fn a_hit_after_a_respawned_targets_despawn_still_finds_it_held() {
+    let mut watch = Watch::new();
+    let player = watch.player(in_view(10.0));
+    let teammate = watch.player(hidden(12.0));
+    let npc = watch.npc(&default_noticing());
+    watch.respawn(player);
+    watch.checks(FILL_CHECKS + 1);
+    assert_eq!(watch.target(npc), Some(player), "acquired in its new life");
+    assert_eq!(watch.brain(npc).acquired_target_life, 1);
+
+    watch.reg.despawn(player).unwrap();
+    watch.hit(npc, Some(teammate));
+    assert_eq!(watch.target(npc), Some(player));
+    assert!(
+        !watch.metered(npc, teammate),
+        "a hit on an NPC holding a target changes no meter"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The aggro gate across a gap in runs (AC 7, P41)
 // ---------------------------------------------------------------------------

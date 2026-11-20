@@ -355,7 +355,7 @@ fn the_agent_controller_holds_no_step_up_or_snap_to_floor_of_its_own() {
         );
     }
     assert!(
-        src.contains("snap_to_floor, step_up};"),
+        src.contains("snap_to_floor, step_up"),
         "the agent controller calls the shared primitives"
     );
     let substrate = include_str!("../substrate.rs");

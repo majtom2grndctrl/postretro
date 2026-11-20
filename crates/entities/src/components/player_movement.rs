@@ -7,7 +7,17 @@ pub fn life_counter(
     registry: &crate::registry::EntityRegistry,
     pawn: crate::registry::EntityId,
 ) -> u32 {
+    pawn_life_counter(registry, pawn).unwrap_or(0)
+}
+
+/// `pawn`'s life counter while it is a player pawn; `None` for any other
+/// entity, a despawned pawn included, whose life cannot have moved on.
+pub fn pawn_life_counter(
+    registry: &crate::registry::EntityRegistry,
+    pawn: crate::registry::EntityId,
+) -> Option<u32> {
     registry
         .get_component::<PlayerMovementComponent>(pawn)
-        .map_or(0, |movement| movement.life_counter)
+        .ok()
+        .map(|movement| movement.life_counter)
 }

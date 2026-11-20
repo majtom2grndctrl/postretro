@@ -30,14 +30,22 @@ pub(crate) fn record_damage_perception(
     let attacker_transform =
         attacker.and_then(|attacker| registry.get_component::<Transform>(attacker).ok().copied());
     let damaged_transform = registry.get_component::<Transform>(id).ok().copied();
-    // The held target's life now. A respawn lands at tick start, before this
-    // brain's next run drops a target from the earlier life, so a hit in
-    // between finds a target that is already gone: it counts as none.
-    let held_target_life = registry
+    // Whether the held target's pawn has respawned since it was acquired. A
+    // respawn lands at tick start, before this brain's next run drops a target
+    // from the earlier life, so a hit in between finds a target that is
+    // already gone: it counts as none. A target that is no pawn now (an NPC,
+    // a despawned pawn) is still held, as the AI's respawn drop reads it.
+    let target_respawned = registry
         .get_component::<crate::components::brain::BrainComponent>(id)
         .ok()
-        .and_then(|brain| brain.acquired_target)
-        .map(|target| crate::components::player_movement::life_counter(registry, target));
+        .and_then(|brain| {
+            let now = crate::components::player_movement::pawn_life_counter(
+                registry,
+                brain.acquired_target?,
+            )?;
+            Some(now != brain.acquired_target_life)
+        })
+        .unwrap_or(false);
     if let Ok(ComponentValue::Brain(brain)) =
         registry.get_component_value_mut(id, ComponentKind::Brain)
     {
@@ -56,8 +64,7 @@ pub(crate) fn record_damage_perception(
         // meter to 1, draining from this hit. One holding a target changes
         // no meter; damage with no attacker changes none. A target whose
         // pawn respawned since it was acquired is held no longer.
-        let holds_target =
-            brain.acquired_target.is_some() && held_target_life == Some(brain.acquired_target_life);
+        let holds_target = brain.acquired_target.is_some() && !target_respawned;
         if let Some(attacker) = attacker
             && attacker != id
             && !holds_target
@@ -102,5 +109,17 @@ pub(crate) fn record_damage_perception(
                 }
             }
         }
+    }
+}
+
+/// A revive starts the brain's damage clock afresh: the lethal hit froze it at
+/// zero and a dead brain is never aged, so the AI tier choice would read the
+/// revived NPC's first tick as a fresh hit. A hit landing after the revive
+/// zeroes it again.
+pub(crate) fn restart_damage_clock(registry: &mut EntityRegistry, id: EntityId) {
+    if let Ok(ComponentValue::Brain(brain)) =
+        registry.get_component_value_mut(id, ComponentKind::Brain)
+    {
+        brain.time_since_damage_ms = crate::components::brain::default_time_since_damage_ms();
     }
 }

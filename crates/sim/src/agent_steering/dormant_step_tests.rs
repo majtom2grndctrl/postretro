@@ -274,6 +274,67 @@ fn dormant_rider_on_a_tilting_deck_is_carried_only_while_the_deck_is_walkable() 
     );
 }
 
+// Regression: a dormant rider perched on its plat's rim, which the 60 Hz
+// ground-stick grounds on the plat, lost its carry on carry-only ticks because
+// the probe's centre ray found the floor below the rim.
+#[test]
+fn dormant_rider_perched_on_a_rising_plats_rim_is_carried_on_carry_only_ticks() {
+    let world = floor_world();
+    // A plat whose +X rim sits at x = 2, its top 0.3 m over the floor.
+    let movers = [solid_box(
+        Vec3::new(-2.0, -0.2, -2.0),
+        Vec3::new(2.0, 0.0, 2.0),
+    )];
+    let mut plat = MoverTrack::at(Vec3::new(0.0, 0.3, 0.0));
+    let mut registry = EntityRegistry::new();
+    // The centre 0.3 m past the rim, so the rim meets the capsule's lower
+    // hemisphere past the walkable slope and the centre ray finds the floor.
+    let id = spawn(&mut registry, Vec3::new(2.3, rest_y(0.3), 0.0), None);
+    let settle = |_: EntityId| AgentStep::Ticks(1);
+    {
+        let collision = CombinedCollisionWorld::new(&world, &movers, &plat);
+        tick_with_steps(
+            &mut registry,
+            &collision,
+            None,
+            AgentSteps::scheduled(&settle),
+            ENV,
+            DT,
+        );
+    }
+    assert_eq!(
+        agent(&registry, id).ground,
+        GroundRef::Mover(MOVER),
+        "a 60 Hz tick grounds the perched rider on the plat"
+    );
+    assert!(
+        position(&registry, id).x > 2.0 + 0.25,
+        "the rider is perched past the rim"
+    );
+
+    // One dormant span of carry-only ticks while the plat rises.
+    let carry_only = |_: EntityId| AgentStep::CarryOnly;
+    let rise = Vec3::Y * 0.4;
+    for tick_index in 0..STRIDE {
+        plat.advance(rise);
+        let before = position(&registry, id);
+        let collision = CombinedCollisionWorld::new(&world, &movers, &plat);
+        tick_with_steps(
+            &mut registry,
+            &collision,
+            None,
+            AgentSteps::scheduled(&carry_only),
+            ENV,
+            DT,
+        );
+        let at = position(&registry, id);
+        assert!(
+            at.distance(before + rise * DT) < CARRY_TOLERANCE,
+            "tick {tick_index}: carried with the plat, at {at:?} from {before:?}"
+        );
+    }
+}
+
 // The schedule's span is bounded: a step asked for more ticks than
 // `MAX_STEP_TICKS` steps that many, so the knockback decay and the sweep's
 // parts stay bounded.

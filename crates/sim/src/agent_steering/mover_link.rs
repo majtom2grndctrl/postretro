@@ -93,7 +93,7 @@ pub(super) fn advance(
     if standing_on == Some(ride.mover_id) {
         agent.ride_airborne_ticks = 0;
     } else if agent.ground == GroundRef::Airborne
-        && (agent.ride_airborne_ticks as f32) * world.tick_dt() * 1000.0 < RIDE_AIRBORNE_GRACE_MS
+        && airborne_ms_through_this_step(agent.ride_airborne_ticks, world) < RIDE_AIRBORNE_GRACE_MS
     {
         // A short hop off the deck keeps the ride and its exit. The count is
         // in elapsed ticks, so a step spanning several spends them all.
@@ -125,6 +125,16 @@ pub(super) fn advance(
     }
     leave_ride(agent);
     RideStep::Free
+}
+
+/// How long a rider found airborne at this step has been off its mover, counted
+/// as the 60 Hz rider counts it: the ticks already spent airborne, then this
+/// step's own ticks but its last. A step that finds the body airborne found it
+/// airborne for its whole span, so a dormant step spends that span against the
+/// grace here, not at its next step. At one tick this is the count alone.
+fn airborne_ms_through_this_step(airborne_ticks: u32, world: RideWorld<'_>) -> f32 {
+    let ticks = airborne_ticks.saturating_add(world.ticks.max(1) - 1);
+    ticks as f32 * world.tick_dt() * 1000.0
 }
 
 /// The boarding walk. `Some` overrides path steering this tick.

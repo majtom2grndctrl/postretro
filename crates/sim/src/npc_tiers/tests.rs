@@ -315,13 +315,9 @@ fn a_dead_npc_leaves_the_tiers_and_rejoins_on_its_revive_tick() {
     assert_eq!(h.scheduler.tiers.agent_step(npc), AgentStep::Ticks(1));
 }
 
-// Regression: a revived NPC's damage clock still read its lethal hit (a
-// quiescent brain is never aged), so it rejoined held idle for the whole 2 s.
-#[test]
-fn a_revived_npc_unseen_goes_dormant_after_its_first_run_whatever_its_lethal_hit() {
-    let mut h = Harness::new();
-    let npc = h.npc(25, 18);
-    let alive = postretro_entities::components::health::HealthComponent {
+/// Full health for a tier test NPC.
+fn alive() -> postretro_entities::components::health::HealthComponent {
+    postretro_entities::components::health::HealthComponent {
         max: 10.0,
         current: 10.0,
         hitbox: None,
@@ -329,31 +325,97 @@ fn a_revived_npc_unseen_goes_dormant_after_its_first_run_whatever_its_lethal_hit
         pending_kill_credit: None,
         zone_multipliers: Default::default(),
         contributor_ledger: Default::default(),
-    };
-    h.registry.set_component(npc, alive.clone()).unwrap();
+    }
+}
+
+/// A hit through the damage chokepoint, as every producer lands one.
+fn hit(registry: &mut EntityRegistry, id: EntityId, amount: f32) {
+    use postretro_entities::components::health::{DamageContext, DamageProducer};
+    assert!(
+        postretro_entities::components::health::apply_damage_with_context(
+            registry,
+            id,
+            &postretro_foundation::DamagePayload {
+                amount,
+                impulse: glam::Vec3::ZERO,
+                damage_type: None,
+            },
+            DamageContext::new("test", DamageProducer::InTick),
+        ),
+        "the hit landed"
+    );
+}
+
+/// Kill `npc` with a hit and take it out of the tiers, then revive it as a
+/// script's health write does.
+fn kill_and_revive(h: &mut Harness, npc: EntityId) {
+    hit(&mut h.registry, npc, 10.0);
     h.choose();
-    // The lethal hit zeroes its damage clock; dead, it leaves the tiers.
-    h.brain(npc, |brain| brain.time_since_damage_ms = 0.0);
-    let mut dead = alive.clone();
-    dead.current = 0.0;
-    h.registry.set_component(npc, dead).unwrap();
+    assert_eq!(h.tier(npc), None, "dead, it leaves the tiers");
+    postretro_entities::components::health::set_health_absolute(&mut h.registry, npc, 10.0);
+}
+
+// Regression: a revived NPC's damage clock still read its lethal hit (a
+// quiescent brain is never aged), so it rejoined held idle for the whole 2 s.
+#[test]
+fn a_revived_npc_unseen_goes_dormant_after_its_first_run_whatever_its_lethal_hit() {
+    let mut h = Harness::new();
+    let npc = h.npc(25, 18);
+    h.registry.set_component(npc, alive()).unwrap();
     h.choose();
-    assert_eq!(h.tier(npc), None);
+    kill_and_revive(&mut h, npc);
 
     // Revived out of sight: its first tick runs, as any NPC joining does.
-    h.registry.set_component(npc, alive).unwrap();
     h.choose();
     assert_eq!(h.scheduler.tiers.ai_run(npc), AiRun::Run);
     assert_eq!(h.scheduler.tiers.agent_step(npc), AgentStep::Ticks(1));
     assert_eq!(h.tier(npc), Some(NpcTier::Dormant));
-    // That run aged the clock one tick, as the AI does.
-    h.brain(npc, |brain| brain.time_since_damage_ms = 1000.0 / 60.0);
     for _ in 0..DORMANT_INTERVAL_TICKS {
         h.choose();
         assert_eq!(
             h.tier(npc),
             Some(NpcTier::Dormant),
             "no hold for a hit from before it died"
+        );
+    }
+}
+
+// Regression: the tiers ignored a zero damage clock on an NPC's join tick to
+// skip a revived NPC's lethal hit, which also dropped a real hit landing then.
+#[test]
+fn an_npc_hit_on_its_join_tick_holds_idle_for_the_hold() {
+    for revived in [false, true] {
+        let mut h = Harness::new();
+        // Spawned out of sight, or revived there.
+        let npc = h.npc(25, 21);
+        h.registry.set_component(npc, alive()).unwrap();
+        if revived {
+            h.choose();
+            kill_and_revive(&mut h, npc);
+        }
+
+        // Hit before the tier choice on the tick it joins.
+        hit(&mut h.registry, npc, 1.0);
+        h.choose();
+        let joined = h.tick();
+        assert_eq!(
+            h.tier(npc),
+            Some(NpcTier::Idle),
+            "revived {revived}: the hit holds it idle"
+        );
+        // Its run ages the clock one tick, as the AI does.
+        h.brain(npc, |brain| brain.time_since_damage_ms = 1000.0 / 60.0);
+        loop {
+            h.choose();
+            if h.tier(npc) == Some(NpcTier::Dormant) {
+                break;
+            }
+            assert_eq!(h.tier(npc), Some(NpcTier::Idle), "revived {revived}");
+        }
+        assert_eq!(
+            h.tick() - joined,
+            MOVE_DOWN_HOLD_TICKS,
+            "revived {revived}: held the whole 2 s"
         );
     }
 }

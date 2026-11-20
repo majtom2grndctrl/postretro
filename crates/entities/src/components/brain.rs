@@ -1274,7 +1274,7 @@ pub fn age_damage_clock(clock_ms: f32, span_dt_ms: f32, tick_dt_ms: f32) -> f32 
     (clock_ms + dt_ms).clamp(0.0, BRAIN_NO_TARGET_DISTANCE)
 }
 
-const fn default_time_since_damage_ms() -> f32 {
+pub(crate) const fn default_time_since_damage_ms() -> f32 {
     BRAIN_NO_TARGET_DISTANCE
 }
 

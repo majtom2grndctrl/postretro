@@ -72,6 +72,10 @@ pub enum SimStage {
     /// Inside `Ai`: combat-slot write-back, attack-turn arbitration and
     /// applying every outcome to the registry.
     AiApply,
+    /// Status applications from fluids, due status ticks through the damage
+    /// chokepoint and their impact policies, then expiry: after `Weapons`,
+    /// before the death sweep.
+    Statuses,
 }
 
 impl StageSet for SimStage {
@@ -98,6 +102,7 @@ impl StageSet for SimStage {
         Self::AiPerception,
         Self::AiGraph,
         Self::AiApply,
+        Self::Statuses,
     ];
 
     fn index(self) -> usize {
@@ -128,6 +133,7 @@ impl StageSet for SimStage {
             Self::AiPerception => "sim_ai_perception",
             Self::AiGraph => "sim_ai_graph",
             Self::AiApply => "sim_ai_apply",
+            Self::Statuses => "sim_statuses",
         }
     }
 

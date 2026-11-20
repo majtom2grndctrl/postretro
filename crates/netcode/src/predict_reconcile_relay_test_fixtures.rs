@@ -673,6 +673,7 @@ impl RelayHarness {
             &EnvironmentTuning {
                 level_gravity: self.host_level_gravity,
                 fluids: self.host_fluid_table.clone(),
+                status_names: Vec::new(),
             },
             &life_names,
             life_revision,

@@ -131,6 +131,7 @@ fn fluids_swim_twins_run_as_mod_manifests_and_declare_the_same_surface() {
                 wave_amplitude: 8.0,
                 wave_length: [64.0, 80.0],
                 surface_reflectivity: 1.0,
+                status: None,
             },
             FluidDescriptor {
                 name: "sludge".into(),
@@ -146,6 +147,7 @@ fn fluids_swim_twins_run_as_mod_manifests_and_declare_the_same_surface() {
                 wave_amplitude: 8.0,
                 wave_length: [64.0, 80.0],
                 surface_reflectivity: 1.0,
+                status: None,
             },
         ]
     );
@@ -198,8 +200,8 @@ fn dev_manifest_declares_the_example_fluids_swim_block_and_wiring_under_its_mod_
     let twin = run_manifest("start-script.js", &bundled_ts_twin()).expect("TS twin initializes");
 
     assert_eq!(dev.id, "postretro.dev", "content/dev keeps its mod id");
-    assert_eq!(dev.fluids, twin.fluids);
-    assert_eq!(dev.fluids.names(), ["water", "sludge"]);
+    assert_eq!(dev.fluids.descriptors()[..2], *twin.fluids.descriptors());
+    assert_eq!(dev.fluids.names(), ["water", "sludge", "lava"]);
     assert_eq!(swim_of(&dev, "player"), swim_of(&twin, "player"));
     assert!(swim_of(&dev, "player").is_some(), "the dev player can swim");
     // content/dev also authors other player events (life-state recipes), so
@@ -365,10 +367,15 @@ fn dev_maps_name_only_fluids_the_dev_manifest_declares() {
     let dev = dev_manifest();
     for map in ["e24-environment-test.map", "stress-env-volumes.map"] {
         let named = fluids_named_by(map);
+        let expected: &[&str] = match map {
+            // The playtest map also has the statuses' lava pool.
+            "e24-environment-test.map" => &["lava", "sludge", "water"],
+            _ => &["sludge", "water"],
+        };
         assert_eq!(
             named.iter().map(String::as_str).collect::<Vec<_>>(),
-            ["sludge", "water"],
-            "{map} names both dev fluids"
+            expected,
+            "{map} names the dev fluids"
         );
         for fluid in &named {
             assert!(

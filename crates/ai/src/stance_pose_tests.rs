@@ -266,6 +266,7 @@ pub(super) fn hit(reg: &mut EntityRegistry, enemy: EntityId, amount: f32) {
             producer: DamageProducer::InTick,
             point: None,
             attacker_life: None,
+            status: None,
         },
     ));
 }

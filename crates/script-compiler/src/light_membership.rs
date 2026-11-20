@@ -104,9 +104,14 @@ const DATA_SCRIPT_LUAU: &str = include_str!("../../../sdk/lib/data_script.luau")
 /// `data_script.luau` part chunks, evaluated in this order before it and
 /// published through the temporary `__postretroDataScriptParts` bridge,
 /// mirroring scripting-core's `evaluate_data_script_sdk`.
-/// `player_events` comes first because `commands.luau` reads
+/// `player_events` comes before `commands`, which reads
 /// `__postretroDataScriptParts.playerEvents` at load.
 const DATA_SCRIPT_PART_LUAU: &[(&str, &str, &str)] = &[
+    (
+        "impactEvents",
+        include_str!("../../../sdk/lib/data_script/impact_events.luau"),
+        "sdk/lib/data_script/impact_events.luau",
+    ),
     (
         "attackBudget",
         include_str!("../../../sdk/lib/data_script/attack_budget.luau"),
@@ -598,6 +603,7 @@ const BRAIN_LUAU_FIELDS: &[&str] = &[
     "brain",
     "candidate",
     "defense",
+    "hasStatus",
     "state",
     "attackTurnHeld",
     "attackTurnFree",
@@ -720,6 +726,7 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineStore",
     "defineDefenseLayer",
     "defineDamageType",
+    "defineStatus",
     "defineAttackToken",
     "defaultToken",
     "defineAttack",

@@ -2279,6 +2279,7 @@ fn crusher_passes_through_a_crush_immune_agent_unharmed() {
                 )]),
             }],
             default_damage_type: None,
+            statuses: Vec::new(),
         }));
     rig.edit_mover(crusher, |mover| {
         mover.crush_damage_type = Some("crush".to_string());

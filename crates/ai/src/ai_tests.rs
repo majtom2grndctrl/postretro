@@ -3264,6 +3264,7 @@ fn lethal_ready_remote_hit_quiesces_brain_before_same_tick_ai_outcomes() {
                     producer: DamageProducer::InTick,
                     point: None,
                     attacker_life: None,
+                    status: None,
                 },
             );
             on_impact(registry);
@@ -13775,6 +13776,7 @@ fn contact_attack_deals_its_damage_type() {
                 )]),
             }],
             default_damage_type: None,
+            statuses: Vec::new(),
         },
     ));
     let mut warned = AiRuntime::deciding_every_tick();

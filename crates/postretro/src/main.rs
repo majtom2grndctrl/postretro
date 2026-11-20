@@ -113,6 +113,7 @@ mod session;
 // renderer outcomes. It never owns GPU objects.
 mod sh_streaming;
 mod sound_events;
+mod status_presentation;
 // Resource-neutral read issuer, drain budget, and id-49 hint decode shared by
 // every streamed resource.
 mod streaming;
@@ -1162,6 +1163,9 @@ pub(crate) struct App {
     /// (forward prediction, adoption, or the host seat's own crossing) and every
     /// observed remote arrival. Played and cleared by the frame's audio step.
     pending_teleport_sounds: Vec<postretro_audio::SoundRequest>,
+    /// Status presentation on this machine: attached emitters and tick sounds
+    /// from each entity's status presence.
+    status_presentation: status_presentation::StatusPresentation,
     client_fire_resolutions: Vec<weapon::ClientFireResolution>,
     client_predicted_shots: weapon::ClientPredictedShots,
     /// Connected-client reload edges derived from replicated slots.
@@ -5902,7 +5906,10 @@ impl App {
                 &mut script_ctx.presentation_overrides.borrow_mut(),
             );
         }
-        netcode::host_ingest_ready_hit_declarations(
+        // Hits that waited on this tick's fire authorization are in-tick
+        // producers of it: a status they apply counts on this tick.
+        registry.set_status_applications_immediate(true);
+        let ingested = netcode::host_ingest_ready_hit_declarations(
             server,
             &mut registry,
             &self.collision_world,
@@ -5931,7 +5938,54 @@ impl App {
             },
             |shot_id, point| projectile_presentations.note_contact(shot_id, point),
             |impact| remote_impacts.push(impact),
-        )
+        );
+        registry.set_status_applications_immediate(false);
+        ingested
+    }
+
+    /// Evaluate script impacts pending outside a fixed tick, in landing order:
+    /// at tick start and at frame end (`scripting.md` §2, Impact-policy
+    /// evaluation). A networked host streams overlay edges exactly as its
+    /// in-tick hits do; a connected client discards them unevaluated.
+    fn evaluate_pending_script_impacts(&mut self) {
+        let connected_client = self.is_connected_client();
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let script_ctx = session.scripting.script_ctx.clone();
+        let scripting = &mut session.scripting;
+        let Some(netcode::NetEndpoint::Host {
+            allocator,
+            replicable,
+            descriptor_entities,
+            ..
+        }) = session.net_endpoint.as_mut()
+        else {
+            scripting.settle_frame_end_impacts(connected_client);
+            return;
+        };
+        let overlay_config = scripting.impact_policy_runtime.client_overlay_config();
+        let overlay_tracker = &mut session.host_overlay_fact_tracker;
+        let identities = crate::host_overlays::HostOverlayIdentities::new(
+            allocator,
+            replicable,
+            descriptor_entities,
+        );
+        let mut registry = script_ctx.registry.borrow_mut();
+        scripting.evaluate_pending_in_tick_impacts_with_overlay_sink(
+            &mut registry,
+            |registry, damage| {
+                if let Some(config) = overlay_config.as_ref() {
+                    identities.record_damage(
+                        registry,
+                        damage,
+                        &mut script_ctx.presentation_overrides.borrow_mut(),
+                        overlay_tracker,
+                        config,
+                    );
+                }
+            },
+        );
     }
 
     fn host_take_ready_hit_declarations(&mut self) -> Vec<netcode::PendingHitDeclaration> {
@@ -7860,6 +7914,7 @@ mod tests {
             postretro_combat_model::EnvironmentTuning {
                 level_gravity: -9.81,
                 fluids: Default::default(),
+                status_names: Vec::new(),
             },
         );
         let terms = client_fire_muzzle_terms(&initial, 0).expect("host row exists");
@@ -7887,6 +7942,7 @@ mod tests {
             postretro_combat_model::EnvironmentTuning {
                 level_gravity: -9.81,
                 fluids: Default::default(),
+                status_names: Vec::new(),
             },
         );
         let terms = client_fire_muzzle_terms(&replacement, 0).expect("replacement row exists");

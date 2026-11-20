@@ -142,10 +142,10 @@ fn member_sequence(name: &str, gate: EntityId, armed: bool) -> NamedReaction {
 
 /// The authoritative host seam with installed teleporters, script bindings,
 /// triggers and movers, driven one fixed tick at a time.
-struct Rig {
-    ctx: ScriptCtx,
+pub(super) struct Rig {
+    pub(super) ctx: ScriptCtx,
     world: CollisionWorld,
-    teleporters: Vec<EntityId>,
+    pub(super) teleporters: Vec<EntityId>,
     bindings: TeleporterBindingTable,
     triggers: TriggerBindingTable,
     bridge: TriggerVolumeBridge,
@@ -156,10 +156,13 @@ struct Rig {
     hit_zones: HitZoneStore,
     steps: SequencedPrimitiveRegistry,
     remote: Vec<RemotePawnCommand>,
+    /// Environment volumes and per-fluid viscosity the tick resolves against;
+    /// none resolves every body dry.
+    pub(super) environment: Option<(postretro_collision::EnvironmentVolumes, Vec<f32>)>,
 }
 
 impl Rig {
-    fn new(records: Vec<TeleporterRecord>) -> Self {
+    pub(super) fn new(records: Vec<TeleporterRecord>) -> Self {
         Self::with_world(CollisionWorld::new(), records)
     }
 
@@ -215,12 +218,13 @@ impl Rig {
             hit_zones: HitZoneStore::new(),
             steps,
             remote: Vec::new(),
+            environment: None,
         }
     }
 
     /// Install level reactions, `teleportEvents` as `(teleporter, reactions)`,
     /// and crossings, then build both binding tables as level install does.
-    fn bind(
+    pub(super) fn bind(
         &mut self,
         reactions: Vec<NamedReaction>,
         teleport_events: &[(usize, &[&str])],
@@ -272,7 +276,7 @@ impl Rig {
         pawn
     }
 
-    fn local_pawn(&self, position: Vec3) -> EntityId {
+    pub(super) fn local_pawn(&self, position: Vec3) -> EntityId {
         let pawn = self.spawn_pawn(position);
         self.ctx
             .registry
@@ -294,7 +298,7 @@ impl Rig {
         pawn
     }
 
-    fn trigger(&mut self, center: Vec3, half: f32) -> EntityId {
+    pub(super) fn trigger(&mut self, center: Vec3, half: f32) -> EntityId {
         let trigger = {
             let mut registry = self.ctx.registry.borrow_mut();
             let trigger = registry.spawn(Transform::default());
@@ -323,7 +327,7 @@ impl Rig {
         trigger
     }
 
-    fn place(&self, pawn: EntityId, position: Vec3) {
+    pub(super) fn place(&self, pawn: EntityId, position: Vec3) {
         let mut registry = self.ctx.registry.borrow_mut();
         let mut transform = *registry.get_component::<Transform>(pawn).unwrap();
         transform.position = position;
@@ -357,7 +361,7 @@ impl Rig {
             .armed
     }
 
-    fn health(&self, pawn: EntityId) -> f32 {
+    pub(super) fn health(&self, pawn: EntityId) -> f32 {
         self.ctx
             .registry
             .borrow()
@@ -366,26 +370,42 @@ impl Rig {
             .current
     }
 
-    fn tick(&mut self) -> TickEvents {
+    pub(super) fn tick(&mut self) -> TickEvents {
         self.tick_with(&[], |_| {})
     }
 
     /// One fixed tick. `batch` runs as script member steps after movement (in
     /// the post-movement stage), in listed order; `ai` runs at the AI stage.
-    fn tick_with(
+    pub(super) fn tick_with(
+        &mut self,
+        batch: &[(usize, bool)],
+        ai: impl FnMut(&mut EntityRegistry),
+    ) -> TickEvents {
+        self.tick_evaluating(batch, ai, |_| {})
+    }
+
+    /// [`Self::tick_with`] with the tick's in-tick impact evaluator.
+    pub(super) fn tick_evaluating(
         &mut self,
         batch: &[(usize, bool)],
         mut ai: impl FnMut(&mut EntityRegistry),
+        on_impact: impl FnMut(&mut EntityRegistry),
     ) -> TickEvents {
         let use_edges = Default::default();
         let steps = &self.steps;
         let teleporters = &self.teleporters;
+        let environment = match &self.environment {
+            Some((volumes, viscosity)) => {
+                postretro_collision::EnvironmentView::new(0.0, volumes, viscosity)
+            }
+            None => postretro_collision::EnvironmentView::level_only(0.0),
+        };
         simulate_tick(
             self.ctx.registry.clone(),
             &self.world,
             &self.hit_zones,
             None,
-            postretro_collision::EnvironmentView::level_only(0.0),
+            environment,
             None,
             0.0,
             &mut self.progress,
@@ -427,7 +447,7 @@ impl Rig {
                 auto_close_timers: None,
                 use_edges: &use_edges,
             }),
-            |_| {},
+            on_impact,
         )
     }
 

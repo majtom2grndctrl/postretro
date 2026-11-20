@@ -113,8 +113,10 @@ pub fn restore_carried_layers(
 /// 16: sorted life-state names, per-pawn capability profiles and table revision
 /// supply the client prediction and reconcile gates. 17: a life-state profile
 /// gains `assistable` (a literal or IR `radius` and `holdMs`); an epoch-16
-/// reader rejects the unknown profile key.
-pub const TUNING_PAYLOAD_EPOCH: u32 = 17;
+/// reader rejects the unknown profile key. 18: the environment gains
+/// `statusNames`, the host's status kinds in declaration order, which name the
+/// bits of each entity's status presence.
+pub const TUNING_PAYLOAD_EPOCH: u32 = 18;
 
 /// Host-resolved values for one occupied wieldable slot.
 ///
@@ -267,6 +269,11 @@ pub struct EnvironmentTuning {
     /// The host's fluid table, movement fields only: a connected client
     /// resolves level fluid names against this, never its own registry.
     pub fluids: FluidMovementTable,
+    /// The host's status kinds in declaration order: bit `i` of an entity's
+    /// replicated status presence names entry `i`. A client maps presence to
+    /// its own statuses by these names; empty means no statuses.
+    #[serde(rename = "statusNames", default)]
+    pub status_names: Vec<String>,
 }
 
 impl TuningPayload {
@@ -377,6 +384,7 @@ mod tests {
             EnvironmentTuning {
                 level_gravity,
                 fluids,
+                status_names: Vec::new(),
             },
         )
     }

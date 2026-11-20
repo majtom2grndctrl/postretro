@@ -158,6 +158,8 @@ fn impact_from(target: EntityId, source: Option<EntityId>) -> ImpactDispatch {
         max_health: 10.0,
         target,
         source,
+        source_id: String::new(),
+        status: None,
         producer: DamageProducer::InTick,
         point: None,
     }

@@ -116,6 +116,7 @@ mod tests {
             EnvironmentTuning {
                 level_gravity: -9.81,
                 fluids: FluidMovementTable::default(),
+                status_names: Vec::new(),
             },
         );
         payload.life_state_names = vec!["alive".into(), "down".into(), "x".into()];

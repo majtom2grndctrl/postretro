@@ -24,7 +24,7 @@ use crate::movement::{
 };
 use postretro_collision::EnvironmentView;
 use postretro_entities::{EntityId, EntityRegistry, Transform};
-use postretro_foundation::{ImmersionComponent, PlayerMovementComponent};
+use postretro_foundation::PlayerMovementComponent;
 
 /// Advance the named movement pawns one fixed tick. Snapshots each pawn's component
 /// and position ONCE at the start of the tick, runs `movement::tick` for each, writes
@@ -108,7 +108,7 @@ pub fn run_host_movement_tick(
             }
         }
         let _ = registry.set_component(id, component);
-        let _ = registry.set_component(id, ImmersionComponent { immersion });
+        let _ = registry.set_component(id, immersion);
         events_out.push((id, events));
     }
 

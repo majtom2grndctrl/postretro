@@ -17,6 +17,7 @@ import {
 import { progression } from "./combat-lifecycle";
 import { shield } from "./defenses";
 import { BLEED_OUT_MS } from "./player-death";
+import { burning, corroding, scalding, wet } from "./statuses";
 
 export const hudTheme = defineTheme({
   color: {
@@ -441,5 +442,30 @@ export const beingRevivedMeterTree = defineUiTree({
         }),
       ],
     ),
+  ),
+});
+
+// One indicator per status, each shown while the local player carries it.
+// `active` is a local read: this machine's own pawn only.
+const statusIndicator = (label: string, active: typeof burning.active, tint: typeof color.warning) =>
+  Text({
+    content: label,
+    color: tint,
+    font: font.hud.status,
+    fontSize: 18.0,
+    visibleWhen: stateEquals(active, true),
+  });
+
+export const statusReadout = defineUiTree({
+  name: "hud.statuses",
+  alwaysOn: true,
+  tree: Tree(
+    { anchor: "top", offset: [0.0, 24.0] },
+    HStack({ gap: spacing.hud.rowGap }, [
+      statusIndicator("BURNING", burning.active, color.warning),
+      statusIndicator("SCALDING", scalding.active, color.critical),
+      statusIndicator("CORRODING", corroding.active, color.ok),
+      statusIndicator("WET", wet.active, color.hud.text),
+    ]),
   ),
 });

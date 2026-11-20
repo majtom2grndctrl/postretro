@@ -791,8 +791,10 @@ impl NetEndpoint {
     /// and fluid table. The host's level change demotes this slot first, which
     /// already drops it, and the next level's payload is sent only after this
     /// client re-enters participation, which needs its reveal of a level loaded
-    /// after this reset. Clearing here keeps the unload self-contained.
-    pub fn reset_level_scoped_client_state(&mut self) {
+    /// after this reset. Clearing here keeps the unload self-contained. The
+    /// host's status names go with it, so presence that lands before the next
+    /// payload shows nothing rather than mapping through the old table.
+    pub fn reset_level_scoped_client_state(&mut self, registry: &mut EntityRegistry) {
         let NetEndpoint::Client {
             client,
             time_sync,
@@ -819,6 +821,7 @@ impl NetEndpoint {
         state_slots.reset_schema();
         state_slots.clear_life_state_elapsed_witness();
         *tuning = None;
+        registry.set_presence_status_names(&[]);
         life_state_tables.clear();
         *applied_movement_tuning_generation = 0;
         pending_switch_declarations.clear();
@@ -914,6 +917,7 @@ impl NetEndpoint {
         prediction.reset_for_level_unload();
         interpolation_delay.reset_for_level_unload();
         *tuning = None;
+        registry.set_presence_status_names(&[]);
         life_state_tables.clear();
         *applied_movement_tuning_generation = 0;
         pending_switch_declarations.clear();
@@ -1000,6 +1004,11 @@ impl NetEndpoint {
                 *applied_movement_tuning_generation = *tuning_generation;
             }
         }
+        // A payload that fails to decode drops the installed tuning, and its
+        // status names with it.
+        registry.set_presence_status_names(tuning.as_deref().map_or(&[][..], |payload| {
+            payload.environment.status_names.as_slice()
+        }));
         if let Err(error) = result {
             log::error!("[Net] tuning payload epoch/decode failure: {error}");
         }
@@ -1043,7 +1052,7 @@ mod tests {
         time_sync.retain_weapon_cues(vec![cue.clone()]);
         assert_eq!(time_sync.drain_weapon_cues().count(), wire::MAX_WEAPON_CUES);
         time_sync.retain_weapon_cues(vec![cue.clone()]);
-        endpoint.reset_level_scoped_client_state();
+        endpoint.reset_level_scoped_client_state(&mut EntityRegistry::new());
         let NetEndpoint::Client { time_sync, .. } = &mut endpoint else {
             unreachable!();
         };
@@ -1080,6 +1089,7 @@ mod tests {
                 std::array::from_fn(|_| None),
                 EnvironmentTuning {
                     level_gravity,
+                    status_names: Vec::new(),
                     fluids: FluidMovementTable::new(
                         fluids
                             .iter()
@@ -1138,7 +1148,7 @@ mod tests {
         // tuning even when it matches the dropped one.
         endpoint.install_tuning_payload(&payload(-4.5, &["water"]), &mut registry, &[]);
         let before_unload = generations(&endpoint);
-        endpoint.reset_level_scoped_client_state();
+        endpoint.reset_level_scoped_client_state(&mut registry);
         assert!(endpoint.client_host_environment().is_none());
         assert!(endpoint.client_movement_tuning().is_none());
         assert_eq!(generations(&endpoint), (before_unload.0, 0));
@@ -1300,7 +1310,7 @@ mod tests {
         assert_eq!(applied.slot_baselines, vec![(slot_id.0, 7)]);
         assert!(!state_slots.is_reset());
 
-        endpoint.reset_level_scoped_client_state();
+        endpoint.reset_level_scoped_client_state(&mut EntityRegistry::new());
 
         let NetEndpoint::Client { state_slots, .. } = &endpoint else {
             panic!("endpoint role cannot change during reset");
@@ -1376,7 +1386,7 @@ mod tests {
                     .is_some()
             );
             match boundary {
-                0 => endpoint.reset_level_scoped_client_state(),
+                0 => endpoint.reset_level_scoped_client_state(&mut EntityRegistry::new()),
                 1 => endpoint.reset_state_slot_schema(),
                 2 => endpoint.demote_client_state(&mut EntityRegistry::new()),
                 _ => {

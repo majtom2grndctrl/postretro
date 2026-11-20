@@ -530,6 +530,7 @@ mod tests {
             layers: vec!["shield".to_string()],
             damage_types: vec![declaration("plain", 1.0), declaration("heavy", 2.0)],
             default_damage_type: Some(1),
+            statuses: Vec::new(),
         });
         let (outcome, dealt) = drain_hit(&mut registry, id, 10.0, Some(9));
         assert_eq!(dealt, Some(1));
@@ -542,6 +543,7 @@ mod tests {
             layers: vec!["shield".to_string()],
             damage_types: vec![declaration("heavy", 2.0)],
             default_damage_type: None,
+            statuses: Vec::new(),
         });
         let (outcome, dealt) = drain_hit(&mut registry, id, 10.0, Some(9));
         assert_eq!(dealt, None);
@@ -554,6 +556,7 @@ mod tests {
             layers: vec!["shield".to_string()],
             damage_types: vec![declaration("crush", 64.0)],
             default_damage_type: None,
+            statuses: Vec::new(),
         });
         let (outcome, _) = drain_hit(&mut registry, id, 1.0e38, Some(0));
         assert!(outcome.health_loss.is_finite());

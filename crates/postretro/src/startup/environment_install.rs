@@ -138,6 +138,7 @@ impl App {
         self.environment_volumes = environment_volumes_for(world, fluids.names(), source);
         self.environment_fluids = fluids;
         self.environment_fluid_source = source;
+        self.install_fluid_statuses();
         self.install_planar_candidates(world);
     }
 
@@ -155,16 +156,19 @@ impl App {
     /// A renamed table moves fluid indices, so every swimming pawn's fluid is
     /// remapped by name first: its exit edge then names the fluid it is in.
     /// A pawn whose fluid left the table keeps its stale index; its next tick
-    /// resolves the fluid gone and leaves swim.
+    /// resolves the fluid gone and leaves swim. Each pawn's last resolved
+    /// immersion fluid is remapped the same way, so the status stage applies
+    /// the status of the fluid it is in.
     pub(crate) fn refresh_environment_fluids(&mut self) {
         let (fluids, source) = self.active_fluid_table();
         let renamed = fluids.names() != self.environment_fluids.names();
         let resourced = source != self.environment_fluid_source;
         if renamed {
-            self.remap_swimming_pawn_fluids(&fluids);
+            self.remap_pawn_fluids(&fluids);
         }
         self.environment_fluids = fluids;
         self.environment_fluid_source = source;
+        self.install_fluid_statuses();
         if (renamed || resourced)
             && let Some(world) = self.level.as_ref()
         {
@@ -175,13 +179,54 @@ impl App {
         self.reinstall_planar_candidates();
     }
 
-    /// Point every `Swim { fluid }` pawn at `next`'s index for the name its
-    /// fluid had in the current table.
-    fn remap_swimming_pawn_fluids(&self, next: &FluidMovementTable) {
+    /// Install the status each fluid applies, in the active table's index
+    /// order. Fluid statuses are host-only gameplay data: only this machine's
+    /// own manifest carries them, so a connected client installs none.
+    fn install_fluid_statuses(&self) {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let script_ctx = &session.scripting.script_ctx;
+        let own = self.environment_fluid_source == FluidTableSource::OwnManifest;
+        let data = script_ctx.data_registry.borrow();
+        let fluids = data
+            .fluids
+            .descriptors()
+            .iter()
+            .filter(|_| own)
+            .map(|fluid| {
+                let status = fluid.status.as_ref().and_then(|status| {
+                    status
+                        .handle("status")
+                        .ok()
+                        .and_then(|handle| handle.expect_status().ok().map(str::to_string))
+                });
+                (fluid.name.clone(), status)
+            });
+        let fluids: Vec<(String, Option<String>)> = fluids.collect();
+        script_ctx.registry.borrow_mut().set_fluid_statuses(
+            fluids
+                .iter()
+                .map(|(fluid, status)| (fluid.as_str(), status.as_deref())),
+        );
+    }
+
+    /// Point every `Swim { fluid }` pawn and every pawn's last resolved
+    /// immersion fluid at `next`'s index for the name the fluid had in the
+    /// current table. The status stage indexes the immersion fluid against
+    /// the new table, and a remote pawn sending no commands keeps its last
+    /// resolve, so a stale index would apply another fluid's status until its
+    /// next command. An immersion fluid that left the table resolves to none.
+    fn remap_pawn_fluids(&self, next: &FluidMovementTable) {
         let Some(session) = self.session.as_ref() else {
             return;
         };
         let previous = self.environment_fluids.names();
+        let remap = |fluid: u16| {
+            previous
+                .get(usize::from(fluid))
+                .and_then(|name| fluid_index(next.names(), name))
+        };
         let mut registry = session.scripting.script_ctx.registry.borrow_mut();
         registry.for_each_with_kind_mut(ComponentKind::PlayerMovement, |_, value| {
             let ComponentValue::PlayerMovement(movement) = value else {
@@ -190,12 +235,15 @@ impl App {
             let MovementState::Swim { fluid } = &mut movement.movement_state else {
                 return;
             };
-            let remapped = previous
-                .get(usize::from(*fluid))
-                .and_then(|name| fluid_index(next.names(), name));
-            if let Some(remapped) = remapped {
+            if let Some(remapped) = remap(*fluid) {
                 *fluid = remapped;
             }
+        });
+        registry.for_each_with_kind_mut(ComponentKind::Immersion, |_, value| {
+            let ComponentValue::Immersion(immersion) = value else {
+                return;
+            };
+            immersion.fluid = immersion.fluid.and_then(&remap);
         });
     }
 

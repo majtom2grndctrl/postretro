@@ -462,10 +462,7 @@ impl Level {
             &session.scripting.system_registry,
             &ctx,
         );
-        session
-            .scripting
-            .impact_policy_runtime
-            .discard_app_drain_pending();
+        session.scripting.settle_frame_end_impacts(false);
         crate::impact_effects::run_end_of_frame_removal_pass(
             &mut ctx.registry.borrow_mut(),
             |removal| {

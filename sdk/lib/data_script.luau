@@ -509,10 +509,16 @@ export type TargetHandle = {
 export type SourceHandle = {
   __impactSourceBrand: true,
   --- Add health to the impact damager. A fire with no damager skips this
-  --- effect; app-drain impacts run no policy in v1.
+  --- effect. Every impact runs its policies whatever produced it. Script
+  --- `applyDamage` evaluates on the host where it lands (in-tick right after
+  --- its damage, otherwise at the next tick start or frame end) and has no
+  --- damager, so a grant on it reaches no one. A status tick's damager is its
+  --- applier, so a grant there reaches the applier.
   grantHealth: (self: SourceHandle, amount: NumberValue) -> Effect,
   --- Add an ammo-pool balance to the impact damager. A fire with no damager
-  --- skips this effect; app-drain impacts run no policy in v1.
+  --- skips this effect. Script damage has no damager, so a grant on it reaches
+  --- no one; a status tick's damager is its applier, so a grant there reaches
+  --- the applier.
   grantAmmo: (self: SourceHandle, type: string, amount: NumberValue) -> Effect,
   grantLayer: (self: SourceHandle, layer: DefenseLayer, amount: NumberValue?) -> Effect,
   --- Whether the damager is a player pawn in life state `name` at this fire.
@@ -633,6 +639,7 @@ export type StoreDefinition = {
 local DataScriptSdk = {}
 local defenseLayerDeclarations = setmetatable({}, { __mode = "k" })
 local damageTypeDeclarations = setmetatable({}, { __mode = "k" })
+local statusDeclarations = setmetatable({}, { __mode = "k" })
 local storeDeclarations = setmetatable({}, { __mode = "k" })
 
 -- Part chunks (`data_script/*.luau`) evaluate before this module and publish
@@ -649,320 +656,7 @@ local numberRef = expressionRefs.numberRef
 local boolRef = expressionRefs.boolRef
 local loweredValue = expressionRefs.loweredValue
 
---- Test the evaluated player in player events, or the local player in crossings.
-function DataScriptSdk.inLifeState(name: string): BoolRef
-  return boolRef({ op = "input", name = "player.inLifeState:" .. name })
-end
-
-function DataScriptSdk.read(ref: ComputedRef<number> | ComputedRef<boolean>): NumberRef | BoolRef
-  local node = { op = "input", name = ref.slot }
-  if (ref :: any).owner ~= nil then
-    node.owner = (ref :: any).owner
-  end
-  if ref.kind == "number" then
-    return numberRef(node)
-  end
-  return boolRef(node)
-end
-
---- Public lifting helpers keep the raw-node adapters private to the SDK.
-DataScriptSdk.fromRuntime = table.freeze({
-  number = function(value: RuntimeValue): NumberRef
-    return numberRef(value)
-  end,
-  bool = function(value: RuntimeValue): BoolRef
-    return boolRef(value)
-  end,
-}) :: RuntimeExpressionRefs
-
-local IMPACT_EFFECT_CAPABILITY: ImpactEffectCapability = table.freeze({ __impactEffectCapability = true })
-
-local function lowerImpactEffect(effect: Effect): ImpactEffectWire
-  return effect(IMPACT_EFFECT_CAPABILITY)
-end
-
-local function impactEffect(primitive: string, args: { [string]: any }?): Effect
-  local wire = { primitive = primitive, target = "@impact.target", args = args } :: any
-  return function(capability: ImpactEffectCapability): ImpactEffectWire
-    if capability ~= IMPACT_EFFECT_CAPABILITY then
-      error("impact effects can only be lowered by the SDK", 2)
-    end
-    return wire
-  end
-end
-
-local function sourceImpactEffect(primitive: string, args: { [string]: any }?): Effect
-  local wire = { primitive = primitive, target = "@impact.source", args = args } :: any
-  return function(capability: ImpactEffectCapability): ImpactEffectWire
-    if capability ~= IMPACT_EFFECT_CAPABILITY then
-      error("impact effects can only be lowered by the SDK", 2)
-    end
-    return wire
-  end
-end
-
-local IMPACT_TARGET: TargetHandle
-local IMPACT_SOURCE: SourceHandle
-
-local function sentimentImpactEffect(
-  target: "@impact.target" | "@impact.source",
-  toward: TargetHandle | SourceHandle,
-  delta: NumberValue
-): Effect
-  local towardToken = if toward == IMPACT_TARGET then "@impact.target" elseif toward == IMPACT_SOURCE then "@impact.source" else "@invalid"
-  local wire = {
-    primitive = "adjustSentiment",
-    target = target,
-    args = { toward = towardToken, delta = numberNode(delta) },
-  } :: any
-  return function(capability: ImpactEffectCapability): ImpactEffectWire
-    if capability ~= IMPACT_EFFECT_CAPABILITY then
-      error("impact effects can only be lowered by the SDK", 2)
-    end
-    return wire
-  end
-end
-
--- The `@defense.` input a layer handle reads; a bad reference (a bare string,
--- a damage-type handle) names no layer, so its bind fails at install.
-local function defenseInput(layer: any, capacity: boolean): string
-  local name = "@invalid"
-  if type(layer) == "table" and rawget(layer, "kind") == "defenseLayer" and type(rawget(layer, "name")) == "string" then
-    name = rawget(layer, "name")
-  end
-  return "@defense." .. name .. (if capacity then ".capacity" else "")
-end
-
-IMPACT_TARGET = table.freeze({
-  healthBefore = numberRef({ op = "input", name = "@impact.healthBefore" }),
-  healthAfter = numberRef({ op = "input", name = "@impact.healthAfter" }),
-  maxHealth = numberRef({ op = "input", name = "@impact.maxHealth" }),
-  despawn = function(_self: TargetHandle, opts: { afterMs: number? }?): Effect
-    return impactEffect("despawn", if opts == nil or opts.afterMs == nil then {} else { afterMs = opts.afterMs })
-  end,
-  playAnim = function(_self: TargetHandle, clip: string): Effect
-    return impactEffect("playAnim", { clip = clip })
-  end,
-  setHealth = function(_self: TargetHandle, value: NumberValue, opts: { afterMs: number? }?): Effect
-    local args: {[string]: any} = { value = numberNode(value) }
-    if opts ~= nil and opts.afterMs ~= nil then
-      args.afterMs = opts.afterMs
-    end
-    return impactEffect("setHealth", args)
-  end,
-  adjustSentimentToward = function(_self: TargetHandle, toward: TargetHandle | SourceHandle, delta: NumberValue): Effect
-    return sentimentImpactEffect("@impact.target", toward, delta)
-  end,
-  state = function(_self: TargetHandle, name: string): NumberRef
-    return numberRef({ op = "input", name = "@state." .. name })
-  end,
-  defense = function(_self: TargetHandle, layer: DefenseLayer)
-    return table.freeze({
-      current = numberRef({ op = "input", name = defenseInput(layer, false) }),
-      capacity = numberRef({ op = "input", name = defenseInput(layer, true) }),
-    })
-  end,
-  setState = function(_self: TargetHandle, name: string, value: NumberValue): Effect
-    return impactEffect("setState", { name = name, value = numberNode(value) })
-  end,
-})
-
-IMPACT_SOURCE = table.freeze({
-  __impactSourceBrand = true,
-  -- Engine state refs' `byPlayer` recognizes the source by this wire spelling.
-  __wire = "@impact.source",
-  grantHealth = function(_self: SourceHandle, amount: NumberValue): Effect
-    return sourceImpactEffect("grantHealth", { amount = numberNode(amount) })
-  end,
-  grantAmmo = function(_self: SourceHandle, ammoType: string, amount: NumberValue): Effect
-    return sourceImpactEffect("grantAmmo", { type = ammoType, amount = numberNode(amount) })
-  end,
-  grantLayer = function(_self: SourceHandle, layer: DefenseLayer, amount: NumberValue?): Effect
-    local args: { [string]: any } = { layer = layer }
-    if amount ~= nil then
-      args.amount = numberNode(amount)
-    end
-    return sourceImpactEffect("grantLayer", args)
-  end,
-  inLifeState = function(_self: SourceHandle, name: string): BoolRef
-    return boolRef({ op = "input", owner = "@impact.source", name = "player.inLifeState:" .. name })
-  end,
-  setLifeState = function(_self: SourceHandle, name: string): Effect
-    return sourceImpactEffect("setLifeState", { state = name })
-  end,
-  adjustSentimentToward = function(_self: SourceHandle, toward: TargetHandle | SourceHandle, delta: NumberValue): Effect
-    return sentimentImpactEffect("@impact.source", toward, delta)
-  end,
-}) :: any
-
-local function assistSide(wire: string): AssistSide
-  return table.freeze({
-    __assistSideBrand = true,
-    -- `byPlayer` recognizes each side by this wire spelling.
-    __wire = wire,
-    inLifeState = function(_self: AssistSide, name: string): BoolRef
-      return boolRef({ op = "input", owner = wire, name = "player.inLifeState:" .. name })
-    end,
-  }) :: any
-end
-
---- The helper and target of an assist pair, for `assistable.radius` and
---- `assistable.holdMs` expressions.
-DataScriptSdk.assist = table.freeze({
-  helper = assistSide("@assist.helper"),
-  target = assistSide("@assist.target"),
-}) :: Assist
-
--- A bad reference (a bare string, a layer handle) names no registered type,
--- so its input fails the bind and the policy holding it drops at install.
-local function impactTypeName(handle: any): string
-  if type(handle) == "table" and rawget(handle, "kind") == "damageType" and type(rawget(handle, "name")) == "string" then
-    return rawget(handle, "name")
-  end
-  return "@invalid"
-end
-
-local IMPACT: Impact = table.freeze({
-  target = IMPACT_TARGET,
-  source = IMPACT_SOURCE,
-  amount = numberRef({ op = "input", name = "@impact.amount" }),
-  raw = numberRef({ op = "input", name = "@impact.raw" }),
-  absorbed = numberRef({ op = "input", name = "@impact.absorbed" }),
-  broke = boolRef({ op = "input", name = "@impact.broke" }),
-  type = function(damageType: DamageType): BoolRef
-    return boolRef({ op = "input", name = "@impact.type." .. impactTypeName(damageType) })
-  end,
-})
-
---- Spawn a passive presentation at the current impact target, shared with every
---- participating peer. The runtime freezes `value` and the anchor before despawn;
---- source identity does not restrict the audience.
-function DataScriptSdk.present(template: { id: string }, value: NumberValue): Effect
-  if type(template) ~= "table" or type(template.id) ~= "string" or #template.id == 0 then
-    error("present: template must come from definePresentationTemplate", 2)
-  end
-  return impactEffect("present", { template = template.id, value = numberNode(value) })
-end
-
-local lowerImpactPolicy: (policy: {EffectOrGroup}) -> {EffectOrGroup}
-
-local function impactEvent(id: string, filter: { tag: string? }, policy: {EffectOrGroup}, levels: {string}?, isOverride: boolean): ImpactEvent
-  local handle: any = { kind = "impact", id = id, isOverride = isOverride, filter = filter, policy = policy }
-  if levels ~= nil then
-    handle.levels = levels
-  end
-  handle.override = function(_self: ImpactEvent, overrideFilter: ImpactEventOverrideFilter, build: (Impact) -> {EffectOrGroup}): ImpactEvent
-    if type(overrideFilter.tag) ~= "string" then
-      error("impact-event override filter requires `tag`", 2)
-    end
-    return impactEvent(id, table.freeze({ tag = overrideFilter.tag }), lowerImpactPolicy(build(IMPACT)), overrideFilter.levels, true)
-  end
-  return table.freeze(handle) :: any
-end
-
-local function denseImpactArrayLength(values: any, context: string): number
-  local count = 0
-  local maxIndex = 0
-  for key in pairs(values) do
-    if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then
-      error(context .. " must be a dense array; holes are not allowed", 3)
-    end
-    count += 1
-    maxIndex = math.max(maxIndex, key)
-  end
-  if count ~= maxIndex then
-    error(context .. " must be a dense array; holes are not allowed", 3)
-  end
-  return maxIndex
-end
-
-lowerImpactPolicy = function(policy: {EffectOrGroup}): {EffectOrGroup}
-  local lowered: {EffectOrGroup} = descriptorArray({})
-  local policyLength = denseImpactArrayLength(policy, "impact policy")
-  for i = 1, policyLength do
-    local entry = policy[i]
-    if type(entry) == "function" then
-      lowered[i] = lowerImpactEffect(entry :: Effect) :: any
-    elseif type(entry) == "table" and entry["do"] ~= nil then
-      local authoredEffects = entry["do"]
-      local effectCount = denseImpactArrayLength(authoredEffects, "impact policy group `do`")
-      local effects = descriptorArray({})
-      for effectIndex = 1, effectCount do
-        effects[effectIndex] = lowerImpactEffect(authoredEffects[effectIndex])
-      end
-      local group: any = { ["do"] = effects }
-      if entry.when ~= nil then
-        group.when = boolNode(entry.when)
-      end
-      lowered[i] = group
-    else
-      lowered[i] = entry
-    end
-  end
-  return lowered
-end
-
-function DataScriptSdk.set(ref: Ref<number>, value: NumberValue): Effect
-  local wire = {
-    primitive = "slot.set",
-    args = {
-      slot = ref.slot,
-      value = numberNode(value),
-    },
-  } :: any
-  if (ref :: any).owner ~= nil then
-    wire.target = (ref :: any).owner
-  end
-  return function(capability: ImpactEffectCapability): ImpactEffectWire
-    if capability ~= IMPACT_EFFECT_CAPABILITY then
-      error("impact effects can only be lowered by the SDK", 2)
-    end
-    return wire
-  end
-end
-
---- Build a read-modify-write effect. `build` receives `cur` during impact plan
---- phase, before effects apply. Owner-addressed reads resolve the live per-seat
---- map; `cur` is not a frozen snapshot.
-function DataScriptSdk.update(ref: Ref<number>, build: (cur: NumberRef) -> NumberValue): Effect
-  return DataScriptSdk.set(ref, build(DataScriptSdk.read(ref) :: NumberRef))
-end
-
---- Build a deferred impact-effect group guarded by a Bool expression.
-function DataScriptSdk.when(cond: BoolRef, effects: {Effect}): GatedEffect
-  return { when = cond, ["do"] = effects }
-end
-
-local IMPACT_EVENT_ID_DIAGNOSTIC = "impact-event `id` must be a single ASCII segment using only [A-Za-z0-9_.-], at most 64 bytes; the engine prefixes the mod id"
-local BINDING_NAME_SUGAR_DIAGNOSTIC = "defineStore/defineImpactEvent/defineDefenseLayer/defineDamageType without an explicit name is binding-name sugar and must be used in a direct top-level binding declaration"
-
-local function validateImpactEventId(id: string)
-  local valid = #id > 0 and #id <= 64
-  for i = 1, #id do
-    local byte = string.byte(id, i)
-    local allowed = (byte >= 48 and byte <= 57)
-      or (byte >= 65 and byte <= 90)
-      or (byte >= 97 and byte <= 122)
-      or byte == 95 or byte == 46 or byte == 45
-    valid = valid and allowed
-  end
-  if not valid then
-    error(IMPACT_EVENT_ID_DIAGNOSTIC, 3)
-  end
-end
-
---- Define a pure impact-policy descriptor. The engine prefixes its single-segment
---- authored id with the mod id. Luau requires the explicit-id form.
-function DataScriptSdk.defineImpactEvent(...: any): ImpactEvent
-  if select("#", ...) == 2 then
-    error(BINDING_NAME_SUGAR_DIAGNOSTIC, 2)
-  end
-  local id, filter, build = ...
-  validateImpactEventId(id)
-  local eventFilter = table.freeze({ tag = filter.tag })
-  local policy = lowerImpactPolicy(build(IMPACT))
-  return impactEvent(id, eventFilter, policy, filter.levels, false)
-end
+local BINDING_NAME_SUGAR_DIAGNOSTIC = dataScriptParts.impactEvents.BINDING_NAME_SUGAR_DIAGNOSTIC
 
 --- Identity builder for entity type descriptors returned from
 --- `ModManifest.entities`. `descriptor` is the full archetype object: optional
@@ -1073,11 +767,12 @@ end
 --- effects until the manifest is returned and validated. `factionSentimentDecay`
 --- is an optional non-negative global return-to-baseline rate; it defaults to
 --- zero (hold), and an individual sentiment row may override it with `decay`.
-function DataScriptSdk.defineMod<T>(config: T & { stores: any?, defenseLayers: any?, damageTypes: any?, attackTokens: any? }): T
+function DataScriptSdk.defineMod<T>(config: T & { stores: any?, defenseLayers: any?, damageTypes: any?, statuses: any?, attackTokens: any? }): T
   if
     config.stores == nil
     and config.defenseLayers == nil
     and config.damageTypes == nil
+    and config.statuses == nil
     and config.attackTokens == nil
   then
     return config
@@ -1101,6 +796,7 @@ function DataScriptSdk.defineMod<T>(config: T & { stores: any?, defenseLayers: a
   manifest.stores = resolve(config.stores, storeDeclarations)
   manifest.defenseLayers = resolve(config.defenseLayers, defenseLayerDeclarations)
   manifest.damageTypes = resolve(config.damageTypes, damageTypeDeclarations)
+  manifest.statuses = resolve(config.statuses, statusDeclarations)
   if config.attackTokens ~= nil then
     local resolved = {}
     for key, entry in pairs(config.attackTokens) do
@@ -1150,7 +846,9 @@ end
 --- a slow surface wave whose `waveAmplitude` (texels, 0..16, default 8) and
 --- `waveLength` (texels: a number or positional `{ min, max }`, e.g.
 --- `{ 48, 80 }`; at most 128, min >= 8 x amplitude) shape it. A field out of range, or a repeated name, is rejected
---- with a warning naming the field, and the first declaration stands. Pure.
+--- with a warning naming the field, and the first declaration stands.
+--- `status`, a status handle, is the exception: one naming a status
+--- `defineMod` does not register fails the load. Pure.
 function DataScriptSdk.defineFluid(desc: FluidDescriptor): FluidDescriptor
   return desc
 end
@@ -1343,10 +1041,35 @@ function DataScriptSdk.defineDamageType(...: any): DamageType
   return handle :: any
 end
 
+--- Declare a status kind: damage over time, or with `damage = 0` a marker
+--- other policies read. Luau passes the name explicitly. Register it with
+--- `defineMod({ statuses = { status } })`, then apply it from impact
+--- policies (`impact.target:applyStatus`), reactions
+--- (`players():applyStatus`) or a fluid's `status`. `active` reads whether
+--- the local player carries it.
+--- `maxStacks` is a whole number in [1, 64], default 1.
+function DataScriptSdk.defineStatus(...: any): Status
+  local name, options = ...
+  if type(name) ~= "string" then
+    error(BINDING_NAME_SUGAR_DIAGNOSTIC, 2)
+  end
+  local accessors = {
+    -- A local-only read: no `byPlayer`, as `player.lifeState` has none.
+    active = table.freeze({ slot = "player.status." .. name, kind = "boolean" }),
+  }
+  local handle = table.freeze(setmetatable({ kind = "status", name = name }, { __index = accessors }))
+  local declaration = table.clone(options or {})
+  declaration.kind = "status"
+  declaration.name = name
+  statusDeclarations[handle] = table.freeze(declaration)
+  return handle :: any
+end
+
 -- Merge the part chunks' public builders. Field names are disjoint from the
 -- builders declared above; `data_script_export_inventory_matches_returned_sdk_fields`
 -- pins the merged set.
 for _, part in ipairs({
+  dataScriptParts.impactEvents,
   dataScriptParts.attackBudget,
   dataScriptParts.attacks,
   dataScriptParts.playerEvents,

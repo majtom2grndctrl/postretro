@@ -192,6 +192,7 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         .field("wavePeriod?", "f32", "Seconds per cycle of an average-length surface wave crest. Finite and >= 6. Omitted: no wave.")
         .field("waveAmplitude?", "f32", "Peak sideways shift of the surface wave, in texture texels at the face's texture scale; 0 is no wave. Finite and in [0, 16]. Omitted: 8.")
         .field("waveLength?", "NumberOrRange", "Crest-to-crest length, in texture texels: one number L, meaning [L, L], or a `[min, max]` range from which each crest takes its own length. Finite, 0 < min <= max <= 128, and min >= 8 x `waveAmplitude` (the default 8 included). Omitted: [max(48, 8A), max(80, 8A)] for amplitude A.")
+        .field("status?", "Status", "Optional status, a handle `defineMod({ statuses })` registers, applied each tick to every player pawn whose body is in this fluid at any depth, as `fluid.<name>`. Host-only gameplay data: it never reaches a client or the replicated movement tuning. Enemies resolve no fluid; hurt them with a trigger and `applyStatus`. A status `defineMod` does not register fails load.")
         .finish();
     registry
         .register_type("GhostStyleDescriptor")
@@ -371,6 +372,11 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
             "defaultDamageType?",
             "DamageType",
             "The type every producer that names none deals; it must be listed in `damageTypes`. Optional; without it, untyped damage is ×1 on every pool and no resist applies.",
+        )
+        .field(
+            "statuses?",
+            "Vec<Status>",
+            "Status kinds from `defineStatus(...)`, in registration order. Optional; at most 64. Impact policies, reactions and a fluid's `status` apply only a listed kind; two entries with one name, an entry that is not a status handle, an unknown key, a `type` that is not a registered damage type, or a parameter out of range fails load naming its key path.",
         )
         .field(
             "attackTokens?",
@@ -724,6 +730,7 @@ mod tests {
             "defenseLayers",
             "damageTypes",
             "defaultDamageType",
+            "statuses",
             "attackTokens",
             "attackBudgets",
         ];

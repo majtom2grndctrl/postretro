@@ -783,6 +783,11 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 continue;
             }
 
+            // Script impacts that landed before this tick (UI presses,
+            // `levelLoad`, the previous tick's player events) evaluate first,
+            // in landing order, before anything this tick reads health.
+            app.evaluate_pending_script_impacts();
+
             // Host-only ghost-link steps queued before this tick apply now,
             // at its start, in call order.
             app.apply_pending_ghost_link_commands();
@@ -1299,6 +1304,19 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
 
     // Who fired each shot this frame, before impacts are attributed.
     app.record_ghost_shot_owners(&pending_weapon_script_events, &pending_ai_events);
+    // Status tick sounds and attached emitters follow each entity's status
+    // presence on this machine; the emitters spawn at render prep below.
+    let mut status_sounds = Vec::new();
+    {
+        let registry = script_ctx.registry.borrow();
+        let own_pawn = if app.is_connected_client() {
+            registry.local_player_pawn()
+        } else {
+            registry.local_player_movement_pawn()
+        };
+        app.status_presentation
+            .update(&registry, own_pawn, frame_dt * 1000.0, &mut status_sounds);
+    }
     // Descriptor sounds for this frame's events, placed at fire time.
     // They play alongside any reaction addressed to the same event.
     // The listener's pawn is named here, before any play this frame,
@@ -1372,6 +1390,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         }
         requests.extend(client_sounds.drain(..).map(Into::into));
         requests.extend(app.pending_teleport_sounds.drain(..).map(Into::into));
+        requests.extend(status_sounds.drain(..).map(Into::into));
         (edges, requests, listener_attached)
     };
     // A client's received link states enter link history once, here, so
@@ -1659,12 +1678,9 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         );
     }
 
-    if let Some(session) = app.session.as_mut() {
-        session
-            .scripting
-            .impact_policy_runtime
-            .discard_app_drain_pending();
-    }
+    // Script impacts that landed after the frame's last tick evaluate here,
+    // before the removal pass reaps any despawn their policies requested.
+    app.evaluate_pending_script_impacts();
 
     drop(stage_scope);
     let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::FrameEndRemoval);
@@ -2055,6 +2071,14 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 &mut registry,
                 frame_dt,
                 frame_script_delta,
+                app.script_time as f32,
+                &mut session.particle_pool,
+                &mut session.particle_render,
+            );
+            session.emitter_bridge.update_attached(
+                &registry,
+                &app.status_presentation,
+                frame_dt,
                 app.script_time as f32,
                 &mut session.particle_pool,
                 &mut session.particle_render,

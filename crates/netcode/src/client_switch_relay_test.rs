@@ -564,7 +564,9 @@ fn switch_outcome_from_before_a_level_unload_resolves_nothing() {
     relay.declare(1);
     relay.frames(5);
     assert_eq!(relay.host_active_slot(), Some(1), "the host answered");
-    relay.endpoint.reset_level_scoped_client_state();
+    relay
+        .endpoint
+        .reset_level_scoped_client_state(&mut relay.client_registry);
     assert!(!relay.pending_declarations(), "unload cleared the chain");
     relay.cut_down_input = false;
     relay.frames(3);
@@ -751,7 +753,9 @@ fn world_less_frame_discarding_a_switch_outcome_leaves_no_stuck_chain() {
     relay.declare(1);
     relay.frames(5);
     assert_eq!(relay.host_active_slot(), Some(1), "the host answered");
-    relay.endpoint.reset_level_scoped_client_state();
+    relay
+        .endpoint
+        .reset_level_scoped_client_state(&mut relay.client_registry);
     // The world-less frame: its poll delivers the held outcome, then discards it.
     relay.hold_down = false;
     let packets = std::mem::take(&mut relay.down);

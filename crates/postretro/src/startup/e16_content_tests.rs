@@ -90,7 +90,17 @@ fn defense_shape(manifest: &ModManifestResult, name: &str) -> serde_json::Value 
 fn e16_ts_and_luau_mods_produce_identical_vocabulary_manifests() {
     let ts = dev_manifest();
     let luau = luau_manifest();
-    assert_eq!(ts.defense, luau.defense, "one registered vocabulary");
+    // The statuses' Luau half is the `statuses-demo` twin
+    // (`status_content_tests`); this fixture mirrors layers and types.
+    assert_eq!(ts.defense.layers, luau.defense.layers);
+    assert_eq!(
+        ts.defense.damage_types, luau.defense.damage_types,
+        "one registered vocabulary"
+    );
+    assert_eq!(
+        ts.defense.default_damage_type,
+        luau.defense.default_damage_type
+    );
     assert_eq!(ts.defense.layers, ["shield", "armor"]);
     let types: Vec<_> = ts
         .defense
@@ -106,7 +116,9 @@ fn e16_ts_and_luau_mods_produce_identical_vocabulary_manifests() {
             "explosive",
             "shock",
             "corrosive",
-            "flechette"
+            "flechette",
+            "fire",
+            "acid"
         ]
     );
     assert_eq!(ts.defense.default_damage_type, Some(0), "ballistic");
@@ -232,7 +244,8 @@ fn dev_mod_loads_clean_with_e16_content() {
 }
 
 // Every dev-mod weapon names its type: the plasma bolt plasma, the
-// rocket explosive, the triangle guns shock and corrosive, the rest ballistic.
+// rocket explosive, the triangle guns shock and corrosive, the incendiary
+// rifle fire, the rest ballistic.
 #[test]
 fn dev_weapons_name_their_damage_types() {
     let manifest = dev_manifest();
@@ -248,6 +261,7 @@ fn dev_weapons_name_their_damage_types() {
             "reference_rocket" => "explosive",
             "arc_rifle" => "shock",
             "acid_rifle" => "corrosive",
+            "incendiary_rifle" => "fire",
             _ => "ballistic",
         };
         let handle = weapon

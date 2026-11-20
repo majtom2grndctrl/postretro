@@ -1131,6 +1131,7 @@ fn land(scene: &mut Scene, enemy: EntityId, amount: f32) {
             producer: DamageProducer::InTick,
             point: None,
             attacker_life: None,
+            status: None,
         },
     ));
 }

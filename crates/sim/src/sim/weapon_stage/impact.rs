@@ -179,6 +179,7 @@ fn apply_weapon_impact_damage_with_source(
             zone: impact.zone.clone(),
             producer: DamageProducer::InTick,
             point,
+            status: None,
             attacker_life,
         },
     );

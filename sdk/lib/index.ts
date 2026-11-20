@@ -20,7 +20,7 @@ export type { Activation, ActivationShotOptions, ActivationShotScale } from "./a
 export { activation } from "./activation";
 
 export type { BrainInputs, CandidateInputs } from "./brain";
-export { attackTurnFree, attackTurnHeld, brain, candidate, defense, state } from "./brain";
+export { attackTurnFree, attackTurnHeld, brain, candidate, defense, hasStatus, state } from "./brain";
 
 export type { AnimatableScalar, AnimatableVec3 } from "./animation";
 
@@ -159,6 +159,7 @@ export {
   defineStore,
   defineDefenseLayer,
   defineDamageType,
+  defineStatus,
   defineAttackToken,
   defaultToken,
   defineAttack,

@@ -2211,6 +2211,7 @@ mod tests {
                         )]),
                     }],
                     default_damage_type: None,
+                    statuses: Vec::new(),
                 },
             ));
         let target = spawn_target(
@@ -2264,6 +2265,7 @@ mod tests {
                     )]),
                 }],
                 default_damage_type: None,
+                statuses: Vec::new(),
             }));
         let target = spawn_target(
             &mut registry.borrow_mut(),

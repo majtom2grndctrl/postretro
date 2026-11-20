@@ -51,6 +51,8 @@ mod revive_marker_surface_tests;
 #[cfg(test)]
 mod save_points_tests;
 pub(crate) mod save_verbs;
+#[cfg(test)]
+mod script_impact_surface_tests;
 mod seam_level_change;
 pub(crate) mod session;
 pub(crate) mod settle_log;
@@ -58,6 +60,8 @@ pub(crate) mod settling;
 pub(crate) mod splash_lifecycle;
 pub(crate) mod staged_manifest_lifecycle;
 pub(crate) mod start_pose;
+#[cfg(test)]
+mod status_content_tests;
 #[cfg(test)]
 mod stress_gate_harness_tests;
 #[cfg(test)]

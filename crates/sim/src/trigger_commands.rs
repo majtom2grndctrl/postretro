@@ -58,6 +58,16 @@ pub(crate) enum BoundTriggerCommand {
         layer: String,
         amount: Option<f32>,
     },
+    /// `applyStatus`: the status name, resolved against the vocabulary when
+    /// it executes so a hot reload that reorders statuses never retargets it.
+    ApplyStatus {
+        target: BoundTarget,
+        status: String,
+    },
+    ClearStatus {
+        target: BoundTarget,
+        status: String,
+    },
     Arm {
         target: BoundTarget,
     },
@@ -183,6 +193,8 @@ pub(crate) enum BoundTriggerCommandKind {
     GrantHealth,
     GrantAmmo,
     GrantLayer,
+    ApplyStatus,
+    ClearStatus,
     Arm,
     Disarm,
     TeleporterArmed,
@@ -198,6 +210,12 @@ pub(crate) enum BoundTriggerCommandKind {
 }
 
 impl BoundTriggerCommand {
+    /// Whether executing this command can publish an impact dispatch, so an
+    /// in-tick caller evaluates right after it.
+    pub(crate) fn produces_impacts(&self) -> bool {
+        matches!(self, Self::Damage { .. })
+    }
+
     pub(crate) fn execute(
         &self,
         registry: &mut EntityRegistry,
@@ -481,6 +499,14 @@ impl BoundTriggerCommand {
                     );
                 }
             }
+            Self::ApplyStatus { target, status } => {
+                let targets = target.resolve(registry, fire_context);
+                crate::status_commands::apply_status_to(registry, targets.as_slice(), status);
+            }
+            Self::ClearStatus { target, status } => {
+                let targets = target.resolve(registry, fire_context);
+                crate::status_commands::clear_status_on(registry, targets.as_slice(), status);
+            }
             Self::Arm { target } => arm_trigger_targets(
                 registry,
                 target.resolve(registry, fire_context).as_slice(),
@@ -594,6 +620,8 @@ impl BoundTriggerCommand {
             | Self::GrantHealth { target, .. }
             | Self::GrantAmmo { target, .. }
             | Self::GrantLayer { target, .. }
+            | Self::ApplyStatus { target, .. }
+            | Self::ClearStatus { target, .. }
             | Self::Arm { target }
             | Self::Disarm { target }
             | Self::TeleporterArmed { target, .. }
@@ -623,6 +651,8 @@ impl BoundTriggerCommand {
             Self::GrantHealth { .. } => BoundTriggerCommandKind::GrantHealth,
             Self::GrantAmmo { .. } => BoundTriggerCommandKind::GrantAmmo,
             Self::GrantLayer { .. } => BoundTriggerCommandKind::GrantLayer,
+            Self::ApplyStatus { .. } => BoundTriggerCommandKind::ApplyStatus,
+            Self::ClearStatus { .. } => BoundTriggerCommandKind::ClearStatus,
             Self::Arm { .. } => BoundTriggerCommandKind::Arm,
             Self::Disarm { .. } => BoundTriggerCommandKind::Disarm,
             Self::TeleporterArmed { .. } => BoundTriggerCommandKind::TeleporterArmed,

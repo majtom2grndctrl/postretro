@@ -174,10 +174,12 @@ and `_color`, never the emissive map or its strength (decided, not yet built;
   - Default: 1.0 for a texture with an `_e` map and no entry; 0 for one
     without `_e`, which samples no emissive texture.
   - Keys are texture names as TrenchBroom shows them (`collection/name`),
-    normalized as the material stage normalizes map texture names. A key
-    matches the texture a map face resolves to, whether the map names it
-    qualified or by bare stem, so aliases share one strength. Two keys that
-    normalize alike warn once, naming both lines; the later wins.
+    normalized as the material stage normalizes map texture names. A face's
+    entry is read under the `collection/name` its texture resolves to, so
+    aliases share one strength; when that has no entry, the key spelled as
+    the map writes the name is read instead. If both are set and differ, the
+    resolved name wins with one warning. Two keys that normalize alike warn
+    once, naming both lines; the later wins.
   - A broken file never stops the compile. A syntax error warns, naming file
     and line, and every texture takes its default; an unknown key warns and is
     ignored; a non-number warns and reads its default. A negative value reads

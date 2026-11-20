@@ -6,7 +6,7 @@ use std::collections::HashSet;
 
 use postretro_level_format::emissive::EmissiveTexture;
 
-use crate::materials_toml::MaterialsToml;
+use crate::materials_toml::{MaterialEntry, MaterialsToml};
 use crate::surface_materials::stats::EmissiveGlow;
 use crate::texture_mips::normalize_map_texture_name;
 
@@ -17,12 +17,14 @@ pub(crate) const DEFAULT_EMISSIVE_STRENGTH: f32 = 1.0;
 /// takes its entry's `emissive`, else 1; one without packs 0 and its entry,
 /// if any, warns once.
 ///
-/// The entry is read by `bundles[i]`, the qualified bundle whose files
-/// resolved, normalized as the keys are, so a map name that reached
-/// `signs/bar` through the bare-stem alias (`bar`, `oldcoll/bar`) reads
-/// `["signs/bar"]` (pin P46). A name nothing resolved for reads its own
-/// normalized name. Aliases therefore share one value. Runs after fluid-only
-/// names join TextureNames, so they are covered.
+/// Keys name a texture as TrenchBroom shows it, so the entry is read first by
+/// `bundles[i]`, the qualified bundle whose files resolved, normalized as the
+/// keys are: a map name that reached `signs/bar` through the bare-stem alias
+/// (`bar`, `oldcoll/bar`) reads `["signs/bar"]`. With no entry there, the map's
+/// own normalized spelling is read, so `["bar"]` still serves a map that
+/// writes `bar`. When both set `emissive` and disagree, the bundle's wins with
+/// one warning naming both keys. Aliases therefore share one value. Runs
+/// after fluid-only names join TextureNames, so they are covered.
 pub(crate) fn build_emissive_textures(
     names: &[String],
     glow: &[EmissiveGlow],
@@ -31,18 +33,34 @@ pub(crate) fn build_emissive_textures(
 ) -> Vec<EmissiveTexture> {
     debug_assert_eq!(names.len(), glow.len(), "one glow record per texture name");
     debug_assert_eq!(names.len(), bundles.len(), "one bundle per texture name");
-    let mut warned = HashSet::new();
+    let mut warned_no_map = HashSet::new();
+    let mut warned_conflict = HashSet::new();
     names
         .iter()
         .zip(glow)
         .zip(bundles)
         .map(|((name, glow), bundle)| {
-            let key = normalize_map_texture_name(bundle.as_deref().unwrap_or(name));
-            let entry = materials.entry(&key);
+            let own_key = normalize_map_texture_name(name);
+            let bundle_key = bundle
+                .as_deref()
+                .map(normalize_map_texture_name)
+                .filter(|key| *key != own_key);
+            let by_bundle = bundle_key
+                .as_ref()
+                .and_then(|key| Some((key, strength_entry(materials, key)?)));
+            let by_spelling = strength_entry(materials, &own_key).map(|entry| (&own_key, entry));
+            let Some((used_key, entry)) = by_bundle.or(by_spelling) else {
+                return if glow.has_emissive {
+                    EmissiveTexture {
+                        strength: DEFAULT_EMISSIVE_STRENGTH,
+                        glow_color: glow.mean_color,
+                    }
+                } else {
+                    EmissiveTexture::DARK
+                };
+            };
             if !glow.has_emissive {
-                if let Some(entry) = entry.filter(|entry| entry.emissive.is_some())
-                    && warned.insert(key)
-                {
+                if warned_no_map.insert(used_key.clone()) {
                     log::warn!(
                         "[prl-build] {}:{}: [\"{}\"] sets emissive, but texture '{name}' has no \
                          _e map; it packs 0",
@@ -53,14 +71,35 @@ pub(crate) fn build_emissive_textures(
                 }
                 return EmissiveTexture::DARK;
             }
+            if let (Some((qualified, bundle_entry)), Some((_, spelled))) = (by_bundle, by_spelling)
+                && bundle_entry.emissive != spelled.emissive
+                && warned_conflict.insert((qualified.clone(), own_key.clone()))
+            {
+                log::warn!(
+                    "[prl-build] {path}:{}: [\"{}\"] and {path}:{}: [\"{}\"] both set emissive \
+                     for texture '{name}'; [\"{}\"] names the texture as TrenchBroom shows it, so \
+                     it wins",
+                    bundle_entry.line,
+                    bundle_entry.key,
+                    spelled.line,
+                    spelled.key,
+                    bundle_entry.key,
+                    path = materials.path().display(),
+                );
+            }
             EmissiveTexture {
-                strength: entry
-                    .and_then(|entry| entry.emissive)
-                    .unwrap_or(DEFAULT_EMISSIVE_STRENGTH),
+                strength: entry.emissive.unwrap_or(DEFAULT_EMISSIVE_STRENGTH),
                 glow_color: glow.mean_color,
             }
         })
         .collect()
+}
+
+/// The entry for `key`, when it sets `emissive`.
+fn strength_entry<'m>(materials: &'m MaterialsToml, key: &str) -> Option<&'m MaterialEntry> {
+    materials
+        .entry(key)
+        .filter(|entry| entry.emissive.is_some())
 }
 
 #[cfg(test)]
@@ -129,14 +168,16 @@ mod tests {
     }
 
     // Pin P46: a name that reached `signs/bar`'s files through the bare-stem
-    // alias reads that bundle's entry, not one for its own spelling.
+    // alias reads that bundle's entry first; an entry for its own spelling
+    // that disagrees loses, with one warning naming both keys.
     #[test]
     fn a_bare_stem_alias_reads_the_entry_of_the_bundle_it_resolved() {
         let capture = LogCapture::start();
         let table = build_emissive_textures(
-            &names(&["signs/bar", "bar", "oldcoll/bar", "signs/other"]),
-            &[LIT; 4],
+            &names(&["signs/bar", "bar", "oldcoll/bar", "BAR", "signs/other"]),
+            &[LIT; 5],
             &[
+                Some("signs/bar".to_owned()),
                 Some("signs/bar".to_owned()),
                 Some("signs/bar".to_owned()),
                 Some("signs/bar".to_owned()),
@@ -147,10 +188,55 @@ mod tests {
         let strengths: Vec<f32> = table.iter().map(|texture| texture.strength).collect();
         assert_eq!(
             strengths,
-            [4.0, 4.0, 4.0, 1.0],
-            "an entry for the bare spelling no bundle resolved to is not read"
+            [4.0, 4.0, 4.0, 4.0, 1.0],
+            "the bundle's entry wins over one for the map's own spelling"
         );
-        capture.assert_nothing_above(Level::Info);
+        capture.assert_logged_once(
+            Level::Warn,
+            "mod/materials.toml:1: [\"signs/bar\"] and mod/materials.toml:4: [\"bar\"] both set \
+             emissive for texture 'bar'; [\"signs/bar\"] names the texture as TrenchBroom shows \
+             it, so it wins",
+        );
+        capture.assert_not_logged(Level::Warn, "oldcoll/bar");
+    }
+
+    // A key spelled as the map spells the texture still reads when the bundle
+    // it resolved has no entry: a bare `["bar"]`, or a stale `["oldcoll/bar"]`.
+    // The no-`_e` warning names the key actually read, once.
+    #[test]
+    fn a_key_spelled_as_the_map_writes_the_texture_reads_when_its_bundle_has_none() {
+        let capture = LogCapture::start();
+        let table = build_emissive_textures(
+            &names(&["bar", "oldcoll/bar", "signs/bar", "lamp", "plate", "PLATE"]),
+            &[LIT, LIT, LIT, LIT, UNLIT, UNLIT],
+            &[
+                Some("signs/bar".to_owned()),
+                Some("signs/bar".to_owned()),
+                Some("signs/bar".to_owned()),
+                Some("signs/lamp".to_owned()),
+                Some("metal/plate".to_owned()),
+                Some("metal/plate".to_owned()),
+            ],
+            &materials(
+                "[\"bar\"]\nemissive = 2\n\n[\"oldcoll/bar\"]\nemissive = 3\n\n\
+                 [\"signs/lamp\"]\nemissive = 5\n\n[\"lamp\"]\nemissive = 5\n\n\
+                 [\"plate\"]\nemissive = 4\n",
+            ),
+        );
+        let strengths: Vec<f32> = table.iter().map(|texture| texture.strength).collect();
+        assert_eq!(
+            strengths,
+            [2.0, 3.0, 1.0, 5.0, 0.0, 0.0],
+            "each spelling reads its own key; the qualified name, with no key of its own, \
+             reads the default"
+        );
+        capture.assert_logged_once(
+            Level::Warn,
+            "mod/materials.toml:13: [\"plate\"] sets emissive, but texture 'plate' has no _e \
+             map; it packs 0",
+        );
+        capture.assert_not_logged(Level::Warn, "both set emissive");
+        capture.assert_not_logged(Level::Warn, "texture 'PLATE'");
     }
 
     // Pin P51: an entry for a texture with no `_e` map warns and packs 0.

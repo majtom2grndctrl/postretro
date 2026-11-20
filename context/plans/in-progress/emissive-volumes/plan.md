@@ -134,3 +134,19 @@ Fix pass (round 1), edit-only agents, then one gate run:
 - Docs: `context/lib` (resource_management, rendering_pipeline §7.3/§7.8/§10, build_pipeline, index, scripting, networking), E23 draft, `docs/`, FGD and `measurement.md` in built terms.
 
 Gate after the fix pass: render-cpu 828, entities 340, scripting-core 1133, net 345, netcode 1063, level-format 822, level-loader 422, prl-build bin 2617, compiler integration targets (emissive_volumes_compile 2, environment_volumes_compile 5, dev_emissive_panels 1, coloured_bounce_source_gates 4, reflection_probes_compile 1), `coloured_bounce_cache` strength test 1, postretro dev-tools bin 2979, renderer lib 1390, xtask 52 passed; migration 16 and gen_emissive 7 Python tests OK; clippy `-D warnings` plain and dev-tools clean; fmt clean. Inline fixes: duplicate `matching_close` from the gate split, lib-unread `bundles` field, one `is_none_or`.
+
+## Review panel (round 2)
+
+3 reviewers on the fix commit f9c0d8338 (tracer on per-face membership, adversarial on limiter/anim/parsers/migration, hygiene+drift). Findings: 1 🔴 (the round-1 colour cap stops brightening only for a neutral scripted colour), 1 🟡 regression (a `materials.toml` key spelled as the map spells the texture went unread after the bare-stem fix), doc gaps (restart rules, triangle-less guard), plan references in durable comments, nits.
+
+Owner ruling (2026-11-20): keep P52 as written (a held red is desaturated at unchanged luminance). Accepted limit, owned by the photosensitivity source floor (E23): with a coloured scripted colour, a held red onset raises the weak channels toward the scripted colour's brightest channel, so member faces or texels unlike the judged glow can brighten during the hold.
+
+Fix pass (round 2): a `materials.toml` key reads under the resolved bundle first, then the map's spelling (bundle wins, warned once); bundle taken from the `_e` slot first; P29 pinned end to end by a fixture that forces a real atlas cut; the triangle-less guard fails right after membership, naming volume, face and brush (the loader refuses such a face anywhere once any volume has members, so the remedy is fixing the brush or removing the volumes); restart rules and the capture start rule documented; plan references removed from durable code; SDK types regenerated. Gate: prl-build bin 2620, compiler lib 243, `emissive_volumes_compile` 3, render-cpu 828, entities 340, scripting-core 1133, sim 2069, netcode 1063, level-loader 422, postretro dev-tools bin 2979, xtask 52 passed; clippy plain and dev-tools clean; fmt clean. No new findings beyond round 2's, so the review loop ends here.
+
+## Integration notes (for landing on main)
+
+The integration branch `claude/blissful-hawking-klwrdj` merged f9c0d8338 (2026-11-20) and reported these cross-branch collisions. Resolve them when this lands on main, depending on which branch reaches main first:
+- Wire component kind 29 is also taken by E16 status effects (`StatusPresence`), and E25 level seams took 30. Integration renumbered `EmissiveVolume` to 31, updating the pinned tests and the handshake comment.
+- E16 also bumps `WIRE_VERSION` 41→42 and `SNAPSHOT_VERSION` 25→26. Whichever of the two lands on main second needs 43/27, with both features named in the version prose.
+- PRL id 60 (Emissive) precedes E25's reserved Seams 61; the section registry's "first unassigned id" check moves to 62 once both land.
+- E25 splits `parse.rs` and moves `parse_fog_tint` into `parse/fog_volumes.rs` (`pub(super)`); `parse/emissive_volumes.rs` must call it there.

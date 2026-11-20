@@ -2087,6 +2087,44 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Per-slot bare aliases can cross collections: a map name `bar` finds
+    /// `a/bar.png` and `b/bar_e.png` through two unique stems. The bundle is
+    /// named from the glow slot, so `materials.toml` strength is keyed to the
+    /// collection whose `_e` map it scales; without one, from the diffuse.
+    #[test]
+    fn bundle_names_the_emissive_slots_collection_when_bare_aliases_cross_collections() {
+        let root = unique_temp_dir("bundle-from-emissive-slot");
+        let alpha = root.join("a");
+        let beta = root.join("b");
+        std::fs::create_dir_all(&alpha).unwrap();
+        std::fs::create_dir_all(&beta).unwrap();
+        // Content is irrelevant to path resolution.
+        std::fs::write(alpha.join("bar.png"), b"").unwrap();
+        std::fs::write(beta.join("bar_e.png"), b"").unwrap();
+        std::fs::write(alpha.join("plain.png"), b"").unwrap();
+        std::fs::write(beta.join("plain_n.png"), b"").unwrap();
+
+        let map = build_name_to_path_map(&root);
+        let paths = resolve_texture_bundle_paths(&map, "bar");
+        assert_eq!(paths.diffuse, Some(alpha.join("bar.png")));
+        assert_eq!(paths.emissive, Some(beta.join("bar_e.png")));
+        assert_eq!(
+            paths.bundle.as_deref(),
+            Some("b/bar"),
+            "the glow's collection"
+        );
+
+        let paths = resolve_texture_bundle_paths(&map, "plain");
+        assert_eq!(paths.emissive, None);
+        assert_eq!(
+            paths.bundle.as_deref(),
+            Some("a/plain"),
+            "no glow slot: the diffuse's collection, ahead of the normal's"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// A height-only material is a real bundle: `_h` joins the suffix list the
     /// resolver uses to decide a qualified base exists, so it neither falls
     /// back to a bare stem nor collapses to the all-absent zero key.

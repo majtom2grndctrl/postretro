@@ -28,6 +28,7 @@ A gap U1 leaves open by decision. U1 ships a photosensitivity floor only on the 
   - colour-only strobes at any strength (white ↔ blue reads one strength both ways);
   - multi-texture volumes: the clamp judges the brightest member, which is not always the worst case under the dark-state rule;
   - the one-step luminance rise when a red hold releases on a saturated-red glow texture;
+  - limiter-induced brightening of non-judged members or texels during a held red under a coloured scripted colour;
   - per-texel variation inside one texture, the bloom halo such strobes drive, and any shared budget across sources.
 
 ## Questions for the session

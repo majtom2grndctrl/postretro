@@ -76,7 +76,7 @@ pub fn register_sequenced_emissive_primitives(
 
 /// Apply `write` to every target's emissive volume. A target with no emissive
 /// volume (a tag matching another kind) warns and is skipped while the others
-/// are still written (`research.md` P11). Each primitive returns before this
+/// are still written. Each primitive returns before this
 /// on an empty target set (a tag matching nothing), a debug no-op. Writes in
 /// place: nothing is cloned.
 fn write_targets(

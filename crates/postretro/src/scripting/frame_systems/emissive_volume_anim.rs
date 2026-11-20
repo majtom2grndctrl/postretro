@@ -85,15 +85,15 @@ impl EmissiveAnimClock {
     ///
     /// A run restarts from its first sample when the component's
     /// `animation_serial` or curve differs from the slot's, so a brightness
-    /// write followed by an identical re-install in one drain restarts
-    /// (`research.md` P30), while a re-install of the running curve, which
-    /// keeps the serial, keeps its start (P6). A colour write touches
-    /// neither, so the run and its samples carry on (P44).
+    /// write followed by an identical re-install in one drain restarts, while
+    /// a re-install of the running curve, which keeps the serial, keeps its
+    /// start. A colour write touches neither, so the run and its samples
+    /// carry on.
     ///
     /// One re-install of the running curve does restart: on a finite run
     /// already finished at `now_ms`. The drain that installed it ran before
     /// this settle, so without the restart the install would be lost; after
-    /// a finite run settles, re-install restarts it (P6). The component's
+    /// a finite run settles, re-install restarts it. The component's
     /// `install_touch` shows the install.
     pub(super) fn advance(
         &mut self,

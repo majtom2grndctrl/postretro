@@ -120,20 +120,20 @@ impl EmissiveFlashSource {
     ///   judged texture and keeps its scripted value.
     ///   - With a neutral glow colour no channel reaches the cap, so glow
     ///     colour × presented colour is the clamp's colour: desaturated toward
-    ///     its own luminance, luminance unchanged, redness at the held level
-    ///     (P52).
+    ///     its own luminance, luminance unchanged, redness at the held level.
     ///   - With a coloured glow, desaturating can need a weak glow channel
     ///     boosted past the cap. It stops there, so the judged texture
     ///     presents redness between the held level and the scripted one, and
-    ///     dims below the clamp's strength instead of keeping luminance (P59).
+    ///     dims below the clamp's strength instead of keeping luminance.
     ///
-    /// Invariant: no member face ever shows more than it would under a white
-    /// volume at the presented multiplier. Every presented colour channel is
-    /// at most the scripted colour's brightest, so each packed channel is at
-    /// most multiplier × that channel. The packed factor multiplies every
-    /// member face's `_e`, and an uncapped boost sized for the judged
-    /// texture's mean glow would brighten every other member texture, and
-    /// texels unlike the mean, past what the clamp let through.
+    /// Each presented channel is capped at the scripted colour's brightest
+    /// channel, so no member face shows more than it would under a white
+    /// volume at the presented multiplier: each packed channel is at most
+    /// multiplier × that channel. With a neutral scripted colour no member
+    /// brightens. With a coloured scripted colour (red, say) a held red onset
+    /// raises the weak channels toward that cap, so member faces or texels
+    /// unlike the judged glow can brighten during the hold. That is an
+    /// accepted limit, owned by the photosensitivity source floor.
     fn presented(
         self,
         glow: VolumeGlow,

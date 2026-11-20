@@ -2,7 +2,7 @@
 
 A runbook for an agent on the owner's Mac. It records a camera-route playback run with a Metal System Trace and a GPU clock poll attached, then reduces them to per-frame drain GPU time. The first run (159f47d64 on `mac/camera-path-checkpoint`) settled the frame-mark and clock-source questions; `plan.md` §Delegated answers records the answers.
 
-Follow `context/lib/rendering_pipeline.md` §12: attach, never `--launch`. Keep the window in front for the whole run. Nothing else runs beside it. **Unlock the screen first:** a locked Mac renders nothing, and the engine stalls at `[Engine] Window ready`. Keep it awake for the whole run with `caffeinate` (step 5): after the first frame, a lock or a sleeping display pauses the run with no deadline.
+Follow `context/lib/rendering_pipeline.md` §12: attach, never `--launch`. Keep the window in front for the whole run. Nothing else runs beside it. **Unlock the screen first:** a locked Mac renders nothing, and the engine stalls at `[Engine] Window ready`. Keep it awake for the whole batch of runs with `caffeinate` (step 5): after the first frame, a lock or a sleeping display pauses the run with no deadline.
 
 ## Steps
 
@@ -18,10 +18,10 @@ Run from the repo root on branch `camera-path-playback`, pulled to the commit th
    `while true; do python3 -c 'import time; print(f"{time.time():.3f}")'; ioreg -r -c IOAccelerator -d 1 | grep -o '"Core Clock(MHz)"=[0-9]*\|"Temperature(C)"=[0-9]*\|"Device Utilization %"=[0-9]*'; sleep 0.5; done > /tmp/cp-ioreg.log`
 5. Launch the engine windowed with a long hold, so there is time to attach:
    `RUST_LOG=info target/profiling/postretro --windowed --camera-route /tmp/cp-far.txt --camera-route-hold 900 --camera-route-report /tmp/cp-far.playback.json content/dev/maps/campaign-test.prl > /tmp/cp-engine.log 2>&1 &` and note the pid.
-   Then hold the display and the machine awake until the engine exits: `caffeinate -di -w <pid> &`.
+   Before the first run of a batch, hold the display and the machine awake with `caffeinate -di &`, and stop it after the last run's export (step 8). Do not tie it to the engine with `-w <pid>`: the screen then locks during the trace save, and the next run aborts with a stalled window and zero frames.
 6. Once the level reveals (the log line `[Settling] entry`), attach within the hold:
    `xcrun xctrace record --template 'Metal System Trace' --attach <pid> --time-limit 20s --no-prompt --output /tmp/cp-far.trace < /dev/null`
-   Keep the trace at 20 s or less: a 40 s trace wrote about 4.7 GB of ktrace and took over 10 minutes to save, while 20 s saved 436 MB in about 11 minutes. Give the watchdog at least 30 minutes after the engine exits. A watchdog that kills `xctrace` mid-save loses the export (`Document Missing Template Error`).
+   Keep the trace at 20 s or less: a 40 s trace wrote about 4.7 GB of ktrace and took over 10 minutes to save, while 20 s traces saved in 11 to 25 minutes (436 MB on the first run). Give the watchdog at least 40 minutes after the engine exits. A watchdog that kills `xctrace` mid-save loses the export (`Document Missing Template Error`).
 7. The engine exits 0 by itself after the last pose. Confirm the exit code and that `/tmp/cp-far.playback.json` exists. Stop the `ioreg` loop.
 8. Export the table of contents and both interval tables into one directory. The reducer needs both interval tables there. It finds the TOC there too, or takes it from `--toc`. Without a TOC it still runs, but cannot line the clock poll up with the trace, so it reports the clock over the whole poll log:
    - `mkdir /tmp/cp-far-export`

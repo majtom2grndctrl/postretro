@@ -124,9 +124,28 @@ Rows number top to bottom through Acceptance (Automated 1–48, Manual 49–51).
 | 46 recording skips Settling and no-world frames; header | recorder tests | achievable as stated |
 | 47 recording scope: backdrop, level exits, no world frame (P13, P15) | recorder lifecycle hook tests | achievable as stated |
 | 48 written on every exit route, same file (P14) | exit-hook test + source test that `exiting` flushes | achievable as stated |
-| 49 Mac consumer run | owner, Mac | manual |
-| 50 showcase copy run | owner, Mac | manual |
+| 49 Mac consumer run | owner, Mac | manual — **pass** 2026-11-20, see Mac results |
+| 50 showcase copy run | owner, Mac | manual — **not run**: frozen copy unavailable, see Mac results |
 | 51 SDK bundle record / generate / play | owner | manual |
+
+## Mac results
+
+AC 49, 2026-11-20, at 20f7e98ec. Machine: MacBookPro16,1 (Radeon Pro 5300M), macOS 26.7.3, AC power, Low Power Mode off. Profiling build with `dev-tools`, `POSTRETRO_CPU_TIMING=1`, frame-locked, hold 900. campaign-test bake id51 `4b7255ff5bdf714c`. Routes from `--steps 40`: far-point 1746 poses; smoothed 2317 poses, 0 cuts, over the same walk. Every engine run exited 0; both reducer runs exited 0.
+
+| Run | Frames | Interval p50 / p95 / max (ms) | Over budget | Drain GPU ms |
+|---|---|---|---|---|
+| far-point, no vsync, cap 8 (production) | 1448 of 1746 traced | 10.5 / 21.1 / 42.9 | 232 | lightmap 21 frames, p50 0.50, max 1.90; SH 4 frames, p50 1.72, max 2.17; per frame p95 2.10, max 2.72 |
+| far-point, no vsync, cap 4 | 1416 of 1746 traced | 10.2 / 18.1 / 28.6 | 119 | lightmap 29 frames, p50 0.44, max 1.23; SH 6 frames, p50 0.75, max 1.91 |
+| smoothed, vsync, cap 8 | 2317 | 16.7 / 23.9 / 77.3 (p99 33.6) | 26 over 33.4 ms | — |
+| smoothed, vsync, cap 4 | 2317 | 16.7 / 23.5 / 49.8 (p99 32.4) | 17 over 33.4 ms | — |
+
+- The 20 s trace covers the first ~1450 route frames; interval and drain figures are over traced frames.
+- Cap 8: every drain warm, 0 cold, 0 pool growth. Of 232 over-budget frames, 226 carry no drain, so drains explain at most 6.
+- GPU clock median 1192 MHz at cap 8 (min 290) and 1222 MHz at cap 4 (min 732). With so few drain frames, the over-budget gap between the two caps is more likely clock and run variance than the cap.
+- Smoothed figures are the Mac agent's first read of `interval_us`; route rows only, gap rows excluded.
+- The first attempts of the cap-4 and smoothed runs aborted with a stalled window: `caffeinate -w <pid>` released when the engine exited, and the screen locked during the 23-minute trace save. The runbook now holds `caffeinate` across the batch.
+
+AC 50: not run. The spike's frozen showcase bake is lost, and the copy measured in the drain-budget findings (PRL sha256 `0fac5bb6…`) is not on the Mac. The Mac holds the same `.map` (`4a95234a…`) in a newer bake: 800,946,571 B, sha256 `3cca549ded7a13b3f007ff0fac20d5a89f8d8d1c6b5847de36564a522af00197`.
 
 ## Integration notes
 

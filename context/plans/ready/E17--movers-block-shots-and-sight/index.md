@@ -1,8 +1,8 @@
 # E17--movers-block-shots-and-sight
 
-Brief · resumable · Epic 17 · reads: `context/lib/networking.md` §Combat authority, §World-LOS-only validation · `context/lib/entity_model.md` §Components (Splash), §7c · `context/lib/development_guide.md` §Workspace · `in-progress/E10--ai-tick-scheduling/` · `research.md` · read at e7438238, AI rows at E10 branch 768446184
+Brief · resumable · Epic 17 · reads: `context/lib/networking.md` §Combat authority, §World-LOS-only validation · `context/lib/entity_model.md` §Components (Splash), §7c · `context/lib/development_guide.md` §Workspace · `done/E10--ai-tick-scheduling/` · `research.md` · read at e7438238; AI rows and Path seams re-read at fe75d18b
 
-**Sequence:** builds after `E10--ai-tick-scheduling` merges; re-read the AI rows at its merge commit.
+**Sequence:** unblocked. `E10--ai-tick-scheduling` landed at 62c06954; its AI sites are re-read in `research.md`.
 
 ## Problem
 Owner decision (2026-10-30), now a live defect: since `E17--enemy-mover-interaction` landed, an enemy held at a closed door still sees and shoots through it, and players' bullets, rockets and blasts pass through doors, sliding walls and rising rooms. Cause: every shot and sight query reads the static collision world; movers join only the combined static-plus-mover world that movement, steering and foot probes use. When done, a mover at its pose stops hitscan, projectiles, muzzle launch, splash damage and NPC sight, for the host and a connected client alike; an open gap passes as empty space. A connected client's rocket lands its authoritative blast where the client saw it hit whenever the host's path agrees, unless the host has a wall or door nearer on that path. Otherwise a level with no movers behaves exactly as today.
@@ -85,7 +85,7 @@ Unchanged:
 - [ ] On levels with no movers, the existing weapon, projectile, splash, perception, awareness and determinism suites pass unchanged, apart from the rewritten tests above, and headless byte identity holds (regression guard).
 
 Scale (measured, not gated; `testing_guide.md` §Resource bounds; on the machine class, worker count and cache mode of E10's runs):
-- [ ] On E10's multi-arena and packed stress rows, with closing doors added in each arena: NPC line-of-sight cost per acquisition check and per tick, against the same rows without movers.
+- [ ] On E10's multi-arena and packed stress rows (`perf-ai-tick-cost`, `crates/ai/src/replan_stress_tests.rs`), with closing doors added in each arena: NPC line-of-sight cost per acquisition check and per tick, against the same rows without movers.
 - [ ] On `mover-setpiece` with its doors cycling: host march cost per tick with four clients firing splash weapons continuously, against the host player firing the same weapon at the same rate.
 
 ### Manual
@@ -104,7 +104,7 @@ Scale (measured, not gated; `testing_guide.md` §Resource bounds; on the machine
   - SteerAgents builds a combined world before its `&mut` `yield_agent_as_corpse`. Build the Projectiles- and Ai-stage worlds the same way, from shared borrows that end before SteerAgents.
   - Weapons follows SteerMovers' `split_for_blocking`.
 - Client plumbing: `App` builds the prediction world from `collision_world`, `kinematic_mover_colliders` and `kinematic_mover_tick_states`. `run_client_fire_path_post_loop` and `main.rs`'s `advance_predicted` caller pass the static world today.
-- `AiTickInputs` may need a separate lifetime for the combined world.
+- `AiTickInputs` may need a separate lifetime for the combined world. `ai::compute` and `ai::combat_slots` take `Option<&CollisionWorld>` today; the combined world replaces it at both.
 - `CombatQuery.collision_world` is not an `Option`, and `placement_cache` batches queries by comparing its pointer; batch on the static world and the pose source instead.
 - March: one step per host tick where host projectiles advance, starting on the tick after FIRE as a host-spawned projectile does, and release from there, not from a drain. A drain-time step would double-step, step on the FIRE tick, or read the previous tick's poses (P1).
 - First slice: the combined queries, then hitscan host and client end to end, including host acceptance. It falsifies the threading and pose-source assumptions before the fan-out.

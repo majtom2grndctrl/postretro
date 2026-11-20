@@ -1,6 +1,6 @@
 # E17--movers-block-shots-and-sight — research
 
-Read at `e7438238` (main) and `768446184` (`claude/gallant-franklin-xafi1n`, E10--ai-tick-scheduling, in review). Re-read the AI rows at E10's merge commit.
+Read at `e7438238` (main). AI rows and Path seams re-read at `fe75d18b`, after `E10--ai-tick-scheduling` landed (`62c06954`).
 
 ## Why the march, not a pose ring
 
@@ -47,18 +47,20 @@ Rival: split into two briefs, movers blocking shots and sight (host march contac
 | Old claim | Now |
 |---|---|
 | Lands before or with `E17--enemy-mover-interaction` | That plan landed. The owner ruled on 2026-11-06 that they land in either order and accepted the gap: an enemy held at a door can see and fire through it. |
-| "Sight returns within the existing debounce" after a door opens | Holds only for a retained target. Under E10 a target survives a loss of sight while its activity engages (`compute.rs` `retains_target`). Once dropped, it is re-noticed only through its awareness meter: the first sighting after a miss gains nothing, and later ones refill at `fillMs` from where the closure drained it (`AwarenessCheck::visit`). |
+| "Sight returns within the existing debounce" after a door opens | Holds only for a retained target. Under E10 a target survives a loss of sight while its activity engages (`ai/src/compute.rs`, `retained_target` gated on `engages_active`). Once dropped, it is re-noticed only through its awareness meter: the first sighting after a miss gains nothing, and later ones refill at `fillMs` from where the closure drained it (`AwarenessCheck::visit` in `entities/src/components/brain/awareness.rs`, driven from `ai/src/targeting.rs`). |
 | Physics has no alloc probe | `postretro-physics` installs `alloc_probe` as its test global allocator. |
 | `split_for_blocking` is the only `&mut` table use after Movers | SteerAgents calls `yield_agent_as_corpse` first. The Ai stage already holds a shared borrow (`MoverNav { poses }`). |
 | Client shot vs presented pose: error under 0.1 m, one tick | `ready/E17--mover-relative-rider-presentation` smooths mover corrections, render-only. The drawn mover trails a correction until it converges (its research measures about 0.16 m under the mandated profile). Decision unchanged: presentation never feeds collision. |
 | Paths `postretro/src/sim`, `weapon/mod.rs` | `crates/sim/src/{sim,weapon}/`. The tick entry is `sim/tick_start.rs`. `resolve_client_shot` and the local and remote weapon commands moved to submodules. |
 | Docs to amend: scripting-reference splash note | The brief's Docs decision lists the human-facing files. Also amend the `splash.rs` doc comment, which says movers do not participate. |
 
-## AI line-of-sight sites (E10 branch)
+## AI line-of-sight sites (main at `fe75d18b`)
 
-- `perception::raw_target_perception` serves acquisition and the awareness scan. The scan reaches line of sight only through this function's closure in `compute.rs`, and dormant checks take the same path.
-- `perception::perceive_target` serves the retained target each run and feeds the fire gate.
-- `combat_positioning::scoring::score_candidate_with`, through `CombatQuery.collision_world`. That field is not an `Option`, and `placement_cache::BatchPlacements::for_batch` batches queries by comparing its pointer.
+- `perception::raw_target_perception` serves acquisition and the awareness scan. `ai/src/compute.rs` calls it from two closures: the retained target's switch check on a decide, and the meter scan with no retained target. A dormant run takes the same loop, its decide set by `dormant_decide`, so it needs no site of its own.
+- `perception::perceive_target` serves the retained target each run and feeds the fire gate (`compute.rs`, third call).
+- All three take `compute.rs`'s `collision_world: Option<&CollisionWorld>`; `perception.rs` calls static `line_of_sight` in both functions.
+- `combat_positioning::scoring::score_candidate_with`, through `CombatQuery.collision_world`. That field is not an `Option`, and `placement_cache::BatchPlacements::for_batch` batches queries by comparing its pointer. `combat_positioning/uncached_reference.rs` keeps its own static `line_of_sight` for the cached-vs-uncached parity row; it moves with scoring. `ai/src/combat_slots.rs` threads the world into both and already carries `MoverNav`.
+- Static line of sight that stays: netcode `valid_hitscan_world_contact` and the hitscan branch of declared-hit validation (`netcode/src/lib.rs`). Both are host validation.
 
 No single choke point. Rays per acquisition check are bounded by candidates walked until the meter bound passes, plus unvisited meter members and ledger attackers. Each now also culls movers.
 

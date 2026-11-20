@@ -143,7 +143,7 @@ impl World {
                     }
                 }
             }
-        } else if tick % REAPPLY_EVERY == 0 {
+        } else if tick.is_multiple_of(REAPPLY_EVERY) {
             for &entity in &self.afflicted {
                 registry.apply_status(entity, 0, applier, self.source);
                 registry.apply_status(entity, 1, applier, self.source);

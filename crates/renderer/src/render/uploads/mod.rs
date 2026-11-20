@@ -26,7 +26,8 @@ pub(crate) use staging_pool::StagingPool;
 pub(crate) enum MarkSite {
     /// "Streamed Lightmap Drain".
     LightmapDrain,
-    /// "Streamed SH Upload Copies".
+    /// "Streamed SH Upload Copies", and the SH and mover-channel pool
+    /// growth copies made inside the SH drain.
     ShUploads,
     /// "Frame Encoder", the frame's last marked encoder.
     Frame,

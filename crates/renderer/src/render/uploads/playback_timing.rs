@@ -50,7 +50,8 @@ pub struct PlaybackGpuSample {
     pub whole_frame: PlaybackGpuSpan,
     /// The "Streamed Lightmap Drain" encoder.
     pub lightmap_drain: PlaybackGpuSpan,
-    /// The "Streamed SH Upload Copies" encoders: the first one's first
+    /// The SH drain's marked encoders ("Streamed SH Upload Copies" and the
+    /// SH and mover-channel pool growth copies): the first one's first
     /// command to the last one's last. A span, not a busy-time union: it
     /// includes the gaps between the separate submits, so it reads longer than
     /// the Mac reducer's union. The copies include mover depth-tile flushes

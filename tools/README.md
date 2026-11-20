@@ -146,9 +146,9 @@ clock is reported over the whole poll log, labelled with the reason.
 `--budget-ms` sets the frame-interval budget (default 16.667 ms). By default
 the over-budget and per-frame tables list only frames with a drain, or over
 budget with one charged or missing; `--all-frames` lists every frame. Add
-`--json` for the full summary. A malformed record or an unreadable table
-exits 2. The script's docstring defines the join, matched
-frames and the over-budget charge. Recording a run, its trace and the poll on a
+`--json` for the full summary. A malformed record, an unreadable table, or
+a record no frame mark matches exits 2. The script's docstring defines the
+join, matched frames and the over-budget charge. Recording a run, its trace and the poll on a
 Mac: `docs/camera-routes.md` §"GPU time on a Mac".
 Its tests run with
 `python3 -m unittest discover -s tools/tests -p test_playback_trace_reduce.py`.

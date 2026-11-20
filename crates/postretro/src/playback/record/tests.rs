@@ -440,15 +440,26 @@ fn playback_record_writes_once_to_its_path() {
     assert_eq!(written["rows"].as_array().unwrap().len(), 1);
     let missing_dir = dir.path().join("absent").join("run.json");
     assert!(record.write(&missing_dir).unwrap_err().contains("absent"));
-    // The launch check identifies a written record by its opening header
-    // schema: the next run may overwrite it.
+}
+
+#[test]
+fn playback_record_written_file_passes_the_launch_overwrite_check() {
+    // The launch check identifies a record by its opening bytes alone: the
+    // header first, its schema as the header's first field. Reordered
+    // fields would leave the next run refusing to overwrite this file.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("run.playback.json");
+    let mut record = PlaybackRecord::new(&args(0), &pose_file(90.0, 1));
+    record.push_row(plan(RowKind::Route, 0), None, UNMARKED, no_fill());
+    record.write(&path).unwrap();
     assert_eq!(
         crate::playback::args::check_report_path(
             std::path::Path::new("run.playback.json"),
             std::path::Path::new("cp.txt"),
             dir.path(),
         ),
-        Ok(())
+        Ok(()),
+        "the next run may overwrite a written record"
     );
 }
 
@@ -512,7 +523,8 @@ fn playback_record_plans_wall_clock_rows_over_the_route_duration() {
 fn playback_record_caps_its_launch_reservation_whatever_the_pose_count() {
     // A pose file planning more rows than the cap reserves the cap, never
     // gigabytes; growth past it is gap-marked. Checked on the reservation
-    // size, without allocating it.
+    // size, without allocating it. The cadence is set directly to reach the
+    // cap with few poses; a parsed file is always 60 Hz.
     let mut file = pose_file(100.0, 5_000);
     file.header.cadence_hz = 1;
     let mut wall = args(crate::playback::args::MAX_HOLD_FRAMES);

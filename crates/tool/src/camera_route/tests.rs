@@ -499,6 +499,83 @@ fn generate_camera_route_refuses_an_output_path_that_names_a_folder() {
     .expect("an existing folder is enough");
 }
 
+// Regression: `Path::parent` drops a trailing `.`, so `-o missing/.`
+// passed the folder check and the write failed after the route was built.
+#[test]
+fn generate_camera_route_refuses_an_output_path_ending_in_a_dot_segment() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let existing = dir.path().to_str().expect("utf-8 path");
+    let outs = [
+        format!("{existing}/missing/."),
+        format!("{existing}\\missing\\."),
+        format!("{existing}/missing/.."),
+        format!("{existing}/."),
+        ".".to_string(),
+        "..".to_string(),
+    ];
+    for out in &outs {
+        let error = parse_args(os(&["l.prl", "--kind", "random", "-o", out])).expect_err("refused");
+        assert!(error.contains("not a folder"), "{out}: {error}");
+    }
+    assert!(!dir.path().join("missing").exists(), "nothing created");
+}
+
+// Regression: `-o` naming the level, or another level, replaced it with
+// the route.
+#[test]
+fn generate_camera_route_overwrites_only_an_earlier_pose_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let level = dir.path().join("a.prl");
+    std::fs::copy(fixture(), &level).expect("copy the fixture");
+    let level_bytes = std::fs::read(&level).expect("read the level");
+    let level_text = level.to_str().expect("utf-8 path");
+    let parse_to = |out: &str| parse_args(os(&[level_text, "--kind", "random", "-o", out]));
+
+    // The level itself, by its own spelling or another.
+    let respelled = dir.path().join(".").join("a.prl");
+    for out in [level_text, respelled.to_str().expect("utf-8 path")] {
+        let error = parse_to(out).expect_err("refused");
+        assert!(
+            error.contains("overwrite the level it is made from"),
+            "{out}: {error}"
+        );
+    }
+    // Another level, or any other file.
+    let other_level = dir.path().join("b.prl");
+    std::fs::copy(fixture(), &other_level).expect("copy the fixture");
+    let notes = dir.path().join("notes.txt");
+    std::fs::write(&notes, "postretro-camera-route notes\n").expect("write notes");
+    for out in [&other_level, &notes] {
+        let out = out.to_str().expect("utf-8 path");
+        let error = parse_to(out).expect_err("refused");
+        assert!(
+            error.contains("is not a camera-route pose file"),
+            "{out}: {error}"
+        );
+    }
+
+    // An earlier route at any version, saved with a BOM or CRLF, is replaced:
+    // its magic line alone identifies it.
+    for (name, text) in [
+        ("older.route", "postretro-camera-route 0\n"),
+        (
+            "bom.route",
+            "\u{feff}postretro-camera-route 1\r\nhand edited\r\n",
+        ),
+    ] {
+        let out = dir.path().join(name);
+        std::fs::write(&out, text).expect("write the earlier route");
+        let written = generate_to(&level, &out, &["--kind", "random", "--steps", "20"])
+            .expect("an earlier route is replaced");
+        parse_pose_file(&written).expect("the replacement is a valid pose file");
+    }
+    assert_eq!(
+        std::fs::read(&level).expect("read the level"),
+        level_bytes,
+        "the level is never written"
+    );
+}
+
 #[test]
 fn generate_camera_route_names_the_right_cause_for_each_route_error() {
     let world = two_cell_world(false);

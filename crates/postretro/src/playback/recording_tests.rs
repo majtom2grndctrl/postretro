@@ -154,6 +154,7 @@ fn recording_resample_cuts_on_a_last_sample_a_rounding_past_the_pose_time() {
     assert_eq!(poses.len(), 2);
     assert!(!poses[0].cut);
     assert!(poses[1].cut, "the jump on the last sample cuts pose 1");
+    // Exact: a cut pose copies its sample, never blends it.
     assert_eq!(
         (poses[1].eye, poses[1].yaw, poses[1].pitch),
         (after.eye, after.yaw, after.pitch),

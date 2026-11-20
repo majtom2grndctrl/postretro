@@ -18,6 +18,8 @@ The commands below keep routes in a `routes` folder. Make it first with `mkdir r
 bin/postretro-tool generate-camera-route content/<mod>/maps/<name>.prl --kind far-point -o routes/far-point.txt
 ```
 
+`-o` must name a file in an existing folder. If that file exists, it must be an earlier route: the tool refuses to overwrite the level it reads or any other file.
+
 `<mod>` is your mod's folder under `content/`. This command takes the level's path from the folder you run it in, so it needs the `content/<mod>/` part. `postretro-tool run`, below, takes a path inside the mod folder, `maps/<name>.prl`.
 
 The level needs at least two rooms joined by a portal. On a level without one, the command stops and says so.
@@ -76,11 +78,11 @@ The engine loads the level, waits until what the first pose sees is ready, holds
 The engine refuses to start, and names the file and the reason, when:
 - the route is empty, malformed or unreadable
 - its field of view is outside 60–130°, or a pose's pitch is past ±89° (the error names the pose's line)
-- the report's folder doesn't exist, the report path ends in `/` or `\`, the report would overwrite the route itself, or it names an existing file that isn't an earlier report
+- the report's folder doesn't exist, the report path ends in `/`, `\`, `.` or `..`, the report would overwrite the route itself, or it names an existing file that isn't an earlier report
 - the launch also has `--connect` or `--record-camera-route`
 - an option is given twice, or a value is outside its range
 
-`--record-camera-route` refuses to start the same way when its file's folder doesn't exist, its path ends in `/` or `\`, or it names an existing file that isn't an earlier route.
+`--record-camera-route` refuses to start the same way when its file's folder doesn't exist, its path ends in `/`, `\`, `.` or `..`, or it names an existing file that isn't an earlier route.
 
 A route made for a different bake of the level is caught when the level loads, not before launch: the window opens and the level loads, then the engine exits with an error naming the route and the level. No report is written.
 
@@ -146,7 +148,7 @@ With `POSTRETRO_TELEMETRY=<file>`, the run also writes one `playback_window` eve
 
 ### GPU time on a Mac
 
-Some Mac GPUs have no timestamp queries. There, GPU time comes from an Instruments Metal System Trace instead. During playback, each frame's GPU work is labelled `pr-frame <N> <site>`. N is the `frame` of that frame's report row, and the site says which work it is: `lightmap` and `sh` for the two streaming installs, `frame` for the frame's rendering.
+Some Mac GPUs have no timestamp queries. There, GPU time comes from an Instruments Metal System Trace instead. During playback, each frame's GPU work is labelled `pr-frame <N> <site>`. N is the `frame` of that frame's report row, and the site says which work it is: `lightmap` and `sh` for the two streaming installs, `frame` for the frame's rendering. The `sh` time also includes the updates to movers' lighting depth tiles, and any growth of its pools, made during that install.
 
 1. In a second terminal, start logging the GPU clock, and leave it running until the trace is saved:
 
@@ -180,7 +182,7 @@ It reports each frame's streaming GPU time and the run's frame-time figures, and
 
 A frame counts as over budget when its frame time is above 16.667 ms, one frame at 60 Hz. Change that with `--budget-ms <ms>`. The telemetry `playback_window` event counts frames over 33 ms instead, so the two counts differ. By default the per-frame tables list only frames that installed something, or that ran over budget while an earlier install may still have been on the GPU. Add `--all-frames` to list every frame, or `--json` for everything the reducer computed.
 
-A figure the trace can't settle reads `missing`, never a guess. A trace from a build older than the site labels has `pr-frame <N>` alone, and some of its streaming work can't be assigned to either install. Those frames' install times read `missing`, and the reducer reports that work on its own line.
+A figure the trace can't settle reads `missing`, never a guess. A trace from a build older than the site labels has `pr-frame <N>` alone, and some of its streaming work can't be assigned to either install. Those frames' install times read `missing`, and the reducer reports that work on its own line. A label naming a site this reducer doesn't know is counted on its own line and never added to either install.
 
 ## Timing figures need a measurement build
 

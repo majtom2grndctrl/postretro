@@ -35,8 +35,10 @@ const WALL_CLOCK_PLANNED_HZ: f64 = 240.0;
 /// The most rows reserved at launch, whatever the pose file plans: a row is
 /// about half a kilobyte, so this bounds the launch reservation near half a
 /// gigabyte, where a huge pose file would otherwise ask for several. It
-/// covers a 600-frame hold and a 100,000-pose route at 240 Hz wall-clock.
-/// A longer run still records: growth past it is gap-marked (`push_row`).
+/// covers a 600-frame hold plus a 100,000-pose route under wall-clock
+/// pacing: at the files' 60 Hz cadence that is about 28 minutes, so about
+/// 400,000 rows planned at 240 Hz. A longer run still records: growth past
+/// it is gap-marked (`push_row`).
 const MAX_RESERVED_ROWS: usize = 1_000_000;
 
 /// Life-state entries reserved: a run logs one per death, respawn or

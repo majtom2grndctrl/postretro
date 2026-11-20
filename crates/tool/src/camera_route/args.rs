@@ -9,7 +9,8 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use postretro_camera_route::{
-    DEFAULT_HFOV_DEGREES, DEFAULT_STEPS, GeneratedKind, Smoothing, WALK_SEED, WalkKind,
+    DEFAULT_HFOV_DEGREES, DEFAULT_STEPS, GeneratedKind, POSE_FILE_MAGIC, Smoothing, WALK_SEED,
+    WalkKind,
 };
 
 use crate::flag::match_flag;
@@ -139,6 +140,7 @@ pub(super) fn parse_args(args: Vec<OsString>) -> Result<GenerateArgs, String> {
 
     let out = out.ok_or_else(|| usage("generate-camera-route requires -o <out-file>"))?;
     check_output_folder(&out)?;
+    check_existing_output(&out, level.as_deref())?;
 
     Ok(GenerateArgs {
         level: level.ok_or_else(|| usage("generate-camera-route requires a level path"))?,
@@ -155,9 +157,12 @@ pub(super) fn parse_args(args: Vec<OsString>) -> Result<GenerateArgs, String> {
 
 /// `-o` names a file whose folder exists: the tool creates no folder, and
 /// refuses before the level is read rather than after the route is built.
+/// A trailing separator, `.` or `..` names a folder: `Path::parent` drops
+/// or steps past it, so the folder check would test another folder.
 fn check_output_folder(out: &Path) -> Result<(), String> {
     let text = out.to_string_lossy();
-    if text.ends_with(['/', '\\']) || out.is_dir() {
+    let dot_segment = matches!(text.rsplit(['/', '\\']).next(), Some("." | ".."));
+    if text.ends_with(['/', '\\']) || dot_segment || out.is_dir() {
         return Err(format!(
             "-o {}: name a file to write, not a folder",
             out.display()
@@ -173,6 +178,76 @@ fn check_output_folder(out: &Path) -> Result<(), String> {
         )),
         None => Err(format!("-o {} names no file", out.display())),
     }
+}
+
+/// Bytes read to identify an existing `-o` file: enough for a pose file's
+/// magic line, so a level named by mistake is never read whole.
+const IDENTIFY_BYTES: u64 = 256;
+
+/// `-o` may replace an earlier pose file and nothing else: never the level
+/// the route is generated from, nor another level or file named by mistake.
+/// A pose file is known by its magic line alone, at any version, as the
+/// engine's `--record-camera-route` launch check knows it: an older or
+/// hand-edited route is still the author's own output to replace.
+fn check_existing_output(out: &Path, level: Option<&str>) -> Result<(), String> {
+    let metadata = match std::fs::metadata(out) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(format!("-o {}: unreadable: {err}", out.display())),
+    };
+    if let Some(level) = level {
+        // Both exist, so the file system resolves case, links and spelling.
+        if let (Ok(out_path), Ok(level_path)) =
+            (out.canonicalize(), Path::new(level).canonicalize())
+            && out_path == level_path
+        {
+            return Err(format!(
+                "-o {} is the level {level}: the route would overwrite the level it is made from",
+                out.display()
+            ));
+        }
+    }
+    let refuse = || {
+        format!(
+            "-o {} exists and is not a camera-route pose file: the write would overwrite it; name another file",
+            out.display()
+        )
+    };
+    if !metadata.is_file() {
+        return Err(refuse());
+    }
+    let head = read_head(out).map_err(|err| format!("-o {}: unreadable: {err}", out.display()))?;
+    // An editor's "UTF-8 with BOM" save: the pose parser strips it too.
+    let head = head.strip_prefix('\u{feff}').unwrap_or(&head);
+    if is_pose_file_head(head) {
+        Ok(())
+    } else {
+        Err(refuse())
+    }
+}
+
+/// Whether `head` opens with a pose file's magic line at any version:
+/// [`POSE_FILE_MAGIC`] up to its last space, then digits. Trailing
+/// whitespace and a CR are allowed, as the parser allows them.
+fn is_pose_file_head(head: &str) -> bool {
+    let Some((prefix, _)) = POSE_FILE_MAGIC.rsplit_once(' ') else {
+        return false;
+    };
+    head.lines()
+        .next()
+        .and_then(|line| line.trim_end().strip_prefix(prefix))
+        .and_then(|rest| rest.strip_prefix(' '))
+        .is_some_and(|version| !version.is_empty() && version.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// The first [`IDENTIFY_BYTES`] of `path`, lossily decoded.
+fn read_head(path: &Path) -> std::io::Result<String> {
+    use std::io::Read;
+    let mut head = Vec::new();
+    std::fs::File::open(path)?
+        .take(IDENTIFY_BYTES)
+        .read_to_end(&mut head)?;
+    Ok(String::from_utf8_lossy(&head).into_owned())
 }
 
 fn parse_kind(value: &str) -> Result<GeneratedKind, String> {

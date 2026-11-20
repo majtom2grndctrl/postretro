@@ -198,9 +198,8 @@ class SampleTests(unittest.TestCase):
         #   7364.473924, its Frame Encoder buffer row's end, 7380.786971 -
         #   16.684 - 0.001); U = min(earliest(1138) = 7367.581896,
         #   7384.353071 - 16.684 = 7367.669071) = 7367.581896. 1137's SH ended
-        #   at 7367.090090, inside (L, U]: it may have been in flight. (The old
-        #   window, anchored at F(1139) - interval = 7375.903 ms, opened 8.3 ms
-        #   after U and called it done.)
+        #   at 7367.090090, inside (L, U]: it may have been in flight. A bound
+        #   from 1139's frame encoder alone (7375.903 ms) would call it done.
         # * 1140: own is 1139's drain, missing (unattributed). L = latest(1138)
         #   = 7380.786971; U = min(7384.353071, 7410.554540 - 17.945). 1138's SH
         #   ended at 7380.093717 and 1136's work at 7343.413473, both before L.
@@ -350,30 +349,47 @@ class Trace:
         self.next_cmdbuffer = 0x1000
 
     def encoder(self, frame, kind, cpu_ns, gpu=(), marked=True, buffer_mark=False,
-                site=False, buffer_label=None):
+                site=True, buffer_label=None, unmarked_gpu=()):
         """One command buffer with one encoder; `gpu` holds (start, duration, channel).
         `marked` marks the encoder row, `buffer_mark` the command buffer row.
-        `site` writes the current mark, `pr-frame <k> <site>`, with `kind` as
-        the site; otherwise the mark is the older `pr-frame <k>`.
-        `buffer_label` replaces the command buffer's label, as wgpu's
-        "(wgpu internal) Signal" relabel does."""
+        The mark is the current `pr-frame <k> <site>`, with `kind` as the site
+        or `site` when it is a string; `site=False` writes the older
+        `pr-frame <k>`. `buffer_label` replaces the command buffer's label, as
+        wgpu's "(wgpu internal) Signal" relabel does. `unmarked_gpu` adds a
+        second, unmarked encoder to the same command buffer, as wgpu's split of
+        one buffer into several Metal encoders does. Returns the marked
+        encoder's id; its command buffer's id is one less."""
         cmdbuffer = self.next_cmdbuffer
         encoder = cmdbuffer + 1
-        self.next_cmdbuffer += 2
+        self.next_cmdbuffer += 3
         label = buffer_label or COMMAND_BUFFER_LABEL[kind]
-        text = f"pr-frame {frame} {kind}" if site else f"pr-frame {frame}"
+        name = site if isinstance(site, str) else kind
+        text = f"pr-frame {frame} {name}" if site else f"pr-frame {frame}"
         buffer = f"  -  :{text}" if buffer_mark else ""
         self.app.append((cpu_ns, 50_000,
                          f"{label}{buffer}  (Frame  {frame % 7} ) ( postretro (1) )",
-                         34, cmdbuffer, R.ALL_ONES))
+                         34, cmdbuffer, R.ALL_ONES, "Encoding"))
         mark = f"  -  :{text}" if marked else ""
         self.app.append((cpu_ns + 1_000, 30_000,
                          f"Blit Command 0{mark}  ( Main Thread (0x1) (postretro, pid: 1) )",
-                         35, cmdbuffer, encoder))
+                         35, cmdbuffer, encoder, "Encoding"))
         for start, duration, channel in gpu:
             self.gpu.append((start, duration, channel, cmdbuffer, encoder,
                              f"{label}:Blit Command 0  ( postretro (1) )  0x{encoder:x}"))
+        if unmarked_gpu:
+            second = cmdbuffer + 2
+            self.app.append((cpu_ns + 32_000, 10_000,
+                             "Blit Command 1  ( Main Thread (0x1) (postretro, pid: 1) )",
+                             35, cmdbuffer, second, "Encoding"))
+            for start, duration, channel in unmarked_gpu:
+                self.gpu.append((start, duration, channel, cmdbuffer, second,
+                                 f"{label}:Blit Command 1  ( postretro (1) )  0x{second:x}"))
         return encoder
+
+    def buffer_event(self, encoder, start_ns, duration_ns, event_type):
+        """Another row for `encoder`'s command buffer, of `event_type`."""
+        self.app.append((start_ns, duration_ns, "Frame Encoder  ( postretro (1) )", 34,
+                         encoder - 1, R.ALL_ONES, event_type))
 
     def frame(self, k, start_ns, drains=(), gpu_offset=4_000_000):
         """Frame k: its drains (kind, gpu rows), then its frame encoder."""
@@ -396,7 +412,7 @@ class Trace:
     def _app_xml(self):
         ids = Ids()
         rows = []
-        for start, dur, label, depth, cmdbuffer, encoder in self.app:
+        for start, dur, label, depth, cmdbuffer, encoder, event_type in self.app:
             rows.append(
                 "<row>"
                 f'<start-time id="{ids.new()}" fmt="t">{start}</start-time>'
@@ -404,7 +420,7 @@ class Trace:
                 + ids.process()
                 + ids.value("metal-nesting-level", str(depth), str(depth))
                 + ids.value("formatted-label", label, "")
-                + ids.value("metal-event-name", "Encoding", "Encoding")
+                + ids.value("metal-event-name", event_type, event_type)
                 + ids.value("metal-command-buffer-id", hex(cmdbuffer), str(cmdbuffer))
                 + ids.value("metal-command-buffer-id", hex(encoder), str(encoder))
                 + "</row>")
@@ -670,6 +686,71 @@ class AttributionTests(unittest.TestCase):
         self.assertTrue(frames[8]["matched"], "and covers the next frame")
         self.assertEqual(frames[7]["drains"]["total"]["state"], "none")
 
+    def test_every_encoder_of_a_drain_command_buffer_counts_toward_the_drain(self):
+        # Frame 5's lightmap buffer holds its marked encoder (5F + 1 ms, 0.3
+        # ms) and a second, unmarked one wgpu split off, which runs late:
+        # 5F + 30 ms to 5F + 30.2 ms = 113.533 ms, past S(6) = 100 ms. Frame
+        # 6's frame encoder buffer also holds an unmarked render pass.
+        trace = steady_trace(range(0, 5))
+        base = 5 * FRAME_NS
+        trace.encoder(5, "lightmap", base, [(base + 1_000_000, 300_000, "SDMA0")],
+                      unmarked_gpu=[(base + 30_000_000, 200_000, "SDMA0")])
+        trace.encoder(5, "frame", base + 200_000, [(base + 4_000_000, 1_000_000, "GFX")])
+        base = 6 * FRAME_NS
+        trace.encoder(6, "frame", base, [(base + 4_000_000, 1_000_000, "GFX")],
+                      unmarked_gpu=[(base + 5_000_000, 3_000_000, "GFX")])
+        for k in range(7, 10):
+            trace.frame(k, k * FRAME_NS)
+        rows = [row(k) for k in range(10)]
+        rows[7]["interval_us"] = 25_000
+        summary = reduce_synthetic(trace, rows)
+        frames = by_frame(summary)
+        lightmap = frames[5]["drains"]["lightmap"]
+        self.assertEqual((lightmap["state"], lightmap["encoders"]), ("measured", 1))
+        self.assertAlmostEqual(gpu_ms(frames[5], "lightmap"), 0.5)
+        self.assertEqual(frames[6]["drains"]["total"]["state"], "none",
+                         "a frame encoder's unmarked passes are never a drain")
+        # Row 7: U = min(earliest(6) = 100.0, earliest(7) - 25 = 91.667) ms.
+        # The split-off encoder ends after U, so frame 5's whole drain was in
+        # flight; its marked encoder alone ends at 84.633 ms, inside (L, U].
+        charge = {c["frame"]: c for c in summary["over_budget_charge"]["frames"]}[7]
+        self.assertEqual(charge["in_flight_frames"], [5])
+        self.assertEqual(charge["in_flight_possible_frames"], [])
+        self.assertAlmostEqual(charge["own_plus_in_flight_ms"], 0.5)
+
+    def test_a_drain_reads_missing_only_when_its_command_buffer_has_no_gpu_row(self):
+        # The second encoder's rows alone reach the trace: the buffer has GPU
+        # rows, so the drain is measured from them.
+        trace = steady_trace(range(0, 3))
+        base = 3 * FRAME_NS
+        trace.encoder(3, "sh", base, unmarked_gpu=[(base + 1_000_000, 400_000, "GFX")])
+        trace.encoder(3, "frame", base + 200_000, [(base + 4_000_000, 1_000_000, "GFX")])
+        # Frame 4's SH buffer has no GPU row at all.
+        trace.frame(4, 4 * FRAME_NS, [("sh", [])])
+        trace.frame(5, 5 * FRAME_NS)
+        summary = reduce_synthetic(trace, [row(k) for k in range(6)])
+        frames = by_frame(summary)
+        self.assertAlmostEqual(gpu_ms(frames[3], "sh"), 0.4)
+        self.assertEqual(frames[4]["drains"]["sh"]["state"], "missing")
+        self.assertIn("1 marked command buffer(s) with no GPU row",
+                      frames[4]["drains"]["sh"]["reason"])
+
+    def test_only_encoding_rows_bound_a_frames_start(self):
+        # Frame 6's frame encoder buffer also has a 30 ms row of another event
+        # type. It is not encoding, so it never stretches latest(6): row 8's
+        # L stays at latest(6) = 6F + 0.05 ms = 100.05 ms.
+        trace = steady_trace(range(0, 6))
+        base = 6 * FRAME_NS
+        encoder = trace.encoder(6, "frame", base, [(base + 4_000_000, 1_000_000, "GFX")])
+        trace.buffer_event(encoder, base + 500, 30_000_000, "Scheduling")
+        for k in range(7, 10):
+            trace.frame(k, k * FRAME_NS)
+        rows = [row(k) for k in range(10)]
+        rows[8]["interval_us"] = 25_000
+        summary = reduce_synthetic(trace, rows)
+        charge = {c["frame"]: c for c in summary["over_budget_charge"]["frames"]}[8]
+        self.assertAlmostEqual(charge["start_lower_ns"] / 1e6, 100.05, places=5)
+
 
 class PartialTraceTests(unittest.TestCase):
     def setUp(self):
@@ -884,7 +965,7 @@ class OverBudgetTests(unittest.TestCase):
         text = R.render_text(summary)
         self.assertIn("possibly 7", text)
 
-    def test_a_late_frame_encoder_anchor_does_not_hide_an_in_flight_drain(self):
+    def test_a_late_frame_encoder_does_not_hide_an_in_flight_drain(self):
         # Frame 6 encodes its SH drain 0.5 ms after its start, but its frame
         # encoder only 9 ms after (as acquire under vsync can make it), and so
         # does frame 7. Frame 5's lightmap drain runs to 5F + 21 ms = 104.333
@@ -902,9 +983,9 @@ class OverBudgetTests(unittest.TestCase):
         rows = [row(k, interval_us=16_666) for k in range(9)]
         summary = reduce_synthetic(trace, rows, budget_ms=10.0)
         charge = self.charges(summary)[7]
-        # Anchored on F(7) = 125.667 ms, the old window opened at 109.0 ms,
-        # after the drain ended. U = min(earliest(6) = 100.5,
-        # earliest(7) - 16.666 = 109.0) = 100.5 ms < 104.333: in flight.
+        # U comes from frame 6's earliest row (100.5 ms), not its late frame
+        # encoder: U = min(earliest(6) = 100.5, earliest(7) - 16.666 = 109.0),
+        # so the drain ending at 104.333 ms is in flight.
         self.assertAlmostEqual(charge["start_upper_ns"] / 1e6, 100.5, places=5)
         self.assertAlmostEqual(charge["own_ms"], 0.4)
         self.assertEqual(charge["in_flight_frames"], [5])
@@ -928,6 +1009,25 @@ class OverBudgetTests(unittest.TestCase):
             "rows": 5, "row_frames": "6-10"}])
         text = R.render_text(summary)
         self.assertIn("frame 3's drain end is unknown: 5 row(s) (6-10)", text)
+
+    def test_an_unmatched_frame_that_admitted_items_blanks_later_in_flight_readings(self):
+        # Every row of frame 5 is missing from the trace, though the record
+        # says it admitted SH items: 5 is unmatched and 6 uncovered. Row 9's
+        # window starts in the covered stretch from 7, after frame 5, but
+        # frame 5's drain may still be on the GPU.
+        trace = steady_trace([k for k in range(0, 12) if k != 5])
+        rows = [row(k) for k in range(12)]
+        rows[5]["drain"]["sh_admitted_items"] = 3
+        rows[9]["interval_us"] = 25_000
+        summary = reduce_synthetic(trace, rows)
+        frames = by_frame(summary)
+        self.assertFalse(frames[5]["matched"])
+        charge = {c["frame"]: c for c in summary["over_budget_charge"]["frames"]}[9]
+        self.assertEqual(charge["in_flight_partial_frames"], [5])
+        self.assertIsNone(charge["own_plus_in_flight_ms"])
+        self.assertEqual(summary["over_budget_charge"]["in_flight_blanked_by"], [{
+            "cause": "end_unknown", "frame": 5, "text": "frame 5's drain end is unknown",
+            "rows": 1, "row_frames": "9"}])
 
     def test_own_reads_a_hold_rows_drain(self):
         trace = steady_trace(range(0, 7), {3: [lm(3)]})
@@ -1023,7 +1123,13 @@ class SiteTagTests(unittest.TestCase):
                                   ("Blit Command 0  -  :pr-frame 12 sh  ( Main", 12, "sh"),
                                   ("Blit Command 0  -  :pr-frame 3 frame  ( Main", 3, "frame"),
                                   ("Blit Command 0  -  :pr-frame 1136  ( Main", 1136, None),
-                                  ("Blit Command 0  -  :pr-frame 7 shadow", 7, None)):
+                                  # A site is its whole token: never a known
+                                  # site's prefix.
+                                  ("Blit Command 0  -  :pr-frame 7 shadow", 7, "shadow"),
+                                  ("Blit Command 0  -  :pr-frame 7 sh-mover  ( Main", 7,
+                                   "sh-mover"),
+                                  ("Blit Command 0  -  :pr-frame 7 lightmap.v2", 7,
+                                   "lightmap.v2")):
             match = R.MARK.search(text)
             self.assertEqual((int(match.group(1)), match.group(2)), (frame, site), text)
 
@@ -1051,14 +1157,40 @@ class SiteTagTests(unittest.TestCase):
         self.assertEqual(summary["unattributed"]["frames"], 0)
         self.assertEqual(summary["trace"]["marked_encoders"][R.OTHER], 0)
 
+    def test_an_unknown_site_is_counted_apart_and_never_blanks_a_drain(self):
+        # A newer engine's site this reducer does not know, even one whose
+        # name starts with a known site's.
+        trace = steady_trace(range(0, 5), {})
+        base = 5 * FRAME_NS
+        trace.encoder(5, "sh", base, [(base + 1_000_000, 500_000, "GFX")])
+        for offset, site in ((100_000, "sh-mover"), (150_000, "lightmap.v2")):
+            trace.encoder(5, "sh", base + offset, [(base + 2_000_000, 300_000, "GFX")],
+                          site=site, buffer_label=R.SIGNAL_LABEL)
+        trace.encoder(5, "frame", base + 300_000, [(base + 4_000_000, 1_000_000, "GFX")])
+        trace.frame(6, 6 * FRAME_NS)
+        summary = reduce_synthetic(trace, [row(k) for k in range(7)])
+        f = by_frame(summary)[5]
+        self.assertTrue(f["matched"])
+        self.assertIsNone(f["unattributed"])
+        self.assertEqual(f["drains"]["sh"]["state"], "measured")
+        self.assertEqual(f["drains"]["sh"]["encoders"], 1)
+        self.assertAlmostEqual(gpu_ms(f, "sh"), 0.5)
+        trace_block = summary["trace"]
+        self.assertEqual(trace_block["unknown_site_marks"], 2)
+        self.assertEqual(trace_block["unknown_sites"], {"sh-mover": 1, "lightmap.v2": 1})
+        self.assertEqual(trace_block["marked_encoders"][R.SH], 1)
+        self.assertIn("marks naming an unknown site: 2 (lightmap.v2 1, sh-mover 1)",
+                      R.render_text(summary))
+
     def test_an_old_mark_on_a_signal_buffer_makes_the_drain_missing_not_partial(self):
         trace = steady_trace(range(0, 5), {})
         base = 5 * FRAME_NS
         trace.encoder(5, "lightmap", base, [(base + 1_000_000, 300_000, "SDMA0"),
                                             (base + 1_200_000, 400_000, "GFX")],
-                      buffer_label=R.SIGNAL_LABEL)
-        trace.encoder(5, "sh", base + 100_000, [(base + 2_000_000, 500_000, "GFX")])
-        trace.encoder(5, "frame", base + 300_000, [(base + 4_000_000, 1_000_000, "GFX")])
+                      buffer_label=R.SIGNAL_LABEL, site=False)
+        trace.encoder(5, "sh", base + 100_000, [(base + 2_000_000, 500_000, "GFX")], site=False)
+        trace.encoder(5, "frame", base + 300_000, [(base + 4_000_000, 1_000_000, "GFX")],
+                      site=False)
         trace.frame(6, 6 * FRAME_NS)
         trace.frame(7, 7 * FRAME_NS)
         rows = [row(k) for k in range(8)]
@@ -1094,7 +1226,7 @@ class SiteTagTests(unittest.TestCase):
         trace = steady_trace(range(0, 2), {})
         base = 2 * FRAME_NS
         trace.encoder(2, "lightmap", base, [(base + 1_000_000, 600_000, "SDMA0")],
-                      buffer_label=R.SIGNAL_LABEL)
+                      buffer_label=R.SIGNAL_LABEL, site=False)
         trace.encoder(2, "frame", base + 300_000, [(base + 4_000_000, 1_000_000, "GFX")])
         for k in range(3, 9):
             trace.frame(k, k * FRAME_NS)

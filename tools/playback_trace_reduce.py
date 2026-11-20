@@ -4,9 +4,11 @@
 A playback run (`--camera-route`) writes a per-frame record
 (`postretro.camera_route_playback.v1`) and wraps each frame's drain and frame
 encoders in a `pr-frame <k> <site>` debug group, where k is the record row's
-`frame` and the site is `lightmap`, `sh` or `frame`. Marks from before the
-site was added read `pr-frame <k>`. This reducer joins the record with an
-`xctrace export` of the run's `metal-application-intervals` and
+`frame` and the site is `lightmap`, `sh` or `frame`. The `sh` site also marks
+the SH and mover-channel pool growth copies and carries the mover depth-tile
+flushes made at the SH drain, so all of them count as SH drain GPU time. Marks
+from before the site was added read `pr-frame <k>`. This reducer joins the
+record with an `xctrace export` of the run's `metal-application-intervals` and
 `metal-gpu-intervals` tables, and reports per frame and per run. See
 `context/lib/rendering_pipeline.md` §12 (GPU Pass Timing: Without timestamp
 support, Pin the GPU clock).
@@ -19,13 +21,26 @@ The join
   label names no encoder, so it joins no GPU row: it counts toward the
   frame's coverage and its frame encoder, never toward its drains. xctrace's
   own "Frame N" is never k.
+* Only "Encoding" rows (creation to commit, on the main thread) are command
+  buffer rows, when the export has an event-type column. The start bounds
+  below assume a command buffer row lies inside its frame's CPU work; a row of
+  another event type could run past the next frame's start.
 * A mark's site says what it marks. A mark with no site is classified by its
   command buffer's label: "Streamed Lightmap Drain", "Streamed SH Upload
   Copies" or "Frame Encoder". wgpu's Metal backend relabels the last command
   buffer of every queue submit "(wgpu internal) Signal", so an older mark on
-  such a buffer cannot be classified. The site wins over any label.
-* `metal-gpu-intervals` rows (any channel: SDMA0, GFX, ...) join to that
-  marked encoder by encoder id.
+  such a buffer cannot be classified. The site wins over any label. A site
+  the reducer does not know is its own kind, counted per run: never a drain,
+  and it never makes a drain read `missing`.
+* `metal-gpu-intervals` rows (any channel: SDMA0, GFX, ...) join a drain by
+  the marked encoder's command buffer id, so every encoder of a drain command
+  buffer counts: a mark covers only one encoder, and wgpu may split a drain's
+  buffer into several (a texture-init clear before a partial copy, a timestamp
+  write). A drain command buffer holds only that drain's work; the per-frame
+  upload copies submitted with it are a separate buffer. Every other mark,
+  the frame encoder's and an unattributed one's, joins its own encoder by
+  encoder id: a frame encoder's buffer also holds the frame's unmarked render
+  passes, and an unattributed mark's buffer may be that one.
 * Attribution is by mark only, never by time overlap: a drain recorded on
   frame k is frame k's, however late the GPU runs it, including after frame
   k + 1's work begins.
@@ -50,10 +65,10 @@ trace attached are not an error. A record with no matched frame at all is an
 error (exit 2), and so is a malformed record.
 
 Within a matched frame, a resource's drain GPU time reads `missing`, not
-zero, when one of its marked encoders has no GPU row (the trace ended before
-the GPU ran it) or when the record says the frame admitted items for that
-resource but the trace holds no encoder for it. Such frames leave the drain
-statistics and are counted.
+zero, when one of its marked command buffers has no GPU row (the trace ended
+before the GPU ran it) or when the record says the frame admitted items for
+that resource but the trace holds no encoder for it. Such frames leave the
+drain statistics and are counted.
 
 Unattributed work. An older mark that no label classifies is marked GPU work
 of frame k that may be either drain, so it makes the frame's lightmap, SH and
@@ -112,8 +127,9 @@ names each cause, when an earlier drain:
 * may have been in flight (its end lies in (L, U]);
 * was in flight but its GPU time is unknown: its frame is unmatched, has no
   record row, or holds unattributed work;
-* has an unknown end: an encoder with no GPU row, or admitted items with no
-  encoder. Such a drain may be in flight for every later window, so one
+* has an unknown end: a command buffer with no GPU row, or admitted items
+  with no encoder, on any record frame inside the trace's marked span, matched
+  or not. Such a drain may be in flight for every later window, so one
   dropped row can blank a long run; the per-run block counts the rows each
   cause blanked.
 
@@ -177,7 +193,10 @@ FRAME = "frame"
 # A mark with no site on a command buffer no label names: marked GPU work the
 # reducer cannot attribute to a drain or the frame encoder.
 OTHER = "unattributed"
+# A mark naming a site this reducer does not know: never a drain.
+UNKNOWN_SITE = "unknown_site"
 DRAINS = (LIGHTMAP, SH)
+SITE_KINDS = {LIGHTMAP: LIGHTMAP, SH: SH, FRAME: FRAME}
 KIND_LABELS = (
     (LIGHTMAP, "Streamed Lightmap Drain"),
     (SH, "Streamed SH Upload Copies"),
@@ -189,7 +208,8 @@ UNATTRIBUTED_REASON = "marked GPU work on a relabelled command buffer could not 
 UNCLASSIFIED_REASON = "marked GPU work on an unrecognised command buffer could not be attributed"
 
 # `pr-frame <k> <site>`; a mark from before the site was added has no site.
-MARK = re.compile(r"pr-frame (\d+)(?: (lightmap|sh|frame))?\b")
+# The site is the whole next token, so `sh-mover` is never read as `sh`.
+MARK = re.compile(r"pr-frame (\d+)(?: (\S+))?")
 SCHEMA_NAME = re.compile(r'<schema name="([^"]+)"')
 TIMESTAMP = re.compile(r"^\s*(\d+)(?:\.(\d+|N))?\s*$")
 READING = re.compile(r'"(Core Clock\(MHz\)|Temperature\(C\)|Device Utilization %)"=(\d+)')
@@ -315,7 +335,10 @@ def read_marks(handle):
 
     A mark's kind is its site when the mark names one, and otherwise the kind
     its command buffer's label (or its own) names. Each mark keeps its command
-    buffer row's span, the row's encoding from creation to commit."""
+    buffer row's span, the row's encoding from creation to commit. Only an
+    "Encoding" row is a command buffer row when the export has the event-type
+    column: the start bounds assume the row lies inside its frame's CPU
+    work."""
     parents = {}
     marked = []
     for row in iter_rows(handle):
@@ -324,7 +347,8 @@ def read_marks(handle):
         encoder = as_int(row.get("encoder-id"))
         start = as_int(row.get("start"))
         end = None if start is None else start + (as_int(row.get("duration")) or 0)
-        if encoder == ALL_ONES and cmdbuffer is not None and start is not None:
+        encoding = "event-type" not in row or as_label(row["event-type"]) == "Encoding"
+        if encoder == ALL_ONES and cmdbuffer is not None and start is not None and encoding:
             parents.setdefault(cmdbuffer, []).append((start, end, label))
         match = MARK.search(label)
         if match is None or start is None:
@@ -347,25 +371,37 @@ def read_marks(handle):
         mark["buffer_start"] = parent[0] if parent else None
         mark["buffer_end"] = parent[1] if parent else None
         # The site wins over any label: wgpu may have relabelled the buffer.
-        mark["kind"] = mark["site"] or classify(mark["label"], parent_label)
+        if mark["site"]:
+            mark["kind"] = SITE_KINDS.get(mark["site"], UNKNOWN_SITE)
+        else:
+            mark["kind"] = classify(mark["label"], parent_label)
         mark["relabelled"] = SIGNAL_LABEL in parent_label
         mark["command_buffer"] = short_label(parent_label or mark["label"])
     return marked
 
 
-def read_gpu(handle, encoders):
-    """GPU intervals (start, end, channel) per wanted encoder id."""
+def read_gpu(handle, encoders, buffers):
+    """GPU intervals (start, end, channel) per wanted join key: `("encoder",
+    id)` for each wanted encoder id and `("buffer", id)` for each wanted
+    command buffer id."""
     out = {}
     for row in iter_rows(handle):
         encoder = as_int(row.get("encoder-id"))
-        if encoder not in encoders:
+        cmdbuffer = as_int(row.get("cmdbuffer-id"))
+        keys = []
+        if encoder in encoders:
+            keys.append(("encoder", encoder))
+        if cmdbuffer in buffers:
+            keys.append(("buffer", cmdbuffer))
+        if not keys:
             continue
         start = as_int(row.get("start"))
         duration = as_int(row.get("duration"))
         if start is None or duration is None:
             continue
         channel = as_label(row.get("channel-name"))
-        out.setdefault(encoder, []).append((start, start + duration, channel))
+        for key in keys:
+            out.setdefault(key, []).append((start, start + duration, channel))
     return out
 
 
@@ -374,14 +410,24 @@ def names_encoder(mark):
     return mark["encoder"] not in (None, ALL_ONES)
 
 
+def join_key(mark):
+    """The GPU rows a mark joins. A drain mark joins its whole command buffer,
+    which holds only that drain; any other mark joins its own encoder."""
+    if mark["kind"] in DRAINS and mark["cmdbuffer"] is not None:
+        return ("buffer", mark["cmdbuffer"])
+    return ("encoder", mark["encoder"])
+
+
 def read_trace(app_path, gpu_path):
     with open_table(app_path) as handle:
         marks = read_marks(handle)
-    # Encoder ids join GPU rows; the all-ones id names a command buffer, never
-    # an encoder, so a mark on a command buffer row joins nothing.
-    encoders = {m["encoder"] for m in marks if names_encoder(m)}
+    # The all-ones id names a command buffer, never an encoder, so a mark on
+    # a command buffer row joins nothing.
+    joined = [m for m in marks if names_encoder(m)]
+    encoders = {m["encoder"] for m in joined}
+    buffers = {key[1] for key in map(join_key, joined) if key[0] == "buffer"}
     with open_table(gpu_path) as handle:
-        gpu = read_gpu(handle, encoders)
+        gpu = read_gpu(handle, encoders, buffers)
     return marks, gpu
 
 
@@ -591,7 +637,7 @@ def unattributed_work(marks, gpu):
     intervals = []
     no_row = 0
     for m in encs:
-        rows = gpu.get(m["encoder"])
+        rows = gpu.get(join_key(m))
         if rows:
             intervals += [(s, e) for s, e, _ in rows]
         else:
@@ -613,7 +659,8 @@ def frame_drains(frame, marks_of, gpu, drain):
     it makes both resources and the total read `missing`, never a partial
     number. Each missing entry carries `causes`: `no_encoder` (admitted
     items, no encoder) and `no_gpu_row` leave the drain's GPU end unknown;
-    `unattributed` leaves only its split unknown."""
+    `unattributed` leaves only its split unknown. A drain's GPU rows are its
+    marked command buffers' rows, every encoder of each."""
     marks = marks_of.get(frame, ())
     unattributed = unattributed_work(marks, gpu)
     out = {}
@@ -629,14 +676,14 @@ def frame_drains(frame, marks_of, gpu, drain):
             own_reasons.append(f"{resource}: {reasons[-1]}")
         intervals = []
         missing = 0
-        for m in encs:
-            rows = gpu.get(m["encoder"])
+        for key in sorted({join_key(m) for m in encs}):
+            rows = gpu.get(key)
             if not rows:
                 missing += 1
             else:
                 intervals += [(s, e) for s, e, _ in rows]
         if missing:
-            reasons.append(f"{missing} encoder(s) with no GPU row")
+            reasons.append(f"{missing} marked command buffer(s) with no GPU row")
             causes.append("no_gpu_row")
             own_reasons.append(f"{resource}: {reasons[-1]}")
         if unattributed is not None:
@@ -669,17 +716,18 @@ def frame_drains(frame, marks_of, gpu, drain):
 def drain_gpu_by_frame(marks_of, gpu):
     """Per trace frame with a marked drain or unattributed encoder: the latest
     end of their GPU rows (None when they have none), the drains' busy µs,
-    and how many of the encoders have no GPU row, so their end is unknown."""
+    and how many of their joins have no GPU row, so their end is unknown."""
     out = {}
     for frame, marks in marks_of.items():
-        drains = drain_encoders(marks)
-        encs = [(m, True) for m in drains] + [(m, False) for m in unattributed_encoders(marks)]
+        drains = {join_key(m) for m in drain_encoders(marks)}
+        others = {join_key(m) for m in unattributed_encoders(marks)}
+        encs = [(key, True) for key in sorted(drains)] + [(key, False) for key in sorted(others)]
         if not encs:
             continue
         intervals, busy = [], []
         no_row = 0
-        for m, is_drain in encs:
-            rows = gpu.get(m["encoder"])
+        for key, is_drain in encs:
+            rows = gpu.get(key)
             if rows:
                 intervals += [(s, e) for s, e, _ in rows]
                 if is_drain:
@@ -849,12 +897,16 @@ def reduce_run(record, marks, gpu, budget_ms=DEFAULT_BUDGET_MS, clock=None):
     drain_block = drain_summary(route_measured)
     charge = over_budget_charge(frames, route_measured, budget_ms * 1000.0, marks_of,
                                 frame_spans(marks), drain_gpu_by_frame(marks_of, gpu),
-                                is_covered)
+                                is_covered, unseen_drains(rows, marks_of))
 
     unmatched_route = [f["frame"] for f in route if not f["matched"]]
     unmatched_hold = [f["frame"] for f in frames if f["phase"] == "hold" and not f["matched"]]
     marks_unrecorded = sum(1 for f in frames if not f["marks_recorded"])
     trace_only = sorted(set(marks_of) - record_frames)
+    unknown_sites = {}
+    for m in marks:
+        if m["kind"] == UNKNOWN_SITE:
+            unknown_sites[m["site"]] = unknown_sites.get(m["site"], 0) + 1
 
     return {
         "record": {
@@ -879,6 +931,9 @@ def reduce_run(record, marks, gpu, budget_ms=DEFAULT_BUDGET_MS, clock=None):
             "marked_encoders": {k: sum(1 for m in marks if m["kind"] == k)
                                 for k in (LIGHTMAP, SH, FRAME, OTHER)},
             "marks_with_site": sum(1 for m in marks if m["site"]),
+            # Marks naming a site the reducer does not know, per site name.
+            "unknown_site_marks": sum(unknown_sites.values()),
+            "unknown_sites": unknown_sites,
             "marks": len(marks),
             "marked_frames_without_record_row": len(trace_only),
         },
@@ -916,6 +971,24 @@ def unattributed_summary(frames):
         # Frames with an unattributed encoder that has no GPU row.
         "gpu_missing": len(hit) - len(known),
     }
+
+
+def unseen_drains(rows, marks_of):
+    """Record frames inside the trace's marked span that admitted items for a
+    drain the trace holds no encoder for, matched or not: their drain ran,
+    but its GPU end is unknown."""
+    if not marks_of:
+        return set()
+    first, last = min(marks_of), max(marks_of)
+    out = set()
+    for row in rows:
+        frame = row["frame"]
+        if not first <= frame <= last:
+            continue
+        marks = marks_of.get(frame, ())
+        if any(admitted(row.get("drain"), r) and not drain_encoders(marks, r) for r in DRAINS):
+            out.add(frame)
+    return out
 
 
 def drain_category(frame, resource=None):
@@ -999,14 +1072,13 @@ CAUSE_TEXT = {
 
 
 def over_budget_charge(frames, route_measured, budget_us, marks_of, spans, drain_gpu,
-                       is_covered):
+                       is_covered, unseen):
     by_frame = {f["frame"]: f for f in frames}
     stretch = stretch_starts(frames, marks_of, is_covered)
-    # A drain's GPU end is unknown when an encoder has no GPU row, or when
-    # the record admitted items the trace holds no encoder for.
-    end_unknown = {j for j, d in drain_gpu.items() if d["no_gpu_row"]}
-    end_unknown |= {f["frame"] for f in frames if f["matched"] for r in DRAINS
-                    if "no_encoder" in f["drains"][r].get("causes", ())}
+    # A drain's GPU end is unknown when a joined command buffer or encoder has
+    # no GPU row, or when the record admitted items the trace holds no
+    # encoder for (`unseen`, matched frames or not).
+    end_unknown = {j for j, d in drain_gpu.items() if d["no_gpu_row"]} | set(unseen)
     candidates = sorted(set(drain_gpu) | end_unknown)
     frames_out = []
     for f in route_measured:
@@ -1175,7 +1247,7 @@ def route_span_ns(summary, gpu, marks):
         if m["frame"] in frames:
             starts.append(m["start"])
             ends.append(m["end"])
-            ends += [e for _, e, _ in gpu.get(m["encoder"], ())]
+            ends += [e for _, e, _ in gpu.get(join_key(m), ())]
     if not starts:
         return None
     return min(starts), max(ends)
@@ -1274,6 +1346,10 @@ def render_text(s, all_frames=False):
     if trace["marks_with_site"] < trace["marks"]:
         out.append(f"  marks naming their site: {trace['marks_with_site']} of {trace['marks']}; "
                    "a mark with none is attributed by its command buffer's label")
+    if trace["unknown_site_marks"]:
+        sites = ", ".join(f"{name} {n}" for name, n in sorted(trace["unknown_sites"].items()))
+        out.append(f"  marks naming an unknown site: {trace['unknown_site_marks']} ({sites}); "
+                   "counted apart, never a drain")
     if trace["marked_frames_without_record_row"]:
         out.append(f"  marked frames with no record row: {trace['marked_frames_without_record_row']}")
     out.append("")

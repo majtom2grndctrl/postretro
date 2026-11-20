@@ -7,32 +7,58 @@ use std::fmt::Write as _;
 
 use super::MarkSite;
 
-/// Each marked site and its name in the label, in label-slot order. The site
-/// rides in the label because wgpu's Metal backend relabels the last command
-/// buffer of every submit "(wgpu internal) Signal", so a trace reducer cannot
-/// always tell a drain from its command buffer's label.
+/// Each marked site and its name in the label; a site's position is its
+/// label slot. The site rides in the label because wgpu's Metal backend
+/// relabels the last command buffer of every submit "(wgpu internal) Signal",
+/// so a trace reducer cannot always tell a drain from its command buffer's
+/// label.
 const SITES: [(MarkSite, &str); 3] = [
     (MarkSite::LightmapDrain, "lightmap"),
     (MarkSite::ShUploads, "sh"),
     (MarkSite::Frame, "frame"),
 ];
 
-/// `site`'s index into [`SITES`] and the label slots.
-fn slot(site: MarkSite) -> usize {
-    match site {
-        MarkSite::LightmapDrain => 0,
-        MarkSite::ShUploads => 1,
-        MarkSite::Frame => 2,
+/// The longest label, `pr-frame <u64::MAX> <longest site>`: every label is
+/// sized to it up front, so no frame index reallocates one mid-route.
+const LABEL_CAPACITY: usize =
+    "pr-frame ".len() + (u64::MAX.ilog10() + 1) as usize + " ".len() + longest_site_name();
+
+const fn longest_site_name() -> usize {
+    let mut longest = 0;
+    let mut index = 0;
+    while index < SITES.len() {
+        if SITES[index].1.len() > longest {
+            longest = SITES[index].1.len();
+        }
+        index += 1;
     }
+    longest
+}
+
+/// `site`'s label slot: its position in [`SITES`].
+fn slot(site: MarkSite) -> usize {
+    SITES
+        .iter()
+        .position(|(listed, _)| *listed == site)
+        .expect("every mark site is listed in SITES")
 }
 
 /// The current playback frame's debug-group labels, one per marked site.
-/// Each is formatted into its own reused `String`, so a mark allocates
-/// nothing once the labels have grown to their longest index.
-#[derive(Debug, Default)]
+/// Each is formatted into its own `String`, sized at construction for the
+/// longest label, so a mark never allocates.
+#[derive(Debug)]
 pub(crate) struct FrameMark {
     labels: [String; SITES.len()],
     active: bool,
+}
+
+impl Default for FrameMark {
+    fn default() -> Self {
+        Self {
+            labels: std::array::from_fn(|_| String::with_capacity(LABEL_CAPACITY)),
+            active: false,
+        }
+    }
 }
 
 impl FrameMark {
@@ -79,28 +105,26 @@ mod tests {
         }
     }
 
+    // Regression: labels grew on frame 0 and reallocated at frame 1000,
+    // mid-route.
     #[test]
-    fn every_site_owns_its_label_slot() {
-        for (index, (site, _)) in SITES.iter().enumerate() {
-            assert_eq!(slot(*site), index, "{site:?}");
-        }
-    }
-
-    #[test]
-    fn frame_mark_reuses_its_label_storage_across_frames() {
+    fn frame_mark_reuses_its_label_storage_from_frame_zero_to_u64_max() {
         let mut mark = FrameMark::default();
-        mark.set(Some(u64::MAX));
         let storage = mark.labels.each_ref().map(|label| label.as_ptr());
         let capacity = mark.labels.each_ref().map(String::capacity);
-        for frame in 0..1_000 {
+        for frame in [0, 9, 10, 999, 1_000, u64::MAX] {
             mark.set(Some(frame));
+            assert_eq!(
+                mark.labels.each_ref().map(|label| label.as_ptr()),
+                storage,
+                "frame {frame}: no label reallocates"
+            );
+            assert_eq!(mark.labels.each_ref().map(String::capacity), capacity);
         }
         assert_eq!(
-            mark.labels.each_ref().map(|label| label.as_ptr()),
-            storage,
-            "no label reallocates"
+            mark.label(MarkSite::Frame),
+            Some("pr-frame 18446744073709551615 frame")
         );
-        assert_eq!(mark.labels.each_ref().map(String::capacity), capacity);
     }
 
     /// Marking brackets an encoder in a debug group; it never renames one,
@@ -120,6 +144,18 @@ mod tests {
             (
                 include_str!("../renderer_render_frame.rs"),
                 "label: Some(\"Frame Encoder\")",
+            ),
+            (
+                include_str!("../sh_streaming/gpu/growth.rs"),
+                "label: Some(\"Streamed SH Dense Atlas Growth Copy\")",
+            ),
+            (
+                include_str!("../sh_streaming/gpu/growth.rs"),
+                "label: Some(\"Streamed SH Sparse Pool Growth Copy\")",
+            ),
+            (
+                include_str!("../mover_channel/gpu.rs"),
+                "label: Some(\"Mover Probe Channel Pool Growth Copy\")",
             ),
         ] {
             assert!(source.contains(label), "{label}");

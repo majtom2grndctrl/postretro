@@ -13,7 +13,6 @@ pub enum Material {
     Metal,
     Concrete,
     Grate,
-    Neon,
     Glass,
     Wood,
     Default,
@@ -182,7 +181,6 @@ impl Material {
         match self {
             Material::Metal => 64.0,
             Material::Glass => 96.0,
-            Material::Neon => 32.0,
             Material::Wood => 16.0,
             Material::Concrete => 4.0,
             Material::Grate => 8.0,
@@ -194,9 +192,8 @@ impl Material {
     ///
     /// Depths are chosen against the aesthetic, not a measurement: cobblestone
     /// and pavement (`concrete`) reach the furthest because that is the look the
-    /// feature exists for; panel and plank seams are shallow; `glass` and
-    /// `neon` are flat because a relief on a light source or pane reads as a
-    /// defect.
+    /// feature exists for; panel and plank seams are shallow; `glass` is flat
+    /// because a relief on a pane reads as a defect.
     ///
     /// Every `max_steps` is sized for the signed span: the depth applies in
     /// each direction, so a full-range map spans twice its depth, and its
@@ -257,7 +254,7 @@ impl Material {
                 max_steps: 32,
                 fade_distance_meters: 10.0,
             },
-            Material::Glass | Material::Neon => SurfaceDepth::FLAT,
+            Material::Glass => SurfaceDepth::FLAT,
             Material::Default => SurfaceDepth {
                 depth_meters: 3.0,
                 quantize_levels: 3,
@@ -301,7 +298,7 @@ impl Material {
                 fade_distance_meters: 10.0,
             },
             // Flat by intent, not by omission.
-            Material::Glass | Material::Neon => SurfaceDepth::FLAT,
+            Material::Glass => SurfaceDepth::FLAT,
             // Unknown prefixes get a conservative carve rather than nothing, so
             // a modder's `_h.png` shows up without needing an engine change.
             Material::Default => SurfaceDepth {
@@ -318,8 +315,7 @@ impl Material {
     pub fn properties(self) -> MaterialProperties {
         match self {
             Material::Metal => MaterialProperties { ricochet: true },
-            Material::Neon
-            | Material::Concrete
+            Material::Concrete
             | Material::Grate
             | Material::Glass
             | Material::Wood
@@ -358,11 +354,10 @@ pub fn parse_prefix(texture_name: &str) -> &str {
 /// [`Material::Default`]. `tools/texture-tool` derives its default height
 /// terraces from the same prefixes; a test in this crate keeps the two tables
 /// in step.
-pub const MATERIAL_PREFIXES: [(&str, Material); 6] = [
+pub const MATERIAL_PREFIXES: [(&str, Material); 5] = [
     ("metal", Material::Metal),
     ("concrete", Material::Concrete),
     ("grate", Material::Grate),
-    ("neon", Material::Neon),
     ("glass", Material::Glass),
     ("wood", Material::Wood),
 ];
@@ -485,12 +480,6 @@ mod tests {
     }
 
     #[test]
-    fn derive_material_maps_neon_prefix() {
-        let mut warned = HashSet::new();
-        assert_eq!(derive_material("neon_sign_01", &mut warned), Material::Neon);
-    }
-
-    #[test]
     fn derive_material_maps_grate_prefix() {
         let mut warned = HashSet::new();
         assert_eq!(
@@ -533,7 +522,10 @@ mod tests {
             derive_material("Metal_floor_01", &mut warned),
             Material::Metal
         );
-        assert_eq!(derive_material("NEON_sign_01", &mut warned), Material::Neon);
+        assert_eq!(
+            derive_material("GLASS_pane_01", &mut warned),
+            Material::Glass
+        );
     }
 
     #[test]
@@ -629,7 +621,6 @@ mod tests {
             Material::Grate,
             Material::Wood,
             Material::Glass,
-            Material::Neon,
             Material::Default,
         ] {
             let meters = mat.surface_depth_meters();
@@ -671,11 +662,9 @@ mod tests {
     }
 
     #[test]
-    fn glass_and_neon_are_deliberately_flat() {
-        for mat in [Material::Glass, Material::Neon] {
-            assert_eq!(mat.surface_depth(), SurfaceDepth::FLAT);
-            assert!(!mat.surface_depth().is_enabled());
-        }
+    fn glass_is_deliberately_flat() {
+        assert_eq!(Material::Glass.surface_depth(), SurfaceDepth::FLAT);
+        assert!(!Material::Glass.surface_depth().is_enabled());
     }
 
     /// Both tables, not just the active one. The inactive table is invisible to
@@ -704,7 +693,6 @@ mod tests {
                 Material::Grate,
                 Material::Wood,
                 Material::Glass,
-                Material::Neon,
                 Material::Default,
             ] {
                 let depth = table(mat);
@@ -764,7 +752,6 @@ mod tests {
             Material::Grate,
             Material::Wood,
             Material::Glass,
-            Material::Neon,
             Material::Default,
         ] {
             let depth = mat.surface_depth();
@@ -807,7 +794,6 @@ mod tests {
     #[test]
     fn non_metal_materials_do_not_ricochet() {
         for mat in [
-            Material::Neon,
             Material::Concrete,
             Material::Grate,
             Material::Glass,

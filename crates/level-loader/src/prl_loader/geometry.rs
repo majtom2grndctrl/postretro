@@ -143,3 +143,33 @@ pub(super) fn decode_geometry(container: &PrlContainer) -> Result<GeometryDecode
         emissive,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use log::Level;
+    use postretro_render_data::material::Material;
+    use postretro_test_log_capture::LogCapture;
+
+    use super::derive_material_with_warning;
+
+    // The `neon` prefix retired: a former `neon_` face is an unknown prefix,
+    // warned once however many faces carry it.
+    #[test]
+    fn a_former_neon_face_derives_default_and_warns_once() {
+        let capture = LogCapture::start();
+        let mut warned = HashSet::new();
+        for name in [
+            "neon/neon_glow_panel",
+            "neon/neon_dim_panel",
+            "neon/neon_glow_panel",
+        ] {
+            assert_eq!(
+                derive_material_with_warning(name, &mut warned),
+                Material::Default
+            );
+        }
+        capture.assert_logged_once(Level::Warn, "Unknown prefix 'neon'");
+    }
+}

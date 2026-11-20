@@ -241,3 +241,54 @@ pub(super) fn predict_models(
 ) -> Vec<String> {
     predict_level_models(map_entities, inputs)
 }
+
+#[cfg(test)]
+mod material_table_tests {
+    use log::Level;
+    use postretro_level_format::emissive::EmissiveSection;
+    use postretro_render_cpu::material_plan::MaterialUniformPlan;
+    use postretro_render_cpu::surface_depth::{
+        SurfaceDepthQuality, SurfaceRelief, SurfaceReliefLevels,
+    };
+    use postretro_render_data::material::Material;
+    use postretro_test_log_capture::LogCapture;
+
+    use super::level_texture_materials;
+
+    // The `neon` prefix retired: a name still carrying it is an unknown prefix
+    // like any other, warned once per prefix however many textures share it.
+    #[test]
+    fn a_former_neon_name_derives_default_and_warns_once() {
+        let names = vec![
+            "neon/neon_glow_panel".to_owned(),
+            "neon/neon_dim_panel".to_owned(),
+        ];
+        let capture = LogCapture::start();
+        let materials = level_texture_materials(&names, &EmissiveSection::dark(names.len()));
+        assert!(
+            materials.iter().all(|m| m.material == Material::Default),
+            "{materials:?}",
+        );
+        capture.assert_logged_once(Level::Warn, "Unknown prefix 'neon'");
+    }
+
+    // With an `_h` map a former `neon_` texture carves as Default does; the
+    // prefix's old flat depth is gone.
+    #[test]
+    fn a_former_neon_texture_with_a_height_map_carves_as_default() {
+        let names = vec!["neon/neon_panel".to_owned()];
+        let _capture = LogCapture::start();
+        let material = level_texture_materials(&names, &EmissiveSection::dark(1))[0].material;
+        let relief = SurfaceReliefLevels::splat(SurfaceRelief::FULL_RANGE);
+        let plan = |material| MaterialUniformPlan::new(material, 0.0, true, 11, relief);
+        let carved = plan(material).surface_depth_uniform(SurfaceDepthQuality::On);
+        assert_eq!(
+            carved,
+            plan(Material::Default).surface_depth_uniform(SurfaceDepthQuality::On)
+        );
+        assert_ne!(
+            carved,
+            postretro_render_cpu::surface_depth::SurfaceDepthUniform::FLAT
+        );
+    }
+}

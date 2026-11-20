@@ -344,7 +344,7 @@ mod tests {
         let names = vec![
             "panels/sign".to_string(),
             "metal_sign".to_string(),
-            "neon_sign".to_string(),
+            "glass_sign".to_string(),
         ];
         let keys = names.iter().map(|name| (name.clone(), [2u8; 32])).collect();
         let strength = |strength| EmissiveTexture {

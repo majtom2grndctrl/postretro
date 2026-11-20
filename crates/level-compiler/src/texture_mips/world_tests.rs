@@ -276,10 +276,10 @@ fn material_stage_aliases_preserve_name_order_and_share_one_glow_mean() {
 #[test]
 fn material_stage_rebakes_rejected_sidecars_before_deriving_stats() {
     let fixture = Fixture::new();
-    fixture.png("panels/neon_panel", 4, 4, |x, _| {
+    fixture.png("panels/glow_panel", 4, 4, |x, _| {
         [255, (x * 60) as u8, 16, 255]
     });
-    let names = vec!["panels/neon_panel".to_owned()];
+    let names = vec!["panels/glow_panel".to_owned()];
     let (keys, expected, _) = fixture.bake(&names);
     assert!(expected[0].snapped_mean().is_some());
     let path = fixture
@@ -327,13 +327,13 @@ fn material_stage_rebakes_rejected_sidecars_before_deriving_stats() {
 #[test]
 fn material_stage_repairs_stats_incompatible_cached_emissive_dimensions() {
     let fixture = Fixture::new();
-    fixture.png("panels/neon_panel", 4, 2, |x, y| {
+    fixture.png("panels/glow_panel", 4, 2, |x, y| {
         [255, (x * 60) as u8, (y * 100) as u8, 255]
     });
-    fixture.png("panels/neon_panel_e", 4, 2, |x, _| {
+    fixture.png("panels/glow_panel_e", 4, 2, |x, _| {
         if x == 0 { [255; 4] } else { [0, 0, 0, 255] }
     });
-    let names = vec!["panels/neon_panel".to_owned()];
+    let names = vec!["panels/glow_panel".to_owned()];
     let (keys, expected, _) = fixture.bake(&names);
     let path = fixture
         .cache
@@ -373,13 +373,13 @@ fn material_stage_repairs_stats_incompatible_cached_emissive_dimensions() {
 fn material_stage_repairs_cached_sidecars_missing_a_sourced_colour_slot() {
     for (dropped, bit) in [(3, PrmSlots::EMISSIVE), (0, PrmSlots::DIFFUSE)] {
         let fixture = Fixture::new();
-        fixture.png("panels/neon_panel", 4, 2, |x, y| {
+        fixture.png("panels/glow_panel", 4, 2, |x, y| {
             [255, (x * 60) as u8, (y * 100) as u8, 255]
         });
-        fixture.png("panels/neon_panel_e", 4, 2, |x, _| {
+        fixture.png("panels/glow_panel_e", 4, 2, |x, _| {
             if x == 0 { [255; 4] } else { [0, 0, 0, 255] }
         });
-        let names = vec!["panels/neon_panel".to_owned()];
+        let names = vec!["panels/glow_panel".to_owned()];
         let (keys, expected, _) = fixture.bake(&names);
         assert!(expected[0].snapped_mean().is_some());
         let path = fixture
@@ -405,7 +405,7 @@ fn material_stage_repairs_cached_sidecars_missing_a_sourced_colour_slot() {
         let ((repaired_keys, repaired, _), observed) = metrics::observe(|| fixture.bake(&names));
         capture.assert_logged_once(
             Level::Debug,
-            "rebaking cached sidecar for 'panels/neon_panel'",
+            "rebaking cached sidecar for 'panels/glow_panel'",
         );
         assert_eq!(observed.decode_attempts.len(), 2, "{bit:?}");
         assert!(observed.decode_attempts.values().all(|&count| count == 1));
@@ -444,13 +444,13 @@ fn material_stage_empty_missing_and_orphan_sources_keep_indexed_grey_records() {
 fn material_stage_propagates_source_decode_and_dimension_failures_without_sidecars() {
     for mismatch in [false, true] {
         let fixture = Fixture::new();
-        let names = vec!["panels/neon_panel".to_owned()];
+        let names = vec!["panels/glow_panel".to_owned()];
         if mismatch {
-            fixture.png("panels/neon_panel", 2, 2, |_, _| [255; 4]);
-            fixture.png("panels/neon_panel_e", 1, 2, |_, _| [255; 4]);
+            fixture.png("panels/glow_panel", 2, 2, |_, _| [255; 4]);
+            fixture.png("panels/glow_panel_e", 1, 2, |_, _| [255; 4]);
         } else {
             std::fs::create_dir_all(fixture.textures.join("panels")).unwrap();
-            std::fs::write(fixture.textures.join("panels/neon_panel.png"), b"not a PNG").unwrap();
+            std::fs::write(fixture.textures.join("panels/glow_panel.png"), b"not a PNG").unwrap();
         }
         for collect_stats in [true, false] {
             let (result, observed) = metrics::observe(|| {
@@ -656,7 +656,7 @@ fn material_stage_emissive_textures_exclude_only_masked_texels_and_fall_back_to_
 fn material_stage_texel_lifetimes_stay_with_one_texture_and_return_fixed_records() {
     let fixture = Fixture::new();
     let names: Vec<_> = (0..32)
-        .map(|index| format!("panels/neon_{index}"))
+        .map(|index| format!("panels/glow_{index}"))
         .collect();
     // Distinct content per name: every cold bake decodes its own sources.
     for (index, name) in names.iter().enumerate() {

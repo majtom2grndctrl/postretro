@@ -1928,15 +1928,19 @@ mod tests {
     fn bake_emissive_sibling_writes_srgb_fourth_slot_and_changes_bundle_hash() {
         let root = unique_temp_dir("emissive-slot");
         let texture_root = root.join("textures");
-        let collection = texture_root.join("neon");
+        let collection = texture_root.join("signs");
         let cache_root = root.join("cache");
         std::fs::create_dir_all(&collection).unwrap();
-        std::fs::write(collection.join("neon_panel.png"), png_bytes(4, 4)).unwrap();
-        std::fs::write(collection.join("neon_panel_e.png"), png_bytes(4, 4)).unwrap();
+        std::fs::write(collection.join("glow_panel.png"), png_bytes(4, 4)).unwrap();
+        std::fs::write(collection.join("glow_panel_e.png"), png_bytes(4, 4)).unwrap();
 
-        let keys = bake_texture_mips(&["neon/neon_panel".to_string()], &texture_root, &cache_root)
-            .unwrap();
-        let key = keys["neon/neon_panel"];
+        let keys = bake_texture_mips(
+            &["signs/glow_panel".to_string()],
+            &texture_root,
+            &cache_root,
+        )
+        .unwrap();
+        let key = keys["signs/glow_panel"];
         let bytes = std::fs::read(cache_root.join(format!("{}.prm", cache_filename_for_key(&key))))
             .unwrap();
         let (header, slots) = PrmFile::from_bytes_partial(&bytes);
@@ -1947,8 +1951,8 @@ mod tests {
             PrmFormat::Rgba8UnormSrgb,
         );
 
-        let diffuse = std::fs::read(collection.join("neon_panel.png")).unwrap();
-        let emissive = std::fs::read(collection.join("neon_panel_e.png")).unwrap();
+        let diffuse = std::fs::read(collection.join("glow_panel.png")).unwrap();
+        let emissive = std::fs::read(collection.join("glow_panel_e.png")).unwrap();
         assert_ne!(
             header.bundle_hash,
             bundle_hash_for(Some(&diffuse), None, None, None, None),
@@ -2065,13 +2069,13 @@ mod tests {
     fn emissive_dimensions_must_match_diffuse_at_compile_time() {
         let root = unique_temp_dir("emissive-dimension-mismatch");
         let texture_root = root.join("textures");
-        let collection = texture_root.join("neon");
+        let collection = texture_root.join("signs");
         let cache_root = root.join("cache");
         std::fs::create_dir_all(&collection).unwrap();
         std::fs::write(collection.join("panel.png"), png_bytes(4, 4)).unwrap();
         std::fs::write(collection.join("panel_e.png"), png_bytes(2, 4)).unwrap();
 
-        let error = bake_texture_mips(&["neon/panel".to_string()], &texture_root, &cache_root)
+        let error = bake_texture_mips(&["signs/panel".to_string()], &texture_root, &cache_root)
             .expect_err("mismatched emissive dimensions must fail the map build");
         let message = error.to_string();
         assert!(message.contains("panel_e.png"));

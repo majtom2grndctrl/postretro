@@ -20,13 +20,13 @@ fn texture_tables_set_emissive_silently() {
     let parsed = parse(
         "# Glow strengths\n\
          \"inline/sign\" = { emissive = 0 }\n\
-         [\"neon/neon_glow_panel\"]\n\
+         [\"neon/glow_panel\"]\n\
          emissive = 4.0\n\
          \n\
          [\"signs/bar\"]\n\
          emissive = 2\n",
     );
-    assert_eq!(emissive(&parsed, "neon/neon_glow_panel"), Some(4.0));
+    assert_eq!(emissive(&parsed, "neon/glow_panel"), Some(4.0));
     assert_eq!(
         emissive(&parsed, "signs/bar"),
         Some(2.0),

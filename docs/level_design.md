@@ -131,7 +131,7 @@ Radiates light in all directions from a single point.
 
 **Static vs. dynamic:** By default, lights are baked into the lightmap and indirect lighting volume at compile time — they're essentially free at runtime and cast soft baked shadows (penumbra width controlled by `_light_size`/`_angular_diameter`; `0` gives the crispest edge the lightmap allows, about one texel wide, and a finer lightmap density (worldspawn `_lightmap_density`, or `--lightmap-density`) makes it crisper still). Set `_dynamic 1` if you need a light to move, change intensity during play, or be spawned by a script.
 
-**Bounce colour.** Baked indirect light takes each static-world texture's average diffuse colour, so repainting a texture changes the colour it spills onto its surroundings. A texel "renders as glow" when its `_e` (emissive) map has non-zero colour there and the texture's name prefix gives it emissive strength, as `neon_` does (see Material System under Textures); glow texels are left out when non-glowing texels remain, and a fully glowing texture uses its full average. A face with no diffuse texture bounces neutral mid-grey. Only static world faces bounce colour: movers, fluids and models do not. Emissive textures still need a separate light entity to light a scene.
+**Bounce colour.** Baked indirect light takes each static-world texture's average diffuse colour, so repainting a texture changes the colour it spills onto its surroundings. A texel "renders as glow" when the texture has an `_e` (emissive) map with non-zero colour there, whatever its glow strength (see Emissive Maps under Textures); glow texels are left out when non-glowing texels remain, and a fully glowing texture uses its full average. A face with no diffuse texture bounces neutral mid-grey. Only static world faces bounce colour: movers, fluids and models do not. Emissive textures still need a separate light entity to light a scene.
 
 **Bounce fill.** `_bounce_fill` on `worldspawn` sets how much light keeps bouncing after its first bounce off a surface, from `0` to `1` (default `1.0`). At `0` the baked indirect light is a single bounce: light that has bounced once off a lit surface still spills through openings, but a room reachable only by light bouncing twice or more stays dark. At `1` it is the full physical fill, so light reflected out of a lit room carries on into the rooms around it; values between blend the two. It is a map key, not a compiler flag, so the look travels with the map. A value outside `0`–`1`, or one that is not a number, warns and uses the default.
 
@@ -810,11 +810,12 @@ The engine reads the first part of a texture name (up to the first `_`) to decid
 | `metal` | Metal |
 | `concrete` | Concrete |
 | `grate` | Grate |
-| `neon` | Neon |
 | `glass` | Glass |
 | `wood` | Wood |
 
 If the engine doesn't recognize a prefix, it falls back to a default material and logs a warning.
+
+The prefix never decides how strongly a texture glows: that is its `materials.toml` entry (see Emissive Maps below).
 
 ### Specular Maps
 
@@ -870,7 +871,7 @@ Depth character comes from the **material prefix** — the same first-token-befo
 | `grate` | Moderate |
 | `wood` | Shallow (same as `metal`) — plank gaps |
 | `metal` | Shallow — panel seams and rivets |
-| `glass`, `neon` | **Flat.** Deliberately |
+| `glass` | **Flat.** Deliberately |
 | anything else | Moderate, so a `_h.png` on an unrecognized prefix still shows up |
 
 The compiler does not know about prefixes — it bakes any `_h.png` it finds. So a `glass_*_h.png` compiles cleanly, makes that material's compiled surface texture twice the size it needed to be, and is then ignored at render time. Don't ship one.
@@ -911,6 +912,48 @@ cargo run --release --manifest-path tools/texture-tool/Cargo.toml -- \
 #### The player's on/off setting
 
 Players get a **SURFACE DEPTH** setting in the graphics options: **Off** or **On**, defaulting to **On**. `On` is the full effect. `Off` renders exactly as the engine did before the feature existed and skips the per-pixel march — it is there for machines that can't afford it. There is no middle setting. Author for `On`, but don't build a room whose readability depends on it — someone will be playing with it off.
+
+### Emissive Maps
+
+A `{diffuse}_e.png` beside a texture makes it glow: the forward pass adds the map's colour, times the texture's glow strength, on top of the lit surface. It must be the same resolution as the diffuse.
+
+- **Format:** RGB colour PNG, authored as ordinary sRGB colour. Black means no glow. Keep alpha opaque; it is reserved.
+- **Where:** world brushes, movers and fluids glow. Models do not; they load only their diffuse.
+- **Effect:** self-illumination only. Glow lights nothing around it — place a light entity for that — but bright glow blooms. A glowing pixel blooms once its linear luminance (`_e` colour × strength) passes `1.0`.
+
+Example: `sign.png` → diffuse; `sign_e.png` → glow colour.
+
+`tools/gen_emissive.py` makes a starting `_e` from a diffuse, keeping only the bright texels. Every texture takes the same default cutoff (`0.75` luminance); pass `--cutoff` to keep more of a sign's pattern:
+
+```bash
+uv venv && source .venv/bin/activate && uv pip install Pillow
+python3 tools/gen_emissive.py --input <content-root>/textures/signs --cutoff 0.35
+```
+
+#### Glow strength: `materials.toml`
+
+A texture's glow strength is content, set in one file per mod: `content/<mod>/materials.toml`, beside the mod's `textures/` and `maps/`. Only the map compiler reads it; recompile the map after editing it.
+
+```toml
+# Keys are texture names as TrenchBroom shows them: "collection/name".
+["signs/bar_sign"]
+emissive = 4.0
+
+# An inline table works too.
+"signs/exit" = { emissive = 2 }
+```
+
+- **Defaults:** a texture with an `_e` map and no entry glows at `1.0`. A texture with no `_e` map glows at `0`, whatever its entry says.
+- **Keys:** match texture names as the compiler does: case does not matter, `\` reads as `/`, and a leading `textures/` is ignored. Two keys that name the same texture warn once, and the later one wins.
+- **Values:** `emissive` is a number. A negative value reads `0`; a value above `64` reads `64`; each warns.
+- **Mistakes never stop the compile.** Each warns, naming the file and line: a syntax error (every texture takes its default), an unknown key (ignored), a value that is not a number (that texture takes its default), and an entry for a texture with no `_e` map (ignored).
+
+**Migrating `neon_` textures.** Older builds gave every `neon_`-prefixed texture a glow strength of `4.0`; the prefix is gone, and a former `neon_` name now reads as an unknown prefix. `tools/migrate_neon_prefix.py` keeps those looks: it renames each `neon_x` texture and its sibling maps (`neon_x_e`, `_s`, `_n`, `_h`) to `x`, rewrites the references in your maps, and writes `emissive = 4.0` into `materials.toml` for each one with an `_e` map. It lists what it would do and writes nothing unless you pass `--apply`. It refuses, writing nothing, on a name collision or when the new name would start with another material's prefix (`neon_metal_x`), so rename those by hand. It needs Python 3.11 or later and nothing else.
+
+```bash
+python3 tools/migrate_neon_prefix.py content/<mod>
+python3 tools/migrate_neon_prefix.py content/<mod> --apply
+```
 
 ### Model Texture Sidecars
 

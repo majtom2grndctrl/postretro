@@ -555,8 +555,6 @@ mod tests {
         PlayerMovementDescriptor {
             sounds: None,
             knockback: Default::default(),
-            swim: None,
-            vault: None,
             capsule: CapsuleParams {
                 radius: 0.35,
                 half_height: 0.9,

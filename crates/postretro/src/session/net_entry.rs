@@ -363,8 +363,10 @@ mod tests {
                 let relative = path
                     .strip_prefix(&root)
                     .unwrap()
-                    .to_string_lossy()
-                    .replace('\\', "/");
+                    .components()
+                    .map(|part| part.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/");
                 // Test-only modules: their files, fixtures and test dirs.
                 if relative.contains("test") || relative.contains("fixture") {
                     continue;

@@ -166,6 +166,8 @@ fn run_headless_inner(
         environment_fluids.names(),
     );
     let mut fog_volume_bridge = FogVolumeBridge::new();
+    let mut emissive_volume_bridge =
+        crate::scripting_systems::emissive_volume_bridge::EmissiveVolumeBridge::new();
     // Trigger volumes are populated for parity with the windowed install, but the
     // tick loop passes no `TriggerTickContext` to `simulate_tick`, so the trigger
     // system never evaluates them headless (declared out-of-frame in the dump).
@@ -195,6 +197,7 @@ fn run_headless_inner(
             active_level_tags: &active_level_tags,
             nav_graph: nav_graph.as_ref(),
             fog_volume_bridge: &mut fog_volume_bridge,
+            emissive_volume_bridge: &mut emissive_volume_bridge,
             trigger_volume_bridge: &mut trigger_volume_bridge,
             classname_dispatch: &session.classname_dispatch,
             script_runtime: &session.scripting.script_runtime,

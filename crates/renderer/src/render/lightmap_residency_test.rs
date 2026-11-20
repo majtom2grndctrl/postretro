@@ -229,6 +229,8 @@ fn offscreen_renderer_meter_is_empty_with_no_active_set() {
         let geometry = crate::render::LevelGeometry {
             vertices: &[],
             vertex_spec_owners: &[],
+            vertex_emissive_volumes: &[],
+            emissive_volumes: &[],
             indices: &[],
             bvh: &empty_bvh,
             lights: &[],

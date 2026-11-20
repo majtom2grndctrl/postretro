@@ -29,6 +29,8 @@ use crate::render::residency::{ResidencyAllocation, ResidencyAllocationState, te
 use crate::render::{LIGHTMAP_SHADOWMASK, LIGHTMAP_STATIC_DIRECTION, LIGHTMAP_STATIC_IRRADIANCE};
 
 #[cfg(test)]
+pub(crate) use bindings::BIND_EMISSIVE_VOLUME_TABLE;
+#[cfg(test)]
 pub(crate) use bindings::animated_block_table_bytes;
 use bindings::{ANIMATED_BLOCK_TABLE_BYTES, BIND_BLOCK_TABLE, Group4Bindings};
 pub(crate) use bindings::{
@@ -124,6 +126,7 @@ impl LightmapResources {
         animated_atlas_view: &wgpu::TextureView,
         animated_direction_view: &wgpu::TextureView,
         animated_block_table: &[u8],
+        emissive_volume_table: &wgpu::Buffer,
         generation_floor: u64,
     ) -> Self {
         debug_assert_eq!(animated_block_table.len(), ANIMATED_BLOCK_TABLE_BYTES);
@@ -156,6 +159,7 @@ impl LightmapResources {
                 contents: animated_block_table,
                 usage: wgpu::BufferUsages::UNIFORM,
             }),
+            emissive_volume_table: emissive_volume_table.clone(),
         };
 
         let mut stream = None;

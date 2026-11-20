@@ -148,6 +148,7 @@ pub(super) fn install_lightmap(
     geometry: &LevelGeometry<'_>,
     gpu_lighting_payloads: postretro_level_loader::GpuLightingPayloads,
     plan: BuiltLightmapFamily,
+    emissive_volume_table: &wgpu::Buffer,
     generation_floor: u64,
 ) -> LevelLightmapFamily {
     let BuiltLightmapFamily {
@@ -169,6 +170,7 @@ pub(super) fn install_lightmap(
         &animated_lightmap.forward_view,
         &animated_lightmap.direction_forward_view,
         &animated_block_table,
+        emissive_volume_table,
         // A reload's first drain must not accept a previous level's
         // generation: the set reserves from the renderer-wide floor.
         generation_floor,

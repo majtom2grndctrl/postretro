@@ -834,6 +834,7 @@ pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
         ComponentKind::GhostLink => postretro_net::wire::COMPONENT_KIND_GHOST_LINK,
         ComponentKind::DefenseLayers => postretro_net::wire::COMPONENT_KIND_DEFENSE_LAYERS,
         ComponentKind::AttackPool => postretro_net::wire::COMPONENT_KIND_ATTACK_POOL,
+        ComponentKind::EmissiveVolume => postretro_net::wire::COMPONENT_KIND_EMISSIVE_VOLUME,
     }
 }
 
@@ -7374,7 +7375,8 @@ mod tests {
                 ComponentKind::ProjectileTrap => Some(ComponentKind::GhostLink),
                 ComponentKind::GhostLink => Some(ComponentKind::DefenseLayers),
                 ComponentKind::DefenseLayers => Some(ComponentKind::AttackPool),
-                ComponentKind::AttackPool => None,
+                ComponentKind::AttackPool => Some(ComponentKind::EmissiveVolume),
+                ComponentKind::EmissiveVolume => None,
             }
         }
 

@@ -306,6 +306,13 @@ fn finalize_lighting(
             .as_ref()
             .map(|index| (index.owners.as_slice(), index.mask_offsets.as_slice())),
     );
+    let vertex_emissive_volumes = crate::prl_emissive_stream::build_vertex_emissive_volumes(
+        geometry.vertices.len(),
+        &geometry.indices,
+        &spatial.bvh.leaves,
+        geometry.face_meta.len(),
+        &geometry.emissive,
+    )?;
     Ok(FinalLighting {
         lights,
         light_influences,
@@ -331,6 +338,7 @@ fn finalize_lighting(
         entity_shadow_lights,
         shadowmask_atlas,
         vertex_spec_owners,
+        vertex_emissive_volumes,
         gpu_lighting_payloads,
         lightmap_storage,
         cluster_directory,
@@ -441,6 +449,7 @@ fn assemble_world(
         entity_shadow_lights,
         shadowmask_atlas,
         vertex_spec_owners,
+        vertex_emissive_volumes,
         gpu_lighting_payloads,
         lightmap_storage,
         cluster_directory,
@@ -483,6 +492,7 @@ fn assemble_world(
         entity_shadow_lights,
         shadowmask_atlas,
         vertex_spec_owners,
+        vertex_emissive_volumes,
         gpu_lighting_payloads,
         lightmap_storage,
         data_script,

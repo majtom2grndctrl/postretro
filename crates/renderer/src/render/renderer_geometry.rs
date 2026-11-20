@@ -138,6 +138,8 @@ pub fn level_world_to_geometry<'a>(
     LevelGeometry {
         vertices: &world.vertices,
         vertex_spec_owners: &world.vertex_spec_owners,
+        vertex_emissive_volumes: &world.vertex_emissive_volumes,
+        emissive_volumes: &world.emissive.volumes,
         indices: &world.indices,
         bvh: &world.bvh,
         lights: &world.lights,

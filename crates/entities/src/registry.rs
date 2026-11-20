@@ -20,6 +20,7 @@ use crate::components::billboard_emitter::BillboardEmitterComponent;
 use crate::components::brain::BrainComponent;
 use crate::components::defense_layers::DefenseLayersComponent;
 use crate::components::deferred_effect::DeferredEffectComponent;
+use crate::components::emissive_volume::EmissiveVolumeComponent;
 use crate::components::entity_state::EntityStateComponent;
 use crate::components::fog_volume::FogAnimation;
 use crate::components::ghost_link::GhostLinkComponent;
@@ -181,6 +182,10 @@ pub enum ComponentKind {
     /// state. Host-owned and never replicated; scripts address it through
     /// member handles.
     AttackPool = 28,
+    /// Map-authored emissive volume: authored glow range plus scripted
+    /// brightness, colour and animation. Scripts address it through member
+    /// handles and the `setEmissive*` primitives.
+    EmissiveVolume = 29,
 }
 
 impl ComponentKind {
@@ -219,6 +224,7 @@ impl ComponentKind {
             ComponentKind::GhostLink,
             ComponentKind::DefenseLayers,
             ComponentKind::AttackPool,
+            ComponentKind::EmissiveVolume,
         ];
         VARIANTS.len()
     };
@@ -297,6 +303,7 @@ pub enum ComponentValue {
     GhostLink(GhostLinkComponent),
     DefenseLayers(DefenseLayersComponent),
     AttackPool(AttackPoolComponent),
+    EmissiveVolume(EmissiveVolumeComponent),
 }
 
 impl ComponentValue {
@@ -331,6 +338,7 @@ impl ComponentValue {
             ComponentValue::GhostLink(_) => ComponentKind::GhostLink,
             ComponentValue::DefenseLayers(_) => ComponentKind::DefenseLayers,
             ComponentValue::AttackPool(_) => ComponentKind::AttackPool,
+            ComponentValue::EmissiveVolume(_) => ComponentKind::EmissiveVolume,
         }
     }
 }

@@ -10,6 +10,8 @@ fn geometry<'a>(
     crate::render::LevelGeometry {
         vertices: &[],
         vertex_spec_owners: &[],
+        vertex_emissive_volumes: &[],
+        emissive_volumes: &[],
         indices: &[],
         bvh,
         lights: &[],

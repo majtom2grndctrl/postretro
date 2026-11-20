@@ -2122,6 +2122,20 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         let point_bytes = session.fog_volume_bridge.update_points(&all_lights);
         renderer.upload_fog_points(point_bytes);
 
+        // Emissive volume bridge — after the script drain, before render, so
+        // a brightness or colour written this frame presents this frame. Only
+        // entries that changed are sent; a static frame sends nothing. A
+        // renderer with no level keeps them pending for the next frame.
+        {
+            let registry = script_ctx.registry.borrow();
+            let bridge = &mut session.emissive_volume_bridge;
+            bridge.update(&registry);
+            let upload = bridge.pending_upload();
+            if !upload.runs.is_empty() && renderer.upload_emissive_volume_table(upload) {
+                bridge.mark_uploaded();
+            }
+        }
+
         renderer
             .set_planar_reflection_view(app.planar_render.camera(), app.planar_render.visible());
         renderer.set_planar_mirror_light_reach(app.planar_render.mirror_light_cell_aabbs());

@@ -98,6 +98,8 @@ pub(crate) struct WorldInstallHandles<'a> {
     pub(crate) nav_graph: Option<&'a crate::nav::NavGraph>,
     pub(crate) fog_volume_bridge:
         &'a mut crate::scripting_systems::fog_volume_bridge::FogVolumeBridge,
+    pub(crate) emissive_volume_bridge:
+        &'a mut crate::scripting_systems::emissive_volume_bridge::EmissiveVolumeBridge,
     pub(crate) trigger_volume_bridge:
         &'a mut crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge,
     pub(crate) classname_dispatch: &'a crate::scripting::builtins::ClassnameDispatch,

@@ -1193,6 +1193,8 @@ pub(in crate::render) fn level_resource_summary(level: &LevelResourceSet) -> Str
     let buffers = [
         &level.vertex_buffer,
         &level.spec_owner_buffer,
+        &level.emissive_volumes.vertex,
+        &level.emissive_volumes.table,
         &level.index_buffer,
         &level.wireframe_index_buffer,
         &level.lights_buffer,

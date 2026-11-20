@@ -168,6 +168,8 @@ pub(in crate::render) fn with_one_triangle<R>(
     use_geometry(&LevelGeometry {
         vertices: &vertices,
         vertex_spec_owners: &[],
+        vertex_emissive_volumes: &[],
+        emissive_volumes: &[],
         indices: &indices,
         bvh: &bvh,
         lights,

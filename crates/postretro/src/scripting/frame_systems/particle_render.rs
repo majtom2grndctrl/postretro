@@ -568,6 +568,7 @@ mod tests {
             entity_shadow_lights: vec![],
             shadowmask_atlas: None,
             vertex_spec_owners: Vec::new(),
+            vertex_emissive_volumes: Vec::new(),
             gpu_lighting_payloads: Default::default(),
             lightmap_storage: Default::default(),
             data_script: None,

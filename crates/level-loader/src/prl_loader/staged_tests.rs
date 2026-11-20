@@ -190,6 +190,7 @@ fn assert_worlds_match_as(staged: &LevelWorld, monolithic: &LevelWorld, identity
         entity_shadow_lights,
         shadowmask_atlas,
         vertex_spec_owners,
+        vertex_emissive_volumes,
         gpu_lighting_payloads,
         lightmap_storage,
         data_script,
@@ -290,6 +291,11 @@ fn assert_worlds_match_as(staged: &LevelWorld, monolithic: &LevelWorld, identity
         "vertex_spec_owners",
         vertex_spec_owners,
         &m.vertex_spec_owners,
+    );
+    same_debug(
+        "vertex_emissive_volumes",
+        vertex_emissive_volumes,
+        &m.vertex_emissive_volumes,
     );
     same_debug(
         "gpu_lighting_payloads",
@@ -435,6 +441,7 @@ fn assert_hand_outs_match(hand_outs: &[HandOut], monolithic: &LevelWorld) {
                         entity_shadow_lights,
                         shadowmask_atlas,
                         vertex_spec_owners,
+                        vertex_emissive_volumes,
                         gpu_lighting_payloads,
                         cluster_directory,
                     ]

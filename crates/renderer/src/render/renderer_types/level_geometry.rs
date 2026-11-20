@@ -39,6 +39,14 @@ pub struct LevelGeometry<'a> {
     /// (a level without id 42 hands an all-empty stream; hand-built geometry
     /// may hand none) installs as all-empty: no static non-SDF specular.
     pub vertex_spec_owners: &'a [postretro_level_format::shadowmask_atlas::SpecOwnerVertex],
+    /// One emissive volume id per vertex (volume index + 1, 0 = none), the
+    /// forward pass's third vertex buffer. Any length other than
+    /// `vertices.len()` (a level with no member face hands none) installs as
+    /// all-zero: every face presents its texture strength alone.
+    pub vertex_emissive_volumes: &'a [u32],
+    /// Id 60's volumes, whose no-script glow seeds the volume table at
+    /// install; the frame's volume bridge owns every later write.
+    pub emissive_volumes: &'a [postretro_level_format::emissive::EmissiveVolumeRecord],
     pub indices: &'a [u32],
     pub bvh: &'a BvhTree,
     pub lights: &'a [MapLight],

@@ -291,6 +291,17 @@ struct AnimatedBlockTable {
 };
 @group(4) @binding(7) var<uniform> animated_block_table: AnimatedBlockTable;
 
+// Emissive volume table: one rgb glow factor per emissive volume (PRL id 60),
+// `(min + brightness × (max − min)) × colour`, packed on CPU each frame a value
+// changes. Entry 0 is "no volume", (1, 1, 1); entry `i + 1` is volume `i`, so
+// the per-vertex volume id indexes it directly. The array length is
+// `EMISSIVE_TABLE_ENTRIES` from `render-cpu` (MAX_EMISSIVE_VOLUMES + 1). Read
+// only for faces whose texture glows.
+struct EmissiveVolumeTable {
+    entries: array<vec4<f32>, 257>,
+};
+@group(4) @binding(8) var<uniform> emissive_volume_table: EmissiveVolumeTable;
+
 // The lightmap helpers — the vertex-stage `resolve_lightmap_block`, and
 // `sample_lightmap_irradiance`, `sample_lightmap_direction`,
 // `sample_lightmap_animated`, `animated_block_uv` (with its `AnimatedBlockUv`
@@ -370,6 +381,9 @@ struct VertexInput {
     // The face's lightmap-to-mask texel offset from the same buffer: i16 x
     // (low half) and i16 y (high half) in one Uint32; 0 on an unowned face.
     @location(7) mask_offset: u32,
+    // The face's emissive volume index + 1 (0 = none) from the third,
+    // forward-only vertex buffer.
+    @location(8) emissive_volume: u32,
 };
 
 struct VertexOutput {
@@ -398,6 +412,8 @@ struct VertexOutput {
     @location(10) @interpolate(flat) lightmap_mask: vec4<u32>,
     // The face's lightmap-to-mask texel offset, packed as on the owner stream.
     @location(11) @interpolate(flat) mask_offset: u32,
+    // The face's emissive volume table entry, whole per face like the owners.
+    @location(12) @interpolate(flat) emissive_volume: u32,
 };
 
 fn oct_decode(enc: vec2<u32>) -> vec3<f32> {
@@ -444,6 +460,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.animated_block = in.lightmap_block_ids.y;
     out.spec_owners = in.spec_owners;
     out.mask_offset = in.mask_offset;
+    out.emissive_volume = in.emissive_volume;
 
     return out;
 }
@@ -1556,11 +1573,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         total_light = total_light + effective_color * attenuation * NdotL * depth_visibility;
     }
 
+    // Texture strength × the face's volume factor. A texture with no glow
+    // samples nothing and reads no table entry.
     var emissive = vec3<f32>(0.0);
     if material.emissive_strength > 0.0 {
-        emissive = sample_color(emissive_texture, shade_uv, ddx, ddy).rgb;
+        let volume_factor = emissive_volume_table.entries[in.emissive_volume].rgb;
+        emissive = sample_color(emissive_texture, shade_uv, ddx, ddy).rgb
+            * material.emissive_strength
+            * volume_factor;
     }
-    let rgb = base_color.rgb * total_light + emissive * material.emissive_strength;
+    let rgb = base_color.rgb * total_light + emissive;
     // `SdfShadowMode::Visualize` (2) replaces the shaded color with a
     // grayscale view of the first per-light visibility slice (R = slot 0,
     // the most-influential sdf light) — sampled through the same bilateral

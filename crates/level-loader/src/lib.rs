@@ -11,7 +11,11 @@ mod prl_animated_atlas;
 #[cfg(feature = "load-prl")]
 mod prl_container;
 #[cfg(feature = "load-prl")]
+mod prl_emissive_stream;
+#[cfg(feature = "load-prl")]
 mod prl_environment;
+#[cfg(feature = "load-prl")]
+mod prl_face_ranges;
 #[cfg(feature = "load-prl")]
 mod prl_file;
 #[cfg(feature = "load-prl")]

@@ -103,6 +103,7 @@ fn install_captures_map_placed_descriptor_npcs_and_excludes_later_spawner_output
             active_level_tags: &[],
             nav_graph: None,
             fog_volume_bridge: &mut session.fog_volume_bridge,
+            emissive_volume_bridge: &mut session.emissive_volume_bridge,
             trigger_volume_bridge: &mut session.trigger_volume_bridge,
             classname_dispatch: &session.classname_dispatch,
             script_runtime: &session.scripting.script_runtime,

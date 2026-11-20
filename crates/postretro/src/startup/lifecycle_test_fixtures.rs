@@ -144,6 +144,8 @@ pub(crate) fn test_app() -> App {
             classname_dispatch: scripting::builtins::ClassnameDispatch::new(),
             light_bridge: scripting_systems::light_bridge::LightBridge::new(),
             fog_volume_bridge: scripting_systems::fog_volume_bridge::FogVolumeBridge::new(),
+            emissive_volume_bridge:
+                scripting_systems::emissive_volume_bridge::EmissiveVolumeBridge::new(),
             trigger_volume_bridge:
                 scripting_systems::trigger_volume_bridge::TriggerVolumeBridge::new(),
             trigger_system: crate::trigger_system::TriggerSystem::default(),
@@ -487,6 +489,7 @@ pub(crate) fn level_world(
         entity_shadow_lights: vec![],
         shadowmask_atlas: None,
         vertex_spec_owners: Vec::new(),
+        vertex_emissive_volumes: Vec::new(),
         gpu_lighting_payloads: Default::default(),
         lightmap_storage: Default::default(),
         data_script: None,
@@ -551,6 +554,7 @@ pub(crate) fn install_descriptor_world(
             active_level_tags: &active_level_tags,
             nav_graph: None,
             fog_volume_bridge: &mut session.fog_volume_bridge,
+            emissive_volume_bridge: &mut session.emissive_volume_bridge,
             trigger_volume_bridge: &mut session.trigger_volume_bridge,
             classname_dispatch: &session.classname_dispatch,
             script_runtime: &session.scripting.script_runtime,
@@ -618,6 +622,7 @@ pub(crate) fn install_capture_world(
         active_level_tags: &[],
         nav_graph: None,
         fog_volume_bridge: &mut session.fog_volume_bridge,
+        emissive_volume_bridge: &mut session.emissive_volume_bridge,
         trigger_volume_bridge: &mut session.trigger_volume_bridge,
         classname_dispatch: &session.classname_dispatch,
         script_runtime: &session.scripting.script_runtime,

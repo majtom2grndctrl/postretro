@@ -205,6 +205,10 @@ pub(crate) struct Session {
     /// Per-level fog-volume registry side-table; packs `FogVolume` GPU bytes.
     /// See: context/lib/rendering_pipeline.md §7.5.
     pub(crate) fog_volume_bridge: scripting_systems::fog_volume_bridge::FogVolumeBridge,
+    /// Per-level emissive-volume entities and the forward shader's volume
+    /// table. See: context/lib/rendering_pipeline.md §7.3.
+    pub(crate) emissive_volume_bridge:
+        scripting_systems::emissive_volume_bridge::EmissiveVolumeBridge,
     pub(crate) trigger_volume_bridge: scripting_systems::trigger_volume_bridge::TriggerVolumeBridge,
     /// Per-level rising-overlap state for host-authoritative trigger evaluation.
     pub(crate) trigger_system: crate::trigger_system::TriggerSystem,
@@ -777,6 +781,8 @@ impl Session {
             classname_dispatch,
             light_bridge: scripting_systems::light_bridge::LightBridge::new(),
             fog_volume_bridge: scripting_systems::fog_volume_bridge::FogVolumeBridge::new(),
+            emissive_volume_bridge:
+                scripting_systems::emissive_volume_bridge::EmissiveVolumeBridge::new(),
             trigger_volume_bridge:
                 scripting_systems::trigger_volume_bridge::TriggerVolumeBridge::new(),
             trigger_system: crate::trigger_system::TriggerSystem::with_mover_auto_close_timers(

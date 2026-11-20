@@ -185,6 +185,8 @@ pub(in crate::render) struct LevelResourceSet {
     pub(in crate::render) vertex_buffer: wgpu::Buffer,
     /// One `Uint16x4` owner entry per world vertex, written once at install.
     pub(in crate::render) spec_owner_buffer: wgpu::Buffer,
+    /// The forward pass's slot-2 volume-id stream and group-4 volume table.
+    pub(in crate::render) emissive_volumes: super::emissive_volumes::EmissiveVolumeBuffers,
     pub(in crate::render) index_buffer: wgpu::Buffer,
     pub(in crate::render) index_count: u32,
     pub(in crate::render) wireframe_index_buffer: wgpu::Buffer,
@@ -406,6 +408,8 @@ impl Renderer {
         let geometry = LevelGeometry {
             vertices: &[],
             vertex_spec_owners: &[],
+            vertex_emissive_volumes: &[],
+            emissive_volumes: &[],
             indices: &[],
             bvh: &empty_bvh,
             lights: &[],

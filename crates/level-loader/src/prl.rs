@@ -803,6 +803,12 @@ pub struct LevelWorld {
     /// no face draws static non-SDF world specular.
     #[cfg(feature = "load-prl")]
     pub vertex_spec_owners: Vec<SpecOwnerVertex>,
+    /// One emissive volume id per world vertex, stamped from id 60's face
+    /// lists: the volume index + 1, or 0 for a face in no volume. The forward
+    /// pass's slot-2 vertex stream. Empty when no volume lists a face; the
+    /// renderer then binds a zero-filled stream.
+    #[cfg(feature = "load-prl")]
+    pub vertex_emissive_volumes: Vec<u32>,
     /// Id-22 and id-42 block payloads, held only until install moves them
     /// into the GPU upload. See [`LevelWorld::take_gpu_lighting_payloads`].
     #[cfg(feature = "load-prl")]
@@ -999,6 +1005,8 @@ impl LevelWorld {
             shadowmask_atlas: None,
             #[cfg(feature = "load-prl")]
             vertex_spec_owners: Vec::new(),
+            #[cfg(feature = "load-prl")]
+            vertex_emissive_volumes: Vec::new(),
             #[cfg(feature = "load-prl")]
             gpu_lighting_payloads: GpuLightingPayloads::default(),
             #[cfg(feature = "load-prl")]
@@ -2117,6 +2125,7 @@ mod tests {
             entity_shadow_lights: Vec::new(),
             shadowmask_atlas: None,
             vertex_spec_owners: Vec::new(),
+            vertex_emissive_volumes: Vec::new(),
             gpu_lighting_payloads: Default::default(),
             lightmap_storage: Default::default(),
             data_script: None,
@@ -2230,6 +2239,7 @@ mod tests {
             entity_shadow_lights: Vec::new(),
             shadowmask_atlas: None,
             vertex_spec_owners: Vec::new(),
+            vertex_emissive_volumes: Vec::new(),
             gpu_lighting_payloads: Default::default(),
             lightmap_storage: Default::default(),
             data_script: None,
@@ -2297,6 +2307,7 @@ mod tests {
             entity_shadow_lights: Vec::new(),
             shadowmask_atlas: None,
             vertex_spec_owners: Vec::new(),
+            vertex_emissive_volumes: Vec::new(),
             gpu_lighting_payloads: Default::default(),
             lightmap_storage: Default::default(),
             data_script: None,
@@ -4973,6 +4984,81 @@ mod tests {
             }
             std::fs::remove_file(&tmp).ok();
         }
+    }
+
+    /// Two one-triangle faces meeting along an edge, as the compiler writes
+    /// them: each owns its vertices, and face 1's first and second vertices
+    /// sit exactly where face 0's first and third do.
+    fn edge_sharing_geometry(indices: Vec<u32>) -> GeometrySection {
+        let at = |x: f32, y: f32| {
+            let mut vertex = sample_vertex(x);
+            vertex.position[1] = y;
+            vertex
+        };
+        GeometrySection {
+            vertices: vec![
+                at(0.0, 0.0),
+                at(1.0, 0.0),
+                at(1.0, 1.0),
+                at(0.0, 0.0),
+                at(1.0, 1.0),
+                at(0.0, 1.0),
+            ],
+            indices,
+            ..sample_geometry()
+        }
+    }
+
+    fn emissive_edge_level(indices: Vec<u32>, name: &str) -> std::path::PathBuf {
+        write_prl_fixture(
+            vec![
+                geometry_blob(edge_sharing_geometry(indices)),
+                bvh_blob(sample_bvh_section()),
+                texture_names_blob(&["signs/bar", "metal/plate"]),
+                default_texture_cache_keys_blob(),
+                default_fog_volumes_blob(),
+                emissive_blob(&baked_emissive()),
+            ],
+            name,
+        )
+    }
+
+    // A8 first slice: one volume around face 1. Its vertices carry volume 0's
+    // id; face 0's vertices at the same positions along the shared edge carry
+    // none, so the glow never bleeds across the edge.
+    #[test]
+    fn load_prl_stamps_member_vertices_and_leaves_the_adjacent_face_unstamped() {
+        let tmp = emissive_edge_level(
+            vec![0, 1, 2, 3, 4, 5],
+            "postretro_test_emissive_vertex_stream.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap()).expect("the level loads");
+        assert_eq!(world.vertices[0].position, world.vertices[3].position);
+        assert_eq!(world.vertices[2].position, world.vertices[4].position);
+        assert_eq!(world.vertex_emissive_volumes, vec![0, 0, 0, 1, 1, 1]);
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    // A value the compiler never writes: face 1 reuses face 0's vertex 0, so
+    // the vertex belongs to a member and a non-member face. The load fails.
+    #[test]
+    fn load_prl_refuses_a_vertex_shared_across_differing_membership() {
+        let tmp = emissive_edge_level(
+            vec![0, 1, 2, 0, 4, 5],
+            "postretro_test_emissive_shared_vertex.prl",
+        );
+        match load_prl(tmp.to_str().unwrap()).unwrap_err() {
+            PrlLoadError::SectionValidation { section, message } => {
+                assert_eq!(section, "Emissive");
+                assert!(
+                    message
+                        .contains("faces 0 and 1 share vertex 0 but belong to different volumes"),
+                    "{message}"
+                );
+            }
+            other => panic!("got {other:?}"),
+        }
+        std::fs::remove_file(&tmp).ok();
     }
 
     #[test]

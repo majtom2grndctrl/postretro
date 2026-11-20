@@ -1,7 +1,7 @@
 # E25--landmark-level-change — plan of record
 
 mode: compact
-status: active
+status: done
 read at: e743823
 
 ## Corrections

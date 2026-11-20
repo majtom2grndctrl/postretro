@@ -3,7 +3,8 @@
 // the audio crate's public API (the muffle included) names no kira type, player
 // option names (reflections take no style option, only the cost tier), and the
 // world material inputs (material prefixes, texture suffixes, FGD classes and
-// keys take no reflection input; no prefix table names the retired `neon`).
+// keys take no reflection input; no prefix table names the retired `neon`;
+// TrenchBroom's config hides every pinned sibling suffix).
 // Run by preflight's `cargo test`, beside the scripting surface gates.
 // See: context/lib/entity_model.md §7 (Environment Volumes) · context/lib/build_pipeline.md §Custom FGD · context/lib/audio.md §1 · context/lib/player_options.md §4
 
@@ -113,13 +114,17 @@ const PYTHON_PREFIX_TOOLS: &[&str] = &[
 // bare diffuse is `""`).
 const BUNDLE_SUFFIXES_FILE: &str = "crates/level-compiler/src/texture_mips/resolution.rs";
 const BUNDLE_SUFFIXES_CONST: &str = "BUNDLE_SUFFIXES";
-const BUNDLE_SUFFIX_NAMES: &[&str] = &["", "_s", "_n", "_e", "_h"];
+const BUNDLE_SUFFIX_NAMES: &[&str] = &["", "_s", "_n", "_e", "_h", "_p", "_t"];
 
 // The sibling lookups: the base identifier the `format!` literals in
 // `BUNDLE_SUFFIXES_FILE` start from, and the suffixes they bind today, in
 // source order.
 const BUNDLE_BINDING_BASE: &str = "resolved_base";
-const BUNDLE_BINDING_SUFFIX_NAMES: &[&str] = &["_s", "_n", "_e", "_h"];
+const BUNDLE_BINDING_SUFFIX_NAMES: &[&str] = &["_s", "_n", "_e", "_h", "_p", "_t"];
+
+/// TrenchBroom's game config. Its `materials.excludes` hides every sibling map
+/// from the texture browser, so each pinned non-diffuse suffix must appear there.
+const TRENCHBROOM_GAME_CONFIG: &str = "sdk/TrenchBroom/GameConfig.cfg";
 
 /// The one FGD class that authors reflection, and its exact keys: an authored
 /// probe box. A new key here is a new reflection input.
@@ -415,6 +420,21 @@ fn format_suffix_literals(code: &str, base: &str) -> Vec<String> {
             Some(rest[..rest.find('"')?].to_string())
         })
         .collect()
+}
+
+/// The string entries of the first `"excludes"` array in a TrenchBroom game
+/// config. `None` when it declares none.
+fn trenchbroom_excludes(config: &str) -> Option<Vec<String>> {
+    let rest = &config[config.find("\"excludes\"")?..];
+    let list = &rest[rest.find('[')? + 1..];
+    let list = &list[..list.find(']')?];
+    Some(
+        list.split('"')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_string)
+            .collect(),
+    )
 }
 
 /// The field names in `struct name`'s body in `code`: each line at brace
@@ -753,6 +773,32 @@ fn no_world_material_fgd_key_or_texture_rule_takes_a_reflection_input() {
     );
 }
 
+// Every sibling map stays out of TrenchBroom's texture browser: the game
+// config's `materials.excludes` names `*<suffix>` for each pinned non-diffuse
+// suffix, so a new sibling cannot ship listed as a texture.
+#[test]
+fn trenchbroom_config_excludes_every_pinned_sibling_suffix() {
+    let root = workspace_root();
+    let config = std::fs::read_to_string(root.join(TRENCHBROOM_GAME_CONFIG))
+        .unwrap_or_else(|_| panic!("{TRENCHBROOM_GAME_CONFIG} moved; point this gate at it"));
+    let excludes = trenchbroom_excludes(&config)
+        .unwrap_or_else(|| panic!("{TRENCHBROOM_GAME_CONFIG} declares no `excludes` list"));
+    let mut missing: Vec<String> = BUNDLE_SUFFIX_NAMES
+        .iter()
+        .chain(BUNDLE_BINDING_SUFFIX_NAMES)
+        .filter(|suffix| !suffix.is_empty())
+        .map(|suffix| format!("*{suffix}"))
+        .filter(|pattern| !excludes.contains(pattern))
+        .collect();
+    missing.sort();
+    missing.dedup();
+    assert!(
+        missing.is_empty(),
+        "{TRENCHBROOM_GAME_CONFIG} `excludes` lacks {missing:?}; TrenchBroom would list \
+         those sibling maps as textures"
+    );
+}
+
 // The `neon` prefix retired: glow strength is per-texture content, never a
 // name prefix. No prefix table, in the engine or a tool, names it again, and the
 // material enum has no variant for it.
@@ -963,6 +1009,18 @@ fn const_named_literals_reads_one_constants_string_values() {
         Some(vec!["a".to_string(), "b".to_string()])
     );
     assert_eq!(const_named_literals(&code, "SUFF"), None);
+}
+
+#[test]
+fn trenchbroom_excludes_reads_only_the_excludes_array() {
+    let config = "{\n    \"materials\": {\n        \"root\": \"textures\",\n        \
+                  \"excludes\": [ \"*_n\", \"*_s\" ],\n        \
+                  \"format\": { \"extensions\": [\".png\"] }\n    }\n}\n";
+    assert_eq!(
+        trenchbroom_excludes(config),
+        Some(vec!["*_n".to_string(), "*_s".to_string()])
+    );
+    assert_eq!(trenchbroom_excludes("{ \"materials\": {} }"), None);
 }
 
 #[test]

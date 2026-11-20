@@ -8,9 +8,11 @@
 // Normal slots may use BC5 block compression (format_tag 3); diffuse and
 // specular stay uncompressed. The specular slot is a two-channel "surface map"
 // (format_tag 4, `Rg8Unorm`) when the material carries a `_h.png` height
-// sibling: R keeps specular intensity, G carries the inverted height byte.
+// sibling: R keeps specular intensity, G carries the inverted height byte. A
+// `_p.png` smoothness or `_t.png` tint sibling widens it to four-channel
+// `Rgba8Unorm` (format_tag 1): B smoothness, A tint.
 // Single-channel `R8Unorm` specular remains valid and is what a material
-// without a height sibling still bakes to. Loading is still a header parse plus
+// with none of those siblings still bakes to. Loading is still a header parse plus
 // memcpy — BC5 payload bytes are uploaded verbatim. No per-mip headers.
 //
 // Wire format (little-endian throughout):
@@ -28,14 +30,16 @@
 //                                    not `slot_mask` — a `_h.png` height
 //                                    sibling contributes bit 4 and tag 0x04
 //                                    there while riding in the specular slot,
-//                                    and contributes nothing at all when
-//                                    absent.
+//                                    `_p.png` bit 5 and tag 0x05, `_t.png`
+//                                    bit 6 and tag 0x06, and each contributes
+//                                    nothing at all when absent.
 //   u32      total_body_bytes     -- Σ across present slots of
 //                                    (12-byte per-slot header + payload_bytes)
 //   u16      layer_count          -- shared layer count for every slot, >= 1
 //
 //   -- per present slot, in wire order diffuse → specular → normal → emissive
-//   u8       format_tag           -- 0 Rgba8UnormSrgb, 1 Rgba8Unorm, 2 R8Unorm,
+//   u8       format_tag           -- 0 Rgba8UnormSrgb, 1 Rgba8Unorm (normal or
+//                                    specular slot), 2 R8Unorm,
 //                                    3 Bc5RgUnorm (normal slot only),
 //                                    4 Rg8Unorm (specular slot only)
 //   u8       reserved             = 0
@@ -111,10 +115,13 @@ bitflags! {
 pub enum PrmFormat {
     /// 4 bytes per pixel, sRGB-encoded RGBA. Used for diffuse and emissive color.
     Rgba8UnormSrgb = 0,
-    /// 4 bytes per pixel, linear RGBA. Previously the normal-map format;
-    /// superseded by `Bc5RgUnorm` (tag 3), which the baker now emits for all
-    /// normal slots. Tag 1 remains readable for pre-BC5 `.prm` files but is no
-    /// longer emitted by the baker.
+    /// 4 bytes per pixel, linear RGBA. Two uses:
+    /// - The specular slot's four-channel form, baked when a material has a
+    ///   `_p.png` smoothness or `_t.png` tint sibling: R specular intensity, G
+    ///   inverted height (as in `Rg8Unorm`), B smoothness as max(p, 1) with 0
+    ///   marking no `_p`, A tint as min(t, 254) with 255 marking no `_t`.
+    /// - The pre-BC5 normal-map format. The baker now emits `Bc5RgUnorm`
+    ///   (tag 3) for every normal slot; tag 1 there stays readable only.
     Rgba8Unorm = 1,
     /// 1 byte per pixel, linear single channel. Used for specular intensity.
     R8Unorm = 2,
@@ -353,14 +360,19 @@ pub fn bc5_level_count(width: u16, height: u16) -> u8 {
 ///
 /// The linear RGBA normal format remains accepted for pre-BC5 sidecars.
 ///
-/// Slot 1 (specular) accepts both of its forms: `R8Unorm` for a material with
-/// no height sibling — which is what every pre-surface-depth `.prm` carries,
-/// still read unchanged — and `Rg8Unorm` for the two-channel surface map
-/// (R specular, G inverted height). Widening here is purely additive.
+/// Slot 1 (specular) accepts all three of its forms: `R8Unorm` for a material
+/// with no height, smoothness or tint sibling — which is what every
+/// pre-surface-depth `.prm` carries, still read unchanged — `Rg8Unorm` for the
+/// two-channel surface map (R specular, G inverted height), and `Rgba8Unorm`
+/// for the four-channel form that adds smoothness (B) and tint (A). Each
+/// widening is purely additive.
 fn format_allowed_for_slot(slot_index: u8, format: PrmFormat) -> bool {
     match slot_index {
         0 | 3 => format == PrmFormat::Rgba8UnormSrgb,
-        1 => matches!(format, PrmFormat::R8Unorm | PrmFormat::Rg8Unorm),
+        1 => matches!(
+            format,
+            PrmFormat::R8Unorm | PrmFormat::Rg8Unorm | PrmFormat::Rgba8Unorm
+        ),
         2 => matches!(format, PrmFormat::Rgba8Unorm | PrmFormat::Bc5RgUnorm),
         _ => false,
     }
@@ -1169,12 +1181,21 @@ mod tests {
     }
 
     /// Widening slot 1 is additive only: `Rg8Unorm` is legal there and
-    /// nowhere else, and `R8Unorm` stays legal there so every pre-surface-depth
-    /// sidecar keeps parsing.
+    /// nowhere else, `Rgba8Unorm` joins it there without leaving the normal
+    /// slot or reaching the colour slots, and `R8Unorm` stays legal there so
+    /// every pre-surface-depth sidecar keeps parsing.
     #[test]
     fn rg8_is_legal_only_on_the_specular_slot() {
         assert!(format_allowed_for_slot(1, PrmFormat::Rg8Unorm));
         assert!(format_allowed_for_slot(1, PrmFormat::R8Unorm));
+        assert!(format_allowed_for_slot(1, PrmFormat::Rgba8Unorm));
+        assert!(format_allowed_for_slot(2, PrmFormat::Rgba8Unorm));
+        for slot_index in [0u8, 3] {
+            assert!(
+                !format_allowed_for_slot(slot_index, PrmFormat::Rgba8Unorm),
+                "Rgba8Unorm must not be accepted on slot {slot_index}"
+            );
+        }
         for slot_index in [0u8, 2, 3] {
             assert!(
                 !format_allowed_for_slot(slot_index, PrmFormat::Rg8Unorm),
@@ -1764,6 +1785,9 @@ mod tests {
             // The specular slot's two-channel surface-map form (R specular,
             // G inverted height). Additive: the R8Unorm row above stays accepted.
             (1, make_slot(PrmFormat::Rg8Unorm, 1, 1)),
+            // The four-channel form a `_p` or `_t` sibling bakes (B smoothness,
+            // A tint). Additive too.
+            (1, make_slot(PrmFormat::Rgba8Unorm, 1, 1)),
             // Legacy linear RGBA normals remain readable and writable.
             (2, make_slot(PrmFormat::Rgba8Unorm, 1, 1)),
             (2, make_bc5_slot(4, 4)),

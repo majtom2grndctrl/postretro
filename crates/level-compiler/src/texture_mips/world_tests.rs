@@ -7,6 +7,7 @@ use crate::surface_materials::stats::{
     BOUNCE_SATURATION, BounceMaterials, EmissiveGlow, MaterialStats,
 };
 use log::Level;
+use postretro_level_format::prm::PrmReadError;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -720,4 +721,430 @@ fn material_stage_texel_lifetimes_stay_with_one_texture_and_return_fixed_records
         names.len(),
         "one sidecar per texture; stats create no additional persistent files"
     );
+}
+
+// -- Smoothness and tint in the specular slot ------------------------------
+
+impl Fixture {
+    /// `key`'s sidecar, read back through the runtime `.prm` reader.
+    fn read_sidecar(&self, key: &[u8; 32]) -> (PrmHeader, [Result<PrmSlot, PrmReadError>; 4]) {
+        let path = self
+            .cache
+            .join(format!("{}.prm", cache_filename_for_key(key)));
+        let bytes = std::fs::read(path).unwrap();
+        let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+        (header.expect("sidecar header parses"), slots)
+    }
+
+    /// One grayscale sibling: every colour channel holds `value(x, y)`.
+    fn gray_png(&self, name: &str, width: u32, height: u32, value: impl Fn(u32, u32) -> u8) {
+        self.png(name, width, height, |x, y| {
+            let v = value(x, y);
+            [v, v, v, 255]
+        });
+    }
+
+    /// A diffuse whose texels all differ.
+    fn diffuse_png(&self, name: &str, width: u32, height: u32) {
+        self.png(name, width, height, |x, y| {
+            [(x * 50) as u8, (y * 50) as u8, 90, 255]
+        });
+    }
+}
+
+/// Each mip level of a non-BC5 slot's payload, in order.
+fn mip_levels(slot: &PrmSlot) -> Vec<&[u8]> {
+    let channels = match slot.format {
+        PrmFormat::R8Unorm => 1,
+        PrmFormat::Rg8Unorm => 2,
+        PrmFormat::Rgba8Unorm | PrmFormat::Rgba8UnormSrgb => 4,
+        PrmFormat::Bc5RgUnorm => unreachable!("BC5 levels are block-sized"),
+    };
+    let (width, height) = (u32::from(slot.width), u32::from(slot.height));
+    let mut levels = Vec::new();
+    let mut offset = 0;
+    for level in 0..u32::from(slot.level_count) {
+        let len = ((width >> level).max(1) * (height >> level).max(1)) as usize * channels;
+        levels.push(&slot.payload[offset..offset + len]);
+        offset += len;
+    }
+    assert_eq!(
+        offset,
+        slot.payload.len(),
+        "the payload holds exactly its levels"
+    );
+    levels
+}
+
+/// The stored G of a slot without `_h.png`: the inverted mid-gray plane.
+const PLANE_G: u8 = 255 - 128;
+
+fn authored_specular(x: u32, _y: u32) -> u8 {
+    (60 + 40 * x) as u8
+}
+
+fn authored_height(_x: u32, y: u32) -> u8 {
+    (20 + 50 * y) as u8
+}
+
+/// Spans both marker-adjacent bytes: 0 stores as 1, 255 stays.
+fn authored_smoothness(x: u32, y: u32) -> u8 {
+    [0, 17, 128, 255][((x + y) % 4) as usize]
+}
+
+/// Spans both marker-adjacent bytes: 0 stays, 255 stores as 254.
+fn authored_tint(x: u32, y: u32) -> u8 {
+    [255, 100, 0, 254][((x + 2 * y) % 4) as usize]
+}
+
+/// The material every specular-slot case bakes.
+const COBBLE: &str = "stone/cobble";
+
+/// Which siblings a specular-slot case authors as [`COBBLE`].
+#[derive(Clone, Copy, Debug)]
+struct SlotCase {
+    diffuse: bool,
+    specular: bool,
+    height: bool,
+    smoothness: bool,
+    tint: bool,
+}
+
+const NO_SIBLINGS: SlotCase = SlotCase {
+    diffuse: false,
+    specular: false,
+    height: false,
+    smoothness: false,
+    tint: false,
+};
+
+impl SlotCase {
+    fn write(self, fixture: &Fixture) {
+        if self.diffuse {
+            fixture.diffuse_png(COBBLE, 4, 4);
+        }
+        if self.specular {
+            fixture.gray_png("stone/cobble_s", 4, 4, authored_specular);
+        }
+        if self.height {
+            fixture.gray_png("stone/cobble_h", 4, 4, authored_height);
+        }
+        if self.smoothness {
+            fixture.gray_png("stone/cobble_p", 4, 4, authored_smoothness);
+        }
+        if self.tint {
+            fixture.gray_png("stone/cobble_t", 4, 4, authored_tint);
+        }
+    }
+
+    /// Mip-0 RGBA as decided: R intensity (0 without `_s`), G inverted height
+    /// (the plane without `_h`), B max(p, 1) (0 without `_p`), A min(t, 254)
+    /// (255 without `_t`).
+    fn expected_texel(self, x: u32, y: u32) -> [u8; 4] {
+        [
+            if self.specular {
+                authored_specular(x, y)
+            } else {
+                0
+            },
+            if self.height {
+                255 - authored_height(x, y)
+            } else {
+                PLANE_G
+            },
+            if self.smoothness {
+                authored_smoothness(x, y).max(1)
+            } else {
+                0
+            },
+            if self.tint {
+                authored_tint(x, y).min(254)
+            } else {
+                255
+            },
+        ]
+    }
+
+    /// Bake the case and check the four-channel slot it must produce through
+    /// the runtime reader: the SPECULAR bit, `Rgba8Unorm`, mip 0 as decided,
+    /// and both markers held at every mip.
+    fn bake_and_check(self) {
+        let fixture = Fixture::new();
+        self.write(&fixture);
+        let names = vec![COBBLE.to_owned()];
+        let bake = bake_materials_into(
+            &names,
+            &fixture.textures,
+            &fixture.cache,
+            &mut StageTextureBytes::new(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            bake.bundles,
+            [Some(COBBLE.to_owned())],
+            "{self:?}: the bundle names its collection"
+        );
+        let key = bake.keys[COBBLE];
+        assert_ne!(key, [0u8; 32], "{self:?}");
+        let (header, slots) = fixture.read_sidecar(&key);
+        assert!(header.slot_mask.contains(PrmSlots::SPECULAR), "{self:?}");
+        assert_eq!(
+            header.slot_mask.contains(PrmSlots::DIFFUSE),
+            self.diffuse,
+            "{self:?}"
+        );
+        let slot = slots[1]
+            .as_ref()
+            .expect("four-channel specular slot parses");
+        assert_eq!(slot.format, PrmFormat::Rgba8Unorm, "{self:?}");
+        assert_eq!((slot.width, slot.height, slot.level_count), (4, 4, 3));
+        let levels = mip_levels(slot);
+        for (index, texel) in levels[0].chunks_exact(4).enumerate() {
+            let (x, y) = (index as u32 % 4, index as u32 / 4);
+            assert_eq!(
+                texel,
+                &self.expected_texel(x, y)[..],
+                "{self:?}: mip 0 texel ({x}, {y})"
+            );
+        }
+        for (level, texels) in levels.iter().enumerate() {
+            for texel in texels.chunks_exact(4) {
+                if self.smoothness {
+                    assert!(texel[2] >= 1, "{self:?}: mip {level} B {texel:?}");
+                } else {
+                    assert_eq!(texel[2], 0, "{self:?}: mip {level} B {texel:?}");
+                }
+                if self.tint {
+                    assert!(texel[3] <= 254, "{self:?}: mip {level} A {texel:?}");
+                } else {
+                    assert_eq!(texel[3], 255, "{self:?}: mip {level} A {texel:?}");
+                }
+                if !self.height {
+                    assert_eq!(texel[1], PLANE_G, "{self:?}: mip {level} G {texel:?}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn smoothness_bundles_bake_four_channel() {
+    for case in [
+        // `_p` alone: no diffuse and no other sibling.
+        SlotCase {
+            smoothness: true,
+            ..NO_SIBLINGS
+        },
+        SlotCase {
+            diffuse: true,
+            specular: true,
+            smoothness: true,
+            ..NO_SIBLINGS
+        },
+        SlotCase {
+            diffuse: true,
+            height: true,
+            smoothness: true,
+            ..NO_SIBLINGS
+        },
+        SlotCase {
+            diffuse: true,
+            specular: true,
+            height: true,
+            smoothness: true,
+            ..NO_SIBLINGS
+        },
+    ] {
+        case.bake_and_check();
+    }
+}
+
+#[test]
+fn tint_bundles_bake_four_channel() {
+    for case in [
+        // `_t` alone: B stays 0 at every mip, so it shades at its prefix
+        // exponent.
+        SlotCase {
+            tint: true,
+            ..NO_SIBLINGS
+        },
+        SlotCase {
+            diffuse: true,
+            smoothness: true,
+            tint: true,
+            ..NO_SIBLINGS
+        },
+        SlotCase {
+            diffuse: true,
+            specular: true,
+            height: true,
+            smoothness: true,
+            tint: true,
+        },
+    ] {
+        case.bake_and_check();
+    }
+
+    // The prefix lives in the name, never the bytes: identical PNG bundles
+    // under two prefixes share one sidecar. Each takes its own prefix exponent
+    // at load, from its name; runtime readback covers that half.
+    let fixture = Fixture::new();
+    let names: Vec<String> = ["test/metal_inlay", "test/wood_inlay"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    for stem in &names {
+        fixture.diffuse_png(stem, 4, 4);
+        fixture.gray_png(&format!("{stem}_t"), 4, 4, authored_tint);
+    }
+    let (keys, _, _) = fixture.bake(&names);
+    assert_eq!(keys[&names[0]], keys[&names[1]]);
+    assert_eq!(fixture.sidecars().len(), 1);
+}
+
+// A `_p` or `_t` that disagrees with the diffuse or an earlier slot sibling
+// fails the build, naming both files; matching dimensions pass.
+#[test]
+fn smoothness_and_tint_dimensions_must_match_the_diffuse_and_slot_siblings() {
+    for (sibling, other) in [
+        ("_p", ""),
+        ("_p", "_s"),
+        ("_p", "_h"),
+        ("_t", ""),
+        ("_t", "_s"),
+        ("_t", "_h"),
+        ("_t", "_p"),
+    ] {
+        let fixture = Fixture::new();
+        fixture.gray_png(&format!("stone/cobble{other}"), 4, 4, |_, _| 128);
+        fixture.gray_png(&format!("stone/cobble{sibling}"), 2, 4, |_, _| 128);
+        let error = bake_materials_into(
+            &["stone/cobble".to_owned()],
+            &fixture.textures,
+            &fixture.cache,
+            &mut StageTextureBytes::new(),
+            true,
+        )
+        .expect_err("mismatched slot sibling dimensions must fail the build");
+        let message = error.to_string();
+        for expected in [
+            format!("cobble{sibling}.png"),
+            format!("cobble{other}.png"),
+            "2x4".to_owned(),
+            "4x4".to_owned(),
+        ] {
+            assert!(
+                message.contains(&expected),
+                "{sibling} vs {other:?}: missing {expected:?} in {message}"
+            );
+        }
+        assert!(fixture.sidecars().is_empty(), "{sibling} vs {other:?}");
+    }
+
+    let fixture = Fixture::new();
+    SlotCase {
+        diffuse: true,
+        specular: true,
+        height: true,
+        smoothness: true,
+        tint: true,
+    }
+    .write(&fixture);
+    let (keys, _, _) = fixture.bake(&[COBBLE.to_owned()]);
+    assert_ne!(keys[COBBLE], [0u8; 32]);
+}
+
+// Pin P14: `_n` and `_s` against the diffuse alone stay unenforced. A
+// mismatched `_n` builds with or without `_p` and `_t`; a mismatched `_s`
+// builds when neither is present.
+#[test]
+fn mismatched_normal_or_specular_builds_where_dimensions_are_unenforced() {
+    for (smoothness, tint) in [(false, false), (true, false), (false, true), (true, true)] {
+        let fixture = Fixture::new();
+        SlotCase {
+            diffuse: true,
+            smoothness,
+            tint,
+            ..NO_SIBLINGS
+        }
+        .write(&fixture);
+        fixture.png("stone/cobble_n", 8, 8, |_, _| [127, 127, 255, 255]);
+        let (keys, _, _) = fixture.bake(&[COBBLE.to_owned()]);
+        let (header, slots) = fixture.read_sidecar(&keys[COBBLE]);
+        assert!(header.slot_mask.contains(PrmSlots::NORMAL));
+        assert_eq!(slots[2].as_ref().unwrap().width, 8);
+        assert_eq!(
+            header.slot_mask.contains(PrmSlots::SPECULAR),
+            smoothness || tint,
+            "_p {smoothness}, _t {tint}"
+        );
+    }
+
+    let fixture = Fixture::new();
+    fixture.diffuse_png(COBBLE, 4, 4);
+    fixture.gray_png("stone/cobble_s", 2, 2, |_, _| 200);
+    let (keys, _, _) = fixture.bake(&[COBBLE.to_owned()]);
+    let (_, slots) = fixture.read_sidecar(&keys[COBBLE]);
+    let specular = slots[1].as_ref().unwrap();
+    assert_eq!(specular.format, PrmFormat::R8Unorm);
+    assert_eq!((specular.width, specular.height), (2, 2));
+}
+
+// `_p` and `_t` ride the specular slot alone: the diffuse, normal and emissive
+// slots bake byte-identical with and without them, and each bundle keeps a
+// sidecar of its own.
+#[test]
+fn smoothness_and_tint_leave_diffuse_normal_and_emissive_slots_unchanged() {
+    let fixture = Fixture::new();
+    let variants = [
+        ("panels/plain", false, false),
+        ("panels/with_p", true, false),
+        ("panels/with_t", false, true),
+        ("panels/with_both", true, true),
+    ];
+    for (stem, smoothness, tint) in variants {
+        fixture.diffuse_png(stem, 4, 4);
+        fixture.png(&format!("{stem}_n"), 4, 4, |x, y| {
+            [127 + (x * 20) as u8, 127 - (y * 20) as u8, 230, 255]
+        });
+        fixture.png(&format!("{stem}_e"), 4, 4, |x, _| {
+            if x == 0 {
+                [255, 64, 0, 255]
+            } else {
+                [0, 0, 0, 255]
+            }
+        });
+        fixture.gray_png(&format!("{stem}_s"), 4, 4, authored_specular);
+        if smoothness {
+            fixture.gray_png(&format!("{stem}_p"), 4, 4, authored_smoothness);
+        }
+        if tint {
+            fixture.gray_png(&format!("{stem}_t"), 4, 4, authored_tint);
+        }
+    }
+    let names: Vec<String> = variants
+        .iter()
+        .map(|(stem, ..)| (*stem).to_owned())
+        .collect();
+    let (keys, _, _) = fixture.bake(&names);
+    assert_eq!(fixture.sidecars().len(), 4, "none overwrites another");
+
+    let (_, plain) = fixture.read_sidecar(&keys["panels/plain"]);
+    assert_eq!(
+        plain[1].as_ref().unwrap().format,
+        PrmFormat::R8Unorm,
+        "neither `_p` nor `_t` keeps the narrow slot"
+    );
+    for name in &names[1..] {
+        let (_, slots) = fixture.read_sidecar(&keys[name]);
+        for (index, label) in [(0, "diffuse"), (2, "normal"), (3, "emissive")] {
+            assert_eq!(
+                slots[index].as_ref().unwrap(),
+                plain[index].as_ref().unwrap(),
+                "{name}: the {label} slot must not change"
+            );
+        }
+        assert_eq!(slots[1].as_ref().unwrap().format, PrmFormat::Rgba8Unorm);
+    }
 }

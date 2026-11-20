@@ -19,6 +19,7 @@ mod probe;
 #[cfg(test)]
 pub(crate) mod probe_test_metrics;
 mod resolution;
+mod specular_slot;
 mod world;
 #[cfg(test)]
 mod world_tests;
@@ -35,7 +36,8 @@ use bake::{
     build_diffuse_chain, build_normal_bc5_chain, build_specular_chain, build_surface_chain,
 };
 use cache::{
-    SLOT_MASK_BITS, bundle_hash_for, cache_entry_has_valid_declared_slots, filename_key_for,
+    BundleSources, SLOT_MASK_BITS, bundle_hash_for, cache_entry_has_valid_declared_slots,
+    filename_key_for,
 };
 use resolution::{build_name_to_path_map, resolve_texture_bundle_paths};
 
@@ -303,43 +305,105 @@ pub(super) fn build_specular_chain_impl(r8: &[u8], width: u32, height: u32) -> V
     payload
 }
 
-/// Build a two-channel surface-map mip chain (`PrmFormat::Rg8Unorm`).
+/// Stored B where a material has no `_p.png`: the value a one- or
+/// two-channel slot and the placeholder already read for B.
+pub(super) const SMOOTHNESS_ABSENT: u8 = 0;
+/// The lowest stored B where `_p.png` exists. Authored 0 stores as 1, which
+/// shades exactly as 0 does (bytes 0-24 all shade at exponent 1).
+pub(super) const SMOOTHNESS_MIN: u8 = 1;
+/// Stored A where a material has no `_t.png`: the value a one- or
+/// two-channel slot and the placeholder already read for A.
+pub(super) const TINT_ABSENT: u8 = 255;
+/// The highest stored A where `_t.png` exists. The shader decodes t = A/254,
+/// so authored 255 still reads as full tint.
+pub(super) const TINT_MAX: u8 = 254;
+
+/// Which marker channels of a four-channel specular slot carry an authored
+/// map. See `context/lib/resource_management.md` §4.7.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct SurfaceMarkers {
+    /// `_p.png` present: B stays at or above [`SMOOTHNESS_MIN`] at every mip.
+    /// Absent: B holds [`SMOOTHNESS_ABSENT`] at every mip.
+    pub smoothness: bool,
+    /// `_t.png` present: A stays at or below [`TINT_MAX`] at every mip.
+    /// Absent: A holds [`TINT_ABSENT`] at every mip.
+    pub tint: bool,
+}
+
+/// Build a surface-map mip chain: two-channel `PrmFormat::Rg8Unorm` or
+/// four-channel `PrmFormat::Rgba8Unorm`, by `channels`.
 ///
-/// `rg` is interleaved `[specular, inverted height]` per texel at `width * height`
-/// texels. Both channels are already linear and already in their stored
-/// sense — in particular the caller has inverted the authored height map
-/// (`255 - height`) before interleaving, so mip 0 is a straight copy.
+/// `texels` is interleaved `[specular, inverted height]` per texel, plus
+/// `[smoothness, tint]` in the four-channel form, at `width * height` texels.
+/// Every channel is already linear and already in its stored sense — the
+/// caller has inverted the authored height map (`255 - height`) and placed
+/// the markers before interleaving, so mip 0 is a straight copy.
 ///
 /// Filtering is the same Mitchell-Netravali (B = C = 1/3) separable path the
-/// single-channel specular chain uses, applied to both channels at once, so a
+/// single-channel specular chain uses, applied to every channel at once, so a
 /// surface map's R channel filters identically to the `R8Unorm` chain it
 /// replaces. Mitchell-Netravali has negative lobes and can overshoot outside
 /// `[0, 1]`; `linear_to_unorm_u8` clamps every output texel, which is what
 /// keeps an overshoot near a hard mortar edge from wrapping to the opposite
-/// extreme.
-pub(super) fn build_surface_chain_impl(rg: &[u8], width: u32, height: u32) -> Vec<u8> {
-    let channels = 2;
+/// extreme. That overshoot can also ring an authored texel beside a hard edge
+/// onto a marker byte, so each mip's B and A are then held to `markers`.
+pub(super) fn build_surface_chain_impl(
+    texels: &[u8],
+    channels: usize,
+    width: u32,
+    height: u32,
+    markers: SurfaceMarkers,
+) -> Vec<u8> {
+    debug_assert!(
+        channels == 2 || channels == 4,
+        "surface maps are RG or RGBA"
+    );
+    debug_assert!(
+        channels == 4 || markers == SurfaceMarkers::default(),
+        "only the four-channel form carries markers"
+    );
     let level_count = expected_level_count(width as u16, height as u16) as u32;
 
-    let mut linear: Vec<f32> = rg.iter().map(|b| (*b as f32) / 255.0).collect();
-    let mut payload: Vec<u8> = Vec::with_capacity(rg.len() * 2);
-    for &v in &linear {
-        payload.push(linear_to_unorm_u8(v));
-    }
+    let mut linear: Vec<f32> = texels.iter().map(|b| (*b as f32) / 255.0).collect();
+    let mut payload: Vec<u8> = Vec::with_capacity(texels.len() * 2);
+    encode_surface_into(&linear, channels, markers, &mut payload);
 
     let mut cw = width;
     let mut ch = height;
     for _ in 1..level_count {
         let (next, nw, nh) = downsample_2x_f32(&linear, cw, ch, channels);
-        for &v in &next {
-            payload.push(linear_to_unorm_u8(v));
-        }
+        encode_surface_into(&next, channels, markers, &mut payload);
         linear = next;
         cw = nw;
         ch = nh;
     }
 
     payload
+}
+
+/// Quantize one surface-map level, appending to `out`. R and G pass through
+/// the clamp-and-round alone; B and A (four-channel only) are then held off
+/// or onto their markers per `markers`. The clamp applies to the stored
+/// bytes only: the next level filters from the unclamped `f32` level, as the
+/// two-channel chain always has.
+fn encode_surface_into(
+    linear: &[f32],
+    channels: usize,
+    markers: SurfaceMarkers,
+    out: &mut Vec<u8>,
+) {
+    for texel in linear.chunks_exact(channels) {
+        for (channel, &value) in texel.iter().enumerate() {
+            let byte = linear_to_unorm_u8(value);
+            out.push(match channel {
+                2 if markers.smoothness => byte.max(SMOOTHNESS_MIN),
+                2 => SMOOTHNESS_ABSENT,
+                3 if markers.tint => byte.min(TINT_MAX),
+                3 => TINT_ABSENT,
+                _ => byte,
+            });
+        }
+    }
 }
 
 /// Build a BC5 normal mip chain (`PrmFormat::Bc5RgUnorm`). Each RGB octet is
@@ -841,8 +905,12 @@ pub fn bake_diffuse_texture(diffuse_path: &Path, cache_root: &Path) -> anyhow::R
             diffuse_path.display()
         )
     })?;
-    let filename_key = filename_key_for(Some(&diffuse_bytes), None, None, None, None);
-    let bundle_hash = bundle_hash_for(Some(&diffuse_bytes), None, None, None, None);
+    let sources = BundleSources {
+        diffuse: Some(&diffuse_bytes),
+        ..Default::default()
+    };
+    let filename_key = filename_key_for(&sources);
+    let bundle_hash = bundle_hash_for(&sources);
     let prm_path = cache_root.join(format!("{}.prm", cache_filename_for_key(&filename_key)));
 
     // A legacy richer world bundle may still occupy this pre-change
@@ -1438,12 +1506,16 @@ mod tests {
         let source_bytes = png_bytes(4, 4);
         std::fs::write(&diffuse_path, &source_bytes).unwrap();
 
-        let key = filename_key_for(Some(&source_bytes), None, None, None, None);
+        let sources = BundleSources {
+            diffuse: Some(&source_bytes),
+            ..Default::default()
+        };
+        let key = filename_key_for(&sources);
         let cached = PrmFile {
             header: PrmHeader {
                 stage_version: STAGE_VERSION,
                 slot_mask: PrmSlots::DIFFUSE,
-                bundle_hash: bundle_hash_for(Some(&source_bytes), None, None, None, None),
+                bundle_hash: bundle_hash_for(&sources),
                 total_body_bytes: 0,
                 layer_count: 1,
             },
@@ -1919,8 +1991,16 @@ mod tests {
     /// (0x00/0x01/0x02) tags which slot the bytes belong to.
     #[test]
     fn bundle_hash_distinguishes_slot_assignment() {
-        let a = bundle_hash_for(None, Some(b"alpha"), Some(b"beta"), None, None);
-        let b = bundle_hash_for(None, Some(b"beta"), Some(b"alpha"), None, None);
+        let a = bundle_hash_for(&BundleSources {
+            specular: Some(b"alpha"),
+            normal: Some(b"beta"),
+            ..Default::default()
+        });
+        let b = bundle_hash_for(&BundleSources {
+            specular: Some(b"beta"),
+            normal: Some(b"alpha"),
+            ..Default::default()
+        });
         assert_ne!(a, b);
     }
 
@@ -1955,12 +2035,19 @@ mod tests {
         let emissive = std::fs::read(collection.join("glow_panel_e.png")).unwrap();
         assert_ne!(
             header.bundle_hash,
-            bundle_hash_for(Some(&diffuse), None, None, None, None),
+            bundle_hash_for(&BundleSources {
+                diffuse: Some(&diffuse),
+                ..Default::default()
+            }),
             "the emissive sibling must participate in the bundle hash",
         );
         assert_eq!(
             header.bundle_hash,
-            bundle_hash_for(Some(&diffuse), None, None, Some(&emissive), None),
+            bundle_hash_for(&BundleSources {
+                diffuse: Some(&diffuse),
+                emissive: Some(&emissive),
+                ..Default::default()
+            }),
         );
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -2172,16 +2259,64 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// The bundle-hash inputs for a height-less bundle must be *exactly* what
-    /// they were before the height sibling existed. This replays the
-    /// pre-surface-depth algorithm — 4-bit mask, tags 0x00..0x03, nothing else
-    /// — and demands equality across every combination of present slots.
+    /// The pre-smoothness digest: a 5-bit mask over diffuse, specular, normal,
+    /// emissive and height, then tags 0x00..0x04 — what the baker hashed
+    /// before `_p` and `_t` existed. With height absent it is also the
+    /// pre-surface-depth digest, bit for bit.
+    fn pre_smoothness_bundle_hash(inputs: [Option<&[u8]>; 5]) -> [u8; 32] {
+        let mut mask: u8 = 0;
+        for (bit, input) in inputs.iter().enumerate() {
+            if input.is_some() {
+                mask |= 1u8 << bit;
+            }
+        }
+        let mut h = blake3::Hasher::new();
+        h.update(&[mask]);
+        for (tag, input) in inputs.iter().enumerate() {
+            if let Some(b) = input {
+                h.update(&[tag as u8]);
+                h.update(b);
+            }
+        }
+        *h.finalize().as_bytes()
+    }
+
+    /// The five pre-smoothness inputs from a presence bitset, in digest order.
+    fn pre_smoothness_inputs(bits: u8) -> [Option<&'static [u8]>; 5] {
+        const BYTES: [&[u8]; 5] = [
+            b"diffuse-png",
+            b"specular-png",
+            b"normal-png",
+            b"emissive-png",
+            b"height-png",
+        ];
+        std::array::from_fn(|i| (((bits >> i) & 1) != 0).then_some(BYTES[i]))
+    }
+
+    fn sources_from(inputs: [Option<&[u8]>; 5]) -> BundleSources<'_> {
+        let [diffuse, specular, normal, emissive, height] = inputs;
+        BundleSources {
+            diffuse,
+            specular,
+            normal,
+            emissive,
+            height,
+            smoothness: None,
+            tint: None,
+        }
+    }
+
+    /// The bundle-hash inputs for a bundle without a sibling must be
+    /// *exactly* what they were before that sibling existed. This replays the
+    /// pre-surface-depth algorithm (4-bit mask, tags 0x00..0x03) for every
+    /// height-less combination, and the pre-smoothness algorithm (5-bit mask,
+    /// tags 0x00..0x04) for every combination without `_p` and `_t`.
     ///
     /// This is the no-rebake property: `baked/materials/` is content-addressed
     /// on these bytes, so a single changed byte here would silently invalidate
     /// and re-bake every `.prm` already on disk.
     #[test]
-    fn height_absent_bundle_hash_matches_the_pre_height_algorithm() {
+    fn absent_siblings_keep_the_pre_sibling_bundle_hash() {
         fn pre_height_bundle_hash(
             diffuse: Option<&[u8]>,
             specular: Option<&[u8]>,
@@ -2217,70 +2352,89 @@ mod tests {
             *h.finalize().as_bytes()
         }
 
-        let d: &[u8] = b"diffuse-png";
-        let sp: &[u8] = b"specular-png";
-        let n: &[u8] = b"normal-png";
-        let e: &[u8] = b"emissive-png";
-
         for bits in 0u8..16 {
-            let diffuse = (bits & 1 != 0).then_some(d);
-            let specular = (bits & 2 != 0).then_some(sp);
-            let normal = (bits & 4 != 0).then_some(n);
-            let emissive = (bits & 8 != 0).then_some(e);
+            let inputs = pre_smoothness_inputs(bits);
+            let [diffuse, specular, normal, emissive, _] = inputs;
             assert_eq!(
-                bundle_hash_for(diffuse, specular, normal, emissive, None),
+                bundle_hash_for(&sources_from(inputs)),
                 pre_height_bundle_hash(diffuse, specular, normal, emissive),
                 "height-less bundle {bits:04b} must hash exactly as it did before \
                  the height sibling existed"
             );
         }
-    }
-
-    /// The same promise for the `.prm` filename stem: without a height
-    /// sibling, every bundle keeps the address it already has on disk, so no
-    /// existing sidecar is orphaned or rewritten.
-    #[test]
-    fn height_absent_filename_key_is_unchanged() {
-        let d: &[u8] = b"diffuse-png";
-        let sp: &[u8] = b"specular-png";
-        let n: &[u8] = b"normal-png";
-        let e: &[u8] = b"emissive-png";
-
-        // Diffuse-only keeps the bare content hash that model loading derives
-        // at runtime — the one address that is not a bundle hash.
-        assert_eq!(
-            filename_key_for(Some(d), None, None, None, None),
-            *blake3::hash(d).as_bytes(),
-        );
-        // Every multi-slot height-less bundle keeps the bundle-hash address.
-        for bits in 0u8..16 {
-            let diffuse = (bits & 1 != 0).then_some(d);
-            let specular = (bits & 2 != 0).then_some(sp);
-            let normal = (bits & 4 != 0).then_some(n);
-            let emissive = (bits & 8 != 0).then_some(e);
-            if bits.count_ones() > 1 {
-                assert_eq!(
-                    filename_key_for(diffuse, specular, normal, emissive, None),
-                    bundle_hash_for(diffuse, specular, normal, emissive, None),
-                    "height-less bundle {bits:04b}"
-                );
-            }
+        for bits in 0u8..32 {
+            let inputs = pre_smoothness_inputs(bits);
+            assert_eq!(
+                bundle_hash_for(&sources_from(inputs)),
+                pre_smoothness_bundle_hash(inputs),
+                "bundle {bits:05b} without `_p` or `_t` must hash exactly as it did \
+                 before those siblings existed"
+            );
         }
-        // And a present height sibling does move the address — otherwise two
-        // different bundles would share one `.prm`.
-        assert_ne!(
-            filename_key_for(Some(d), Some(sp), None, None, Some(b"height-png")),
-            filename_key_for(Some(d), Some(sp), None, None, None),
-        );
     }
 
-    /// End-to-end no-rebake proof. A `.prm` written by the pre-surface-depth
-    /// baker — placed at its historical address, carrying its historical
-    /// bundle hash and a payload nothing here could reproduce — must be
-    /// recognised as a cache hit and left byte-for-byte alone.
+    /// The same promise for the `.prm` filename stem: without a `_p` or `_t`
+    /// sibling (and, before that, without height), every bundle keeps the
+    /// address it already has on disk, so no existing sidecar is orphaned or
+    /// rewritten.
     #[test]
-    fn heightless_bundle_is_a_cache_hit_and_is_not_rewritten() {
-        let root = unique_temp_dir("heightless-no-rebake");
+    fn absent_siblings_keep_their_filename_key() {
+        for bits in 0u8..32 {
+            let inputs = pre_smoothness_inputs(bits);
+            let expected = match bits.count_ones() {
+                0 => [0u8; 32],
+                // Diffuse-only keeps the bare content hash that model loading
+                // derives at runtime — the one address that is not tagged.
+                1 if bits == 1 => *blake3::hash(inputs[0].unwrap()).as_bytes(),
+                1 => {
+                    let tag = bits.trailing_zeros() as u8;
+                    let mut h = blake3::Hasher::new();
+                    h.update(&[tag]);
+                    h.update(inputs[tag as usize].unwrap());
+                    *h.finalize().as_bytes()
+                }
+                _ => pre_smoothness_bundle_hash(inputs),
+            };
+            assert_eq!(
+                filename_key_for(&sources_from(inputs)),
+                expected,
+                "bundle {bits:05b} without `_p` or `_t`"
+            );
+        }
+        // A present height, smoothness or tint sibling does move the address —
+        // otherwise two different bundles would share one `.prm`.
+        let base = BundleSources {
+            diffuse: Some(b"diffuse-png"),
+            specular: Some(b"specular-png"),
+            ..Default::default()
+        };
+        for widened in [
+            BundleSources {
+                height: Some(b"sibling-png"),
+                ..base
+            },
+            BundleSources {
+                smoothness: Some(b"sibling-png"),
+                ..base
+            },
+            BundleSources {
+                tint: Some(b"sibling-png"),
+                ..base
+            },
+        ] {
+            assert_ne!(filename_key_for(&widened), filename_key_for(&base));
+        }
+    }
+
+    /// End-to-end no-rebake proof. `.prm` files written by older bakers —
+    /// placed at their historical addresses, carrying their historical bundle
+    /// hashes and payloads nothing here could reproduce — must be recognised
+    /// as cache hits and left byte-for-byte alone. One predates height (an
+    /// `R8Unorm` specular), one predates smoothness and tint (an `Rg8Unorm`
+    /// surface map).
+    #[test]
+    fn bundle_without_smoothness_or_tint_is_a_cache_hit_and_is_not_rewritten() {
+        let root = unique_temp_dir("pre-sibling-no-rebake");
         let texture_root = root.join("textures");
         let collection = texture_root.join("stone");
         let cache_root = root.join("cache");
@@ -2288,53 +2442,80 @@ mod tests {
 
         let diffuse = png_bytes(4, 4);
         let specular = solid_png_bytes(4, 4, [90, 90, 90, 255]);
-        std::fs::write(collection.join("cobble.png"), &diffuse).unwrap();
-        std::fs::write(collection.join("cobble_s.png"), &specular).unwrap();
-
-        let key = filename_key_for(Some(&diffuse), Some(&specular), None, None, None);
-        // A deliberately wrong-but-structurally-valid payload: if the baker
-        // rebaked, these bytes would be replaced by real mip chains.
-        let sentinel = PrmFile {
-            header: PrmHeader {
-                stage_version: STAGE_VERSION,
-                slot_mask: PrmSlots::DIFFUSE | PrmSlots::SPECULAR,
-                bundle_hash: bundle_hash_for(Some(&diffuse), Some(&specular), None, None, None),
-                total_body_bytes: 0,
-                layer_count: 1,
-            },
-            slots: [
-                Some(PrmSlot {
-                    format: PrmFormat::Rgba8UnormSrgb,
-                    width: 1,
-                    height: 1,
-                    level_count: 1,
-                    payload: vec![0xDE, 0xAD, 0xBE, 0xEF],
-                }),
-                Some(PrmSlot {
-                    format: PrmFormat::R8Unorm,
-                    width: 1,
-                    height: 1,
-                    level_count: 1,
-                    payload: vec![0x5A],
-                }),
-                None,
-                None,
-            ],
+        let height = solid_png_bytes(4, 4, [60, 60, 60, 255]);
+        for stem in ["cobble", "relief"] {
+            std::fs::write(collection.join(format!("{stem}.png")), &diffuse).unwrap();
+            std::fs::write(collection.join(format!("{stem}_s.png")), &specular).unwrap();
         }
-        .to_bytes()
-        .unwrap();
-        let cache_path = cache_root.join(format!("{}.prm", cache_filename_for_key(&key)));
-        atomic_write(&cache_path, &sentinel).unwrap();
+        std::fs::write(collection.join("relief_h.png"), &height).unwrap();
 
-        let keys =
-            bake_texture_mips(&["stone/cobble".to_string()], &texture_root, &cache_root).unwrap();
+        let mut sentinels = Vec::new();
+        for (name, height_source, specular_format, specular_payload) in [
+            ("stone/cobble", None, PrmFormat::R8Unorm, vec![0x5A]),
+            (
+                "stone/relief",
+                Some(height.as_slice()),
+                PrmFormat::Rg8Unorm,
+                vec![0x5A, 0xA5],
+            ),
+        ] {
+            let sources = BundleSources {
+                diffuse: Some(&diffuse),
+                specular: Some(&specular),
+                height: height_source,
+                ..Default::default()
+            };
+            let key = filename_key_for(&sources);
+            // A deliberately wrong-but-structurally-valid payload: if the
+            // baker rebaked, these bytes would be replaced by real mip chains.
+            let sentinel = PrmFile {
+                header: PrmHeader {
+                    stage_version: STAGE_VERSION,
+                    slot_mask: PrmSlots::DIFFUSE | PrmSlots::SPECULAR,
+                    bundle_hash: bundle_hash_for(&sources),
+                    total_body_bytes: 0,
+                    layer_count: 1,
+                },
+                slots: [
+                    Some(PrmSlot {
+                        format: PrmFormat::Rgba8UnormSrgb,
+                        width: 1,
+                        height: 1,
+                        level_count: 1,
+                        payload: vec![0xDE, 0xAD, 0xBE, 0xEF],
+                    }),
+                    Some(PrmSlot {
+                        format: specular_format,
+                        width: 1,
+                        height: 1,
+                        level_count: 1,
+                        payload: specular_payload,
+                    }),
+                    None,
+                    None,
+                ],
+            }
+            .to_bytes()
+            .unwrap();
+            let cache_path = cache_root.join(format!("{}.prm", cache_filename_for_key(&key)));
+            atomic_write(&cache_path, &sentinel).unwrap();
+            sentinels.push((name, key, cache_path, sentinel));
+        }
 
-        assert_eq!(keys["stone/cobble"], key, "the address must not move");
-        assert_eq!(
-            std::fs::read(&cache_path).unwrap(),
-            sentinel,
-            "a height-less bundle must not rebake"
-        );
+        let names: Vec<String> = sentinels
+            .iter()
+            .map(|(name, ..)| name.to_string())
+            .collect();
+        let keys = bake_texture_mips(&names, &texture_root, &cache_root).unwrap();
+
+        for (name, key, cache_path, sentinel) in sentinels {
+            assert_eq!(keys[name], key, "{name}: the address must not move");
+            assert_eq!(
+                std::fs::read(&cache_path).unwrap(),
+                sentinel,
+                "{name}: a bundle without `_p` or `_t` must not rebake"
+            );
+        }
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -2556,7 +2737,7 @@ mod tests {
         }
 
         let specular_chain = build_specular_chain_impl(&r8, w, h);
-        let surface_chain = build_surface_chain_impl(&rg, w, h);
+        let surface_chain = build_surface_chain_impl(&rg, 2, w, h, SurfaceMarkers::default());
 
         assert_eq!(surface_chain.len(), specular_chain.len() * 2);
         let reds: Vec<u8> = surface_chain
@@ -2583,7 +2764,7 @@ mod tests {
         rg[centre] = 255;
         rg[centre + 1] = 255;
 
-        let chain = build_surface_chain_impl(&rg, w, h);
+        let chain = build_surface_chain_impl(&rg, 2, w, h, SurfaceMarkers::default());
         // Mip 0 is a verbatim copy.
         assert_eq!(&chain[..(w * h) as usize * 2], &rg[..]);
         // Ringing is negative around the spike; unclamped it would wrap high.
@@ -2596,20 +2777,168 @@ mod tests {
         );
     }
 
+    /// Each mip level of a `channels`-per-texel surface chain, in order.
+    fn surface_mips(chain: &[u8], channels: usize, width: u32, height: u32) -> Vec<&[u8]> {
+        let mut levels = Vec::new();
+        let mut offset = 0;
+        for level in 0..u32::from(expected_level_count(width as u16, height as u16)) {
+            let len = ((width >> level).max(1) * (height >> level).max(1)) as usize * channels;
+            levels.push(&chain[offset..offset + len]);
+            offset += len;
+        }
+        assert_eq!(offset, chain.len(), "the chain holds exactly its levels");
+        levels
+    }
+
+    /// Mitchell-Netravali's negative lobes ring a texel beside a hard edge past
+    /// its neighbours, and the [0, 1] clamp can land it on a marker byte: B = 0
+    /// (no `_p`) beside the low side of a smoothness edge, A = 255 (no `_t`)
+    /// beside the high side of a tint edge. The bake holds every mip off the
+    /// markers where the map exists, and on them where it does not (pin P13).
+    #[test]
+    fn marker_clamp_holds_at_every_mip_beside_a_hard_edge() {
+        let (w, h) = (16u32, 16u32);
+        let authored = |x: u32| if x < 8 { 0u8 } else { 255 };
+        for markers in [
+            SurfaceMarkers {
+                smoothness: true,
+                tint: true,
+            },
+            SurfaceMarkers {
+                smoothness: true,
+                tint: false,
+            },
+            SurfaceMarkers {
+                smoothness: false,
+                tint: true,
+            },
+        ] {
+            // One vertical 0-to-255 edge in every channel; B and A stored as
+            // the interleave stores them.
+            let texels: Vec<u8> = (0..h)
+                .flat_map(|_| {
+                    (0..w).flat_map(move |x| {
+                        let value = authored(x);
+                        [
+                            value,
+                            255 - value,
+                            if markers.smoothness {
+                                value.max(SMOOTHNESS_MIN)
+                            } else {
+                                SMOOTHNESS_ABSENT
+                            },
+                            if markers.tint {
+                                value.min(TINT_MAX)
+                            } else {
+                                TINT_ABSENT
+                            },
+                        ]
+                    })
+                })
+                .collect();
+
+            // The fixture must actually ring onto each present marker, or the
+            // clamp below is untested.
+            let linear: Vec<f32> = texels.iter().map(|&b| f32::from(b) / 255.0).collect();
+            let (raw_mip1, _, _) = downsample_2x_f32(&linear, w, h, 4);
+            let raw: Vec<[u8; 4]> = raw_mip1
+                .chunks_exact(4)
+                .map(|t| std::array::from_fn(|c| linear_to_unorm_u8(t[c])))
+                .collect();
+            if markers.smoothness {
+                assert!(
+                    raw.iter().any(|t| t[2] == SMOOTHNESS_ABSENT),
+                    "the unclamped filter must ring B onto the no-`_p` marker: {raw:?}"
+                );
+            }
+            if markers.tint {
+                assert!(
+                    raw.iter().any(|t| t[3] == TINT_ABSENT),
+                    "the unclamped filter must ring A onto the no-`_t` marker: {raw:?}"
+                );
+            }
+
+            let chain = build_surface_chain_impl(&texels, 4, w, h, markers);
+            let rg: Vec<u8> = texels.chunks_exact(4).flat_map(|t| [t[0], t[1]]).collect();
+            let rg_chain = build_surface_chain_impl(&rg, 2, w, h, SurfaceMarkers::default());
+            let levels = surface_mips(&chain, 4, w, h);
+            let rg_levels = surface_mips(&rg_chain, 2, w, h);
+            assert_eq!(levels.len(), 5);
+            for (level, (rgba, rg)) in levels.iter().zip(&rg_levels).enumerate() {
+                for (texel, rg) in rgba.chunks_exact(4).zip(rg.chunks_exact(2)) {
+                    assert_eq!(
+                        &texel[..2],
+                        rg,
+                        "mip {level}: the clamp touches only B and A ({markers:?})"
+                    );
+                    if markers.smoothness {
+                        assert!(
+                            texel[2] >= SMOOTHNESS_MIN,
+                            "mip {level}: B rang onto the no-`_p` marker ({markers:?})"
+                        );
+                    } else {
+                        assert_eq!(texel[2], SMOOTHNESS_ABSENT, "mip {level}: {markers:?}");
+                    }
+                    if markers.tint {
+                        assert!(
+                            texel[3] <= TINT_MAX,
+                            "mip {level}: A rang onto the no-`_t` marker ({markers:?})"
+                        );
+                    } else {
+                        assert_eq!(texel[3], TINT_ABSENT, "mip {level}: {markers:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Regression guard on the third channel's mip stride: one mip down, a
+    /// 2×2 block of authored smoothness 0 and 255 in equal parts (stored 1
+    /// and 255) filters to about 128, while R, G and A — distinct constants —
+    /// come through untouched. A chain that walked the texels with the wrong
+    /// stride would mix those constants into B.
+    #[test]
+    fn smoothness_channel_filters_on_its_own_stride_one_mip_down() {
+        #[rustfmt::skip]
+        let texels: [u8; 16] = [
+            200, 40, 1, 100,    200, 40, 255, 100,
+            200, 40, 255, 100,  200, 40, 1, 100,
+        ];
+        let markers = SurfaceMarkers {
+            smoothness: true,
+            tint: true,
+        };
+        let chain = build_surface_chain_impl(&texels, 4, 2, 2, markers);
+        let levels = surface_mips(&chain, 4, 2, 2);
+        assert_eq!(levels.len(), 2);
+        assert_eq!(levels[0], &texels[..], "mip 0 is the interleave, verbatim");
+        let &[r, g, b, a] = levels[1] else {
+            panic!("a 2×2 source has one 1×1 mip: {:?}", levels[1]);
+        };
+        assert_eq!((r, g, a), (200, 40, 100));
+        assert!(b.abs_diff(128) <= 1, "B one mip down is {b}, not about 128");
+    }
+
     /// Filename key falls back to specular when diffuse is missing, but the
     /// 0x01 prefix prevents a collision with a diffuse PNG whose bytes
     /// happen to equal the specular bytes.
     #[test]
     fn filename_key_specular_fallback_does_not_collide_with_diffuse() {
         let bytes: &[u8] = b"identical-payload";
-        let diff_only = filename_key_for(Some(bytes), None, None, None, None);
-        let spec_only = filename_key_for(None, Some(bytes), None, None, None);
+        let diff_only = filename_key_for(&BundleSources {
+            diffuse: Some(bytes),
+            ..Default::default()
+        });
+        let spec_only = filename_key_for(&BundleSources {
+            specular: Some(bytes),
+            ..Default::default()
+        });
         assert_ne!(diff_only, spec_only);
     }
 
     #[test]
     fn all_absent_key_is_zero() {
-        assert_eq!(filename_key_for(None, None, None, None, None), [0u8; 32]);
+        assert_eq!(filename_key_for(&BundleSources::default()), [0u8; 32]);
     }
 
     /// Resolver coverage: a collection subdir with a diffuse and all optional
@@ -2793,7 +3122,10 @@ mod tests {
             0xd0, 0x01, 0x49, 0xe8, 0x68, 0xc3, 0x89, 0xd5, 0xa9, 0xcb, 0x57, 0xc8, 0xb2, 0x04,
             0x7c, 0xc1, 0x7b, 0xbe,
         ];
-        let got = bundle_hash_for(Some(&[0xAAu8, 0xBB]), None, None, None, None);
+        let got = bundle_hash_for(&BundleSources {
+            diffuse: Some(&[0xAAu8, 0xBB]),
+            ..Default::default()
+        });
         assert_eq!(got, expected);
     }
 

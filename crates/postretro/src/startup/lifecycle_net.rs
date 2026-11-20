@@ -188,7 +188,9 @@ impl App {
         // the session borrow.
         if let Some(session) = self.session.as_mut() {
             if let Some(endpoint) = session.net_endpoint.as_mut() {
-                endpoint.reset_level_scoped_client_state();
+                endpoint.reset_level_scoped_client_state(
+                    &mut session.scripting.script_ctx.registry.borrow_mut(),
+                );
             }
             // No assist hold carries into the next level.
             self.client_assist.reset();

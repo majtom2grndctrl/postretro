@@ -1077,11 +1077,13 @@ pub fn drain_defense_vocabulary_js<'js>(
     ctx: &rquickjs::Ctx<'js>,
     obj: &Object<'js>,
 ) -> Result<postretro_foundation::defense::DefenseVocabulary, DescriptorError> {
-    let mut values: [Option<serde_json::Value>; 3] = [None, None, None];
-    for (slot, key) in values
-        .iter_mut()
-        .zip(["defenseLayers", "damageTypes", "defaultDamageType"])
-    {
+    let mut values: [Option<serde_json::Value>; 4] = [None, None, None, None];
+    for (slot, key) in values.iter_mut().zip([
+        "defenseLayers",
+        "damageTypes",
+        "defaultDamageType",
+        "statuses",
+    ]) {
         if !obj.contains_key(key).map_err(js_err)? {
             continue;
         }
@@ -1095,6 +1097,7 @@ pub fn drain_defense_vocabulary_js<'js>(
         values[0].as_ref(),
         values[1].as_ref(),
         values[2].as_ref(),
+        values[3].as_ref(),
     )
     .map_err(|reason| DescriptorError::InvalidShape { reason })
 }

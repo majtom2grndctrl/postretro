@@ -491,6 +491,7 @@ fn the_fog_and_wave_scripting_example_parses_identically_in_ts_and_luau() {
             wave_amplitude: 6.0,
             wave_length: [48.0, 80.0],
             surface_reflectivity: 1.0,
+            status: None,
         }]
     );
 }

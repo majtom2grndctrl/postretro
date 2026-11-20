@@ -92,12 +92,123 @@ impl EmitterBridgeState {
 /// dispatch and before the particle simulation.
 pub(crate) struct EmitterBridge {
     states: HashMap<EntityId, EmitterBridgeState>,
+    /// Status-presentation emitters attached to afflicted entities, keyed by
+    /// entity and status (`crate::status_presentation`).
+    attached: HashMap<(EntityId, u16), EmitterBridgeState>,
 }
 
 impl EmitterBridge {
     pub(crate) fn new() -> Self {
         Self {
             states: HashMap::new(),
+            attached: HashMap::new(),
+        }
+    }
+
+    /// Emit each status emitter attached this frame at its entity's body
+    /// centre: its rate, and its burst once when it attaches. A key no longer
+    /// attached drops its state, so presence reappearing starts afresh. The
+    /// attached list is built before the frame-end pass, so an entity despawned
+    /// since then emits nothing.
+    pub(crate) fn update_attached(
+        &mut self,
+        registry: &EntityRegistry,
+        presentation: &crate::status_presentation::StatusPresentation,
+        delta: f32,
+        current_time: f32,
+        pool: &mut ParticlePool,
+        collector: &mut ParticleRenderCollector,
+    ) {
+        let attached = presentation.attached();
+        let components = presentation.emitters();
+        self.attached.retain(|key, _| {
+            registry.exists(key.0)
+                && attached
+                    .iter()
+                    .any(|emitter| (emitter.entity, emitter.status) == *key)
+        });
+        if delta <= 0.0 {
+            return;
+        }
+        for emitter in attached {
+            if !registry.exists(emitter.entity) {
+                continue;
+            }
+            let Some(Some(component)) = components.get(usize::from(emitter.status)) else {
+                continue;
+            };
+            let mut first = false;
+            let state = self
+                .attached
+                .entry((emitter.entity, emitter.status))
+                .or_insert_with(|| {
+                    first = true;
+                    EmitterBridgeState::new(emitter_seed(emitter.entity, emitter.origin))
+                });
+            state.step = state.step.wrapping_add(1);
+            state.rand_state ^= state.step;
+            let collection = collector
+                .resolve_collection(&derive_collection_id(
+                    &component.sprite,
+                    Some(component.lifetime),
+                    None,
+                    0.0,
+                    None,
+                    None,
+                ))
+                .unwrap_or(usize::MAX);
+            let parameters = ParticleParameters {
+                lifetime: component.lifetime,
+                buoyancy: component.buoyancy,
+                drag: component.drag,
+                size_curve: component.size_over_lifetime.clone(),
+                opacity_curve: component.opacity_over_lifetime.clone(),
+                collection,
+                tint: component.color,
+            };
+            let mut live_count = pool.live_count(emitter.entity);
+            let mut spawn = |state: &mut EmitterBridgeState, live: &mut usize| {
+                if *live >= MAX_SPRITES {
+                    rate_limited_warn(
+                        state,
+                        current_time,
+                        format_args!(
+                            "[EmitterBridge] status emitter on {} at cap {MAX_SPRITES}",
+                            emitter.entity
+                        ),
+                    );
+                    return false;
+                }
+                let spawned = spawn_one(
+                    pool,
+                    &parameters,
+                    component,
+                    emitter.origin,
+                    emitter.entity,
+                    state,
+                );
+                if spawned {
+                    *live += 1;
+                }
+                spawned
+            };
+            if first && let Some(burst) = component.burst {
+                for _ in 0..burst {
+                    if !spawn(state, &mut live_count) {
+                        break;
+                    }
+                }
+            }
+            if component.rate > 0.0 {
+                state.accumulator += delta * component.rate;
+                while state.accumulator >= 1.0 {
+                    if !spawn(state, &mut live_count) {
+                        state.accumulator = state.accumulator.fract();
+                        break;
+                    }
+                    state.accumulator -= 1.0;
+                }
+            }
         }
     }
 
@@ -138,6 +249,7 @@ impl EmitterBridge {
 
     pub(crate) fn clear(&mut self) {
         self.states.clear();
+        self.attached.clear();
     }
 
     /// Install reactions run at clock zero, before any running-frame delta.

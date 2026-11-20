@@ -534,6 +534,12 @@ pub(super) fn run_mod_init_quickjs(
                 return;
             }
         };
+        if let Err(error) = super::check_fluid_status_references(&fluids, &defense) {
+            out = Err(ScriptError::InvalidArgument {
+                reason: format!("mod-init: `{source_path}` default mod manifest export invalid: {error}"),
+            });
+            return;
+        }
         let ghost_styles = match drain_ghost_styles_js(&ctx, &obj, "default mod manifest export") {
             Ok(ghost_styles) => ghost_styles,
             Err(e) => {
@@ -959,6 +965,11 @@ pub(super) fn run_mod_init_luau(
             reason: format!(
                 "mod-init: `{source_path}` returned mod manifest `fluids` invalid: {e}"
             ),
+        }
+    })?;
+    super::check_fluid_status_references(&fluids, &defense).map_err(|error| {
+        ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` returned mod manifest invalid: {error}"),
         }
     })?;
     let ghost_styles = drain_ghost_styles_lua(&table, "returned mod manifest").map_err(|e| {

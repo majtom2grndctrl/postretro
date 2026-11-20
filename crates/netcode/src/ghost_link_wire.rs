@@ -128,6 +128,7 @@ mod tests {
             emitter: None,
             fog: None,
             ghost_link: Some(wire),
+            status_presence: None,
             emissive: None,
         };
         let bytes = postretro_net::wire::encode(&raw);

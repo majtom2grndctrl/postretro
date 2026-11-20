@@ -220,7 +220,9 @@ impl Fixture {
         if let netcode::NetEndpoint::Client { client, .. } = &mut receive.endpoint {
             std::mem::swap(client.as_mut(), &mut self.client);
         }
-        receive.endpoint.reset_level_scoped_client_state();
+        receive
+            .endpoint
+            .reset_level_scoped_client_state(&mut self.local.borrow_mut());
         if let netcode::NetEndpoint::Client { client, .. } = &mut receive.endpoint {
             std::mem::swap(client.as_mut(), &mut self.client);
         }

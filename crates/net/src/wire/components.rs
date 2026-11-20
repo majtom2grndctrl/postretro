@@ -42,9 +42,20 @@ pub const COMPONENT_KIND_DEFENSE_LAYERS: u16 = 27;
 pub const COMPONENT_KIND_ATTACK_POOL: u16 = 28;
 /// Reserved discriminant; level seams are host-only and never replicate.
 pub const COMPONENT_KIND_SEAM: u16 = 29;
+/// An entity's live status kinds, one bit per host status declaration.
+pub const COMPONENT_KIND_STATUS_PRESENCE: u16 = 30;
+
+/// `status_presence`: bit `i` set while any instance of the host's `i`-th
+/// declared status is live on the entity. An entity with no live status
+/// sends no payload. The host's `statusNames` tuning table names each bit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+pub struct WireStatusPresence {
+    pub bits: u64,
+}
+
 /// Emissive volumes: written brightness, colour and animation, bound by
 /// emissive record index (`super::WireEmissiveState`).
-pub const COMPONENT_KIND_EMISSIVE_VOLUME: u16 = 30;
+pub const COMPONENT_KIND_EMISSIVE_VOLUME: u16 = 31;
 
 /// Maximum key count in any replicated presentation animation channel.
 pub const MAX_WIRE_CURVE_KEYS: usize = 64;
@@ -622,6 +633,7 @@ pub struct RawComponentPayload {
     pub emitter: Option<WireEmitterState>,
     pub fog: Option<WireFogState>,
     pub ghost_link: Option<super::WireGhostLinkState>,
+    pub status_presence: Option<WireStatusPresence>,
     pub emissive: Option<super::WireEmissiveState>,
 }
 
@@ -638,6 +650,7 @@ pub enum ComponentPayload {
     EmitterState(WireEmitterState),
     FogState(WireFogState),
     GhostLinkState(super::WireGhostLinkState),
+    StatusPresence(WireStatusPresence),
     EmissiveState(super::WireEmissiveState),
 }
 
@@ -657,6 +670,7 @@ impl ComponentPayload {
             ComponentPayload::EmitterState(_) => COMPONENT_KIND_BILLBOARD_EMITTER,
             ComponentPayload::FogState(_) => COMPONENT_KIND_FOG_VOLUME,
             ComponentPayload::GhostLinkState(_) => COMPONENT_KIND_GHOST_LINK,
+            ComponentPayload::StatusPresence(_) => COMPONENT_KIND_STATUS_PRESENCE,
             ComponentPayload::EmissiveState(_) => COMPONENT_KIND_EMISSIVE_VOLUME,
         }
     }
@@ -680,9 +694,23 @@ impl RawComponentPayload {
             + usize::from(self.emitter.is_some())
             + usize::from(self.fog.is_some())
             + usize::from(self.ghost_link.is_some())
+            + usize::from(self.status_presence.is_some())
             + usize::from(self.emissive.is_some());
 
         match self.component_kind {
+            // An empty presence is never sent: no live status sends no payload.
+            COMPONENT_KIND_STATUS_PRESENCE => match self.status_presence {
+                Some(presence) if populated == 1 && presence.bits != 0 => {
+                    Ok(ComponentPayload::StatusPresence(presence))
+                }
+                Some(_) if populated == 1 => Err(ValidationError::EmptyStatusPresence),
+                Some(_) => Err(ValidationError::MismatchedComponentPayload(
+                    self.component_kind,
+                )),
+                None => Err(ValidationError::MissingComponentPayload(
+                    self.component_kind,
+                )),
+            },
             COMPONENT_KIND_GHOST_LINK => match self.ghost_link {
                 Some(state) if populated == 1 => state
                     .validate()
@@ -892,6 +920,7 @@ mod tests {
             emitter: None,
             fog: None,
             ghost_link: None,
+            status_presence: None,
             emissive: None,
         }
     }
@@ -1235,6 +1264,7 @@ mod tests {
                     teleporter: None,
                     fog: Some(fog_state()),
                     ghost_link: None,
+                    status_presence: None,
                     emissive: None,
                     ..empty_raw(COMPONENT_KIND_FOG_VOLUME)
                 },

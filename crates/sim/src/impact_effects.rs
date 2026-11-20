@@ -87,6 +87,15 @@ pub(crate) enum ImpactEffect {
     SetLifeState {
         state: String,
     },
+    /// `impact.target.applyStatus(h)` keys its instance to the dispatch's
+    /// damager or source id, so the policy runtime applies it.
+    ApplyStatus {
+        status: u16,
+    },
+    /// `impact.target.clearStatus(h)`: every applier's instance of the kind.
+    ClearStatus {
+        status: u16,
+    },
 }
 
 /// Apply one command-buffer effect to the resolved target id.
@@ -125,6 +134,10 @@ pub(crate) fn apply_effect(registry: &mut EntityRegistry, target: EntityId, effe
         ImpactEffect::SetLifeState { .. } => {
             unreachable!("life-state writes are intercepted by ImpactPolicyRuntime")
         }
+        ImpactEffect::ApplyStatus { .. } => {
+            unreachable!("status applications are intercepted by ImpactPolicyRuntime")
+        }
+        ImpactEffect::ClearStatus { status } => registry.clear_status(target, *status),
     }
 }
 

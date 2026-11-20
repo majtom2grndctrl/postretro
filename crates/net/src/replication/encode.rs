@@ -335,7 +335,8 @@ impl MovementAuthority {
             ComponentPayload::Transform(t) => t.all_finite(),
             ComponentPayload::PlayerMovementState(_)
             | ComponentPayload::TeleporterState(_)
-            | ComponentPayload::GhostLinkState(_) => false,
+            | ComponentPayload::GhostLinkState(_)
+            | ComponentPayload::StatusPresence(_) => false,
             ComponentPayload::MeshAnimationState(_) => false,
             ComponentPayload::KinematicMoverState(_)
             | ComponentPayload::LightState(_)

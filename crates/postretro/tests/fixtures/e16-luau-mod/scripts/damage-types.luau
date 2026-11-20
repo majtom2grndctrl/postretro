@@ -10,4 +10,6 @@ return {
   shock = Postretro.defineDamageType("shock", { shield = 2, armor = 0.5, health = 0.75 }),
   corrosive = Postretro.defineDamageType("corrosive", { shield = 0.5, armor = 2 }),
   flechette = Postretro.defineDamageType("flechette", { shield = "bypass", armor = 0 }),
+  fire = Postretro.defineDamageType("fire", { health = 1.25 }),
+  acid = Postretro.defineDamageType("acid", { health = 0.75 }),
 }

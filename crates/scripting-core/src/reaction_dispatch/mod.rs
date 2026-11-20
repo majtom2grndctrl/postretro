@@ -390,6 +390,8 @@ fn is_trigger_consequential_primitive(primitive: &str) -> bool {
             | "grantHealth"
             | "grantAmmo"
             | "grantLayer"
+            | "applyStatus"
+            | "clearStatus"
             | "moverStart"
             | "moverStop"
             | "moverReverse"

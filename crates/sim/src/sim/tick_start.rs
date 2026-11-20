@@ -30,6 +30,9 @@ pub fn begin_tick(
         let mut registry = registry.borrow_mut();
         registry.snapshot_transforms();
         registry.advance_host_tick();
+        // Status applications made since the last tick count on this one,
+        // after the script impacts that landed before it evaluated.
+        registry.apply_latched_statuses();
     }
     let arrivals = if let Some(ctx) = ctx {
         crate::teleporter_commands::apply_pending_teleporter_mutations(ctx);
@@ -183,12 +186,17 @@ pub fn simulate_tick_scheduled<AiResult>(
     drop_pressed: &HashMap<PlayerId, bool>,
     trigger_context: Option<TriggerTickContext<'_>>,
     ingest_ready_remote_hits: impl FnMut(&mut EntityRegistry, &mut dyn FnMut(&mut EntityRegistry)),
-    on_impact: impl FnMut(&mut EntityRegistry),
+    mut on_impact: impl FnMut(&mut EntityRegistry),
     timing: postretro_stage_timing::TimingGate,
 ) -> TickEvents
 where
     AiResult: Into<AiTickResult>,
 {
+    // Script impacts that landed before this tick evaluate at its start, in
+    // landing order, before anything this tick reads health (`scripting.md`
+    // §2, Impact-policy evaluation). The windowed host does the same before
+    // calling [`begin_tick`] itself.
+    on_impact(&mut registry.borrow_mut());
     let ctx = trigger_context
         .as_ref()
         .and_then(|context| context.script_ctx.as_ref());

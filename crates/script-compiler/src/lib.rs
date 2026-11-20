@@ -539,6 +539,7 @@ fn apply_binding_name_sugar(var: &mut swc_ecma_ast::VarDecl) {
             "defineDamageType" => {
                 (1..=2).contains(&call.args.len()) && first_arg_is_object_literal(&call.args)
             }
+            "defineStatus" => call.args.len() == 1 && first_arg_is_object_literal(&call.args),
             "defineDefenseLayer" | "defineAttackToken" => {
                 call.args.is_empty()
                     || (call.args.len() == 1 && first_arg_is_object_literal(&call.args))
@@ -1439,7 +1440,7 @@ mod tests {
     }
 
     #[test]
-    fn binding_name_sugar_names_defense_layers_and_damage_types() {
+    fn binding_name_sugar_names_defense_layers_damage_types_and_statuses() {
         let dir = unique_tempdir("binding-name-sugar-defense");
         let entry = dir.join("entry.ts");
         fs::write(
@@ -1449,6 +1450,10 @@ mod tests {
             let armor = defineDefenseLayer({});
             var shock = defineDamageType({ shield: 2, health: 0.75 });
             export const plasma = defineDamageType({ shield: 1.5 }, {});
+            export const burning = defineStatus({ damage: 4, tickMs: 500 });
+            const held = { damage: 0, tickMs: 500 };
+            export const wet = defineStatus(held);
+            export const named = defineStatus("soaked", { damage: 0, tickMs: 500 });
             "#,
         )
         .unwrap();
@@ -1459,12 +1464,19 @@ mod tests {
             ("defineDefenseLayer", "armor"),
             ("defineDamageType", "shock"),
             ("defineDamageType", "plasma"),
+            ("defineStatus", "burning"),
+            ("defineStatus", "soaked"),
         ] {
             assert!(
                 js.contains(&format!("{call}(\"{name}\"")),
                 "bundle should name `{name}` by its binding: {js}"
             );
         }
+
+        assert!(
+            !js.contains("defineStatus(\"wet\""),
+            "a held options object is not an object literal, so it stays unnamed: {js}"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

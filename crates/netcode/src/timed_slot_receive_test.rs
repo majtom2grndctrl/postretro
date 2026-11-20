@@ -245,6 +245,7 @@ fn descriptor_record() -> RawEntityRecord {
             fog: None,
             teleporter: None,
             ghost_link: None,
+            status_presence: None,
             emissive: None,
         }],
     }

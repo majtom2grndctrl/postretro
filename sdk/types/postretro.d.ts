@@ -1695,6 +1695,8 @@ declare module "postretro" {
     waveAmplitude?: number;
     /** Crest-to-crest length, in texture texels: one number L, meaning [L, L], or a `[min, max]` range from which each crest takes its own length. Finite, 0 < min <= max <= 128, and min >= 8 x `waveAmplitude` (the default 8 included). Omitted: [max(48, 8A), max(80, 8A)] for amplitude A. */
     waveLength?: number | readonly [number, number];
+    /** Optional status, a handle `defineMod({ statuses })` registers, applied each tick to every player pawn whose body is in this fluid at any depth, as `fluid.<name>`. Host-only gameplay data: it never reaches a client or the replicated movement tuning. Enemies resolve no fluid; hurt them with a trigger and `applyStatus`. A status `defineMod` does not register fails load. */
+    status?: Status;
   };
 
   /** A ghost style declared in `ModManifest.ghostStyles`, built with `defineGhostStyle`: how a ghost link's ghosts look and whether their sounds carry. A map's `ghost_link` names it through its `ghost_style` key. Every field but `name` is optional; an omitted field takes the floor style's value (neutral, translucent, no sound). A malformed field drops the whole style with a warning naming it, and a second declaration of an existing name is dropped; the first declaration stands and the rest of the manifest is kept. A link naming no declared style uses the floor style. Styles resolve on each machine by name and never affect co-op compatibility. */
@@ -1783,6 +1785,8 @@ declare module "postretro" {
     damageTypes?: ReadonlyArray<DamageType>;
     /** The type every producer that names none deals; it must be listed in `damageTypes`. Optional; without it, untyped damage is ×1 on every pool and no resist applies. */
     defaultDamageType?: DamageType;
+    /** Status kinds from `defineStatus(...)`, in registration order. Optional; at most 64. Impact policies, reactions and a fluid's `status` apply only a listed kind; two entries with one name, an entry that is not a status handle, an unknown key, a `type` that is not a registered damage type, or a parameter out of range fails load naming its key path. */
+    statuses?: ReadonlyArray<Status>;
     /** Attack tokens from `defineAttackToken(...)`, each carrying its default budget. Optional; the SDK's `defaultToken` is always registered and is never listed. An attack's `draws` name only a listed token or `defaultToken`; two entries with one name, a token named `default`, an entry that is not a token handle, or a `limit` that is not an integer of at least 1 or a `refreshMs` that is not a finite number of at least 0 fails load. */
     attackTokens?: ReadonlyArray<AttackToken>;
     /** Budget profiles keyed by name, each a list of overrides made with the token's `with({ limit?, refreshMs? })` (`melee.with(...)` in TypeScript, `melee:with(...)` in Luau); a token a profile leaves out keeps its declared budget. Attack pools select a profile by name, and enemies in no running pool use `default`, which is the declared budgets unless the mod declares it. Optional. A token overridden twice by one profile, a `cost`, or an unregistered token fails load. */
@@ -2494,6 +2498,10 @@ declare module "postretro" {
     grantAmmo(type: string, amount: number): SubjectTokenCommand;
     /** Refill `layer` on this fire's activators: omit `amount` to fill to capacity, or add a finite, non-negative `amount`, clamped to capacity. A pawn without that layer warns and is skipped. */
     grantLayer(layer: DefenseLayer, amount?: number): SubjectTokenCommand;
+    /** Apply `status` as `script.applyStatus`; a subject without health warns and is skipped. Host and single player only; applied at the next fixed tick when it fires outside one. */
+    applyStatus(status: Status): SubjectTokenCommand;
+    /** Remove every applier's instance of `status`. Host and single player only. */
+    clearStatus(status: Status): SubjectTokenCommand;
     /** Add `delta` to this fire's activators' value of a per-owner numeric slot. */
     addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;
   }
@@ -2535,6 +2543,10 @@ declare module "postretro" {
     grantAmmo(type: string, amount: number): SubjectTokenCommand;
     /** Refill `layer` on this event's player: omit `amount` to fill to capacity, or add a finite, non-negative `amount`, clamped to capacity. A pawn without that layer warns and is skipped. */
     grantLayer(layer: DefenseLayer, amount?: number): SubjectTokenCommand;
+    /** Apply `status` as `script.applyStatus`; a subject without health warns and is skipped. Host and single player only; applied at the next fixed tick when it fires outside one. */
+    applyStatus(status: Status): SubjectTokenCommand;
+    /** Remove every applier's instance of `status`. Host and single player only. */
+    clearStatus(status: Status): SubjectTokenCommand;
     /** Add `delta` to this event's player's value of a per-owner numeric slot. */
     addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;
   }
@@ -2637,12 +2649,18 @@ declare module "postretro" {
     /** The impact target's own layer, read before this fire's effects: `current` and `capacity`. A target without that layer reads 0; a bad reference drops the policy at install. */
     defense(layer: DefenseLayer): Readonly<{ current: NumberRef; capacity: NumberRef }>;
     setState(name: string, value: NumberValue): Effect;
+    /** Whether the target carries a live instance of `status`, from any applier, at this fire. A bad reference drops the policy at install. */
+    hasStatus(status: Status): BoolRef;
+    /** Apply `status` to the target. The applier is this impact's damager, or with none its source id (`fluid.<name>`, `script.applyDamage`); one applier's applications on one fixed tick count once. A target at health ≤ 0 accepts none. */
+    applyStatus(status: Status): Effect;
+    /** Remove every applier's instance of `status` from the target. */
+    clearStatus(status: Status): Effect;
   }
   export interface SourceHandle {
     readonly [sourceBrand]: true;
-    /** Add health to the impact damager. A fire with no damager skips this effect; app-drain impacts run no policy in v1. */
+    /** Add health to the impact damager. A fire with no damager skips this effect. Every impact runs its policies whatever produced it. Script `applyDamage` evaluates on the host where it lands (in-tick right after its damage, otherwise at the next tick start or frame end) and has no damager, so a grant on it reaches no one. A status tick's damager is its applier, so a grant there reaches the applier. */
     grantHealth(amount: NumberValue): Effect;
-    /** Add an ammo-pool balance to the impact damager. A fire with no damager skips this effect; app-drain impacts run no policy in v1. */
+    /** Add an ammo-pool balance to the impact damager. A fire with no damager skips this effect. Script damage has no damager, so a grant on it reaches no one; a status tick's damager is its applier, so a grant there reaches the applier. */
     grantAmmo(type: string, amount: NumberValue): Effect;
     /** Refill `layer` on the impact damager: omit `amount` to fill to capacity, or add `amount`, clamped to capacity. The capacity is evaluated when the grant applies. A damager without that layer warns and skips; a fire with no damager skips this effect. */
     grantLayer(layer: DefenseLayer, amount?: NumberValue): Effect;
@@ -2653,8 +2671,8 @@ declare module "postretro" {
     /** Adjust this faction's sentiment toward another impact recipient. Negative values degrade the relationship; positive values strengthen its bond. */
     adjustSentimentToward(toward: TargetHandle | SourceHandle, delta: NumberValue): Effect;
   }
-  /** One impact's facts. `amount` is points dealt: the total drained from layers and health after type multipliers and resistances. `raw` is the incoming amount after hit zones, before type and layers; `absorbed` is the layers' share of `amount`; `broke` is true when this hit took some layer from above zero to zero; `type(damageType)` is true when the hit dealt that type, the mod's default included. */
-  export type Impact = Readonly<{ target: TargetHandle; source: SourceHandle; amount: NumberRef; raw: NumberRef; absorbed: NumberRef; broke: BoolRef; type(damageType: DamageType): BoolRef }>;
+  /** One impact's facts. `amount` is points dealt: the total drained from layers and health after type multipliers and resistances. `raw` is the incoming amount after hit zones, before type and layers; `absorbed` is the layers' share of `amount`; `broke` is true when this hit took some layer from above zero to zero; `type(damageType)` is true when the hit dealt that type, the mod's default included; `status(h)` is true when this impact is a tick of `h`, the guard that keeps an igniting policy from reapplying a burn from its own ticks. */
+  export type Impact = Readonly<{ target: TargetHandle; source: SourceHandle; amount: NumberRef; raw: NumberRef; absorbed: NumberRef; broke: BoolRef; type(damageType: DamageType): BoolRef; status(status: Status): BoolRef }>;
   export interface ImpactEvent {
     readonly kind: "impact";
     readonly isOverride: boolean;
@@ -2782,6 +2800,10 @@ declare module "postretro" {
     update(fields: NpcStateUpdateArgs): GroupCommand;
     /** Damage each NPC by a finite, non-negative amount. */
     damage(amount: number, options?: DamageOptions): GroupCommand;
+    /** Apply `status` to each NPC as `script.applyStatus`; one without health warns and is skipped. Host and single player only; applied at the next fixed tick when it fires outside one. */
+    applyStatus(status: Status): GroupCommand;
+    /** Remove every applier's instance of `status` from each NPC. Host and single player only. */
+    clearStatus(status: Status): GroupCommand;
   }
   /** Options for relocating a player to its seat placement on the next tick. `health` lies in (0, max] and defaults to the pawn's maximum; a value outside that range, or a non-finite one, warns and restores the maximum. `lifeState` names the state to enter at elapsed zero and defaults to the descriptor's `initial`. */
   export type RespawnOptions = { health?: number; lifeState?: string };
@@ -2799,6 +2821,10 @@ declare module "postretro" {
     grantAmmo(type: string, amount: number): GroupCommand;
     /** Refill `layer` on each player: omit `amount` to fill to capacity, or add a finite, non-negative `amount`, clamped to capacity. A player without that layer warns and is skipped. */
     grantLayer(layer: DefenseLayer, amount?: number): GroupCommand;
+    /** Apply `status` as `script.applyStatus`; a subject without health warns and is skipped. Host and single player only; applied at the next fixed tick when it fires outside one. */
+    applyStatus(status: Status): GroupCommand;
+    /** Remove every applier's instance of `status`. Host and single player only. */
+    clearStatus(status: Status): GroupCommand;
     /** Add `delta` to each player's value of a per-owner numeric slot. */
     addSlot(slot: StateRef<number>, delta: number): GroupCommand;
     /** Fire `fire` once per player whenever `edge`'s condition crosses for that player, or, for `assistReceived()` / `assistGiven()`, once per completed assist on its target or helper. Evaluated on the host (and in single player) once per authoritative tick, after the tick settles; a connected client registers nothing. Effective only when returned under a manifest's `playerEvents`; `options.levels` scopes a `ModManifest` entry. */
@@ -2945,6 +2971,63 @@ declare module "postretro" {
   /** Declare a damage type by its matrix. Omit `name` only in a TypeScript direct top-level binding declaration whose first argument is an object literal; scripts-build names it by its binding. Register it with `defineMod({ damageTypes: [type] })`. */
   export function defineDamageType(matrix: DamageTypeMatrix, options?: DamageTypeOptions): DamageType;
   export function defineDamageType(name: string, matrix: DamageTypeMatrix, options?: DamageTypeOptions): DamageType;
+
+  /** Input shape for `emitter()`. Required: `lifetime`, `velocity` and `sprite`; other fields fall back to the documented emitter defaults. */
+  export type EmitterProps = {
+    /** Starts this many particles every second. Omit for the default `0`; use `burst` for a one-off puff. Must be finite and ≥ 0. */
+    rate?: number;
+    /** Starts this many particles once, then clears itself. A whole number ≥ 0. */
+    burst?: number;
+    /** Widens particle directions around `velocity`, in radians. Finite and ≥ 0. Default: `0.2`. */
+    spread?: number;
+    /** How long each particle remains alive, in seconds. Finite and > 0. */
+    lifetime: number;
+    /** Starting movement as `[x, y, z]` metres per second (`y` is up). All three numbers finite. */
+    velocity: [number, number, number];
+    /** How gravity affects particles: `-1` falls normally, `0` floats, positive values rise. Default: `0.5`. */
+    buoyancy?: number;
+    /** How quickly motion slows, in 1/seconds. Finite and ≥ 0. Default: `0.5`. */
+    drag?: number;
+    /** Finite size multipliers sampled evenly from birth to death. Default: `[1]`. */
+    size_over_lifetime?: number[];
+    /** Finite opacity multipliers sampled evenly from birth to death. Default: `[1, 1, 0.8, 0]`. */
+    opacity_over_lifetime?: number[];
+    /** RGB tint, each in `[0, 1]`. Default: white. */
+    color?: [number, number, number];
+    /** Non-empty sprite or material name for the particle image, such as `"smoke"` or `"ember"`. */
+    sprite: string;
+    /** Billboard rotation speed in radians per second. Default: `0`. */
+    spin_rate?: number;
+  };
+  /** Build a `billboard_emitter` component value from `props`, validating them and filling defaults; throws naming the offending field. Use it in a component preset or a status's `presentation.emitter`. */
+  export function emitter(props: EmitterProps): { kind: "billboard_emitter" } & BillboardEmitterComponent;
+
+  /** How a repeat application by the same applier changes its instance: `"refresh"` resets time left; `"stack"` adds one stack up to `maxStacks`, resets time left, and each tick deals `damage × stacks`. */
+  export type StatusStacking = "refresh" | "stack";
+  /** What a status draws on each afflicted entity, on every machine: an `emitter()` that follows the entity while the status is live (never on the local player's own pawn), and a one-shot `tickSound` every `tickMs`. */
+  export type StatusPresentation = {
+    readonly emitter?: { kind: "billboard_emitter" } & BillboardEmitterComponent;
+    readonly tickSound?: string;
+  };
+  /** A status's literal parameters. `damage`: per tick per stack, in [0, 1e6]; `0` makes a marker that never enters the damage chokepoint. `type`: a registered damage type; omitted, ticks deal the mod's `defaultDamageType`. `tickMs` in [1, 60000] and `durationMs` in [`tickMs`, 600000], each rounded up to whole fixed ticks; omit `durationMs` to last until cleared. `maxStacks` a whole number in [1, 64], default 1. Any other key rejects load. */
+  export type StatusOptions = {
+    readonly damage: number;
+    readonly type?: DamageType;
+    readonly tickMs: number;
+    readonly durationMs?: number;
+    readonly stacking?: StatusStacking;
+    readonly maxStacks?: number;
+    readonly presentation?: StatusPresentation;
+  };
+  /** A registered status kind. It crosses the manifest as `{ kind, name }`. `active` reads whether the local player carries it (`player.status.<name>`): a local-only read with no `byPlayer`, which a player event rejects. */
+  export type Status = {
+    readonly kind: "status";
+    readonly name: string;
+    readonly active: ComputedRef<boolean>;
+  };
+  /** Declare a status kind. Omit `name` only in a TypeScript direct top-level binding declaration whose only argument is an object literal; scripts-build names it by its binding. Register it with `defineMod({ statuses: [status] })`. */
+  export function defineStatus(options: StatusOptions): Status;
+  export function defineStatus(name: string, options: StatusOptions): Status;
 
   /** A token's default budget on one target. `limit`: how much of it may be drawn on one target at once, an integer of at least 1 (default 3). `refreshMs`: how long a spent draw stays counted after its turn ends, a finite number of at least 0 (default 0). */
   export type AttackTokenBudget = { readonly limit?: number; readonly refreshMs?: number };
@@ -3098,7 +3181,7 @@ declare module "postretro" {
   export function defineFaction(name: string): FactionDescriptor;
   /** Build one directed relationship for `ModManifest.sentiment`; negative sentiment is hostile, zero neutral, and positive allied. Optional non-negative `decay` overrides the global return-to-baseline rate; zero holds the pair. */
   export function sentiment(fromFaction: string, toFaction: string, values: Pick<FactionSentimentDescriptor, "sentiment" | "tolerance" | "decay">): FactionSentimentDescriptor;
-  /** Pure identity builder for a fluid declaration in `ModManifest.fluids`. A map's `fluid_volume` names it through its `fluid` key; declaration order assigns its index. A field out of range, or a repeated name, is rejected with a warning naming the field, and the first declaration stands. */
+  /** Pure identity builder for a fluid declaration in `ModManifest.fluids`. A map's `fluid_volume` names it through its `fluid` key; declaration order assigns its index. A field out of range, or a repeated name, is rejected with a warning naming the field, and the first declaration stands. `status`, a status handle, is the exception: one naming a status `defineMod` does not register fails the load. */
   export function defineFluid(desc: FluidDescriptor): FluidDescriptor;
   /** Pure identity builder for a ghost style in `ModManifest.ghostStyles`. A map's `ghost_link` names it through its `ghost_style` key. Every field but `name` is optional and takes the floor style's value when omitted. A malformed field drops the whole style with a warning naming it, a repeated name is dropped and the first declaration stands, and a link naming no declared style uses the floor style. */
   export function defineGhostStyle(desc: GhostStyleDescriptor): GhostStyleDescriptor;
@@ -3347,6 +3430,9 @@ declare module "postretro" {
 
   /** Read the brain entity's own defense layer as guard inputs, as `state(name)` reads its own state: `defense(armor).current.le(0)`. An entity without the layer reads `0`; a bad reference fails load. */
   export function defense(layer: DefenseLayer): Readonly<{ current: RuntimeGuardNode; capacity: RuntimeGuardNode }>;
+
+  /** `true` while the brain entity carries a live instance of `status`, from any applier: `{ to: "flee", when: hasStatus(burning) }`. A status `defineMod` does not register fails load. */
+  export function hasStatus(status: Status): RuntimeGuardNode;
 
   /** `true` while the enemy holds a turn for `attack`, one of its archetype's attacks, as of the previous tick. Naming another attack fails load; anything but an attack handle throws at the call. Reading it registers no attack. */
   export function attackTurnHeld(attack: Attack): RuntimeGuardNode;

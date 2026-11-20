@@ -69,6 +69,7 @@ const ALL_KINDS: [ComponentKind; ComponentKind::COUNT] = [
     ComponentKind::DefenseLayers,
     ComponentKind::AttackPool,
     ComponentKind::Seam,
+    ComponentKind::StatusPresence,
     ComponentKind::EmissiveVolume,
 ];
 
@@ -111,6 +112,7 @@ fn component_kind_snake(kind: ComponentKind) -> &'static str {
         ComponentKind::DefenseLayers => "defense_layers",
         ComponentKind::AttackPool => "attack_pool",
         ComponentKind::Seam => "seam",
+        ComponentKind::StatusPresence => "status_presence",
         ComponentKind::EmissiveVolume => "emissive_volume",
     }
 }
@@ -500,11 +502,17 @@ mod tests {
                 armed: true,
                 on_arrive: String::new(),
             }),
+            ComponentKind::StatusPresence => ComponentValue::StatusPresence(
+                postretro_entities::components::statuses::StatusPresenceComponent { bits: 1 },
+            ),
             ComponentKind::EmissiveVolume => ComponentValue::EmissiveVolume(
                 postretro_entities::EmissiveVolumeComponent::authored(0.0, 1.0, [1.0, 0.5, 0.0]),
             ),
             ComponentKind::Immersion => ComponentValue::Immersion(
-                postretro_entities::components::immersion::ImmersionComponent { immersion: 0.5 },
+                postretro_entities::components::immersion::ImmersionComponent {
+                    immersion: 0.5,
+                    fluid: None,
+                },
             ),
             ComponentKind::HitVolume => ComponentValue::HitVolume(
                 postretro_entities::components::hit_volume::HitVolumeComponent {

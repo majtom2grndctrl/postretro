@@ -288,6 +288,7 @@ impl Fixture {
             &postretro_combat_model::EnvironmentTuning {
                 level_gravity: 0.0,
                 fluids: Default::default(),
+                status_names: Vec::new(),
             },
             &life_state_names,
             life_state_revision,

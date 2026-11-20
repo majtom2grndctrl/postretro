@@ -50,12 +50,12 @@ pub use components::{
     COMPONENT_KIND_LIGHT, COMPONENT_KIND_MAP_ORDINAL, COMPONENT_KIND_MESH_ANIMATION_STATE,
     COMPONENT_KIND_PLAYER_MOVEMENT_STATE, COMPONENT_KIND_PROJECTILE,
     COMPONENT_KIND_PROJECTILE_TRAP, COMPONENT_KIND_SEAM, COMPONENT_KIND_SPAWNER,
-    COMPONENT_KIND_SPRITE_VISUAL, COMPONENT_KIND_TELEPORTER, COMPONENT_KIND_TOUCHABLE,
-    COMPONENT_KIND_TRANSFORM, COMPONENT_KIND_TRIGGER_VOLUME, COMPONENT_KIND_WEAPON,
-    ComponentPayload, MAX_WIRE_CURVE_KEYS, RawComponentPayload, WireEmitterState, WireFogAnimation,
-    WireFogState, WireGroundRef, WireKinematicMoverState, WireLightAnimation, WireLightState,
-    WireMeshAnimationState, WireMovementState, WirePlayerMovementState, WireSpinAnimation,
-    WireTransform,
+    COMPONENT_KIND_SPRITE_VISUAL, COMPONENT_KIND_STATUS_PRESENCE, COMPONENT_KIND_TELEPORTER,
+    COMPONENT_KIND_TOUCHABLE, COMPONENT_KIND_TRANSFORM, COMPONENT_KIND_TRIGGER_VOLUME,
+    COMPONENT_KIND_WEAPON, ComponentPayload, MAX_WIRE_CURVE_KEYS, RawComponentPayload,
+    WireEmitterState, WireFogAnimation, WireFogState, WireGroundRef, WireKinematicMoverState,
+    WireLightAnimation, WireLightState, WireMeshAnimationState, WireMovementState,
+    WirePlayerMovementState, WireSpinAnimation, WireStatusPresence, WireTransform,
 };
 pub use emissive::{WireEmissiveAnimation, WireEmissiveState};
 pub use ghost::{
@@ -386,9 +386,10 @@ impl WeaponCuesMessage {
 /// Bumped to 25 for teammate assist: player movement state gained the
 /// `assistable` bool, and the local-pawn record its assist pair table and
 /// received required ticks, all under the one bump.
-/// Bumped to 26 for emissive volumes: component payloads gained the emissive
+/// Bumped to 26 for the `status_presence` entity component payload.
+/// Bumped to 27 for emissive volumes: component payloads gained the emissive
 /// presentation record, and bindings the emissive-volume kind.
-pub const SNAPSHOT_VERSION: u16 = 26;
+pub const SNAPSHOT_VERSION: u16 = 27;
 
 /// The highest [`WirePresentationBinding::kind`] byte a binding may carry.
 pub const MAX_PRESENTATION_BINDING_KIND: u8 = 3;
@@ -640,6 +641,9 @@ pub enum ValidationError {
     /// More than one payload slot was `Some` (ambiguous which one `component_kind`
     /// names).
     MismatchedComponentPayload(u16),
+    /// A status-presence payload carried no bits. An empty presence is never
+    /// sent: a pawn with no live status sends no payload.
+    EmptyStatusPresence,
     /// A record carried movement-authority metadata
     /// (`has_last_processed_client_tick` / `local_player`) but does not carry a
     /// `PlayerMovementState` component. Ack/local-player metadata is only meaningful
@@ -762,6 +766,9 @@ impl std::fmt::Display for ValidationError {
                     f,
                     "mismatched/duplicate payload slot for component_kind {k}"
                 )
+            }
+            ValidationError::EmptyStatusPresence => {
+                write!(f, "status presence payload with no bits set")
             }
             ValidationError::MovementMetadataWithoutMovement => write!(
                 f,
@@ -1029,7 +1036,8 @@ impl RawEntityRecord {
                 ComponentPayload::Transform(t) => t.all_finite(),
                 ComponentPayload::PlayerMovementState(_)
                 | ComponentPayload::TeleporterState(_)
-                | ComponentPayload::GhostLinkState(_) => false,
+                | ComponentPayload::GhostLinkState(_)
+                | ComponentPayload::StatusPresence(_) => false,
                 ComponentPayload::MeshAnimationState(_) => false,
                 ComponentPayload::KinematicMoverState(_)
                 | ComponentPayload::LightState(_)
@@ -1567,6 +1575,7 @@ mod tests {
             emitter: None,
             fog: None,
             ghost_link: None,
+            status_presence: None,
             emissive: None,
         }
     }
@@ -1583,6 +1592,7 @@ mod tests {
             emitter: None,
             fog: None,
             ghost_link: None,
+            status_presence: None,
             emissive: None,
         }
     }
@@ -1601,6 +1611,7 @@ mod tests {
             emitter: None,
             fog: None,
             ghost_link: None,
+            status_presence: None,
             emissive: None,
         }
     }
@@ -1638,6 +1649,7 @@ mod tests {
             emitter: None,
             fog: None,
             ghost_link: None,
+            status_presence: None,
             emissive: None,
         }
     }
@@ -2562,6 +2574,7 @@ mod tests {
                     emitter: None,
                     fog: None,
                     ghost_link: None,
+                    status_presence: None,
                     emissive: None,
                 }],
             )],
@@ -2591,6 +2604,7 @@ mod tests {
             emitter: None,
             fog: None,
             ghost_link: None,
+            status_presence: None,
             emissive: None,
         };
         assert_eq!(
@@ -2615,6 +2629,7 @@ mod tests {
             emitter: None,
             fog: None,
             ghost_link: None,
+            status_presence: None,
             emissive: None,
         };
         assert_eq!(
@@ -2641,6 +2656,7 @@ mod tests {
             emitter: None,
             fog: None,
             ghost_link: None,
+            status_presence: None,
             emissive: None,
         };
         assert_eq!(
@@ -2727,6 +2743,7 @@ mod tests {
             }),
             ComponentPayload::KinematicMoverState(sample_mover_state()),
             ComponentPayload::GhostLinkState(WireGhostLinkState::new(0, 1, true, 0b1111)),
+            ComponentPayload::StatusPresence(WireStatusPresence { bits: 0b101 }),
             ComponentPayload::EmissiveState(WireEmissiveState {
                 brightness: 1.0,
                 color: [1.0; 3],
@@ -2745,14 +2762,16 @@ mod tests {
                 ComponentPayload::FogState(_) => 4,
                 ComponentPayload::TeleporterState(_) => 24,
                 ComponentPayload::GhostLinkState(_) => 26,
-                ComponentPayload::EmissiveState(_) => 30,
+                ComponentPayload::StatusPresence(_) => 30,
+                ComponentPayload::EmissiveState(_) => 31,
             };
             assert_eq!(payload.kind(), expected);
         }
         assert_eq!(COMPONENT_KIND_LIGHT, 1);
         assert_eq!(COMPONENT_KIND_BILLBOARD_EMITTER, 2);
         assert_eq!(COMPONENT_KIND_FOG_VOLUME, 4);
-        assert_eq!(COMPONENT_KIND_EMISSIVE_VOLUME, 30);
+        assert_eq!(COMPONENT_KIND_STATUS_PRESENCE, 30);
+        assert_eq!(COMPONENT_KIND_EMISSIVE_VOLUME, 31);
     }
 
     // Drift guard: the three record_kind constants are distinct and a typed record
@@ -3370,6 +3389,7 @@ mod tests {
                 emitter: None,
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
                 emissive: None,
             };
             assert_eq!(
@@ -3401,6 +3421,7 @@ mod tests {
             emitter: None,
             fog: None,
             ghost_link: None,
+            status_presence: None,
             emissive: None,
         };
         assert_eq!(
@@ -3425,6 +3446,7 @@ mod tests {
             emitter: None,
             fog: None,
             ghost_link: None,
+            status_presence: None,
             emissive: None,
         }
     }
@@ -3510,6 +3532,7 @@ mod tests {
             emitter: None,
             fog: None,
             ghost_link: None,
+            status_presence: None,
             emissive: None,
         };
 
@@ -3545,6 +3568,7 @@ mod tests {
                 emitter: None,
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
                 emissive: None,
             };
 
@@ -3584,6 +3608,7 @@ mod tests {
                 emitter: None,
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
                 emissive: None,
             };
 
@@ -3628,6 +3653,7 @@ mod tests {
                 emitter: None,
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
                 emissive: None,
             };
             assert_eq!(
@@ -3657,6 +3683,7 @@ mod tests {
                 emitter: None,
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
                 emissive: None,
             };
             assert_eq!(
@@ -3692,6 +3719,7 @@ mod tests {
                 emitter: None,
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
                 emissive: None,
             };
             assert_eq!(payload.validate(), Err(ValidationError::NonFiniteTransform));
@@ -3723,6 +3751,7 @@ mod tests {
                 emitter: None,
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
                 emissive: None,
             }],
         );
@@ -3755,6 +3784,7 @@ mod tests {
                 emitter: None,
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
                 emissive: None,
             }],
         );
@@ -3932,10 +3962,10 @@ mod tests {
     // typed gate; a pre-emissive snapshot version is refused before any record.
     #[test]
     fn emissive_state_binds_as_kind_3_roundtrips_and_rejects_pre_emissive_snapshot_version() {
-        const PRE_EMISSIVE_SNAPSHOT_VERSION: u16 = 25;
+        const PRE_EMISSIVE_SNAPSHOT_VERSION: u16 = 26;
         const {
             assert!(SNAPSHOT_VERSION > PRE_EMISSIVE_SNAPSHOT_VERSION);
-            assert!(crate::handshake::WIRE_VERSION >= 42);
+            assert!(crate::handshake::WIRE_VERSION >= 43);
         }
         let state = WireEmissiveState {
             brightness: 0.25,
@@ -4111,13 +4141,66 @@ mod tests {
                 received: 19
             })
         ));
+        // The layout before the status-presence component payload.
+        snapshot.version = 25;
+        assert_eq!(SNAPSHOT_VERSION, 27);
+        assert!(matches!(
+            snapshot.validate(),
+            Err(ValidationError::VersionMismatch {
+                expected: SNAPSHOT_VERSION,
+                received: 25
+            })
+        ));
+    }
+
+    // A status presence crosses as one non-empty bitset; an empty one is never
+    // sent, so a payload carrying none is malformed.
+    #[test]
+    fn status_presence_payload_round_trips_and_rejects_empty_bits() {
+        let raw = raw_from_typed(&ComponentPayload::StatusPresence(WireStatusPresence {
+            bits: 1 << 63 | 1,
+        }));
+        assert!(round_trips(&raw));
+        assert_eq!(
+            raw.validate(),
+            Ok(ComponentPayload::StatusPresence(WireStatusPresence {
+                bits: 1 << 63 | 1
+            }))
+        );
+        let mut empty = raw.clone();
+        empty.status_presence = Some(WireStatusPresence { bits: 0 });
+        assert!(round_trips(&empty));
+        assert_eq!(empty.validate(), Err(ValidationError::EmptyStatusPresence));
+        let mut missing = raw;
+        missing.status_presence = None;
+        assert_eq!(
+            missing.validate(),
+            Err(ValidationError::MissingComponentPayload(
+                COMPONENT_KIND_STATUS_PRESENCE
+            ))
+        );
     }
 
     fn raw_from_typed(payload: &ComponentPayload) -> RawComponentPayload {
         match payload {
+            ComponentPayload::StatusPresence(presence) => RawComponentPayload {
+                component_kind: COMPONENT_KIND_STATUS_PRESENCE,
+                status_presence: Some(*presence),
+                emissive: None,
+                ghost_link: None,
+                teleporter: None,
+                transform: None,
+                player_movement: None,
+                mesh_animation_state: None,
+                kinematic_mover: None,
+                light: None,
+                emitter: None,
+                fog: None,
+            },
             ComponentPayload::GhostLinkState(state) => RawComponentPayload {
                 component_kind: COMPONENT_KIND_GHOST_LINK,
                 ghost_link: Some(*state),
+                status_presence: None,
                 emissive: None,
                 teleporter: None,
                 transform: None,
@@ -4139,6 +4222,7 @@ mod tests {
                 emitter: None,
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
                 emissive: None,
             },
             ComponentPayload::Transform(t) => RawComponentPayload {
@@ -4152,6 +4236,7 @@ mod tests {
                 emitter: None,
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
                 emissive: None,
             },
             ComponentPayload::PlayerMovementState(m) => RawComponentPayload {
@@ -4165,6 +4250,7 @@ mod tests {
                 emitter: None,
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
                 emissive: None,
             },
             ComponentPayload::MeshAnimationState(m) => RawComponentPayload {
@@ -4178,6 +4264,7 @@ mod tests {
                 emitter: None,
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
                 emissive: None,
             },
             ComponentPayload::KinematicMoverState(m) => RawComponentPayload {
@@ -4191,6 +4278,7 @@ mod tests {
                 emitter: None,
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
                 emissive: None,
             },
             ComponentPayload::LightState(state) => RawComponentPayload {
@@ -4204,6 +4292,7 @@ mod tests {
                 emitter: None,
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
                 emissive: None,
             },
             ComponentPayload::EmitterState(state) => RawComponentPayload {
@@ -4217,6 +4306,7 @@ mod tests {
                 emitter: Some(state.clone()),
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
                 emissive: None,
             },
             ComponentPayload::FogState(state) => RawComponentPayload {
@@ -4230,6 +4320,7 @@ mod tests {
                 emitter: None,
                 fog: Some(state.clone()),
                 ghost_link: None,
+                status_presence: None,
                 emissive: None,
             },
             ComponentPayload::EmissiveState(state) => RawComponentPayload {
@@ -4243,6 +4334,7 @@ mod tests {
                 emitter: None,
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
                 emissive: Some(state.clone()),
             },
         }
@@ -4281,6 +4373,7 @@ mod tests {
             emitter: None,
             fog: None,
             ghost_link: None,
+            status_presence: None,
             emissive: None,
         };
         assert!(matches!(
@@ -4325,6 +4418,7 @@ mod tests {
     fn ghost_link_payload_validates_its_record_and_its_envelope_slot() {
         let raw = |state| RawComponentPayload {
             ghost_link: Some(state),
+            status_presence: None,
             emissive: None,
             component_kind: COMPONENT_KIND_GHOST_LINK,
             teleporter: None,

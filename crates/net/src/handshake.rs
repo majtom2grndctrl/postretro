@@ -62,10 +62,11 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C47; // "PRLG"
 /// The roster entry's display name and status advance it to 40.
 /// The carried loadout on `JoinSeed` and `FinalCharacter` advances it to 41:
 /// both shipped messages changed layout.
-/// Emissive volumes advance it to 42 (`SNAPSHOT_VERSION` 26): component payloads
-/// gained the emissive presentation record (kind 30) and presentation bindings
+/// Status presence, a new entity component payload, advances it to 42 (`SNAPSHOT_VERSION` 26).
+/// Emissive volumes advance it to 43 (`SNAPSHOT_VERSION` 27): component payloads
+/// gained the emissive presentation record (kind 31) and presentation bindings
 /// the emissive-volume kind 3.
-pub const WIRE_VERSION: u32 = 42;
+pub const WIRE_VERSION: u32 = 43;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -1317,15 +1318,15 @@ mod switch_tick_epoch_tests {
         );
     }
 
-    // A wire-41 peer knows no emissive presentation record (component kind 30)
+    // A wire-42 peer knows no emissive presentation record (component kind 31)
     // and no emissive binding kind 3, so it would refuse every snapshot naming
     // one: both gates refuse it under the one bump; the vocabulary is unchanged.
     #[test]
-    fn emissive_volumes_refuse_wire_41_peers_and_admit_current_wire() {
-        const PRE_EMISSIVE_WIRE_VERSION: u32 = 41;
+    fn emissive_volumes_refuse_wire_42_peers_and_admit_current_wire() {
+        const PRE_EMISSIVE_WIRE_VERSION: u32 = 42;
         const {
             assert!(WIRE_VERSION > PRE_EMISSIVE_WIRE_VERSION);
-            assert!(crate::wire::SNAPSHOT_VERSION >= 26);
+            assert!(crate::wire::SNAPSHOT_VERSION >= 27);
             assert!(
                 PROTOCOL_ID >= 0x_5052_4C47,
                 "no vocabulary change at this bump: PRLG or later"
@@ -1639,7 +1640,7 @@ mod server_vocabulary_tests {
         );
 
         assert_eq!(PROTOCOL_ID, 0x_5052_4C47, "PROTOCOL_ID is still \"PRLG\"");
-        assert_eq!(WIRE_VERSION, 42);
-        assert_eq!(crate::wire::SNAPSHOT_VERSION, 26);
+        assert_eq!(WIRE_VERSION, 43);
+        assert_eq!(crate::wire::SNAPSHOT_VERSION, 27);
     }
 }

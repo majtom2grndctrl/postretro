@@ -26,6 +26,8 @@ const CONSEQUENTIAL_PRIMITIVES: &[&str] = &[
     "grantHealth",
     "grantAmmo",
     "grantLayer",
+    crate::status_commands::APPLY_STATUS,
+    crate::status_commands::CLEAR_STATUS,
     "armTrigger",
     "disarmTrigger",
     "armTeleporter",

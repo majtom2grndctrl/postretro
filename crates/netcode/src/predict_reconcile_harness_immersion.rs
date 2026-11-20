@@ -53,6 +53,7 @@ fn water() -> FluidRegistry {
             wave_amplitude: 8.0,
             wave_length: [64.0, 80.0],
             surface_reflectivity: 1.0,
+            status: None,
         })],
     )
 }
@@ -93,10 +94,22 @@ fn a_stale_immersion_component_changes_no_prediction_replay_or_merge() {
     for step in 0..240_usize {
         let stale = STALE[step % 2];
         h.client_registry
-            .set_component(client_pawn, ImmersionComponent { immersion: stale })
+            .set_component(
+                client_pawn,
+                ImmersionComponent {
+                    immersion: stale,
+                    fluid: None,
+                },
+            )
             .unwrap();
         h.host_registry
-            .set_component(h.host_pawn, ImmersionComponent { immersion: stale })
+            .set_component(
+                h.host_pawn,
+                ImmersionComponent {
+                    immersion: stale,
+                    fluid: None,
+                },
+            )
             .unwrap();
         // The host frame below runs exactly one tick from this pose.
         let host_start = h.host_position();

@@ -15,3 +15,10 @@ export const shock = defineDamageType({ shield: 2, armor: 0.5, health: 0.75 });
 export const corrosive = defineDamageType({ shield: 0.5, armor: 2 });
 // Slips past shields; standing armor stops it whole.
 export const flechette = defineDamageType({ shield: "bypass", armor: 0 });
+// Flesh burns hotter than plating: what `burning` and `scalding` deal
+// (scripts/statuses.ts) and what the incendiary rifle fires. Named
+// explicitly: a top-level `fire` binding would collide with the SDK's
+// `fire` builder in a TypeScript bundle.
+export const fireDamage = defineDamageType("fire", { health: 1.25 });
+// Eats flesh slowly: what `corroding` deals.
+export const acid = defineDamageType({ health: 0.75 });

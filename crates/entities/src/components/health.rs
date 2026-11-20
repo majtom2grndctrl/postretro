@@ -46,6 +46,9 @@ pub struct DamageContext {
     /// fired before its pawn's latest respawn touches no NPC's awareness
     /// meter, attacker ledger or damage bearing. `None`: the hit lands as it is fired.
     pub attacker_life: Option<u32>,
+    /// The registered status this hit is a tick of, `None` for any other hit.
+    /// Evaluator-only data: `impact.status(h)` reads it.
+    pub status: Option<u16>,
 }
 
 impl DamageContext {
@@ -58,6 +61,7 @@ impl DamageContext {
             producer,
             point: None,
             attacker_life: None,
+            status: None,
         }
     }
 }
@@ -79,8 +83,8 @@ pub use super::contributor_ledger::{
 pub use super::impact_dispatch::{
     IMPACT_ABSORBED_INPUT, IMPACT_AMOUNT_INPUT, IMPACT_BROKE_INPUT, IMPACT_DISPATCH_INPUTS,
     IMPACT_HEALTH_AFTER_INPUT, IMPACT_HEALTH_BEFORE_INPUT, IMPACT_MAX_HEALTH_INPUT,
-    IMPACT_RAW_INPUT, IMPACT_SOURCE_TOKEN, IMPACT_TARGET_TOKEN, IMPACT_TYPE_INPUT_PREFIX,
-    ImpactDispatch,
+    IMPACT_RAW_INPUT, IMPACT_SOURCE_TOKEN, IMPACT_STATUS_INPUT_PREFIX, IMPACT_TARGET_TOKEN,
+    IMPACT_TYPE_INPUT_PREFIX, ImpactDispatch,
 };
 
 // Not `Copy`: `zone_multipliers` carries a heap-backed `HashMap`, so
@@ -231,7 +235,8 @@ pub fn apply_damage_with_context(
     // that later sweep; only hits whose pre-impact HP was still alive belong
     // to this down.
     if target_was_live {
-        let mut record = ContributorLedgerRecord::new(context.source_id, drain.points_dealt);
+        let mut record =
+            ContributorLedgerRecord::new(context.source_id.clone(), drain.points_dealt);
         record.zone = context.zone;
         record.attacker = context.attacker;
         record.weapon = context.weapon;
@@ -265,6 +270,8 @@ pub fn apply_damage_with_context(
         max_health,
         target: id,
         source: context.attacker,
+        source_id: context.source_id,
+        status: context.status,
         producer: context.producer,
         point: context.point,
     });
@@ -602,6 +609,7 @@ mod tests {
                 producer: DamageProducer::InTick,
                 point: None,
                 attacker_life: None,
+                status: None,
             },
         );
 
@@ -704,6 +712,7 @@ mod tests {
                 producer: DamageProducer::InTick,
                 point: None,
                 attacker_life: None,
+                status: None,
             },
         );
         apply_damage_with_context(
@@ -722,6 +731,7 @@ mod tests {
                 producer: DamageProducer::InTick,
                 point: None,
                 attacker_life: None,
+                status: None,
             },
         );
 
@@ -765,6 +775,7 @@ mod tests {
                 producer: DamageProducer::InTick,
                 point: None,
                 attacker_life: None,
+                status: None,
             },
         );
 

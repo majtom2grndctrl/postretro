@@ -708,6 +708,7 @@ mod tests {
                     emitter: None,
                     fog: None,
                     ghost_link: None,
+                    status_presence: None,
                     emissive: None,
                 }],
             }],

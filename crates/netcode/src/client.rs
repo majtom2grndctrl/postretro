@@ -2325,7 +2325,31 @@ impl ClientReplication {
                 | ComponentPayload::FogState(_)
                 | ComponentPayload::EmitterState(_)
                 | ComponentPayload::EmissiveState(_) => {}
+                // Host status presence, in the host's status indices; the
+                // client maps them by the host's name table where it reads them.
+                ComponentPayload::StatusPresence(presence) => {
+                    let _ = registry.set_component(
+                        id,
+                        postretro_entities::components::statuses::StatusPresenceComponent {
+                            bits: presence.bits,
+                        },
+                    );
+                }
             }
+        }
+        // A record carries the entity's whole component set: no presence
+        // payload means no live status.
+        if !components
+            .iter()
+            .any(|payload| matches!(payload, ComponentPayload::StatusPresence(_)))
+            && registry
+                .has_component_kind(id, ComponentKind::StatusPresence)
+                .unwrap_or(false)
+        {
+            let _ = registry
+                .remove_component::<postretro_entities::components::statuses::StatusPresenceComponent>(
+                    id,
+                );
         }
         if !record_has_transform
             && let Some(intrinsic_velocity) = record_intrinsic_velocity

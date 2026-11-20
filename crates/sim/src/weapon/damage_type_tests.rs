@@ -22,6 +22,7 @@ fn registry_with_heavy() -> EntityRegistry {
             )]),
         }],
         default_damage_type: None,
+        statuses: Vec::new(),
     }));
     registry
 }

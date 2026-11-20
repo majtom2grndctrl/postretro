@@ -642,6 +642,7 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
         ComponentPayload::GhostLinkState(state) => RawComponentPayload {
             component_kind: crate::wire::COMPONENT_KIND_GHOST_LINK,
             ghost_link: Some(*state),
+            status_presence: None,
             emissive: None,
             teleporter: None,
             transform: None,
@@ -663,6 +664,7 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             emitter: None,
             fog: None,
             ghost_link: None,
+            status_presence: None,
             emissive: None,
         },
         ComponentPayload::Transform(t) => RawComponentPayload {
@@ -676,6 +678,7 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             emitter: None,
             fog: None,
             ghost_link: None,
+            status_presence: None,
             emissive: None,
         },
         ComponentPayload::PlayerMovementState(m) => RawComponentPayload {
@@ -689,6 +692,7 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             emitter: None,
             fog: None,
             ghost_link: None,
+            status_presence: None,
             emissive: None,
         },
         ComponentPayload::MeshAnimationState(m) => RawComponentPayload {
@@ -702,6 +706,7 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             emitter: None,
             fog: None,
             ghost_link: None,
+            status_presence: None,
             emissive: None,
         },
         ComponentPayload::KinematicMoverState(m) => RawComponentPayload {
@@ -715,6 +720,7 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             emitter: None,
             fog: None,
             ghost_link: None,
+            status_presence: None,
             emissive: None,
         },
         ComponentPayload::LightState(state) => RawComponentPayload {
@@ -728,6 +734,7 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             emitter: None,
             fog: None,
             ghost_link: None,
+            status_presence: None,
             emissive: None,
         },
         ComponentPayload::EmitterState(state) => RawComponentPayload {
@@ -741,6 +748,21 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             emitter: Some(state.clone()),
             fog: None,
             ghost_link: None,
+            status_presence: None,
+            emissive: None,
+        },
+        ComponentPayload::StatusPresence(presence) => RawComponentPayload {
+            teleporter: None,
+            component_kind: crate::wire::COMPONENT_KIND_STATUS_PRESENCE,
+            transform: None,
+            player_movement: None,
+            mesh_animation_state: None,
+            kinematic_mover: None,
+            light: None,
+            emitter: None,
+            fog: None,
+            ghost_link: None,
+            status_presence: Some(*presence),
             emissive: None,
         },
         ComponentPayload::FogState(state) => RawComponentPayload {
@@ -754,6 +776,7 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             emitter: None,
             fog: Some(state.clone()),
             ghost_link: None,
+            status_presence: None,
             emissive: None,
         },
         ComponentPayload::EmissiveState(state) => RawComponentPayload {
@@ -767,6 +790,7 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             emitter: None,
             fog: None,
             ghost_link: None,
+            status_presence: None,
             emissive: Some(state.clone()),
         },
     }

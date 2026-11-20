@@ -212,6 +212,30 @@ impl TriggerBindingTable {
         script_ctx: &ScriptCtx,
         fire_context: &TriggerFireContext,
     ) -> TriggerBindingExecution {
+        self.execute_evaluating_impacts(
+            trigger,
+            edge,
+            registry,
+            script_ctx,
+            fire_context,
+            &mut |_| {},
+        )
+    }
+
+    /// [`Self::execute_with_script_ctx`], evaluating each script impact right
+    /// after its damage applies (`scripting.md` §2, Impact-policy
+    /// evaluation): the Triggers stage passes the tick's in-tick evaluator, so
+    /// a later command in this list, or a later hit this tick, sees the target
+    /// after its policies.
+    pub fn execute_evaluating_impacts(
+        &self,
+        trigger: EntityId,
+        edge: TriggerEventEdge,
+        registry: &mut EntityRegistry,
+        script_ctx: &ScriptCtx,
+        fire_context: &TriggerFireContext,
+        on_impact: &mut dyn FnMut(&mut EntityRegistry),
+    ) -> TriggerBindingExecution {
         let Some(binding) = self.bindings.get(&(trigger, edge)) else {
             return TriggerBindingExecution {
                 residual: None,
@@ -245,6 +269,9 @@ impl TriggerBindingTable {
                 &self.spawn_context,
                 fire_context,
             );
+            if command.produces_impacts() {
+                on_impact(registry);
+            }
             #[cfg(test)]
             commands.push(command.kind());
         }

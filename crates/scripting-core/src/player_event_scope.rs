@@ -107,6 +107,11 @@ pub fn is_per_player_slot(name: &str, slot_table: &SlotTable) -> bool {
 /// player. Derived once from the engine-state catalog; consulted at bind and
 /// install time only.
 pub fn is_local_player_slot(name: &str) -> bool {
+    // The per-mod `player.status.<name>` family is local-only by contract;
+    // it is not in the built-in catalog.
+    if name.starts_with(postretro_foundation::status::PLAYER_STATUS_SLOT_PREFIX) {
+        return true;
+    }
     static LOCAL_PLAYER_SLOTS: OnceLock<Vec<&'static str>> = OnceLock::new();
     LOCAL_PLAYER_SLOTS
         .get_or_init(|| {

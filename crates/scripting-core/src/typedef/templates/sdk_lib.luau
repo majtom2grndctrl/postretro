@@ -643,9 +643,11 @@ export type ActivatorsTarget = {
   --- capacity, or add it, clamped to capacity.
   grantLayer: (self: ActivatorsTarget, layer: DefenseLayer, amount: number?) -> SubjectTokenCommand,
   --- Apply `status` as `script.applyStatus`; a subject without health warns
-  --- and is skipped. Host and single player only.
+  --- and is skipped. Host and single player only; applied at the next fixed
+  --- tick when it fires outside one.
   applyStatus: (self: ActivatorsTarget, status: Status) -> SubjectTokenCommand,
-  --- Remove every applier's instance of `status`.
+  --- Remove every applier's instance of `status`. Host and single
+  --- player only.
   clearStatus: (self: ActivatorsTarget, status: Status) -> SubjectTokenCommand,
   --- Add `delta` to this fire's activators' value of a per-owner numeric slot.
   addSlot: (self: ActivatorsTarget, slot: StateRef<number>, delta: number) -> SubjectTokenCommand,
@@ -689,9 +691,11 @@ export type PlayerTarget = {
   --- capacity, or add it, clamped to capacity.
   grantLayer: (self: PlayerTarget, layer: DefenseLayer, amount: number?) -> SubjectTokenCommand,
   --- Apply `status` as `script.applyStatus`; a subject without health warns
-  --- and is skipped. Host and single player only.
+  --- and is skipped. Host and single player only; applied at the next fixed
+  --- tick when it fires outside one.
   applyStatus: (self: PlayerTarget, status: Status) -> SubjectTokenCommand,
-  --- Remove every applier's instance of `status`.
+  --- Remove every applier's instance of `status`. Host and single
+  --- player only.
   clearStatus: (self: PlayerTarget, status: Status) -> SubjectTokenCommand,
   --- Add `delta` to this event's player's value of a per-owner numeric slot.
   addSlot: (self: PlayerTarget, slot: StateRef<number>, delta: number) -> SubjectTokenCommand,
@@ -823,10 +827,16 @@ export type TargetHandle = {
 export type SourceHandle = {
   __impactSourceBrand: true,
   --- Add health to the impact damager. A fire with no damager skips this
-  --- effect; app-drain impacts run no policy in v1.
+  --- effect. Every impact runs its policies whatever produced it. Script
+  --- `applyDamage` evaluates on the host where it lands (in-tick right after
+  --- its damage, otherwise at the next tick start or frame end) and has no
+  --- damager, so a grant on it reaches no one. A status tick's damager is its
+  --- applier, so a grant there reaches the applier.
   grantHealth: (self: SourceHandle, amount: NumberValue) -> Effect,
   --- Add an ammo-pool balance to the impact damager. A fire with no damager
-  --- skips this effect; app-drain impacts run no policy in v1.
+  --- skips this effect. Script damage has no damager, so a grant on it reaches
+  --- no one; a status tick's damager is its applier, so a grant there reaches
+  --- the applier.
   grantAmmo: (self: SourceHandle, type: string, amount: NumberValue) -> Effect,
   --- Refill `layer` on the impact damager: omit `amount` to fill to
   --- capacity, or add it, clamped to capacity evaluated when the grant
@@ -1052,9 +1062,11 @@ export type NpcGroup = {
   --- Damage each NPC by a finite, non-negative amount.
   damage: (self: NpcGroup, amount: number, options: DamageOptions?) -> GroupCommand,
   --- Apply `status` to each NPC as `script.applyStatus`; one without health
-  --- warns and is skipped.
+  --- warns and is skipped. Host and single player only; applied at the next
+  --- fixed tick when it fires outside one.
   applyStatus: (self: NpcGroup, status: Status) -> GroupCommand,
-  --- Remove every applier's instance of `status` from each NPC.
+  --- Remove every applier's instance of `status` from each NPC. Host and
+  --- single player only.
   clearStatus: (self: NpcGroup, status: Status) -> GroupCommand,
 }
 --- Options for relocating a player to its seat placement on the next tick.
@@ -1083,9 +1095,11 @@ export type PlayerGroup = {
   --- add it, clamped to capacity.
   grantLayer: (self: PlayerGroup, layer: DefenseLayer, amount: number?) -> GroupCommand,
   --- Apply `status` as `script.applyStatus`; a subject without health warns
-  --- and is skipped. Host and single player only.
+  --- and is skipped. Host and single player only; applied at the next fixed
+  --- tick when it fires outside one.
   applyStatus: (self: PlayerGroup, status: Status) -> GroupCommand,
-  --- Remove every applier's instance of `status`.
+  --- Remove every applier's instance of `status`. Host and single
+  --- player only.
   clearStatus: (self: PlayerGroup, status: Status) -> GroupCommand,
   --- Add `delta` to each player's value of a per-owner numeric slot.
   addSlot: (self: PlayerGroup, slot: StateRef<number>, delta: number) -> GroupCommand,
@@ -1177,6 +1191,8 @@ declare function sentiment(fromFaction: string, toFaction: string, values: { sen
 --- mod manifest. A map's `fluid_volume` names it through its `fluid` key;
 --- declaration order assigns its index. A field out of range, or a repeated
 --- name, is rejected with a warning naming the field; the first stands.
+--- `status`, a status handle, is the exception: one naming a status
+--- `defineMod` does not register fails the load.
 declare function defineFluid(desc: FluidDescriptor): FluidDescriptor
 --- Pure identity builder for a ghost style in `ghostStyles` on the returned
 --- mod manifest. A map's `ghost_link` names it through its `ghost_style` key.
@@ -1576,7 +1592,7 @@ export type StatusPresentation = { emitter: ComponentValue?, tickSound: string? 
 --- A status's literal parameters. `damage` in [0, 1e6] per tick per stack (0
 --- is a marker); `type` a registered damage type; `tickMs` in [1, 60000];
 --- `durationMs` in [`tickMs`, 600000], omitted to last until cleared;
---- `maxStacks` in [1, 64].
+--- `maxStacks` a whole number in [1, 64], default 1.
 export type StatusOptions = {
   damage: number,
   type: DamageType?,

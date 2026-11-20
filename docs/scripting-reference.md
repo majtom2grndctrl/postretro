@@ -4016,9 +4016,9 @@ const purge = defineReaction("purge", players().damage(20));
 
 `damage(amount)` on an NPC group, the player group or `on.activators` routes a
 fixed `amount` of damage through the engine's damage chokepoint for every
-resolved target that carries a health component. This is the only non-weapon
-damage producer — use it to script scene damage (a trap, a collapsing floor, a
-retaliation strike).
+resolved target that carries a health component. Use it to script scene damage
+(a trap, a collapsing floor, a retaliation strike); for damage over time, apply
+a [status](#statuses) instead.
 
 `amount` must be **finite and `>= 0`** (the chokepoint only ever reduces HP;
 healing is out of scope). The handler never despawns. Reaching zero HP does not

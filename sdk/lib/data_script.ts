@@ -510,7 +510,9 @@ export function sentiment(
  * `waveAmplitude` (texels, 0..16, default 8) and `waveLength` (texels: a
  * number or `[min, max]`, at most 128, min >= 8 x amplitude) shape it. A field
  * out of range, or a repeated name, is rejected with a warning naming the
- * field, and the first declaration stands. Pure: no engine side effects. */
+ * field, and the first declaration stands. `status`, a status handle, is the
+ * exception: one naming a status `defineMod` does not register fails the
+ * load. Pure: no engine side effects. */
 export function defineFluid(
   desc: import("postretro").FluidDescriptor,
 ): import("postretro").FluidDescriptor {
@@ -714,7 +716,7 @@ export function defineDamageType(
   return handle as unknown as import("postretro").DamageType;
 }
 
-/** Declare a status kind: damage over time, or with `damage: 0` a marker other policies read. Omit `name` only in a TypeScript direct top-level binding declaration compiled by scripts-build, which names it by its binding. Register it with `defineMod({ statuses: [status] })`, then apply it from impact policies (`impact.target.applyStatus`), reactions (`players().applyStatus`) or a fluid's `status`. `active` reads whether the local player carries it. */
+/** Declare a status kind: damage over time, or with `damage: 0` a marker other policies read. Omit `name` only in a TypeScript direct top-level binding declaration whose only argument is an object literal, compiled by scripts-build, which names it by its binding. Register it with `defineMod({ statuses: [status] })`, then apply it from impact policies (`impact.target.applyStatus`), reactions (`players().applyStatus`) or a fluid's `status`. `active` reads whether the local player carries it. `maxStacks` is a whole number in [1, 64], default 1. */
 export function defineStatus(options: import("postretro").StatusOptions): import("postretro").Status;
 export function defineStatus(name: string, options: import("postretro").StatusOptions): import("postretro").Status;
 export function defineStatus(

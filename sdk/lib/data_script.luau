@@ -499,10 +499,16 @@ export type TargetHandle = {
 export type SourceHandle = {
   __impactSourceBrand: true,
   --- Add health to the impact damager. A fire with no damager skips this
-  --- effect; app-drain impacts run no policy in v1.
+  --- effect. Every impact runs its policies whatever produced it. Script
+  --- `applyDamage` evaluates on the host where it lands (in-tick right after
+  --- its damage, otherwise at the next tick start or frame end) and has no
+  --- damager, so a grant on it reaches no one. A status tick's damager is its
+  --- applier, so a grant there reaches the applier.
   grantHealth: (self: SourceHandle, amount: NumberValue) -> Effect,
   --- Add an ammo-pool balance to the impact damager. A fire with no damager
-  --- skips this effect; app-drain impacts run no policy in v1.
+  --- skips this effect. Script damage has no damager, so a grant on it reaches
+  --- no one; a status tick's damager is its applier, so a grant there reaches
+  --- the applier.
   grantAmmo: (self: SourceHandle, type: string, amount: NumberValue) -> Effect,
   grantLayer: (self: SourceHandle, layer: DefenseLayer, amount: NumberValue?) -> Effect,
   --- Whether the damager is a player pawn in life state `name` at this fire.
@@ -828,7 +834,9 @@ end
 --- a slow surface wave whose `waveAmplitude` (texels, 0..16, default 8) and
 --- `waveLength` (texels: a number or positional `{ min, max }`, e.g.
 --- `{ 48, 80 }`; at most 128, min >= 8 x amplitude) shape it. A field out of range, or a repeated name, is rejected
---- with a warning naming the field, and the first declaration stands. Pure.
+--- with a warning naming the field, and the first declaration stands.
+--- `status`, a status handle, is the exception: one naming a status
+--- `defineMod` does not register fails the load. Pure.
 function DataScriptSdk.defineFluid(desc: FluidDescriptor): FluidDescriptor
   return desc
 end
@@ -1027,6 +1035,7 @@ end
 --- policies (`impact.target:applyStatus`), reactions
 --- (`players():applyStatus`) or a fluid's `status`. `active` reads whether
 --- the local player carries it.
+--- `maxStacks` is a whole number in [1, 64], default 1.
 function DataScriptSdk.defineStatus(...: any): Status
   local name, options = ...
   if type(name) ~= "string" then

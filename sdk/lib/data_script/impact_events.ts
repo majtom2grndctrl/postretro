@@ -62,13 +62,19 @@ export interface TargetHandle {
 export interface SourceHandle {
   readonly [sourceBrand]: true;
   /**
-   * Add health to the impact damager. A fire with no damager skips this effect;
-   * app-drain impacts run no policy in v1.
+   * Add health to the impact damager. A fire with no damager skips this
+   * effect. Every impact runs its policies whatever produced it. Script
+   * `applyDamage` evaluates on the host where it lands (in-tick right after
+   * its damage, otherwise at the next tick start or frame end) and has no
+   * damager, so a grant on it reaches no one. A status tick's damager is its
+   * applier, so a grant there reaches the applier.
    */
   grantHealth(amount: NumberValue): Effect;
   /**
    * Add an ammo-pool balance to the impact damager. A fire with no damager
-   * skips this effect; app-drain impacts run no policy in v1.
+   * skips this effect. Script damage has no damager, so a grant on it reaches
+   * no one; a status tick's damager is its applier, so a grant there reaches
+   * the applier.
    */
   grantAmmo(type: string, amount: NumberValue): Effect;
   /**

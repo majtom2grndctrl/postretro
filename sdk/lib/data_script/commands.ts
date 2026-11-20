@@ -53,9 +53,9 @@ export interface NpcGroup {
   update(fields: NpcStateUpdateArgs): GroupCommand;
   /** Damage each NPC by a finite, non-negative amount. */
   damage(amount: number, options?: DamageOptions): GroupCommand;
-  /** Apply `status` to each NPC as `script.applyStatus`; one without health warns and is skipped. Applied at the next fixed tick when it fires outside one. */
+  /** Apply `status` to each NPC as `script.applyStatus`; one without health warns and is skipped. Host and single player only; applied at the next fixed tick when it fires outside one. */
   applyStatus(status: import("postretro").Status): GroupCommand;
-  /** Remove every applier's instance of `status` from each NPC. */
+  /** Remove every applier's instance of `status` from each NPC. Host and single player only. */
   clearStatus(status: import("postretro").Status): GroupCommand;
 }
 
@@ -81,9 +81,9 @@ export interface PlayerGroup {
    * that layer warns and is skipped.
    */
   grantLayer(layer: import("postretro").DefenseLayer, amount?: number): GroupCommand;
-  /** Apply `status` as `script.applyStatus`; a subject without health warns and is skipped. Applied at the next fixed tick when it fires outside one. */
+  /** Apply `status` as `script.applyStatus`; a subject without health warns and is skipped. Host and single player only; applied at the next fixed tick when it fires outside one. */
   applyStatus(status: import("postretro").Status): GroupCommand;
-  /** Remove every applier's instance of `status`. */
+  /** Remove every applier's instance of `status`. Host and single player only. */
   clearStatus(status: import("postretro").Status): GroupCommand;
   /** Add `delta` to each player's value of a per-owner numeric slot. */
   addSlot(slot: StateRef<number>, delta: number): GroupCommand;
@@ -132,9 +132,9 @@ export interface ActivatorsTarget {
   grantAmmo(type: string, amount: number): SubjectTokenCommand;
   /** Refill this fire's activators' `layer`: omit `amount` to fill, or add it, clamped to capacity. */
   grantLayer(layer: import("postretro").DefenseLayer, amount?: number): SubjectTokenCommand;
-  /** Apply `status` as `script.applyStatus`; a subject without health warns and is skipped. Applied at the next fixed tick when it fires outside one. */
+  /** Apply `status` as `script.applyStatus`; a subject without health warns and is skipped. Host and single player only; applied at the next fixed tick when it fires outside one. */
   applyStatus(status: import("postretro").Status): SubjectTokenCommand;
-  /** Remove every applier's instance of `status`. */
+  /** Remove every applier's instance of `status`. Host and single player only. */
   clearStatus(status: import("postretro").Status): SubjectTokenCommand;
   /** Add `delta` to this fire's activators' value of a per-owner numeric slot. */
   addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;
@@ -159,9 +159,9 @@ export interface PlayerTarget {
   grantAmmo(type: string, amount: number): SubjectTokenCommand;
   /** Refill this event's player's `layer`: omit `amount` to fill, or add it, clamped to capacity. */
   grantLayer(layer: import("postretro").DefenseLayer, amount?: number): SubjectTokenCommand;
-  /** Apply `status` as `script.applyStatus`; a subject without health warns and is skipped. Applied at the next fixed tick when it fires outside one. */
+  /** Apply `status` as `script.applyStatus`; a subject without health warns and is skipped. Host and single player only; applied at the next fixed tick when it fires outside one. */
   applyStatus(status: import("postretro").Status): SubjectTokenCommand;
-  /** Remove every applier's instance of `status`. */
+  /** Remove every applier's instance of `status`. Host and single player only. */
   clearStatus(status: import("postretro").Status): SubjectTokenCommand;
   /** Add `delta` to this event's player's value of a per-owner numeric slot. */
   addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;

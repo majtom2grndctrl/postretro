@@ -199,11 +199,11 @@ A run is active from Continue or `newRun` until the frontend is entered by any p
 
 | Save point | Run | Character and world |
 |---|---|---|
-| Level start, after the outgoing level's gear is read, before install | at the destination level; through a level seam, at that seam's checkpoint, which selects its spawn set even with no run to save (`entity_model.md` §7e) | yes |
+| Level start, after the outgoing level's gear is read, before install | at the destination level; through a level seam, at that seam's checkpoint (`entity_model.md` §7e) | yes |
 | `checkpoint(name)` | at that checkpoint | yes |
 | Frontend entry from a played level, a join, clean exit | no | yes |
 
-The run writes first. A failed run write skips the character, so a run never pairs one level with another level's gear. Gear saves from a played level's pawns, never a frontend backdrop's. A character never saves downed or dead: life state saves initial, and health at or below zero restores full. A crash loses play since the last save point. The implicit run keeps the same cadence, so quitting loses run-scoped state written since its last level start or checkpoint.
+The run writes first. A failed run write skips the character, so a run never pairs one level with another level's gear. Gear saves from a played level's pawns, never a frontend backdrop's. A character never saves downed or dead: life state saves initial, and health at or below zero restores full. A crash loses play since the last save point. The implicit run keeps the same cadence, so quitting loses run-scoped state written since its last level start or checkpoint. A seam crossing selects the seam's spawn set even with no run active or no store to save to.
 
 Selecting or creating a character, Continue and `newRun` reload the store (§10.4). Each first saves the live world, so a frontend write to a `persist: true` global survives. Then every mod-owned slot resets to its default, and the world file, the character and, for Continue, the run overlay it. While hosting only seat 0 reloads. Crossing watchers re-arm on the reloaded values without firing. Continue arrives at the run's checkpoint spawn set when it reached one (`entity_model.md` §7b).
 

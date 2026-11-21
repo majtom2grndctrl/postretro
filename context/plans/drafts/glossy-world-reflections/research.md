@@ -98,6 +98,7 @@ Not measured. One probe per coplanar glossy face group means a box room with a g
 - **Per-material forward pipeline variant** (`context/research/gi-rtx-lite/index.md` measurement item 9). It keeps the always-run shader clean but still needs a binding slot forward lacks. The overlay's own layout sidesteps it.
 - **Room-centre probes.** Fewer probes, but one elevated point per room leaves capture-shadow holes on faces it cannot see (behind pillars, alcoves), and the IP rules forbid filling them. Face-lifted probes also shadow behind pillars, but each face group gets the vantage closest to its own plane. Rejected by the owner.
 - **SSR or planar on world faces.** No-go by owner decision; SSR on world faces would be a second screen-space exception needing its own sign-off (`index.md` §1.1).
+- **Composite (1 − W)·diffuse** (the first lock, reopened 2026-11-21 by `/validate-plan`). Diffuse includes Σ dynamic direct (`rendering_pipeline.md` §7.3 output), and dynamic lights draw no specular (§4), so W removed their light with nothing in its place. Fresnel drives W toward 1 at grazing: about 0.44 untinted for a floor 10 m ahead at eye height, and near 1 at any angle for a tint-1 metal. Replaced by forward + W·(R − D_static), which also spares the overlay forward's specular and emissive inputs.
 - **Animated glow in reflections** (glow delta tiles, selective glow SSR): moved with their IP checks to `drafts/dynamic-reflection-layer/`. v1 ships static.
 
 ## IP fences carried over

@@ -190,7 +190,9 @@ and `_color`, never the emissive map or its strength (decided, not yet built;
     `.prm` caches stay warm.
   - A `light_area` face (decided, not yet built) instead takes its light's
     `_glow` × the light's live colour and brightness, so its glow follows its
-    light frame for frame.
+    light frame for frame. No `emissive_volume` claims it, and reflection
+    capture shows it at `_glow` × `_color`, dark when the light starts
+    inactive.
 - **Emissive volumes:** an `emissive_volume` brush scales and tints the static
   world faces it holds. Glow = texture strength × (min + brightness × (max −
   min)) × color. Membership is per final face, fixed at compile time

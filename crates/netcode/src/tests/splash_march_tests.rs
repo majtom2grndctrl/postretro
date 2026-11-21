@@ -5,11 +5,11 @@
 //! See: context/lib/networking.md §Combat authority (march and credit)
 
 use super::*;
-use std::cell::RefCell;
-use std::rc::Rc;
-use postretro_entities::components::agent::AgentComponent;
 use crate::collision::test_movers::{DoorPoses, door_slab};
 use glam::Quat;
+use postretro_entities::components::agent::AgentComponent;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 const DOOR: u32 = 6;
 

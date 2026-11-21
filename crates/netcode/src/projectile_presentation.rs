@@ -52,6 +52,9 @@ enum PresentationFlight {
         contact_point: Option<Vec3>,
         endpoint: Option<EndpointPublication>,
         impact_light: Option<ProjectileImpactLight>,
+        /// A client splash shot's flight follows its host march instead of
+        /// flying free, and ends without a contact flash (`splash_march`).
+        marched: bool,
     },
 }
 
@@ -185,6 +188,7 @@ impl HostProjectilePresentations {
                 contact_point: None,
                 endpoint: None,
                 impact_light: launch.projectile.visual.impact_light.clone(),
+                marched: false,
             },
         );
     }
@@ -399,60 +403,95 @@ impl HostProjectilePresentations {
                     contact_point,
                     endpoint,
                     impact_light,
-                    ..
+                    marched,
                 } => {
-                    if endpoint.is_none()
-                        && let Some(point) = contact_point.take()
-                    {
-                        let changed = set_presentation_endpoint(registry, id, point);
-                        *pose_dirty |= changed;
-                        *path_finished = true;
-                        if let Some(config) = impact_light.clone() {
-                            host_flashes.push((point, config));
+                    let march = open_shots.march(*shot_id);
+                    *marched |= march.is_some();
+                    if *marched {
+                        if endpoint.is_none() {
+                            // The deciding point a release noted, the march's
+                            // contact or path end, or where the flight stands
+                            // once its march is gone. No flash: the burst shows
+                            // with the blast.
+                            let end = contact_point.take().or_else(|| match march {
+                                Some(march) => {
+                                    let cursor = march.cursor();
+                                    *pose_dirty |= set_presentation_endpoint(registry, id, cursor);
+                                    march.resolved().then_some(cursor)
+                                }
+                                None => registry
+                                    .get_component::<Transform>(id)
+                                    .ok()
+                                    .map(|transform| transform.position),
+                            });
+                            if let Some(point) = end {
+                                *pose_dirty |= set_presentation_endpoint(registry, id, point);
+                                *path_finished = true;
+                                *endpoint = Some(begin_endpoint_publication(
+                                    replication,
+                                    network_id,
+                                    0,
+                                    *pose_dirty,
+                                ));
+                            }
                         }
-                        *endpoint = Some(begin_endpoint_publication(
-                            replication,
-                            network_id,
-                            PROJECTILE_CONTACT_DESPAWN_REASON,
-                            *pose_dirty,
-                        ));
-                    }
+                        endpoint
+                            .as_mut()
+                            .and_then(|endpoint| endpoint_ready(replication, network_id, endpoint))
+                    } else {
+                        if endpoint.is_none()
+                            && let Some(point) = contact_point.take()
+                        {
+                            let changed = set_presentation_endpoint(registry, id, point);
+                            *pose_dirty |= changed;
+                            *path_finished = true;
+                            if let Some(config) = impact_light.clone() {
+                                host_flashes.push((point, config));
+                            }
+                            *endpoint = Some(begin_endpoint_publication(
+                                replication,
+                                network_id,
+                                PROJECTILE_CONTACT_DESPAWN_REASON,
+                                *pose_dirty,
+                            ));
+                        }
 
-                    if endpoint.is_none() && !*path_finished {
-                        let before = registry
-                            .get_component::<Transform>(id)
-                            .ok()
-                            .map(|transform| transform.position);
-                        *path_finished = !advance_straight_line_visual(
-                            registry,
-                            id,
-                            *direction,
-                            *speed,
-                            remaining_range,
-                            remaining_lifetime,
-                            dt,
-                        );
-                        let after = registry
-                            .get_component::<Transform>(id)
-                            .ok()
-                            .map(|transform| transform.position);
-                        *pose_dirty |= before != after;
-                    }
+                        if endpoint.is_none() && !*path_finished {
+                            let before = registry
+                                .get_component::<Transform>(id)
+                                .ok()
+                                .map(|transform| transform.position);
+                            *path_finished = !advance_straight_line_visual(
+                                registry,
+                                id,
+                                *direction,
+                                *speed,
+                                remaining_range,
+                                remaining_lifetime,
+                                dt,
+                            );
+                            let after = registry
+                                .get_component::<Transform>(id)
+                                .ok()
+                                .map(|transform| transform.position);
+                            *pose_dirty |= before != after;
+                        }
 
-                    // A finished path remains live while its authorized shot is
-                    // retained. A later valid contact may still replace this nominal
-                    // endpoint and must not lose its observer flash.
-                    if endpoint.is_none() && open_shots.get(*shot_id).is_none() {
-                        *endpoint = Some(begin_endpoint_publication(
-                            replication,
-                            network_id,
-                            0,
-                            *pose_dirty,
-                        ));
+                        // A finished path remains live while its authorized shot is
+                        // retained. A later valid contact may still replace this nominal
+                        // endpoint and must not lose its observer flash.
+                        if endpoint.is_none() && open_shots.get(*shot_id).is_none() {
+                            *endpoint = Some(begin_endpoint_publication(
+                                replication,
+                                network_id,
+                                0,
+                                *pose_dirty,
+                            ));
+                        }
+                        endpoint
+                            .as_mut()
+                            .and_then(|endpoint| endpoint_ready(replication, network_id, endpoint))
                     }
-                    endpoint
-                        .as_mut()
-                        .and_then(|endpoint| endpoint_ready(replication, network_id, endpoint))
                 }
             };
             if let Some(reason) = retire_reason {
@@ -3210,5 +3249,197 @@ mod tests {
         );
         assert!(!registry.exists(visual));
         assert!(!replicable.contains(visual));
+    }
+
+    // P32: a client splash rocket's observer flight steps with the host march,
+    // never passes the door or the wall, and ends at the march's contact with no
+    // flash; a later blast behind that end shows only as its burst.
+    #[test]
+    fn client_splash_flight_follows_the_march_and_ends_without_a_flash() {
+        use crate::collision::moving::CombinedCollisionWorld;
+        use crate::collision::test_movers::{DoorPoses, door_slab};
+
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let weapon = registry.spawn(Transform::default());
+        let shot_id = ShotId::from_parts(
+            (postretro_net::wire::NetworkId(4)).0,
+            42,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
+        let fire_tick = 1;
+        let mut open_shots = OpenAuthorizedShots::new();
+        open_shots.record(
+            AuthorizedShot {
+                sounds: None,
+                action: None,
+                source_weapon: None,
+                knockback: None,
+                shot_id,
+                pawn,
+                pawn_life: 0,
+                weapon,
+                fire_tick,
+                damage: 10.0,
+                range: 30.0,
+                pellet_count: 1,
+                credit_source: "weapon.test.remote".to_string(),
+                splash: Some(postretro_foundation::SplashDescriptor {
+                    knockback: None,
+                    radius: 2.0,
+                    min_fraction: 0.0,
+                    self_damage: true,
+                }),
+                projectile_radius: Some(0.0),
+                projectile_direction: Some(Vec3::X),
+                projectile_speed: Some(60.0),
+                projectile_lifetime_seconds: Some(10.0),
+                projectile_tick_seconds: Some(1.0 / 60.0),
+                splash_on_path_tolerance: Some(0.25),
+                is_projectile: true,
+                fire_origin: Vec3::ZERO,
+                timeout_budget_ticks: 180,
+                damage_type: None,
+            },
+            FIRING_CLIENT,
+        );
+        let mut projectile = descriptor();
+        projectile.speed = 60.0;
+        projectile.visual.impact_light = Some(ProjectileImpactLight {
+            color: [1.0, 0.5, 0.2],
+            intensity: 6.0,
+            radius: 7.0,
+            peak_radius: None,
+            fade_ms: 240.0,
+        });
+        let launch = RemoteProjectilePresentationLaunch {
+            action: None,
+            model_scale: 1.0,
+            owner_client_id: FIRING_CLIENT,
+            shot_id,
+            origin: Vec3::ZERO,
+            direction: Vec3::X,
+            range: 30.0,
+            descriptor_class: "test_remote_projectile".to_string(),
+            projectile,
+        };
+        let mut allocator = NetworkIdAllocator::new();
+        let mut replicable = ReplicableSet::new();
+        let mut replication = ServerReplication::new();
+        replication.register_client(OBSERVING_CLIENT);
+        let mut presentations = HostProjectilePresentations::default();
+        presentations.spawn_remote(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &mut replication,
+            &launch,
+            fire_tick,
+        );
+        let visual = *presentations.flights.keys().next().expect("one flight");
+        let visual_net = allocator.network_id_for_entity(visual).unwrap().0;
+
+        // A wall at x = 8 and, closing behind the march on tick 7, a door at 5.
+        let wall = crate::collision::CollisionWorld::from_triangles_for_test(
+            vec![
+                Vec3::new(8.0, -2.0, -2.0),
+                Vec3::new(8.0, 2.0, -2.0),
+                Vec3::new(8.0, 2.0, 2.0),
+                Vec3::new(8.0, -2.0, 2.0),
+            ],
+            vec![[0, 1, 2], [0, 2, 3]],
+        );
+        let movers = [door_slab(3, 0.1, 4.0, 3.0)];
+        let mut poses = DoorPoses::default();
+        let hit_zones = crate::scripting_systems::hit_zones::HitZoneStore::new();
+        let mut flight_end = None;
+        for tick in fire_tick..fire_tick + 12 {
+            if tick == fire_tick + 7 {
+                poses.set(3, Vec3::new(5.0, -2.0, 0.0), glam::Quat::IDENTITY);
+            }
+            if tick == fire_tick + 10 {
+                // The client saw the door close in front of it (P20); its
+                // declaration arrives after the flight has ended.
+                let march = open_shots.marches.get_mut(&shot_id).unwrap();
+                march.bind(&postretro_net::wire::HitDeclaration {
+                    shot_id: crate::wire_convert::shot_id_to_wire(shot_id),
+                    records: vec![postretro_net::wire::HitRecord {
+                        normal: [-1.0, 0.0, 0.0],
+                        target: crate::PRESENTATION_CONTACT_TARGET,
+                        point: [4.9, 0.0, 0.0],
+                        zone: None,
+                    }],
+                });
+            }
+            let world = CombinedCollisionWorld::new(&wall, &movers, &poses);
+            for released in crate::splash_march::step_and_release(
+                &mut registry,
+                &world,
+                &hit_zones,
+                &allocator,
+                &mut open_shots,
+                tick,
+                &mut |_| {},
+            ) {
+                assert_eq!(
+                    tick,
+                    fire_tick + 10,
+                    "released when its declaration arrives"
+                );
+                let blast = released.result.projectile_contact.expect("a blast");
+                assert!(blast.distance(Vec3::new(4.9, 0.0, 0.0)) <= 1.0e-4);
+                presentations.note_contact(shot_id, blast);
+            }
+            presentations.advance(
+                &mut registry,
+                &mut allocator,
+                &mut replicable,
+                &mut replication,
+                &open_shots,
+                1.0 / 60.0,
+            );
+            if !registry.exists(visual) {
+                break;
+            }
+            let position = registry
+                .get_component::<Transform>(visual)
+                .unwrap()
+                .position;
+            assert!(
+                position.x <= 8.0 + 1.0e-4,
+                "never past the wall: {position}"
+            );
+            if let Some(march) = open_shots.march(shot_id) {
+                assert!(
+                    position.distance(march.cursor()) <= 1.0e-4,
+                    "tick {tick}: the flight stands at the march cursor"
+                );
+                if tick == fire_tick {
+                    assert_eq!(position, Vec3::ZERO, "no lead on the FIRE tick");
+                }
+            }
+            if flight_end.is_none() && open_shots.march(shot_id).is_some_and(|m| m.resolved()) {
+                flight_end = Some(position);
+            }
+            replication.ingest_tick(produce_owned_snapshots(
+                &registry,
+                &replicable,
+                &mut allocator,
+                &MovementOwners::new(),
+                &HostCommandQueues::new(),
+            ));
+            presentations.mark_current_poses_ingested();
+            ack_current_entity_baseline(&mut replication, OBSERVING_CLIENT, visual_net, tick);
+        }
+
+        let end = flight_end.expect("the march reached the wall");
+        assert!(end.distance(Vec3::new(8.0, 0.0, 0.0)) <= 1.0e-4, "{end}");
+        assert!(!registry.exists(visual), "the flight retired");
+        assert_eq!(
+            registry.iter_with_kind(ComponentKind::Light).count(),
+            0,
+            "no contact flash"
+        );
     }
 }

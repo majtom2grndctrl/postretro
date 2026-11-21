@@ -137,7 +137,7 @@ It then holds one row per held or flown frame. Each row has:
 Some rows are marked, and they stay in the report:
 - **Hold rows** are the frames before the route starts flying.
 - **No-draw rows** streamed but did not reach the screen.
-- **Change marks** start on the frame where you toggled vsync, resized the window, changed window mode, moved the drain cap slider or hot-reloaded scripts. The mark stays on every row after it.
+- **Change marks** start on the frame where you toggled vsync; resized the window, moved it to a display with a different scaling or changed the render resolution; changed window mode; moved the drain cap slider or pressed its production button; or hot-reloaded scripts. The mark stays on every row after it.
 - **Gap marks** sit on the rows whose frame time spans a stretch when the window was hidden, a frame that didn't reach the screen, or the engine making room for more report rows.
 
 Leave marked rows out of frame-time figures.
@@ -150,20 +150,22 @@ With `POSTRETRO_TELEMETRY=<file>`, the run also writes one `playback_window` eve
 
 Some Mac GPUs have no timestamp queries. There, GPU time comes from an Instruments Metal System Trace instead. During playback, each frame's GPU work is labelled `pr-frame <N> <site>`. N is the `frame` of that frame's report row, and the site says which work it is: `lightmap` and `sh` for the two streaming installs, `frame` for the frame's rendering. The `sh` time also includes the updates to movers' lighting depth tiles, and any growth of its pools, made during that install.
 
-1. In a second terminal, start logging the GPU clock, and leave it running until the trace is saved:
+When you trace, start `caffeinate -di` in its own terminal before the first run and stop it after the last export. Don't wrap each run in `caffeinate` the way *Keep the display awake* shows: a trace keeps saving for many minutes after the engine exits, and if the screen locks then, the next run stalls.
+
+1. In another terminal, start logging the GPU clock, and leave it running until the trace is saved:
 
    ```bash
    while true; do python3 -c 'import time; print(f"{time.time():.3f}")'; ioreg -r -c IOAccelerator -d 1 | grep -o '"Core Clock(MHz)"=[0-9]*\|"Device Utilization %"=[0-9]*'; sleep 0.5; done > ioreg.log
    ```
 
 2. Play the route with a long hold, for example `--camera-route-hold 900`. Find the engine's process id with `pgrep -x postretro`.
-3. Once the level shows, attach a trace during the hold, for 20 seconds or less. Longer traces take many minutes to save.
+3. Once the level shows, attach a trace during the hold, for 20 seconds or less. Longer traces write gigabytes, and even a 20-second trace takes many minutes to save.
 
    ```bash
    xcrun xctrace record --template 'Metal System Trace' --attach <pid> --time-limit 20s --no-prompt --output run.trace
    ```
 
-4. When the engine has exited, stop the clock log and export the trace's table of contents and its two interval tables into one folder:
+4. When the trace has saved, stop the clock log and export the trace's table of contents and its two interval tables into one folder:
 
    ```bash
    mkdir trace

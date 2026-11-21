@@ -223,7 +223,10 @@ cluster count. The budget's size, 8 MiB per play drain and 32 MiB per settling d
 value, not a contract: a retune that keeps the one owner, the admission order and the lightmap
 in-hand totals lands without a brief. In the dev-tools Streaming tab, a slider beside lead L
 overrides the play cap live, and a production button unsets it; settling and the lightmap
-in-hand totals keep production. It is not a player setting.
+in-hand totals keep production. It is not a player setting. `POSTRETRO_PLAY_DRAIN_CAP_MIB`
+seeds the slider at launch, in MiB. A value off the slider's range or step warns once and keeps
+production (`development_guide.md` §6.4). The seed holds across levels until the slider or the
+production button changes the cap.
 A newly installed cluster remains unavailable to sampling until the next drain,
 after all applicable indirect and direct compose work has completed. The all-zero word
 remains the miss representation: valid neighbors are renormalized and an all-miss sample
@@ -1286,7 +1289,11 @@ GPU intervals by pass. A capture run, which exits on its own, records under
 `xcrun xctrace record --template 'Metal System Trace' --launch -- <postretro binary> <map>.prl`.
 A windowed run attaches instead: launch the engine, wait for the level to settle, then
 `xctrace record --attach <pid> --time-limit <seconds>`. Under `--launch`, a windowed
-recording can fail to finalise while its ktrace grows to tens of GB. Read the tables with
+recording can fail to finalise while its ktrace grows to tens of GB. Keep an attached trace
+at 20 s or less: its ktrace grows with length, to hundreds of MB at 20 s and about 4.7 GB at
+40 s. Even a 20 s trace takes 11–25 minutes to save on the Mac target. Put a watchdog on
+`xctrace record`: it can hang after the target exits. Give the watchdog at least 40 minutes
+after the engine exits; killing `xctrace` mid-save loses the trace. Read the tables with
 `xctrace export`. Reduce the export per encoder. A pass's time is the union of its
 encoder's intervals, with nested and coalesced rows counted once. Divide by a once-per-frame
 encoder of the same pass to get a per-frame figure. Never take the frame count from
@@ -1295,11 +1302,11 @@ undercounts frames by up to a quarter and invents between-launch "regimes" that 
 The engine renders no frames while its window is hidden or backgrounded,
 or while the screen is locked. Keep the window in front for the whole capture.
 The renderer's ignored install-cost tests (`install_cost_measurement.rs` beside the lightmap stream and the SH streaming GPU state) bracket each measured drain with labelled marker command buffers and write the drain order to the directory named by `POSTRETRO_INSTALL_COST_TRACE_DIR`, so a trace of them reduces per drain. Those tests wait for the GPU after every drain, so the GPU idles at a low clock and their figures are upper bounds.
-Each recording also leaves an `instruments*.ktrace` temp file of about 1 GB in
-`$TMPDIR`, and the `.trace` bundle stays wherever `--output` put it. Delete both once
+Each recording also leaves its ktrace as an `instruments*.ktrace` temp file in `$TMPDIR`,
+and the `.trace` bundle stays wherever `--output` put it. Delete both once
 the export is parsed.
 
-**Pin the GPU clock.** A lightly loaded discrete AMD GPU drops to a low, drifting core clock (a third of its top clock, varying ~13% run to run), which dominates sub-millisecond A/Bs; it is power management, not thermal throttling. Capture mode waits for the GPU after every submit, so its GPU idles between frames at low resolutions. Measure at a resolution that saturates the GPU (4K capture held per-frame `forward` to about ±1.5% and run-to-run spread to ±0.03 ms), and confirm by polling `ioreg -c IOAccelerator`'s `PerformanceStatistics` (`Core Clock(MHz)`, `Temperature(C)`) during the capture, not only between runs. Put a watchdog on `xctrace record`: it can hang after the target exits and stall a batch.
+**Pin the GPU clock.** A lightly loaded discrete AMD GPU drops to a low, drifting core clock (a third of its top clock, varying ~13% run to run), which dominates sub-millisecond A/Bs; it is power management, not thermal throttling. Capture mode waits for the GPU after every submit, so its GPU idles between frames at low resolutions. Measure at a resolution that saturates the GPU (4K capture held per-frame `forward` to about ±1.5% and run-to-run spread to ±0.03 ms), and confirm by polling `ioreg -c IOAccelerator`'s `PerformanceStatistics` (`Core Clock(MHz)`, `Temperature(C)`) during the capture, not only between runs.
 
 **Build profile.** Iterate on timings under `--profile profiling`, not default `dev` (`development_guide.md` §Build and run). `dev`'s debug assertions run `objc2`'s per-message check on every Metal call: about 0.9 µs a draw, 2.7 ms of `render_submit` a frame. Validate shipped numbers under `--release`.
 
@@ -1345,6 +1352,46 @@ CPU and GPU windows never align: the GPU window counts completed readbacks. Surf
 **Planar cost.** Mac perf target, native 1440p, scale ½, lake poses: the planar group costs about 1.0–1.1 ms of GPU and replaces a 7.4–7.6 ms SSR pass at very high; ultra costs the same. CPU at a 1280×720 scene: about 0.31 ms of `mirror_walk` and 0.07 ms of `rec_planar`.
 
 **Emissive-volume fixture.** `tools/gen_emissive_stress.py` writes one sealed room with two 16 × 16 panel grids, glowing on one side and without `_e` on the other, and 0, 1 or 256 `emissive_volume` brushes (`--animate 16` pulses the diagonal). Its maps are `content/dev/maps/emissive-volumes-stress-*.map`. Forward GPU time comes from a Metal System Trace on the Mac target; CPU cost is the `emissive_update` row, and uploaded entries are `emissive_uploaded`. The first frame after a load uploads all 257 table entries by design.
+
+### Camera-Route Playback
+
+`dev-tools` only. A run flies the camera along a pose file through the production frame, writes a per-frame record, and exits at the route's end. Flags, defaults and the bundle workflow: `docs/camera-routes.md`.
+
+**Pose files.** World-space eye, with yaw and pitch in engine radians, written exact so a replay is bit-equal; one pose per 60 Hz step. The header carries the bake identity, the projection the poses were made for, and how they were made. Playback reads only files and never generates a route. Generation lives in `postretro-camera-route`, which the lightmap walk harness and `postretro-tool generate-camera-route` share, so a route a bundle generates is the route the harness measures. The engine uses the crate only to read, match and write pose files.
+
+**Recording.** `--record-camera-route` writes a pose file from the first gameplay level's presented world frames: eye and aim before view feel (no bob, roll or FOV kick), resampled to 60 Hz. It cuts wherever the followed pawn's view jumps (teleport, death, respawn, gaining or losing the pawn). It shares playback's stall timeout.
+
+**Refusals.** A file matches a level on the id-51 hash and walk epoch only. A mismatch is caught at install and exits non-zero before any world frame, writing no record. A level without an id-51 hash is accepted with a warning, and the record marks the identity unproven. Launch refuses a bad file, an out-of-range FOV or pitch, `--connect`, or recording and playing together; nothing is clamped. This departs from `--start-pose`, which warns and starts at the spawn, because a run that silently draws the spawn reads as a result.
+
+**Placement.** The binary owns playback; the renderer owns frame marks. Playback replaces the render aim pose at the point where the frontend menu camera overrides the view, and bypasses view feel, so the render eye is the pose. Visibility, streaming, rendering and the audio listener follow that eye unchanged, so the drains measured are production drains. The pawn stays at spawn with gameplay input suspended, as in Settling. The sim keeps ticking; diagnostic chords and the dev-tools panel stay live.
+
+**Pacing.** Frame-locked, the default, draws pose k on route frame k at any frame rate, so every run makes the same demand. Wall-clock draws the pose at the elapsed route time, interpolated, skipping poses when frames run slow. Neither reproduces the lightmap walk harness's demand: never compare a run's counts with the harness's.
+
+| Phase | Contract |
+|---|---|
+| Settling | Streams from the first pose. The held view and the reveal draw the first pose. No rows. |
+| Hold | Holds the first pose for a launch-set frame count, so a trace can attach and the settle tail drains. Rows marked hold. |
+| Route | A frame that draws no world does not advance a frame-locked route. One that drained without drawing writes a no-draw row. |
+| Marks | A vsync chord, extent change (resize, scale factor or render resolution), window-mode change, drain-cap change (slider or production button) or script hot reload marks every row from its frame to the end. A gap (hidden window, a frame that presented nothing, or the row store growing past its reservation) marks only the rows whose interval spans it. Marked rows stay in the record and leave per-run figures. |
+| End | After the last pose: write the record, exit 0. |
+| Abort | A level change, unload, reload, frontend join, window close or quit before the route ends, Settling and hold included, writes the record marked aborted with its reason and exits non-zero. |
+| Stall | No hold or route frame within the stall timeout of launch: write the record marked aborted and exit non-zero, naming a stalled window when nothing presented (display asleep, screen locked), else the screen waited on (first-run accessibility panel). The run's first hold or route frame turns the timeout off: after it, even a hidden window waits with no deadline. |
+
+**Level requests.** The level-request drain asks playback before it acts. A request that ends a run is left undone and its level stays installed, so it harvests no seam arrival (`boot_sequence.md` §4). A recording is written before its level unloads. Any new path that unloads a level must ask playback first and write a pending recording before the unload.
+
+**Record.** One JSON file, written once at run end. The header carries the run's machine state (adapter, surface and scene extents, render divisor, effective window mode, present mode; see Machine-state confounders), its setup, both bake identities and projections, the settle outcome and timing availability. Idle VRAM, GPU utilization and the GPU clock stay outside it. Rows carry the interval, the CPU split, per-resource admission and late-draw counts, and GPU times under `POSTRETRO_GPU_TIMING` on an adapter with timestamp queries (GPU Pass Timing). `tools/playback_trace_reduce.py` reads this shape and `docs/camera-routes.md` describes it: a field change updates both. Stages are absent, never zero, with CPU timing off. Writing a row does no I/O. It allocates only when the row store grows past its reservation, which gap-marks the spanning rows (Marks row). Inactive playback allocates nothing and marks nothing.
+
+**Telemetry.** One `playback_window` event per 120 record rows, plus a final partial; its figures cover unmarked route rows only (`development_guide.md` §6.5). Each window's log line and event are written at frame end, so one row in 120 carries that I/O, unmarked, in its interval. Per-frame rows never reach the sink: its per-line flush is sized for per-window rates.
+
+**Frame marks.** During playback only, each frame's lightmap drain, SH upload copies (with SH and mover pool growth and mover depth-tile flushes) and frame encoders carry a `pr-frame <k> <site>` debug group: k is the record row's frame, and the site is `lightmap`, `sh` or `frame`. The site rides in the mark because wgpu's Metal backend relabels a submit's last command buffer, so a reducer cannot classify work by command-buffer label. Marks bracket encoders and never rename one, so per-encoder trace reductions still group by pass label.
+
+**Reducer.** `tools/playback_trace_reduce.py` (stdlib; preflight runs its unittest) joins the record with a Metal System Trace export and an `ioreg` clock poll. Row k's interval runs from frame k−1's start to frame k's, so it charges frame k−1's drains. A drain that may still be in flight at a frame's start blanks that reading and names the cause. A drain with no GPU row reads missing, never zero. Every GPU figure names the clock it ran at or says the clock went unrecorded.
+
+**Present mode and drain cap.** `--present-mode vsync|no-vsync` sets the present mode from the first frame in any `dev-tools` session, a route or not. A run's drain cap comes from the play drain-cap slider and its launch seed (§4); playback adds no flag for it.
+
+**Gating.** SDK bundles carry playback, recording, the seed and the generate verb. The bundle engine is a debug build, so bundle runs check routes, not timing; measure under `--profile profiling` or `--release` with `dev-tools`. Player builds carry none of it and warn on the flags.
+
+**Mac traces.** Hold one `caffeinate -di` across a batch of traced runs, not one per run: a per-run hold ends with the engine, the trace keeps saving for minutes after, and a screen that locks meanwhile stalls the next run with zero frames.
 
 ### Indirect-Call Validation
 

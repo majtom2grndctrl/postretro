@@ -66,12 +66,15 @@ impl Rig {
 
     /// Step until release; ticks since FIRE and what released.
     fn run(&mut self) -> (u32, HitDeclarationResult) {
-        for _ in 0..200 {
+        let budget = self
+            .march()
+            .map_or(0, |march| march.shot.timeout_budget_ticks);
+        while self.tick - self.fire_tick < budget {
             if let Some(result) = self.step() {
                 return (self.tick - self.fire_tick, result);
             }
         }
-        panic!("the march releases within its reach");
+        panic!("the march releases within its shot's timeout budget");
     }
 
     fn steps(&mut self, count: u32) {
@@ -253,9 +256,9 @@ fn launch_point_and_launched_inside_a_hull_release_on_the_tick_after_fire() {
 
 #[test]
 fn door_sliding_into_the_path_takes_the_blast_and_one_that_opens_passes_it_to_the_wall() {
-    // The client saw the door a frame later (5.05) or earlier (4.8); either way
-    // the host detonates on its own door.
-    for declared in [5.05, 4.8] {
+    // The client saw the door a frame later (5.05) or a hair earlier (4.85);
+    // either way the host detonates on its own door.
+    for declared in [5.05, 4.85] {
         let mut rig = Rig::new(wall_at_x(8.0), 0.0);
         rig.declare(vec![at(declared)]);
         rig.steps(2);
@@ -371,6 +374,37 @@ fn client_and_host_disagreeing_on_a_door_land_at_the_nearer_of_host_door_and_dec
     rig.declare(vec![at(4.9)]);
     let (_, result) = rig.run();
     assert_near(point(&result), Vec3::new(4.9, 0.0, 0.0));
+}
+
+// A world point declared a hair short of a wall the cursor has not reached
+// yet: the host looks ahead from the cursor by the at-point slack and its
+// wall decides, never a point in open air. One at the wall lands there; one
+// short of the wall by more than the slack is the client's on-path point.
+#[test]
+fn world_point_declared_just_short_of_an_unreached_wall_takes_the_walls_contact() {
+    // The wall face lies 0.05 beyond the cursor's eighth step.
+    const WALL: f32 = 8.05;
+    for (declared, lands, host_contact) in
+        [(7.99, WALL, true), (WALL, WALL, true), (7.9, 7.9, false)]
+    {
+        let mut rig = Rig::new(wall_at_x(WALL), 0.0);
+        // A normal no host surface has, so the result shows whose point won.
+        rig.declare(vec![world_contact(Vec3::new(declared, 0.0, 0.0), Vec3::Y)]);
+        let (_, result) = rig.run();
+        assert_near(point(&result), Vec3::new(lands, 0.0, 0.0));
+        let normal = result.contacts[0].normal;
+        if host_contact {
+            assert!(
+                normal.dot(Vec3::X).abs() > 0.99,
+                "declared {declared}: the host's wall decides, {normal}"
+            );
+        } else {
+            assert!(
+                normal.dot(Vec3::Y) > 0.99,
+                "declared {declared}: the declared point decides, {normal}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -576,6 +610,36 @@ fn invalid_or_empty_declarations_set_off_nothing_even_after_a_contact() {
 }
 
 #[test]
+fn a_shot_settled_before_its_declaration_binds_takes_its_march_with_it() {
+    // No pellet can count, so intake settles the shot at once.
+    let mut rig = Rig::with(wall_at_x(8.0), 0.0, |shot| shot.pellet_count = 0);
+    let declaration = rig.f.declaration(vec![at(8.0)]);
+    let settled = rig.f.ingest_result(7, &declaration);
+    assert!(!settled.deferred && !settled.hit_accepted);
+    assert!(rig.march().is_none(), "gone with its pelletless shot");
+
+    // An overflowed HIT refuses the open shot before it binds.
+    let mut rig = Rig::new(wall_at_x(8.0), 0.0);
+    let verdict = rig.f.open_shots.refuse_overflowed_hit(
+        &crate::activation_ledger::HostActivationLedger::default(),
+        7,
+        rig.f.shot_id,
+        rig.tick,
+    );
+    assert!(verdict.is_some_and(|verdict| !verdict.hit_accepted));
+    assert!(rig.march().is_none(), "gone with its refused shot");
+    assert!(rig.f.march_tick(rig.tick + 1).is_empty());
+}
+
+#[test]
+fn march_with_a_non_finite_fire_origin_is_born_exhausted() {
+    let rig = Rig::with(wall_at_x(8.0), 0.0, |shot| {
+        shot.fire_origin = Vec3::new(f32::NAN, 0.0, 0.0);
+    });
+    assert!(rig.march().is_some_and(|march| march.exhausted));
+}
+
+#[test]
 fn a_declaration_that_never_arrives_sets_off_nothing_and_its_march_expires() {
     let mut rig = Rig::new(wall_at_x(8.0), 0.0);
     let budget = rig.march().unwrap().shot.timeout_budget_ticks;
@@ -595,11 +659,16 @@ fn a_declaration_that_never_arrives_sets_off_nothing_and_its_march_expires() {
 fn non_late_muzzle_offset_rocket_at_a_moved_enemy_lands_at_its_declared_point() {
     const MUZZLE: Vec3 = Vec3::new(0.0, 0.0, 0.4);
     const WALL: f32 = 20.0;
+    // The eye sits at the origin, looking down +X at the wall.
+    let eye_ray = Vec3::X;
+    let muzzle_lateral_offset = (MUZZLE - eye_ray * MUZZLE.dot(eye_ray)).length();
     for distance in [2.0, 18.0] {
         let mut rig = Rig::with(wall_at_x(WALL), 0.1, |shot| {
             shot.fire_origin = MUZZLE;
             shot.projectile_direction = Some((Vec3::new(WALL, 0.0, 0.0) - MUZZLE).normalize());
-            shot.splash_on_path_tolerance = Some(0.1 + MUZZLE.length() + 0.25);
+            // As the host freezes it at FIRE: radius, the launched muzzle's
+            // offset off the eye ray, and the slack.
+            shot.splash_on_path_tolerance = Some(0.1 + muzzle_lateral_offset + 0.25);
         });
         let enemy = rig.target(Vec3::new(distance + 0.1, 0.0, 0.0));
         let record = rig.enemy_record(enemy, Vec3::new(distance, 0.0, 0.0));
@@ -683,14 +752,15 @@ fn resolved_march_casts_nothing_more_and_no_open_shot_means_no_work() {
 // ---- C13 ----
 
 // No movers, nothing on the path, the host launching where the client did: a
-// world-contact blast lands at the host's first contact, as the retired
-// replay did, on no later a tick than its hold released.
+// world-contact blast lands at the host's first contact, the centre a level
+// without movers had before the march, and no later than travel at one metre
+// a tick reaches it.
 #[test]
 fn level_without_movers_lands_at_the_same_centre_no_later() {
     let mut rig = Rig::new(wall_at_x(7.5), 0.0);
     rig.declare(vec![at(7.5)]);
     let (ticks, result) = rig.run();
     assert_near(point(&result), Vec3::new(7.5, 0.0, 0.0));
-    // The retired hold: ceil(7.5 m / 1 m per tick) plus one tick of margin.
+    // ceil(7.5 m / 1 m per tick), plus one tick of margin.
     assert!(ticks <= 8 + 1, "released after {ticks} ticks");
 }

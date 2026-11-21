@@ -92,7 +92,7 @@ mod seat;
 pub mod session_players;
 mod snapshot_apply;
 mod splash_march;
-pub use splash_march::host_step_splash_marches;
+pub use splash_march::{MarchRelease, host_step_splash_marches};
 #[cfg(test)]
 mod teleport_tests;
 pub mod weapon_cues;
@@ -2258,6 +2258,8 @@ fn ingest_hit_declaration(
     let sounds = open.shot.sounds.clone();
     let pellet_count = open.shot.pellet_count;
     if pellet_count == 0 {
+        // No record can count: the shot settles here, and its march with it.
+        context.open_shots.drop_march(shot_id);
         return HitDeclarationResult {
             sounds,
             action,
@@ -2288,8 +2290,7 @@ fn ingest_hit_declaration(
         };
     }
 
-    // Non-splash projectile contact presentation keeps the existing declared
-    // endpoint contract. Splash is stricter because its point is a damage origin.
+    // A direct projectile presents its first valid declared contact.
     let projectile_record = if open.shot.is_projectile {
         declaration
             .records
@@ -2392,7 +2393,9 @@ pub(crate) fn ingest_hit_declaration_for_test(
         return (false, false);
     }
     let shot_id = crate::wire_convert::shot_id_from_wire(declaration.shot_id);
-    let fire_tick = open_shots.get(shot_id).map(|open| open.shot.fire_tick);
+    let budget = open_shots
+        .get(shot_id)
+        .map(|open| (open.shot.fire_tick, open.shot.timeout_budget_ticks));
     let result = ingest_hit_declaration(
         HostHitIngestContext {
             registry: &mut *registry,
@@ -2410,8 +2413,8 @@ pub(crate) fn ingest_hit_declaration_for_test(
     }
     // A splash declaration releases when its march reaches its deciding point.
     let world = collision::moving::CombinedCollisionWorld::static_only(collision_world);
-    let fire_tick = fire_tick.unwrap_or_default();
-    for tick in fire_tick.wrapping_add(1)..fire_tick.wrapping_add(MAX_OPEN_SHOT_AGE_TICKS) {
+    let (fire_tick, timeout_budget_ticks) = budget.unwrap_or_default();
+    for tick in fire_tick.wrapping_add(1)..=fire_tick.wrapping_add(timeout_budget_ticks) {
         if let Some(released) = crate::splash_march::step_and_release(
             registry,
             &world,
@@ -2452,10 +2455,10 @@ fn apply_valid_hit_record(
         return false;
     };
     // Every resolution rejects a target already committed to removal above.
-    // Deferred direct-impact projectiles additionally share the local
-    // projectile spatial eligibility contract, including declared player life
-    // capabilities. An ineligible impact is spent without damage. Hitscan/pellet declarations retain
-    // the common impact dispatch semantics used by authored zero-HP policies.
+    // A direct projectile also shares the local projectile's spatial
+    // eligibility, including declared player life capabilities: an ineligible
+    // impact is spent without damage. Hitscan and pellet declarations keep the
+    // common impact dispatch that authored zero-HP policies rely on.
     if shot.is_projectile
         && !crate::scripting_systems::health::is_damage_target_eligible(registry, target)
     {
@@ -4348,7 +4351,7 @@ mod tests {
             &mut fixture.open_shots,
             tick,
             |_| {},
-            |_, point| projectile_contacts.push(point),
+            |_, release| projectile_contacts.extend(release.blast),
             |emission| impacts.push(emission),
         );
         weapon::drain_impact_particle_requests(
@@ -4704,10 +4707,10 @@ mod tests {
         );
     }
 
-    // A direct projectile presents its declared endpoint and replays nothing, so
-    // its declaration still resolves one tick after FIRE however far it flew.
+    // A direct projectile has no march: its declared endpoint is taken on the
+    // tick after FIRE, however far the client's projectile flew.
     #[test]
-    fn direct_projectile_declaration_is_not_held_for_travel() {
+    fn direct_projectile_declaration_is_ready_on_the_tick_after_fire() {
         let mut fixture = HitIngestFixture::new(CollisionWorld::new());
         fixture.configure_projectile_splash(0.0);
         let shot = fixture.shot_mut();
@@ -5037,14 +5040,14 @@ mod tests {
             declaration: &wire::HitDeclaration,
         ) -> (u32, HitDeclarationResult) {
             self.arm_march();
-            let fire_tick = self
+            let (fire_tick, budget) = self
                 .open_shots
                 .march(self.shot_id)
-                .map(|march| march.shot.fire_tick)
+                .map(|march| (march.shot.fire_tick, march.shot.timeout_budget_ticks))
                 .expect("a splash shot marches");
             let bound = self.ingest_result(client_id, declaration);
             assert!(bound.deferred, "a splash declaration binds to its march");
-            for tick in fire_tick + 1..fire_tick + 1_000 {
+            for tick in fire_tick + 1..=fire_tick + budget {
                 if let Some(released) = self.march_tick(tick).pop() {
                     return (tick, released.result);
                 }
@@ -6757,8 +6760,8 @@ mod tests {
         );
     }
 
-    // Regression: remote splash replay must preserve the local authoritative
-    // projectile stage's swept-radius contact instead of trusting the client point.
+    // Regression: the host march must find the local authoritative projectile
+    // stage's swept-radius contact instead of trusting the client point.
     #[test]
     fn remote_splash_static_contact_preserves_projectile_radius_semantics() {
         let mut fixture = HitIngestFixture::new(wall_at_x(1.0));
@@ -6795,7 +6798,7 @@ mod tests {
             .expect("host resolves swept sphere contact");
         assert!(
             point.distance(local_impact.point) <= EPSILON,
-            "remote replay must expose the same contact point as local authoritative flight",
+            "the march must reach the same contact point as local authoritative flight",
         );
         assert!(
             point.x < 0.9,

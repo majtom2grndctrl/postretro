@@ -1,4 +1,5 @@
-//! Shared enemy-to-pawn perception endpoints and debounced LOS through static geometry and movers at the tick's pose.
+//! Shared enemy-to-pawn perception endpoints and debounced LOS through static
+//! geometry and movers at the tick's pose.
 //! See: context/lib/entity_model.md §7c.
 
 use std::collections::HashMap;

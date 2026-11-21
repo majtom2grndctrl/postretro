@@ -9,15 +9,11 @@ use std::collections::{HashMap, VecDeque};
 
 pub(crate) const MAX_PENDING_HIT_DECLARATIONS_PER_CLIENT: usize = 64;
 
-/// A projectile cannot have struck anything on its own FIRE tick.
+/// Host ticks after FIRE before a projectile declaration may be taken: a
+/// projectile cannot have struck anything on its own FIRE tick. A splash
+/// declaration then binds to its shot's march, which decides when the blast
+/// lands (`splash_march`).
 const MIN_PROJECTILE_HOLD_TICKS: u32 = 1;
-
-/// Host ticks after FIRE before a projectile declaration may be taken. A
-/// splash declaration then binds to its shot's march, which decides when the
-/// blast lands (`splash_march`).
-fn projectile_hold_ticks(_shot: &AuthorizedShot, _declaration: &wire::HitDeclaration) -> u32 {
-    MIN_PROJECTILE_HOLD_TICKS
-}
 
 #[derive(Debug, Default)]
 pub struct OpenAuthorizedShots {
@@ -26,6 +22,9 @@ pub struct OpenAuthorizedShots {
     /// intake: binding the declaration retires the shot, and the march
     /// releases the blast when it reaches its deciding point.
     pub(crate) marches: HashMap<ShotId, SplashMarch>,
+    /// `splash_march::step_and_release`'s fixed march order, kept between
+    /// ticks so a tick does not allocate it.
+    pub(crate) march_order: Vec<ShotId>,
 }
 
 impl OpenAuthorizedShots {
@@ -81,7 +80,10 @@ impl OpenAuthorizedShots {
             return None;
         }
         if owned_open {
+            // Refused before its declaration bound, its march has nothing to
+            // release.
             self.retire(shot_id);
+            self.drop_march(shot_id);
         }
         Some(wire::ShotVerdict {
             shot_id: crate::wire_convert::shot_id_to_wire(shot_id),
@@ -115,6 +117,17 @@ impl OpenAuthorizedShots {
 
     pub(crate) fn march(&self, shot_id: ShotId) -> Option<&SplashMarch> {
         self.marches.get(&shot_id)
+    }
+
+    /// Whether any client splash shot is marching: one can release a blast on
+    /// a tick that ingests no declaration.
+    pub fn has_marches(&self) -> bool {
+        !self.marches.is_empty()
+    }
+
+    /// Drop a march whose shot settled without it.
+    pub(crate) fn drop_march(&mut self, shot_id: ShotId) {
+        self.marches.remove(&shot_id);
     }
 
     /// Bind a splash declaration to its shot's march; whether one was open.
@@ -224,8 +237,7 @@ impl PendingHitDeclarations {
             let shot_open = open_shot.is_some();
             let projectile_hold_active = open_shot.as_ref().is_some_and(|open| {
                 open.shot.is_projectile
-                    && current_tick.wrapping_sub(open.shot.fire_tick)
-                        < projectile_hold_ticks(&open.shot, &pending.declaration)
+                    && current_tick.wrapping_sub(open.shot.fire_tick) < MIN_PROJECTILE_HOLD_TICKS
             });
             use activation_ledger::OrdinalStatus;
             let ordinal =

@@ -12,6 +12,12 @@ use crate::collision::shot_queries::{cast_sphere_exact_combined, mover_enclosing
 /// Travel this close to the reach counts as having reached it.
 const REACH_EPSILON: f32 = 1.0e-4;
 
+/// How far beyond a declared world point a host surface still counts as at
+/// it (P18): float noise between the client's cast and the host's of one
+/// surface. Any wider, and a point declared short of a wall the cursor has
+/// not reached yet would take the blast in open air.
+const AT_POINT_SLACK: f32 = 0.1;
+
 /// One open client splash shot's march along its frozen path.
 #[derive(Debug, Clone)]
 pub struct SplashMarch {
@@ -104,7 +110,7 @@ impl SplashMarch {
             self.exhausted = true;
             return;
         };
-        let position = self.shot.fire_origin + flight.direction * self.travelled;
+        let position = flight.origin + flight.direction * self.travelled;
         // A sweep from inside a hull meets its far face: a cursor enclosed in
         // one is struck where it is, before any expiry. One only overlapping a
         // surface is the sweep's to judge.
@@ -118,20 +124,40 @@ impl SplashMarch {
         }
         let remaining = (flight.reach - self.travelled).max(0.0);
         let segment = flight.step.min(remaining);
-        if let Some(hit) =
-            cast_sphere_exact_combined(world, position, flight.radius, flight.direction, segment)
-        {
-            let toi = hit.time_of_impact.max(0.0);
-            self.contact = Some(MarchContact {
-                distance: self.travelled + toi,
-                point: position + flight.direction * toi,
-                normal: hit.normal,
-            });
+        if let Some(contact) = flight.contact_ahead(world, self.travelled, segment) {
+            self.contact = Some(contact);
             return;
         }
         self.travelled += segment;
         if self.travelled >= flight.reach - REACH_EPSILON {
             self.exhausted = true;
+            return;
+        }
+        self.look_ahead_at_declared_point(world, &flight);
+    }
+
+    /// The cursor has reached a declared world point with no host contact
+    /// yet: a host surface within [`AT_POINT_SLACK`] beyond the point is the
+    /// host's contact there, though the cursor has not reached it.
+    fn look_ahead_at_declared_point(
+        &mut self,
+        world: &CombinedCollisionWorld<'_>,
+        flight: &Flight,
+    ) {
+        let distance = match &self.declaration {
+            Some(BoundDeclaration::OnPath { distance, record })
+                if record.target == crate::PRESENTATION_CONTACT_TARGET =>
+            {
+                *distance
+            }
+            _ => return,
+        };
+        if self.travelled < distance {
+            return;
+        }
+        let ahead = (distance + AT_POINT_SLACK).min(flight.reach) - self.travelled;
+        if ahead > 0.0 {
+            self.contact = flight.contact_ahead(world, self.travelled, ahead);
         }
     }
 
@@ -184,13 +210,12 @@ impl SplashMarch {
             },
             BoundDeclaration::OnPath { distance, record } => {
                 let world_record = record.target == crate::PRESENTATION_CONTACT_TARGET;
-                let at_point = self.shot.splash_on_path_tolerance.unwrap_or(0.0);
                 match self.contact {
                     // A host contact nearer than the declared point wins with
                     // its own surface; so does one at a declared world point.
                     Some(contact)
                         if contact.distance < *distance
-                            || (world_record && contact.distance <= distance + at_point) =>
+                            || (world_record && contact.distance <= distance + AT_POINT_SLACK) =>
                     {
                         MarchOutcome::HostContact(contact)
                     }
@@ -207,6 +232,7 @@ impl SplashMarch {
 
 /// The frozen flight facts a march steps with.
 struct Flight {
+    origin: Vec3,
     direction: Vec3,
     radius: f32,
     /// Distance per host tick.
@@ -223,6 +249,7 @@ impl Flight {
         let lifetime = shot.projectile_lifetime_seconds?;
         let radius = shot.projectile_radius?;
         Some(Self {
+            origin: shot.fire_origin,
             direction,
             radius,
             step: speed * tick_seconds,
@@ -231,7 +258,8 @@ impl Flight {
     }
 
     fn valid(&self) -> bool {
-        self.direction.is_finite()
+        self.origin.is_finite()
+            && self.direction.is_finite()
             && (self.direction.length_squared() - 1.0).abs() <= 1.0e-3
             && self.radius.is_finite()
             && self.radius >= 0.0
@@ -240,19 +268,78 @@ impl Flight {
             && self.reach.is_finite()
             && self.reach >= 0.0
     }
+
+    /// The first world contact within `length` ahead of `travelled`.
+    fn contact_ahead(
+        &self,
+        world: &CombinedCollisionWorld<'_>,
+        travelled: f32,
+        length: f32,
+    ) -> Option<MarchContact> {
+        let position = self.origin + self.direction * travelled;
+        let hit = cast_sphere_exact_combined(world, position, self.radius, self.direction, length)?;
+        let toi = hit.time_of_impact.max(0.0);
+        Some(MarchContact {
+            distance: travelled + toi,
+            point: position + self.direction * toi,
+            normal: hit.normal,
+        })
+    }
 }
 
 /// One march's release: who fired it, and what the host settled.
 pub(crate) struct Released {
     pub(crate) client_id: u64,
     pub(crate) shot_id: postretro_combat_model::ShotId,
+    /// Where the march's cursor stood when it released.
+    pub(crate) cursor: Vec3,
     pub(crate) result: crate::HitDeclarationResult,
+}
+
+impl Released {
+    pub(crate) fn march_release(&self) -> MarchRelease {
+        MarchRelease {
+            cursor: self.cursor,
+            blast: self.result.projectile_contact,
+        }
+    }
+}
+
+/// How a march ended, for its observer flight: the cursor's last position,
+/// and the blast point, which a refusal does not have.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MarchRelease {
+    pub cursor: Vec3,
+    pub blast: Option<Vec3>,
+}
+
+/// A blast this far behind a flight's pose still counts as at it: float noise
+/// between the cursor and the blast point.
+const FLIGHT_END_EPSILON: f32 = 1.0e-4;
+
+impl MarchRelease {
+    /// Where the observer flight standing at `pose` ends. A blast it has not
+    /// passed ends it there; a blast behind it never pulls it back, so it ends
+    /// where it stands; a refusal ends it at the march's last cursor. It never
+    /// ends with a contact flash: the blast's own burst shows the impact
+    /// (brief Decision "Observers never see…").
+    pub(crate) fn flight_end(&self, pose: Option<Vec3>, direction: Vec3) -> Vec3 {
+        match (self.blast, pose) {
+            (None, _) => self.cursor,
+            (Some(blast), Some(pose)) if (blast - pose).dot(direction) < -FLIGHT_END_EPSILON => {
+                pose
+            }
+            (Some(blast), _) => blast,
+        }
+    }
 }
 
 /// Step every open march one host tick against this tick's world, then
 /// release each that reached its deciding point with its declaration in
 /// hand: the authoritative blast, then its verdict and presentation. Runs in
 /// the Projectiles stage, before host projectiles advance and before AI.
+/// `on_march_release` hears every release, refusals included, so the
+/// observer flight can end where the march did.
 #[allow(clippy::too_many_arguments)]
 pub fn host_step_splash_marches(
     server: &mut crate::NetServer,
@@ -263,7 +350,7 @@ pub fn host_step_splash_marches(
     open_shots: &mut crate::OpenAuthorizedShots,
     current_tick: u32,
     mut on_impact: impl FnMut(&mut postretro_entities::EntityRegistry),
-    mut on_projectile_contact: impl FnMut(postretro_combat_model::ShotId, Vec3),
+    mut on_march_release: impl FnMut(postretro_combat_model::ShotId, MarchRelease),
     mut on_remote_impact: impl FnMut(crate::emission::WeaponEmission),
 ) -> bool {
     let mut accepted_any_hit = false;
@@ -276,6 +363,7 @@ pub fn host_step_splash_marches(
         current_tick,
         &mut on_impact,
     ) {
+        on_march_release(released.shot_id, released.march_release());
         accepted_any_hit |= crate::finish_hit_declaration(
             server,
             registry,
@@ -284,7 +372,7 @@ pub fn host_step_splash_marches(
             released.shot_id,
             true,
             released.result,
-            &mut on_projectile_contact,
+            &mut |_, _| {},
             &mut on_remote_impact,
         );
     }
@@ -306,14 +394,17 @@ pub(crate) fn step_and_release(
         return Vec::new();
     }
     // One fixed order, so blasts on one tick credit kills the same way on
-    // every run.
-    let mut ids: Vec<_> = open_shots.marches.keys().copied().collect();
-    ids.sort_unstable_by_key(|id| {
+    // every run. The order buffer is kept between ticks, so a tick allocates
+    // only when more marches are open than ever before.
+    let mut order = std::mem::take(&mut open_shots.march_order);
+    order.clear();
+    order.extend(open_shots.marches.keys().copied());
+    order.sort_unstable_by_key(|id| {
         let wire = crate::wire_convert::shot_id_to_wire(*id);
         (wire.pawn, wire.start_tick, wire.lane, wire.ordinal)
     });
     let mut released = Vec::new();
-    for id in ids {
+    for &id in &order {
         let Some(march) = open_shots.marches.get_mut(&id) else {
             continue;
         };
@@ -330,6 +421,7 @@ pub(crate) fn step_and_release(
         let Some(march) = open_shots.marches.remove(&id) else {
             continue;
         };
+        let cursor = march.cursor();
         let result = release(
             registry,
             world,
@@ -342,9 +434,11 @@ pub(crate) fn step_and_release(
         released.push(Released {
             client_id: march.owner_client_id,
             shot_id: id,
+            cursor,
             result,
         });
     }
+    open_shots.march_order = order;
     released
 }
 

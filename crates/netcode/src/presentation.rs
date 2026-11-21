@@ -847,7 +847,7 @@ mod tests {
                         .current,
                 ));
             },
-            |_, point| projectile_contact = Some(point),
+            |_, release| projectile_contact = release.blast,
             |impact| remote_impacts.push(impact),
         );
         assert!(!ingested && released, "the march releases the blast");

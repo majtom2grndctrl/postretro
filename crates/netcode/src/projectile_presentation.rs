@@ -24,7 +24,8 @@ use crate::sprite_collection::derive_collection_id;
 use crate::weapon;
 
 use super::{
-    NetworkIdAllocator, OpenAuthorizedShots, PROJECTILE_CONTACT_DESPAWN_REASON, ReplicableSet,
+    MarchRelease, NetworkIdAllocator, OpenAuthorizedShots, PROJECTILE_CONTACT_DESPAWN_REASON,
+    ReplicableSet,
 };
 
 #[derive(Debug)]
@@ -40,7 +41,8 @@ enum PresentationFlight {
     /// A connected client's authority projectile runs only on that client. The
     /// host advances this visual along the launch direction frozen from the
     /// authorized shot (a late-admitted start's captured aim), never the live
-    /// pawn aim, until the path ends or its shot retires.
+    /// pawn aim, until the path ends or its shot retires. A `marched` flight,
+    /// a client splash shot's, stands at its host march's cursor instead.
     StraightLine {
         shot_id: ShotId,
         direction: Vec3,
@@ -53,8 +55,11 @@ enum PresentationFlight {
         endpoint: Option<EndpointPublication>,
         impact_light: Option<ProjectileImpactLight>,
         /// A client splash shot's flight follows its host march instead of
-        /// flying free, and ends without a contact flash (`splash_march`).
+        /// flying free (`splash_march`). It ends without a contact flash; the
+        /// blast's burst shows the impact.
         marched: bool,
+        /// How the march ended, from its release until the flight reads it.
+        march_release: Option<MarchRelease>,
     },
 }
 
@@ -104,6 +109,23 @@ impl HostProjectilePresentations {
                 && *live == shot_id
             {
                 *contact_point = Some(point);
+                return;
+            }
+        }
+    }
+
+    /// Retain how a client splash shot's march ended on its marched flight.
+    /// Unknown or already-retired shots are ignored.
+    pub fn note_march_release(&mut self, shot_id: ShotId, release: MarchRelease) {
+        for flight in self.flights.values_mut() {
+            if let PresentationFlight::StraightLine {
+                shot_id: live,
+                march_release,
+                ..
+            } = flight
+                && *live == shot_id
+            {
+                *march_release = Some(release);
                 return;
             }
         }
@@ -189,6 +211,7 @@ impl HostProjectilePresentations {
                 endpoint: None,
                 impact_light: launch.projectile.visual.impact_light.clone(),
                 marched: false,
+                march_release: None,
             },
         );
     }
@@ -333,9 +356,10 @@ impl HostProjectilePresentations {
     }
 
     /// Advance independent remote-fire visuals and host-local mirrors. Nominal path
-    /// completion holds while shot authorization remains open. Every terminal pose
-    /// then remains replicated until all intended recipients acknowledge its current
-    /// baseline; only the following tombstone may retire it.
+    /// completion holds while shot authorization remains open. A marched flight
+    /// instead stands at its march's cursor and ends where the march does. Every
+    /// terminal pose then remains replicated until all intended recipients
+    /// acknowledge its current baseline; only the following tombstone may retire it.
     pub fn advance(
         &mut self,
         registry: &mut EntityRegistry,
@@ -404,28 +428,46 @@ impl HostProjectilePresentations {
                     endpoint,
                     impact_light,
                     marched,
+                    march_release,
                 } => {
                     let march = open_shots.march(*shot_id);
-                    *marched |= march.is_some();
+                    // A march can release on the first tick this flight is
+                    // advanced, before it was ever seen open.
+                    *marched |= march.is_some() || march_release.is_some();
                     if *marched {
-                        if endpoint.is_none() {
-                            // The deciding point a release noted, the march's
-                            // contact or path end, or where the flight stands
-                            // once its march is gone. No flash: the burst shows
-                            // with the blast.
-                            let end = contact_point.take().or_else(|| match march {
+                        let pose = registry
+                            .get_component::<Transform>(id)
+                            .ok()
+                            .map(|transform| transform.position);
+                        if let Some(release) = march_release.take() {
+                            let end = release.flight_end(pose, *direction);
+                            // One that already ended at the march's contact
+                            // before the declaration arrived keeps that end.
+                            if endpoint.is_none() {
+                                *pose_dirty |= set_presentation_endpoint(registry, id, end);
+                                *path_finished = true;
+                                *endpoint = Some(begin_endpoint_publication(
+                                    replication,
+                                    network_id,
+                                    0,
+                                    *pose_dirty,
+                                ));
+                            }
+                        } else if endpoint.is_none() {
+                            // Stand at the cursor. A march that found its
+                            // contact or ran out ends the flight there,
+                            // unflashed.
+                            // One gone without a release ends it where it
+                            // stands.
+                            let end = match march {
                                 Some(march) => {
                                     let cursor = march.cursor();
                                     *pose_dirty |= set_presentation_endpoint(registry, id, cursor);
                                     march.resolved().then_some(cursor)
                                 }
-                                None => registry
-                                    .get_component::<Transform>(id)
-                                    .ok()
-                                    .map(|transform| transform.position),
-                            });
-                            if let Some(point) = end {
-                                *pose_dirty |= set_presentation_endpoint(registry, id, point);
+                                None => pose,
+                            };
+                            if end.is_some() {
                                 *path_finished = true;
                                 *endpoint = Some(begin_endpoint_publication(
                                     replication,
@@ -3252,8 +3294,8 @@ mod tests {
     }
 
     // P32: a client splash rocket's observer flight steps with the host march,
-    // never passes the door or the wall, and ends at the march's contact with no
-    // flash; a later blast behind that end shows only as its burst.
+    // never passes the wall, and ends at the march's wall contact with no
+    // flash; a later blast at the door behind that end shows only as its burst.
     #[test]
     fn client_splash_flight_follows_the_march_and_ends_without_a_flash() {
         use crate::collision::moving::CombinedCollisionWorld;
@@ -3389,7 +3431,7 @@ mod tests {
                 );
                 let blast = released.result.projectile_contact.expect("a blast");
                 assert!(blast.distance(Vec3::new(4.9, 0.0, 0.0)) <= 1.0e-4);
-                presentations.note_contact(shot_id, blast);
+                presentations.note_march_release(shot_id, released.march_release());
             }
             presentations.advance(
                 &mut registry,
@@ -3441,5 +3483,273 @@ mod tests {
             0,
             "no contact flash"
         );
+    }
+
+    /// A client splash shot fired +X from the origin at one metre a host tick,
+    /// its marched observer flight, and a wall at x = 8. Nothing acknowledges
+    /// a baseline, so an ended flight stays to be read.
+    struct MarchedFlightRig {
+        registry: EntityRegistry,
+        open_shots: OpenAuthorizedShots,
+        presentations: HostProjectilePresentations,
+        allocator: NetworkIdAllocator,
+        replicable: ReplicableSet,
+        replication: ServerReplication,
+        wall: crate::collision::CollisionWorld,
+        hit_zones: crate::scripting_systems::hit_zones::HitZoneStore,
+        shot_id: ShotId,
+        visual: EntityId,
+        tick: u32,
+    }
+
+    impl MarchedFlightRig {
+        fn new(range: f32) -> Self {
+            let mut registry = EntityRegistry::new();
+            let pawn = registry.spawn(Transform::default());
+            let weapon = registry.spawn(Transform::default());
+            let shot_id = ShotId::from_parts(
+                (postretro_net::wire::NetworkId(4)).0,
+                42,
+                postretro_foundation::ActivationLane::Primary,
+                0,
+            );
+            let fire_tick = 1;
+            let mut open_shots = OpenAuthorizedShots::new();
+            open_shots.record(
+                AuthorizedShot {
+                    sounds: None,
+                    action: None,
+                    source_weapon: None,
+                    knockback: None,
+                    shot_id,
+                    pawn,
+                    pawn_life: 0,
+                    weapon,
+                    fire_tick,
+                    damage: 10.0,
+                    range,
+                    pellet_count: 1,
+                    credit_source: "weapon.test.remote".to_string(),
+                    splash: Some(postretro_foundation::SplashDescriptor {
+                        knockback: None,
+                        radius: 2.0,
+                        min_fraction: 0.0,
+                        self_damage: true,
+                    }),
+                    projectile_radius: Some(0.0),
+                    projectile_direction: Some(Vec3::X),
+                    projectile_speed: Some(60.0),
+                    projectile_lifetime_seconds: Some(10.0),
+                    projectile_tick_seconds: Some(1.0 / 60.0),
+                    splash_on_path_tolerance: Some(0.25),
+                    is_projectile: true,
+                    fire_origin: Vec3::ZERO,
+                    timeout_budget_ticks: 180,
+                    damage_type: None,
+                },
+                FIRING_CLIENT,
+            );
+            let mut projectile = descriptor();
+            projectile.speed = 60.0;
+            projectile.visual.impact_light = Some(ProjectileImpactLight {
+                color: [1.0, 0.5, 0.2],
+                intensity: 6.0,
+                radius: 7.0,
+                peak_radius: None,
+                fade_ms: 240.0,
+            });
+            let launch = RemoteProjectilePresentationLaunch {
+                action: None,
+                model_scale: 1.0,
+                owner_client_id: FIRING_CLIENT,
+                shot_id,
+                origin: Vec3::ZERO,
+                direction: Vec3::X,
+                range,
+                descriptor_class: "test_remote_projectile".to_string(),
+                projectile,
+            };
+            let mut allocator = NetworkIdAllocator::new();
+            let mut replicable = ReplicableSet::new();
+            let mut replication = ServerReplication::new();
+            replication.register_client(OBSERVING_CLIENT);
+            let mut presentations = HostProjectilePresentations::default();
+            presentations.spawn_remote(
+                &mut registry,
+                &mut allocator,
+                &mut replicable,
+                &mut replication,
+                &launch,
+                fire_tick,
+            );
+            let visual = *presentations.flights.keys().next().expect("one flight");
+            let wall = crate::collision::CollisionWorld::from_triangles_for_test(
+                vec![
+                    Vec3::new(8.0, -2.0, -2.0),
+                    Vec3::new(8.0, 2.0, -2.0),
+                    Vec3::new(8.0, 2.0, 2.0),
+                    Vec3::new(8.0, -2.0, 2.0),
+                ],
+                vec![[0, 1, 2], [0, 2, 3]],
+            );
+            let mut rig = Self {
+                registry,
+                open_shots,
+                presentations,
+                allocator,
+                replicable,
+                replication,
+                wall,
+                hit_zones: crate::scripting_systems::hit_zones::HitZoneStore::new(),
+                shot_id,
+                visual,
+                tick: fire_tick,
+            };
+            rig.advance();
+            rig
+        }
+
+        fn declare(&mut self, records: Vec<postretro_net::wire::HitRecord>) {
+            assert!(self.open_shots.bind_splash_declaration(
+                self.shot_id,
+                &postretro_net::wire::HitDeclaration {
+                    shot_id: crate::wire_convert::shot_id_to_wire(self.shot_id),
+                    records,
+                },
+            ));
+        }
+
+        /// One host tick: the march steps and may release, then the flight
+        /// advances. Whether the march released.
+        fn step(&mut self) -> bool {
+            self.tick += 1;
+            let world = crate::collision::moving::CombinedCollisionWorld::static_only(&self.wall);
+            let released = crate::splash_march::step_and_release(
+                &mut self.registry,
+                &world,
+                &self.hit_zones,
+                &self.allocator,
+                &mut self.open_shots,
+                self.tick,
+                &mut |_| {},
+            );
+            for released in &released {
+                self.presentations
+                    .note_march_release(released.shot_id, released.march_release());
+            }
+            self.advance();
+            !released.is_empty()
+        }
+
+        fn run_to_release(&mut self) {
+            for _ in 0..60 {
+                if self.step() {
+                    return;
+                }
+            }
+            panic!("the march releases");
+        }
+
+        fn advance(&mut self) {
+            self.presentations.advance(
+                &mut self.registry,
+                &mut self.allocator,
+                &mut self.replicable,
+                &mut self.replication,
+                &self.open_shots,
+                1.0 / 60.0,
+            );
+        }
+
+        fn position(&self) -> Vec3 {
+            self.registry
+                .get_component::<Transform>(self.visual)
+                .expect("the ended flight stays until acknowledged")
+                .position
+        }
+
+        /// The despawn reason the ended flight retires with.
+        fn end_reason(&self) -> Option<u8> {
+            match self.presentations.flights.get(&self.visual) {
+                Some(PresentationFlight::StraightLine {
+                    endpoint: Some(endpoint),
+                    ..
+                }) => Some(endpoint.reason),
+                _ => None,
+            }
+        }
+
+        fn host_flashes(&self) -> usize {
+            self.registry.iter_with_kind(ComponentKind::Light).count()
+        }
+    }
+
+    fn world_point(x: f32) -> postretro_net::wire::HitRecord {
+        postretro_net::wire::HitRecord {
+            normal: [-1.0, 0.0, 0.0],
+            target: crate::PRESENTATION_CONTACT_TARGET,
+            point: [x, 0.0, 0.0],
+            zone: None,
+        }
+    }
+
+    // A blast at the march's cursor ends the flight there with no contact
+    // flash (the blast's burst shows the impact): on the tick the march
+    // reaches the wall, or later, once the declaration arrives at a flight
+    // that already ended there.
+    #[test]
+    fn marched_flight_ending_at_its_blast_ends_there_unflashed() {
+        let mut rig = MarchedFlightRig::new(30.0);
+        rig.declare(vec![world_point(8.0)]);
+        rig.run_to_release();
+        assert!(rig.position().distance(Vec3::new(8.0, 0.0, 0.0)) <= 1.0e-4);
+        assert_eq!(rig.end_reason(), Some(0));
+        assert_eq!(rig.host_flashes(), 0);
+
+        let mut rig = MarchedFlightRig::new(30.0);
+        for _ in 0..9 {
+            assert!(!rig.step(), "no declaration yet");
+        }
+        assert_eq!(rig.end_reason(), Some(0), "ended at the wall, unflashed");
+        rig.declare(vec![world_point(8.0)]);
+        assert!(rig.step());
+        assert!(rig.position().distance(Vec3::new(8.0, 0.0, 0.0)) <= 1.0e-4);
+        assert_eq!(rig.end_reason(), Some(0));
+        assert_eq!(rig.host_flashes(), 0);
+    }
+
+    // A declared point the march passed before its declaration arrived lands
+    // behind the flight: the flight ends where it stands, never snapping
+    // back, and does not flash.
+    #[test]
+    fn marched_flight_behind_its_blast_ends_where_it_stands_unflashed() {
+        let mut rig = MarchedFlightRig::new(30.0);
+        for _ in 0..5 {
+            assert!(!rig.step());
+        }
+        let stands = rig.position();
+        assert!(stands.distance(Vec3::new(5.0, 0.0, 0.0)) <= 1.0e-4);
+        rig.declare(vec![world_point(4.0)]);
+        assert!(rig.step(), "the march passed 4 m and releases there");
+        assert!(rig.position().distance(stands) <= 1.0e-4, "no snap back");
+        assert_eq!(rig.end_reason(), Some(0));
+        assert_eq!(rig.host_flashes(), 0);
+    }
+
+    // A refused shot sets off no blast: the flight ends at the march's last
+    // cursor, here the end of its range, with no flash.
+    #[test]
+    fn marched_flight_of_a_refused_shot_ends_at_the_last_cursor_unflashed() {
+        let mut rig = MarchedFlightRig::new(5.5);
+        // Off the host's path: only the host's own contact could count, and
+        // the range ends before the wall.
+        rig.declare(vec![postretro_net::wire::HitRecord {
+            point: [4.0, 0.0, 2.0],
+            ..world_point(4.0)
+        }]);
+        rig.run_to_release();
+        assert!(rig.position().distance(Vec3::new(5.5, 0.0, 0.0)) <= 1.0e-4);
+        assert_eq!(rig.end_reason(), Some(0));
+        assert_eq!(rig.host_flashes(), 0);
     }
 }

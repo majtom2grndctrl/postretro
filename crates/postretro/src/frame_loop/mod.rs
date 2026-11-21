@@ -1032,7 +1032,12 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                     let identities = host_overlay_identities
                         .as_ref()
                         .expect("host HIT intake has canonical identities");
-                    if overlay_config.is_some() && !ready_hit_declarations.is_empty() {
+                    if overlay_config.is_some()
+                        && crate::host_overlays::remote_hits_may_land(
+                            !ready_hit_declarations.is_empty(),
+                            open_shots,
+                        )
+                    {
                         identities.register_before_remote_hits(
                             registry,
                             &mut script_ctx.presentation_overrides.borrow_mut(),
@@ -1061,7 +1066,9 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                         open_shots,
                         *tick,
                         |registry| on_impact(registry),
-                        |shot_id, point| projectile_presentations.note_contact(shot_id, point),
+                        |shot_id, release| {
+                            projectile_presentations.note_march_release(shot_id, release)
+                        },
                         |impact| remote_impacts.push(impact),
                     );
                 },

@@ -35,7 +35,7 @@ Owner-requested capability, for a genre-staple look: polished floors and walls t
   - Dynamic entities in world-face reflections: probe-only means movers, characters, projectiles and dynamic lights never appear there.
   - Fluid surfaces in captures: water stays absent from every capture, as today, so a glossy wall shows the pool's bed, not its surface.
   - Reflections of reflections, and highlights in reflections: captures shade every face with its diffuse and emissive only, so a glossy face appears in other probes' captures without its reflection or its highlights.
-  - Live `emissive_volume` glow in reflections: captures hold each volume at its no-script state, so a pulsing sign's reflection stays steady. A per-probe aggregate glow term could follow it nearly free once `reflection-probe-fluid-pass-performance`'s per-probe sums land, but its share spreads over a whole lobe, so pulsing a sign would dim a quadrant of the reflection while the sign's own image holds (`research.md` §Volume glow share). Revisit if playtests read it wrong.
+  - Live `emissive_volume` glow in reflections: captures hold each volume at its no-script state, so a pulsing sign's reflection stays steady. A per-probe aggregate share would dim a whole lobe instead (`research.md` §Volume glow share). Glow delta tiles are the candidate fix (Path, Animated glow rival).
   - A per-material reflectivity override or opt-out in `materials.toml` (owner, deferred). Strength already uses water's reflectance meaning, so a later override is purely additive.
   - The roughness→`_p` conversion formula: the sharpness brief owns its doc row.
 
@@ -117,11 +117,13 @@ Owner-requested capability, for a genre-staple look: polished floors and walls t
   - Colour arrays need `mip_level_count` past 1. BC6H stops the chain at 4².
 - **Live lighting** reads `reflection-probe-fluid-pass-performance`'s per-probe sums. Its dispatch condition extends to frames with overlay draws.
 - **Strongest rival:** forward integration. It needs a binding forward lacks and taxes the always-run shader (`research.md` §Rivals).
+- **Animated glow rival:** glow delta tiles. Per probe, a sparse baked tile per animated glow source is summed at sample time by its live value. It is exact at every mip and off screen, and it would replace the deferred limit on volume glow and the lobe-wide area-glass dimming (`research.md` §Glow delta tiles). It waits on counsel and a cost measurement.
 - **First slice.** One dev glossy floor: a derived floor probe with the self-transparent capture, and the overlay drawing the mip-0 term. It falsifies the self-occlusion and `Equal`-landing assumptions before the format and mip work.
 - **Split first.** `compute_cull.rs`, `renderer_render_frame.rs` and level-compiler `pipeline.rs` are past the size guideline. Split before extending, behaviour-preserving, each in its own commit.
 
 ## Open questions
 - Counsel on Tencent WO2026113651A1 claim 1 for world faces. — owner, with counsel — **blocks build**
+- Counsel on glow delta tiles summed at sample time against Tencent WO2026113651A1 claims 10–14 and 19 and the post-sample-ratio fence (`ip-delta-tiles.md`). It decides whether the rival can replace the deferred volume-glow limit. — owner, with counsel
 - Sharpness floor value (estimate n ≈ 6–16) and the fade band's width. — **delegated**
 - What counts as one facing for an authored box: the normal tolerance. — **delegated**: the build warns when one box makes more than a handful of probes, naming it.
 - How `_capture_offset` applies to each per-facing probe of one authored box. — **delegated**

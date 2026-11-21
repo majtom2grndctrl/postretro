@@ -98,6 +98,34 @@ Not measured. One probe per coplanar glossy face group means a box room with a g
 - **Per-material forward pipeline variant** (`context/research/gi-rtx-lite/index.md` measurement item 9). It keeps the always-run shader clean but still needs a binding slot forward lacks. The overlay's own layout sidesteps it.
 - **Room-centre probes.** Fewer probes, but one elevated point per room leaves capture-shadow holes on faces it cannot see (behind pillars, alcoves), and the IP rules forbid filling them. Face-lifted probes also shadow behind pillars, but each face group gets the vantage closest to its own plane. Rejected by the owner.
 - **SSR or planar on world faces.** No-go by owner decision; SSR on world faces would be a second screen-space exception needing its own sign-off (`index.md` §1.1).
+- **Glow delta tiles** (rival for animated glow; §Glow delta tiles).
+
+## Glow delta tiles
+
+A rival to the deferred limit (§Volume glow share) for glow that changes at runtime: area-light glass, `emissive_volume` signs, neon tubes. It follows the delta-SH form: a base plus each animated source's baked contribution × its live value. IP reading: `ip-delta-tiles.md` (in progress).
+
+- **Shape.**
+  - The compiler bakes, per probe, one sparse delta tile per animated glow source: what that source's glow adds to the probe's view at unit strength. A source is an area light's glass or an `emissive_volume`'s faces. Tiles are stored as 8×8 blocks of the 128² colour tile, with prefiltered mips.
+  - At lookup, the overlay samples the base tile and each delta block present at that texel, and adds current_s × delta_s. Here current_s is the presented value: the volume table entry, or the area light's compose descriptor, both of which the overlay already binds.
+  - Cast light stays on the share ratio. Its deltas would be dense, at about 21 KiB per light per probe, or about 22 MB at 4 lights × 256 probes [E]. Light spreads softly enough that the ratio hides its error.
+- **Why it beats the alternatives.**
+  - Prefiltering is linear, so blurring each delta and summing equals blurring the sum: the result is exact at every colour mip. A per-texel glow id cannot mix sources under blur.
+  - It is exact off screen, where a screen-space layer has nothing.
+  - It is per texel, where the aggregate share dims a whole lobe.
+  - A switched-off tube goes fully dark in its reflection, and a recolour into a channel the reference lacks shows.
+- **Base variant.** The base either holds glow at reference, with deltas adding current − reference, or holds no animated glow, with deltas adding current. The second keeps a source at 0 exactly dark with no subtraction. Which reads closer to any claim is part of the IP question.
+- **Cost** [E].
+  - Bytes: a 2 m tube touches a handful of mip-0 blocks per probe, a few KB per source per probe with mips, plus a per-probe block index.
+  - Per glossy fragment: one block-index read and one sample per glow source present, times the mips the exponent selects. Cap it at about 4 glow sources per probe; glow past the cap holds its reference, as today.
+  - Compile: one more accumulation per glow hit in the capture trace, which `ShareSums::add` already visits.
+  - Id 54: rides this brief's version 3.
+- **IP.**
+  - A compose pass that writes base + Σ deltas into a live tile on a source change is out. It updates stored probe lighting on a light change, which is what Tencent WO2026113651A1 claims 10–14 and 19 describe (`plans/done/reflection-probes/ip-check.md` §4).
+  - Summing at sample time rewrites nothing, but it goes past the recorded fence, which allows only a post-sample scalar ratio. Counsel reads it before the design is chosen.
+- **Open.**
+  - Per-fragment cost on the 5300M near a large glossy floor with several glow sources.
+  - The sparse-block index format.
+  - Whether the overlay's binding budget holds the delta array beside the base.
 
 ## IP fences carried over
 

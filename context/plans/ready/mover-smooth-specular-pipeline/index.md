@@ -51,6 +51,7 @@ specular-texel-sharpness's cost measurement (`plans/done/specular-texel-sharpnes
 - First slice: build the smooth entry in the V5s shape and screen both entries before wiring selection. If either crosses the tier, stop there.
 - The style word in `KinematicLightParams` may become unread by the mover; retire it or keep it, and move its tests to pin pipeline selection.
 - `tools/metal_register_screen/` captures one entry today; extend it to name the entry it screens.
+- Promotion landed the §4, §7.3 and §8 text, marked "Not built yet" where it describes the two pipelines. Landing removes the marks and corrects any line the build proved wrong.
 - `kinematic_brush.rs` is large; if the pipeline split grows it, split the tests out first, in their own commit.
 
 ## Open questions

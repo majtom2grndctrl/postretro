@@ -7,6 +7,7 @@ pub mod animated_block_ids;
 pub mod animated_direct_sh_bake;
 pub mod animated_light_chunks;
 pub mod animated_light_weight_maps;
+pub(crate) mod area_light;
 pub(crate) mod bake_content_keys;
 pub mod bake_control;
 pub(crate) mod bake_fidelity;

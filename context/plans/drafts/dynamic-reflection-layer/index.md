@@ -10,7 +10,7 @@ Glossy world faces and water reflect compile-time probes. Anything that changes 
 - **Animated glow.** A flickering neon sign, an `emissive_volume` a script dims, or `light_area` glass switching on and off. Captures hold each at its reference, so the reflection stays steady. A thin emitter is the worst case (`research.md` §Thin emitters).
 - **Moving surfaces.** Doors and other movers are absent from captures, and so are characters and projectiles. `mover-aware-reflection-captures.md` records the door case.
 
-Moving lights are mostly covered already: a glossy texel's highlight is the blurred reflection of a point or spot light, sized by the same exponent as the probe blur. Glow is the light that highlights miss.
+- **Dynamic lights.** Runtime lights (muzzle flashes, rockets, scripted lamps) are diffuse-only: no surface receives their specular (`rendering_pipeline.md` §4). They show neither as a highlight nor in a reflection. Static and animated baked lights do draw highlights, sized by the same exponent as the probe blur.
 
 What the owner wants: dynamic content shows in reflections, softened by the same blur as the static reflection.
 

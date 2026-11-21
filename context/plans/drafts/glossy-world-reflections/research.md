@@ -136,8 +136,14 @@ Orderings the Acceptance rows cite.
 | P10 | Very high, selected plane, glossy faces in the mirror's reach | planar group records world draws with main pipelines | Mirror glossy faces draw no overlay, or one tested against mirror depth from the mirror camera |
 | P11 | Surface Depth quality toggled live over a glossy Surface Depth material | toggle applies, then the next frame | The overlay's sampled texel follows the same quality as forward's on that frame |
 | P12 | A ghost, water, a billboard or fog drawn over a bound glossy face | world forward, overlay, then the Ghost Pass and every later colour pass | The overlay's destination is forward's output alone; nothing drawn after it is dimmed by the reflection weight |
+| P13 | A character under a promoted static light casts its pool shadow on a bound glossy floor, head-on and at grazing, untinted and tint-1 | forward subtracts the shadowmask union from static direct, then the overlay adds W·(R − D_static) | D_static carries the same union subtraction at the same promotion weight, so the shadow fades by (1 − W) with the rest of static diffuse; no channel of the overlay's output is below 0 |
+| P14 | On frame N an animated baked light pulses, a promoted light's w crossfades, an SH cluster becomes resident, and the lighting mask toggles one bit | mask snapshot and frame scales, compose, SDF visibility, forward, then the overlay, all on N | The overlay's D_static reads N's values for every input forward read on N; with any all-terms bit off on N, the overlay draws no term on N |
+| P15 | A mover face coplanar with a bound glossy world face, and a mover in front of one | world forward, overlay, then the mover pass and the skinned-mesh pass | The mover's pixels show the mover pass's output alone; no overlay term lands on them |
+| P16 | Counsel refuses the precompute and the plan stop drops world-face live lighting at Low; a stored light forced off its reference; tier switched live low → medium → low | tier change applies on its commit frame | At Low, world-face reflections stay at reference while water's change on that frame; at medium they change on the commit frame |
+| P17 | A glossy level at low or above; the camera turns from a view with N glossy faces to one with 0, then to one with 1 | cull, then the overlay gate and the precompute's dispatch condition | A frame with no overlay draw records no overlay pass and, with no reflecting fluid draw, dispatches no precompute; the 1-face frame records one pass and dispatches the precompute once |
+| P18 | A water map one probe under the cap gains glossy faces needing two probes | authored, derived, then the cap | Every water probe survives; the two world-face-only probes with the smallest bound area drop, and the warning names their faces |
 
-P11 holds only if the Surface Depth open question answers that the overlay reruns the march. No Acceptance row cites it until that answer lands.
+
 
 ## Not verified
 

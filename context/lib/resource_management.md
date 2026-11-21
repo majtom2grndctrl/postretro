@@ -346,23 +346,21 @@ slot rather than slots of their own.
     rewrites the material uniform, not the slot).
   - On the unorm sample the shader decodes r = 1 − B and t = A·255/254 (A/254
     in bytes), capped at 1: exact for every stored byte.
-  - r⁴ is floored at 2/8200 before the divide, r⁴ at an exponent a hair past
-    the cap. Byte 255 (r = 0) never divides by zero, which WGSL `clamp()` does
-    not reliably sanitize, and an approximate GPU divide at the floor still
-    lands above the cap and clamps to exactly 8192. No authored byte changes:
-    every r⁴ below the floor already decodes past the cap.
+  - r⁴ is floored just past the cap before the divide, so byte 255 (r = 0)
+    never divides by zero and an approximate GPU divide still clamps to
+    exactly 8192. No authored byte changes: every r⁴ below the floor already
+    decodes past the cap.
   - A `_t`-only slot (B = 0) shades at its prefix exponent, so two materials
     with identical bundles under different prefixes share one sidecar and each
     shades at its own exponent.
   - Forward and mover share one decode, mirrored by a GPU-free render-cpu
     reference. Shading: `rendering_pipeline.md` §4 (Texel-centre highlight).
 - **Content addressing:** each map folds into the bundle hash only when
-  present, as height does: hashing-mask bit 5 and tag byte 0x05 for `_p`, bit 6
-  and 0x06 for `_t`, appended after height's bit 4 and 0x04. A bundle with
-  neither keeps its format, sidecar bytes and key, so existing sidecars stay
-  cache hits. `_p` or `_t` alone gets its own single-input key.
-  `STAGE_VERSION` stays 3: the widening is additive. Changing either encoding,
-  marker or marker clamp bumps it (`build_pipeline.md` §Baked texture mips).
+  present, as height does, with its own mask bit and tag after height's. A
+  bundle with neither keeps its format, sidecar bytes and key, so existing
+  sidecars stay cache hits. `_p` or `_t` alone gets its own single-input key.
+  Changing either encoding, marker or marker clamp bumps `STAGE_VERSION`
+  (`build_pipeline.md` §Baked texture mips).
 - **Cost:** four bytes per texel at every mip, paid only by materials with
   `_p` or `_t`: a 1024×1024 slot across 11 mips is 5,592,404 bytes, against
   2,796,202 for `Rg8Unorm` and 1,398,101 for `R8Unorm`.

@@ -1,7 +1,7 @@
 # specular-texel-sharpness — plan of record
 
 mode: resumable
-status: approved
+status: done
 read at: 1c7fc9e3a
 
 Branch: `feature/specular-texel-sharpness`. The brief was read at e919c0e0 (tint at e7438238). Every symbol the Decisions and Path cite was re-read at 1c7fc9e3a, after `emissive-volumes` (#686), E16 status effects and E25 level seams landed. No Decision premise is false. The corrections below are stale Path claims and clarifications that keep each Decision's and AC's meaning.

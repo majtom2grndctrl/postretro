@@ -882,8 +882,8 @@ if any sibling is present. See `resource_management.md` §4.6.
 A `{name}_p.png` or `{name}_t.png` sibling makes the slot `Rgba8Unorm` (wire
 tag 1): R and G as for height (G the stored plane without `_h`), B smoothness
 and A tint, with B = 0 and A = 255 marking an absent map. The bake holds both
-markers at every mip after filtering. It is additive like height, and
-`STAGE_VERSION` stays 3. As for height, changing either encoding, marker or
+markers at every mip after filtering. Like height it is additive: a bundle
+without either keeps its bytes and key. Changing either encoding, marker or
 marker clamp bumps `STAGE_VERSION`. Layout: `resource_management.md` §4.7.
 
 **Slot siblings: validation.** `_h`, `_p` and `_t` share the specular slot's

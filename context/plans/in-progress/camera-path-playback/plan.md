@@ -74,59 +74,79 @@ pose <x> <y> <z> <yaw> <pitch> [walk <step> <cell>] [cut]
 
 Rows number top to bottom through Acceptance (Automated 1–48, Manual 49–51). "Lifecycle fixture" means `startup/lifecycle_test_fixtures.rs` driving install, Settling and reveal. Task 5 confirms how far the fixture reaches `redraw`. Where it stops, the proof is the playback state machine plus a source-order test at the call site, and the row's result says so.
 
-| AC | Proof | Status |
-|---|---|---|
-| 1 exact file reproduces walk fingerprints | `camera_route` on-demand test vs the harness's in-memory walk, campaign-test, both walks (`POSTRETRO_LIGHTMAP_WALK_PRL`); synthetic-world unit test always on | achievable as stated |
-| 2 pre/post-move trip records pair | baseline `POSTRETRO_LIGHTMAP_WALK_TRIP_RECORD_OUT` written before the move (Task 1), replayed with `_IN` after it, both walks, default steps | achievable as stated |
-| 3 smoothed route obeys cells, speed, turn cap | `postretro-camera-route` unit tests on a synthetic world at two speed/turn-cap sets; on-demand campaign-test check | achievable as stated |
-| 4 frame-locked bit-equal, view feel and mover | `playback` pacing tests; frame-eye test with a view-feel driver present; lifecycle fixture with a view-feel pawn on a mover | achievable as stated |
-| 5 wall-clock pacing (P16) | pacing tests with injected elapsed times, slowed frames, last pose | achievable as stated |
-| 6 file FOV at window aspect; header both projections | frame-eye test + record header test | achievable as stated |
-| 7 Settling held view and reveal use first pose (P5) | lifecycle fixture with and without a pawn | achievable as stated |
-| 8 no-draw rows (P9) | state-machine test | achievable as stated |
-| 9 one-pose file; zero hold | state-machine tests, both pacings | achievable as stated |
-| 10 pawn at spawn | lifecycle fixture | achievable as stated |
-| 11 held key leaves pawn and portal mask; chord acts and marks (P12) | capture-gate test + lifecycle fixture + mark test | achievable as stated |
-| 12 death/respawn logged (P11) | life-state observer test | achievable as stated |
-| 13 CPU split carries `fixed_step` and ticks; sim never paused | row-fill test from a composed record | achievable as stated |
-| 14 bad file / identity / FOV refusals | parser + validation tests with log capture | achievable as stated |
-| 15 identity match from another path / copy; no id-51 warns once | validation tests | achievable as stated |
-| 16 `--connect` and record+play refuse | arg tests | achievable as stated |
-| 17 aborts in Settling / hold / route (P3, P4) | state tests + abort-hook test at the request drain and frontend join | achievable as stated |
-| 18 level change on last-pose frame completes (P2) | state test | achievable as stated |
-| 19 change marks and hidden gaps (P10) | state tests + hook tests at vsync, extents, window mode, hot reload, occlusion | achievable as stated |
-| 20 stall timeout (P17) | state tests with injected clock | achievable as stated |
-| 21 missing-feature warn-once | default-feature `cargo test -p postretro` with log capture | achievable as stated |
-| 22 cap seed, slider shows it, settling unaffected | drain-budget tests + slider seed test (`dev-tools`) | achievable as stated |
-| 23 present and pacing modes from first frame | renderer present-mode init test + header test | achievable as stated |
-| 24 rows in order; full header; settle outcome | record tests | achievable as stated |
-| 25 GPU time per route row on timestamp adapters | query-ring bookkeeping test; owner-free manual run on the Windows 1660 Super (has timestamps) | achievable with the clarification in Corrections |
-| 26 stage fields absent with CPU timing off | row tests | achievable as stated |
-| 27 cold flag | renderer GPU test (`POSTRETRO_REQUIRE_GPU=1` here) on pool `created` deltas | achievable as stated |
-| 28 pool-growth flag, reducer counts apart | renderer GPU test + reducer unittest | achievable as stated |
-| 29 row fill allocates nothing; one write | `alloc_probe` test + I/O-seam test | achievable as stated |
-| 30 inactive: no allocation, no marks, labels unchanged | `alloc_probe` test + renderer label test | achievable as stated |
-| 31 window event equals record rows; `null` CPU max when off | telemetry hub test | achievable as stated |
-| 32 final partial window; `run_start` names producer (P18) | telemetry hub test | achievable as stated |
-| 33 GPU figures name the clock | reducer unittest | achievable as stated |
-| 34 reducer sample from a real run | reducer unittest on the Task 4 owner export | achievable; sample needs the owner's Mac run |
-| 35 preflight runs reducer test | `SKILL.md` line + a deliberately failing run | achievable as stated |
-| 36 P6 attribution | reducer unittest | achievable as stated |
-| 37 P7 partial trace | reducer unittest | achievable as stated |
-| 38 P8/P10 route-only figures | reducer unittest | achievable as stated |
-| 39 SDK and player gating | xtask dist feature test + one `sdk-dist` build | achievable as stated |
-| 40 grep gate | engine-binary source gate `startup/camera_route_gate_tests.rs` (reuses the spike's `strip_gated`; xtask has no gated-item stripper) | achievable as stated |
-| 41 generate determinism; path/copy header-only diff | tool tests on a fixture PRL | achievable as stated |
-| 42 no GPU; parameter and level failures | tool tests | achievable as stated |
-| 43 SDK bundle generates a valid file | one `sdk-dist` build, then the bundle's verb | achievable as stated |
-| 44 recording is pre-feel; replay has no roll / FOV offset | recorder tests + frame-eye test | achievable as stated |
-| 45 30 vs 60 fps resample; frame-locked replay; hitch | recorder resampling tests | achievable as stated |
-| 46 recording skips Settling and no-world frames; header | recorder tests | achievable as stated |
-| 47 recording scope: backdrop, level exits, no world frame (P13, P15) | recorder lifecycle hook tests | achievable as stated |
-| 48 written on every exit route, same file (P14) | exit-hook test + source test that `exiting` flushes | achievable as stated |
-| 49 Mac consumer run | owner, Mac | manual — **pass** 2026-11-20, see Mac results |
-| 50 showcase copy run | owner, Mac | manual — **not run**: frozen copy unavailable, see Mac results |
-| 51 SDK bundle record / generate / play | owner | manual |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| 1 exact file reproduces walk fingerprints | `camera_route` on-demand test vs the harness's in-memory walk, campaign-test, both walks (`POSTRETRO_LIGHTMAP_WALK_PRL`); synthetic-world unit test always on | achievable as stated | pass: on-demand, campaign-test, both walks (Task 2) |
+| 2 pre/post-move trip records pair | baseline `POSTRETRO_LIGHTMAP_WALK_TRIP_RECORD_OUT` written before the move (Task 1), replayed with `_IN` after it, both walks, default steps | achievable as stated | pass: replay paired both walks, no pose mismatch (Task 2) |
+| 3 smoothed route obeys cells, speed, turn cap | `postretro-camera-route` unit tests on a synthetic world at two speed/turn-cap sets; on-demand campaign-test check | achievable as stated | pass |
+| 4 frame-locked bit-equal, view feel and mover | `playback` pacing tests; frame-eye test with a view-feel driver present; lifecycle fixture with a view-feel pawn on a mover | achievable as stated | pass |
+| 5 wall-clock pacing (P16) | pacing tests with injected elapsed times, slowed frames, last pose | achievable as stated | pass |
+| 6 file FOV at window aspect; header both projections | frame-eye test + record header test | achievable as stated | pass |
+| 7 Settling held view and reveal use first pose (P5) | lifecycle fixture with and without a pawn | achievable as stated | pass |
+| 8 no-draw rows (P9) | state-machine test | achievable as stated | pass |
+| 9 one-pose file; zero hold | state-machine tests, both pacings | achievable as stated | pass |
+| 10 pawn at spawn | lifecycle fixture | achievable as stated | pass |
+| 11 held key leaves pawn and portal mask; chord acts and marks (P12) | capture-gate test + lifecycle fixture + mark test | achievable as stated | pass |
+| 12 death/respawn logged (P11) | life-state observer test | achievable as stated | pass |
+| 13 CPU split carries `fixed_step` and ticks; sim never paused | row-fill test from a composed record | achievable as stated | pass |
+| 14 bad file / identity / FOV refusals | parser + validation tests with log capture | achievable as stated | pass |
+| 15 identity match from another path / copy; no id-51 warns once | validation tests | achievable as stated | pass |
+| 16 `--connect` and record+play refuse | arg tests | achievable as stated | pass |
+| 17 aborts in Settling / hold / route (P3, P4) | state tests + abort-hook test at the request drain and frontend join | achievable as stated | pass |
+| 18 level change on last-pose frame completes (P2) | state test | achievable as stated | pass |
+| 19 change marks and hidden gaps (P10) | state tests + hook tests at vsync, extents, window mode, hot reload, occlusion | achievable as stated | pass |
+| 20 stall timeout (P17) | state tests with injected clock | achievable as stated | pass |
+| 21 missing-feature warn-once | default-feature `cargo test -p postretro` with log capture | achievable as stated | pass |
+| 22 cap seed, slider shows it, settling unaffected | drain-budget tests + slider seed test (`dev-tools`) | achievable as stated | pass |
+| 23 present and pacing modes from first frame | renderer present-mode init test + header test | achievable as stated | pass |
+| 24 rows in order; full header; settle outcome | record tests | achievable as stated | pass |
+| 25 GPU time per route row on timestamp adapters | query-ring bookkeeping test; owner-free manual run on the Windows 1660 Super (has timestamps) | achievable with the clarification in Corrections | pass: 1660 Super smoke, GPU fields on every route row (Task 6) |
+| 26 stage fields absent with CPU timing off | row tests | achievable as stated | pass |
+| 27 cold flag | renderer GPU test (`POSTRETRO_REQUIRE_GPU=1` here) on pool `created` deltas | achievable as stated | pass: GPU test, 1660 Super |
+| 28 pool-growth flag, reducer counts apart | renderer GPU test + reducer unittest | achievable as stated | pass: GPU test, 1660 Super; reducer unittest |
+| 29 row fill allocates nothing; one write | `alloc_probe` test + I/O-seam test | achievable as stated | pass |
+| 30 inactive: no allocation, no marks, labels unchanged | `alloc_probe` test + renderer label test | achievable as stated | pass |
+| 31 window event equals record rows; `null` CPU max when off | telemetry hub test | achievable as stated | pass |
+| 32 final partial window; `run_start` names producer (P18) | telemetry hub test | achievable as stated | pass |
+| 33 GPU figures name the clock | reducer unittest | achievable as stated | pass |
+| 34 reducer sample from a real run | reducer unittest on the Task 4 owner export | achievable; sample needs the owner's Mac run | pass: fixture sliced from the Mac checkpoint export (Task 11) |
+| 35 preflight runs reducer test | `SKILL.md` line + a deliberately failing run | achievable as stated | pass |
+| 36 P6 attribution | reducer unittest | achievable as stated | pass |
+| 37 P7 partial trace | reducer unittest | achievable as stated | pass |
+| 38 P8/P10 route-only figures | reducer unittest | achievable as stated | pass |
+| 39 SDK and player gating | xtask dist feature test + one `sdk-dist` build | achievable as stated | pass: dist tests and one `sdk-dist` bundle (Task 12) |
+| 40 grep gate | engine-binary source gate `startup/camera_route_gate_tests.rs` (reuses the spike's `strip_gated`; xtask has no gated-item stripper) | achievable as stated | pass |
+| 41 generate determinism; path/copy header-only diff | tool tests on a fixture PRL | achievable as stated | pass |
+| 42 no GPU; parameter and level failures | tool tests | achievable as stated | pass |
+| 43 SDK bundle generates a valid file | one `sdk-dist` build, then the bundle's verb | achievable as stated | pass: generated from the bundle root (Task 12) |
+| 44 recording is pre-feel; replay has no roll / FOV offset | recorder tests + frame-eye test | achievable as stated | pass |
+| 45 30 vs 60 fps resample; frame-locked replay; hitch | recorder resampling tests | achievable as stated | pass |
+| 46 recording skips Settling and no-world frames; header | recorder tests | achievable as stated | pass |
+| 47 recording scope: backdrop, level exits, no world frame (P13, P15) | recorder lifecycle hook tests | achievable as stated | pass |
+| 48 written on every exit route, same file (P14) | exit-hook test + source test that `exiting` flushes | achievable as stated | pass |
+| 49 Mac consumer run | owner, Mac | manual | **pass** 2026-11-20, see Mac results |
+| 50 showcase copy run | owner, Mac | manual | **not run**: frozen copy unavailable; owner left it not run 2026-11-20, see Mac results |
+| 51 SDK bundle record / generate / play | owner | manual | **pass**: Windows bundle check from the bundle root (Task 12) |
+
+An automated row's pass rests on its named proof passing in the final gate.
+
+## Review and final gate
+
+Three `/review-panel` → `/fix-review-findings` rounds: fixes in d78ece02b, 374602f0a and 1cbef2304. Round 3 raised no blocker. A full-crate run then found two Windows-only test failures, fixed in 20f7e98ec (`camera-route` missing from `CRATES_ABOVE_LEVEL_LOADER`) and 248de3834 / 6ad42d084 (a source-scanning test compared host path strings; `testing_guide.md` gained the rule).
+
+Final gate, 2026-11-20, Windows 11, GTX 1660 Super, at 63480f420: this branch merged with `main` (E10 AI tick scheduling, E25 level seams, E16 status effects) and `feature/emissive-volumes`. The owner accepted it in place of `/preflight`.
+
+| Check | Result |
+|---|---|
+| `cargo fmt --check` | pass |
+| `cargo clippy --target-dir target/preflight-clippy -- -D warnings` | pass; also `--workspace --all-targets --features postretro/dev-tools` |
+| `cargo test --workspace --no-fail-fast` | 17,409 passed, 1 failed, 154 ignored. The failure was the seam gate reading gitignored worktrees and `dist/`; fixed on `main` by #687 |
+| `cargo test -p postretro --features dev-tools --no-fail-fast` | 3,194 passed |
+| `cargo check --release` | pass |
+| `cargo run -p xtask -- crate-graph --check` | pass, after regenerating in the emissive merge |
+| telemetry / playback trace reducer unittests | 24 / 57 passed |
+
+c37088b6d adds only #687 (seam gate), #688 (neon-prefix migration paths) and four brief-claim renames over that gate. Their tests pass there, as does `cargo fmt --check`.
 
 ## Mac results
 
@@ -149,10 +169,10 @@ AC 50: not run. The spike's frozen showcase bake is lost, and the copy measured 
 
 ## Integration notes
 
-E25 (level seams, `claude/tender-sagan-z91xgd`) is not on `main` as of 2026-11-20. Whichever branch lands second makes these edits. The integration branch `claude/blissful-hawking-klwrdj` already has them.
+E25 (level seams) reached `main` first. The `main` merge c88e96f17 made its edits:
 
-- `playback_request_abort_reason` needs a `LevelRequest::Seam { .. }` arm that aborts the route like any level change.
-- Two source-order tests search for the load branch's unload as `self.unload_level();`. E25 changes that call to `self.unload_level_crossing(seam.as_deref())`, so the search lands on the Frontend branch. Both tests must look for `self.unload_level_crossing(` instead:
+- `playback_request_abort_reason` has a `LevelRequest::Seam { .. }` arm that aborts the route like any level change. The abort returns before `unload_level_crossing`, so an aborted route harvests no seam arrival.
+- Two source-order tests searched for the load branch's unload as `self.unload_level();`. E25 changed that call to `self.unload_level_crossing(seam.as_deref())`, so they now search for `self.unload_level_crossing(`:
   - `lifecycle_tests::level_requests_and_joins_reach_the_abort_hook_before_they_act`
   - `recording_tests::level_requests_end_a_recording_before_the_level_unloads`
 

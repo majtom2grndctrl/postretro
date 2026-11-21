@@ -1,7 +1,7 @@
 # mover-channel-bounded-bake — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: 1a66523a
 
 Source check: no file under `crates/level-compiler/src/mover_probe_channel/`,

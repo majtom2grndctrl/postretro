@@ -101,9 +101,10 @@ Orderings cite `research.md` §Pins.
 - **Large files:** `fluid_surface.wgsl` and `renderer_render_frame.rs` are past the size guideline, and `fluid_surface.rs` is close. Split before extending.
 
 ## Open questions
-- IP line for each lever, from `ip-research.md` §For counsel:
+- IP line for each lever, from `ip-check.md` §For counsel (claim charts) and `ip-research.md`:
   - the precompute against Tencent claims 10/19 and 11–14, and US12293451B2;
-  - the same-frame cell storage against the texture-space shading patents.
+  - the same-frame cell storage against the texture-space shading patents, chiefly Qualcomm US12136166B2;
+  - the hidden-cell skip against Intel US10699475B1, which binds the skip to an inline test with no mask or compacted dispatch.
 
   Owner: Dan, with counsel — **blocks build**
 - Cutoff and margin values — **delegated**.

@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Generate the exact-value dev fixtures for per-texel specular sharpness and tint.
 
-Writes three 16 x 16 materials into `content/dev/textures/test/` (or `--out`),
-each a diffuse plus its slot siblings. The values are the plan of record's
-(`context/plans/in-progress/specular-texel-sharpness/plan.md`, Delegated
-answers); the map that shows them is `content/dev/maps/specular-texel-sharpness.map`.
+Writes five 16 x 16 materials into `content/dev/textures/test/` (or `--out`),
+each a diffuse plus its slot siblings. The first three are the plan of
+record's (`context/plans/in-progress/specular-texel-sharpness/plan.md`,
+Delegated answers); the last two close pins P3 and P11's remaining cases
+(`research.md`): `_p` on a prefix with no Surface Depth tuning, and `_p`, `_t`
+and `_h` together. The map that shows them is
+`content/dev/maps/specular-texel-sharpness.map`.
 
 * `metal_smoothness_ramp`: a neutral grey checker per texel (sRGB 118 and
   138), so texel edges read. `_s` is 255 everywhere. `_p` column x stores
@@ -19,6 +22,22 @@ answers); the map that shows them is `content/dev/maps/specular-texel-sharpness.
   one-texel mortar line on its low edges (mortar where x % 4 == 0 or
   y % 4 == 0). Diffuse: grey tiles (sRGB 150) and dark mortar (sRGB 56). `_h`
   tiles 200, mortar 56. `_p` tiles 235, mortar 30. `_s` 220 everywhere.
+* `glass_gloss_tiles`: the carved cell lattice on `glass`, the one prefix whose
+  Surface Depth resolves flat. Diffuse: pale glass tiles (sRGB 140 180 190)
+  and dark came (sRGB 44 48 52). `_s` 255. `_h` tiles 200, came 56: a real
+  relief the march must still ignore. `_p` checkers the cells: tiles in cells
+  whose (x // 4 + y // 4) is even store 235 (the 8192 cap), odd 120 (about
+  exponent 23); came 30 (near exponent 1). Without `_p` the prefix would shade
+  at 96.
+* `concrete_carved_tinted_gloss`: the carved cell lattice with `_p`, `_t` and
+  `_h` together. Diffuse: cyan tiles (sRGB 60 140 170) and copper mortar
+  (sRGB 110 60 34). `_s` 220. `_h` tiles 200, mortar 56. `_p` by cell row:
+  tiles in cell rows 0 and 2 (y // 4 even) store 235, rows 1 and 3 store 120;
+  mortar 30. `_t` by cell column, mortar included: columns 0 and 2 (x // 4
+  even) store 255 (the bake stores 254), columns 1 and 3 store 0. So one
+  albedo glints in its own hue on the 255 columns and white on the 0 columns
+  (t = 0 is white, not the raw-albedo multiply of a slot without `_t`), at
+  each sharpness.
 
 Rows run top to bottom and columns left to right, as PNG stores them. Diffuse
 PNGs are 8-bit RGB; every sibling is 8-bit greyscale. No PNG carries an
@@ -66,6 +85,21 @@ CARVED_HEIGHT = {"tile": 200, "mortar": 56}
 CARVED_SMOOTHNESS = {"tile": 235, "mortar": 30}
 CARVED_SPECULAR = 220
 
+# glass_gloss_tiles
+GLASS_TILE_RGB = (140, 180, 190)
+GLASS_CAME_RGB = (44, 48, 52)
+GLASS_SPECULAR = 255
+GLASS_HEIGHT = {"tile": 200, "mortar": 56}
+GLASS_SMOOTHNESS = {"sharp": 235, "broad": 120, "mortar": 30}
+
+# concrete_carved_tinted_gloss
+TINTED_TILE_RGB = (60, 140, 170)
+TINTED_MORTAR_RGB = (110, 60, 34)
+TINTED_SPECULAR = 220
+TINTED_HEIGHT = {"tile": 200, "mortar": 56}
+TINTED_SMOOTHNESS = {"sharp": 235, "broad": 120, "mortar": 30}
+TINTED_TINT = {"tinted": 255, "untinted": 0}
+
 
 def ramp_smoothness(x):
     """`_p` byte of ramp column x: round(255 * x / 15). 255 / 15 is 17, so the
@@ -89,6 +123,25 @@ def carved_region(x, y):
     if x % CARVED_CELL == 0 or y % CARVED_CELL == 0:
         return "mortar"
     return "tile"
+
+
+def glass_smoothness_region(x, y):
+    """`mortar`, `sharp` or `broad` for one glass texel: tiles checker by cell."""
+    if carved_region(x, y) == "mortar":
+        return "mortar"
+    return "sharp" if (x // CARVED_CELL + y // CARVED_CELL) % 2 == 0 else "broad"
+
+
+def tinted_smoothness_region(x, y):
+    """`mortar`, `sharp` or `broad` for one tinted texel: tiles by cell row."""
+    if carved_region(x, y) == "mortar":
+        return "mortar"
+    return "sharp" if (y // CARVED_CELL) % 2 == 0 else "broad"
+
+
+def tinted_tint_region(x, y):
+    """`tinted` or `untinted` for one tinted texel: by cell column."""
+    return "tinted" if (x // CARVED_CELL) % 2 == 0 else "untinted"
 
 
 def grid(texel):
@@ -129,6 +182,44 @@ def fixtures():
         "concrete_carved_gloss_p.png": (
             "grey",
             grid(lambda x, y: CARVED_SMOOTHNESS[carved_region(x, y)]),
+        ),
+        "glass_gloss_tiles.png": (
+            "rgb",
+            grid(
+                lambda x, y: GLASS_TILE_RGB
+                if carved_region(x, y) == "tile"
+                else GLASS_CAME_RGB
+            ),
+        ),
+        "glass_gloss_tiles_s.png": ("grey", grid(lambda x, y: GLASS_SPECULAR)),
+        "glass_gloss_tiles_h.png": (
+            "grey",
+            grid(lambda x, y: GLASS_HEIGHT[carved_region(x, y)]),
+        ),
+        "glass_gloss_tiles_p.png": (
+            "grey",
+            grid(lambda x, y: GLASS_SMOOTHNESS[glass_smoothness_region(x, y)]),
+        ),
+        "concrete_carved_tinted_gloss.png": (
+            "rgb",
+            grid(
+                lambda x, y: TINTED_TILE_RGB
+                if carved_region(x, y) == "tile"
+                else TINTED_MORTAR_RGB
+            ),
+        ),
+        "concrete_carved_tinted_gloss_s.png": ("grey", grid(lambda x, y: TINTED_SPECULAR)),
+        "concrete_carved_tinted_gloss_h.png": (
+            "grey",
+            grid(lambda x, y: TINTED_HEIGHT[carved_region(x, y)]),
+        ),
+        "concrete_carved_tinted_gloss_p.png": (
+            "grey",
+            grid(lambda x, y: TINTED_SMOOTHNESS[tinted_smoothness_region(x, y)]),
+        ),
+        "concrete_carved_tinted_gloss_t.png": (
+            "grey",
+            grid(lambda x, y: TINTED_TINT[tinted_tint_region(x, y)]),
         ),
     }
 

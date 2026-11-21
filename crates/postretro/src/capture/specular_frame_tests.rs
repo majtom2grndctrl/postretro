@@ -25,6 +25,11 @@ const HEIGHT: u32 = 180;
 /// Frames rendered before any comparison, so streamed SH and the promotion
 /// pins have settled; specular reads neither, but the warmup costs little.
 const WARMUP: usize = 3;
+/// A channel above this carries specular.
+const LIT: u8 = 2;
+/// Largest channel spread of a white glint, and smallest of a hued one.
+const WHITE_SPREAD: u8 = 2;
+const HUE_SPREAD: u8 = 16;
 
 /// The compiled dev map. An ignored test run without it fails rather than
 /// passing on a skip.
@@ -40,7 +45,9 @@ fn engine(point: [f32; 3]) -> Vec3 {
 
 /// One fixture view: a camera, the lights whose mover crossfade it pins at
 /// full weight, a static-face rectangle and a mover-face rectangle, each
-/// given as two opposite map-space corners on one plane.
+/// given as two opposite map-space corners on one plane. `marches` is true
+/// where the material has a height map and its prefix carries Surface Depth
+/// tuning, so the march runs at On.
 #[derive(Clone, Copy)]
 struct Fixture {
     name: &'static str,
@@ -49,6 +56,7 @@ struct Fixture {
     promoted: &'static [&'static str],
     static_face: [[f32; 3]; 2],
     mover_face: [[f32; 3]; 2],
+    marches: bool,
 }
 
 /// `_p` without `_h` on a tuned prefix (metal): the ramp wall and
@@ -60,6 +68,7 @@ const RAMP: Fixture = Fixture {
     promoted: &["point_light", "spot_light"],
     static_face: [[380.0, 512.0, 16.0], [470.0, 512.0, 112.0]],
     mover_face: [[520.0, 416.0, 8.0], [632.0, 416.0, 120.0]],
+    marches: false,
 };
 
 /// `_t` without `_p`: the inlay wall and `inlay_mover`.
@@ -70,6 +79,7 @@ const INLAY: Fixture = Fixture {
     promoted: &["point_light", "spot_light"],
     static_face: [[768.0, 110.0, 16.0], [768.0, 200.0, 112.0]],
     mover_face: [[672.0, 264.0, 8.0], [672.0, 376.0, 120.0]],
+    marches: false,
 };
 
 /// `_p` with `_h` on concrete, the deepest-tuned prefix: the south wall and
@@ -81,6 +91,7 @@ const CARVED: Fixture = Fixture {
     promoted: &["point_light"],
     static_face: [[410.0, 0.0, 16.0], [480.0, 0.0, 128.0]],
     mover_face: [[284.0, 0.0, 8.0], [388.0, 0.0, 136.0]],
+    marches: true,
 };
 
 /// Legacy one-channel slots (the comparison strip's shipped textures), static
@@ -92,6 +103,35 @@ const STRIP: Fixture = Fixture {
     promoted: &[],
     static_face: [[8.0, 48.0, 40.0], [8.0, 272.0, 152.0]],
     mover_face: [[0.0; 3]; 2],
+    marches: false,
+};
+
+/// `_p` with `_h` on `glass`, the one prefix whose Surface Depth resolves
+/// flat: the glass panel and `glass_mover` beside it on the north wall. The
+/// height map carries real relief, so a march that ran would show.
+const GLASS: Fixture = Fixture {
+    name: "glass (_p + _h, untuned prefix)",
+    eye: [96.0, 260.0, 64.0],
+    yaw_deg: 90.0,
+    promoted: &["point_light", "spot_light"],
+    static_face: [[40.0, 504.0, 8.0], [88.0, 504.0, 120.0]],
+    mover_face: [[104.0, 504.0, 8.0], [152.0, 504.0, 120.0]],
+    marches: false,
+};
+
+/// `_p`, `_t` and `_h` together on concrete: the tinted panel and
+/// `tinted_mover` beside it on the south wall, seen obliquely from the east
+/// near the point light's mirror direction. `_t` alternates 255 and 0 by
+/// 4-texel cell column, so each face holds texels at t = 1 and t = 0. No other fixture
+/// view sees this pair, so its march never blooms into their rectangles.
+const TINTED: Fixture = Fixture {
+    name: "tinted (_p + _t + _h)",
+    eye: [744.0, 96.0, 64.0],
+    yaw_deg: 220.0,
+    promoted: &["point_light"],
+    static_face: [[584.0, 8.0, 8.0], [632.0, 8.0, 120.0]],
+    mover_face: [[648.0, 8.0, 8.0], [696.0, 8.0, 120.0]],
+    marches: true,
 };
 
 impl Fixture {
@@ -250,12 +290,36 @@ impl Capture {
         for y in rect.y[0]..rect.y[1] {
             for x in rect.x[0]..rect.x[1] {
                 let at = ((y * WIDTH + x) * 4) as usize;
-                if frame[at..at + 3].iter().any(|&channel| channel > 2) {
+                if frame[at..at + 3].iter().any(|&channel| channel > LIT) {
                     count += 1;
                 }
             }
         }
         count
+    }
+
+    /// Lit pixels inside `rect` that are white (equal channels) and that
+    /// carry a hue. A static face keeps only specular under a white light, so
+    /// a `_t` texel at t = 0 glints white and one at t = 1 in its albedo's
+    /// hue.
+    fn white_and_hued(frame: &[u8], rect: Rect) -> (usize, usize) {
+        let (mut white, mut hued) = (0, 0);
+        for y in rect.y[0]..rect.y[1] {
+            for x in rect.x[0]..rect.x[1] {
+                let at = ((y * WIDTH + x) * 4) as usize;
+                let rgb = &frame[at..at + 3];
+                let (low, high) = (*rgb.iter().min().unwrap(), *rgb.iter().max().unwrap());
+                if high <= LIT {
+                    continue;
+                }
+                if high - low <= WHITE_SPREAD {
+                    white += 1;
+                } else if high - low >= HUE_SPREAD {
+                    hued += 1;
+                }
+            }
+        }
+        (white, hued)
     }
 
     /// The style alters both the static face and the mover face between
@@ -422,14 +486,17 @@ fn specular_style_and_surface_depth_switch_independently() {
 // rewrites. A level whose materials build at Surface Depth Off renders, at
 // Off and then at On, exactly the frames of a level built at On and switched
 // Off then On, on the static faces and movers of `_p` (ramp), `_t` (inlay),
-// `_p` + `_h` (carved) and a legacy one-channel slot (strip), under each
-// style. Where no height map is authored, Off and On render alike (the
-// relief band is flat); with `_h` they differ (the march is restored).
+// `_p` + `_h` (carved), `_p` + `_h` on the untuned glass prefix, `_p` + `_t`
+// + `_h` (tinted) and a legacy one-channel slot (strip), under each style.
+// The march runs only where a height map meets a tuned prefix (carved,
+// tinted): there Off and On differ. Everywhere else Off and On render alike,
+// glass included, whose height map carries relief its flat prefix never
+// marches. On the tinted panel, t = 1 texels glint in their albedo's hue and
+// t = 0 texels white in every state.
 #[test]
 #[ignore = "requires a GPU adapter and SPECULAR_TEXEL_PRL (specular-texel-sharpness compiled under content/dev/maps); run under POSTRETRO_SH_STREAMING=sync-proof"]
 fn dev_map_per_texel_specular_holds_through_surface_depth_off_and_on() {
-    for fixture in [RAMP, INLAY, CARVED, STRIP] {
-        let carved = fixture.name == CARVED.name;
+    for fixture in [RAMP, INLAY, CARVED, STRIP, GLASS, TINTED] {
         for style in SpecularStyle::ALL {
             let mut built_on = fixture.prepare(None);
             built_on.renderer().set_specular_style(style);
@@ -454,10 +521,17 @@ fn dev_map_per_texel_specular_holds_through_surface_depth_off_and_on() {
             let off_then_on = built_off.settled();
 
             let name = format!("{} {style:?}", fixture.name);
-            assert!(
-                Capture::lit(&on, built_on.static_rect) > 0,
-                "{name}: specular"
+            let label = format!(
+                "{}-{style:?}",
+                fixture.name.split(' ').next().unwrap_or("fixture")
             );
+            dump(&format!("{label}-on"), &on);
+            dump(&format!("{label}-off"), &off);
+            let mut rects = vec![built_on.static_rect];
+            rects.extend(built_on.mover_rect);
+            for &rect in &rects {
+                assert!(Capture::lit(&on, rect) > 0, "{name}: specular");
+            }
             assert!(
                 off == on_then_off,
                 "{name}: built at Off draws as switched to Off"
@@ -467,16 +541,24 @@ fn dev_map_per_texel_specular_holds_through_surface_depth_off_and_on() {
                 "{name}: built at Off, then On, draws as built at On"
             );
             assert!(on_off_on == on, "{name}: Off then On restores the frame");
-            let mut rects = vec![built_on.static_rect];
-            rects.extend(built_on.mover_rect);
-            for rect in rects {
+            for &rect in &rects {
                 let changed = Capture::changed(&on, &off, rect);
-                if carved {
+                if fixture.marches {
                     assert!(changed > 0, "{name}: `_h` marches at On only");
                 } else {
                     assert_eq!(
                         changed, 0,
-                        "{name}: no height map, no march: Off draws as On"
+                        "{name}: no march (no height map, or a flat prefix): Off draws as On"
+                    );
+                }
+            }
+            if fixture.name == TINTED.name {
+                for (state, frame) in [("On", &on), ("Off", &off), ("Off then On", &off_then_on)] {
+                    let (white, hued) = Capture::white_and_hued(frame, built_on.static_rect);
+                    eprintln!("[SpecularFrame] {name} at {state}: {white} white, {hued} hued");
+                    assert!(
+                        white > 0 && hued > 0,
+                        "{name} at {state}: t = 0 texels glint white and t = 1 texels in their hue"
                     );
                 }
             }

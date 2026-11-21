@@ -4,12 +4,18 @@
 // y 0 to 512, z 0 to 256, walls 32 thick. Fixture faces carry test/ textures
 // at scale 8, so one texel spans 8 units. North wall metal_smoothness_ramp,
 // east wall metal_tint_inlay, floor and south wall concrete_carved_gloss.
-// Three parked kinematic_mover brushes: ramp_mover by the north wall,
-// inlay_mover by the east wall, carved_door set flush into the south wall.
+// Five parked kinematic_mover brushes: ramp_mover by the north wall,
+// inlay_mover by the east wall, carved_door set flush into the south wall,
+// glass_mover beside its panel on the north wall, tinted_mover beside its
+// panel on the south wall.
 // One static point light half a metre from the door seam, one static spot
 // aimed north-east over both fixture movers. A shelf on the north wall casts
 // a horizontal spot shadow edge across the ramp. West wall comparison strip:
 // default_dirt_011, wood_bark_048, concrete_pavement_036 at scale 1.
+// Two pairs of an 8-proud static panel and a parked mover slab beside it,
+// z 0 to 128: glass_gloss_tiles on the north wall at x 32 to 160, and
+// concrete_carved_tinted_gloss on the south wall at x 576 to 704, east of
+// what the carved view sees.
 // See specular-texel-sharpness.README.md. Fixture PNGs come from
 // tools/gen_specular_texel_fixtures.py.
 // NOTE: keep map comments free of braces and quotes, and never leave a blank
@@ -135,6 +141,24 @@
 ( 0 288 32 ) ( 8 288 160 ) ( 8 288 32 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 ( 0 416 160 ) ( 8 288 160 ) ( 0 288 160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 ( 0 288 32 ) ( 8 416 32 ) ( 0 416 32 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// brush glass_panel
+{
+( 96 504 0 ) ( 96 512 128 ) ( 96 512 0 ) test/glass_gloss_tiles 0 0 0 8 8
+( 32 512 0 ) ( 32 504 128 ) ( 32 504 0 ) test/glass_gloss_tiles 0 0 0 8 8
+( 96 512 0 ) ( 32 512 128 ) ( 32 512 0 ) test/glass_gloss_tiles 0 0 0 8 8
+( 32 504 0 ) ( 96 504 128 ) ( 96 504 0 ) test/glass_gloss_tiles 0 0 0 8 8
+( 32 512 128 ) ( 96 504 128 ) ( 32 504 128 ) test/glass_gloss_tiles 0 0 0 8 8
+( 32 504 0 ) ( 96 512 0 ) ( 32 512 0 ) test/glass_gloss_tiles 0 0 0 8 8
+}
+// brush tinted_panel
+{
+( 640 0 0 ) ( 640 8 128 ) ( 640 8 0 ) test/concrete_carved_tinted_gloss 0 0 0 8 8
+( 576 8 0 ) ( 576 0 128 ) ( 576 0 0 ) test/concrete_carved_tinted_gloss 0 0 0 8 8
+( 640 8 0 ) ( 576 8 128 ) ( 576 8 0 ) test/concrete_carved_tinted_gloss 0 0 0 8 8
+( 576 0 0 ) ( 640 0 128 ) ( 640 0 0 ) test/concrete_carved_tinted_gloss 0 0 0 8 8
+( 576 8 128 ) ( 640 0 128 ) ( 576 0 128 ) test/concrete_carved_tinted_gloss 0 0 0 8 8
+( 576 0 0 ) ( 640 8 0 ) ( 576 8 0 ) test/concrete_carved_tinted_gloss 0 0 0 8 8
 }
 }
 // entity 1 -- player start, south-west, facing the movers
@@ -270,4 +294,70 @@
 "classname" "kinematic_waypoint"
 "name" "carved_door_away"
 "origin" "336 0 72"
+}
+// entity 13 -- parked mover faced with the glass tiles, beside its static panel on the north wall
+{
+"classname" "kinematic_mover"
+"name" "glass_mover"
+"path" "glass_mover_rest"
+"speed" "1"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "0"
+"_tags" "dev specular_texel glass_mover"
+// brush glass_mover_slab
+{
+( 160 504 0 ) ( 160 512 128 ) ( 160 512 0 ) test/glass_gloss_tiles 0 0 0 8 8
+( 96 512 0 ) ( 96 504 128 ) ( 96 504 0 ) test/glass_gloss_tiles 0 0 0 8 8
+( 160 512 0 ) ( 96 512 128 ) ( 96 512 0 ) test/glass_gloss_tiles 0 0 0 8 8
+( 96 504 0 ) ( 160 504 128 ) ( 160 504 0 ) test/glass_gloss_tiles 0 0 0 8 8
+( 96 512 128 ) ( 160 504 128 ) ( 96 504 128 ) test/glass_gloss_tiles 0 0 0 8 8
+( 96 504 0 ) ( 160 512 0 ) ( 96 512 0 ) test/glass_gloss_tiles 0 0 0 8 8
+}
+}
+// entity 14 -- glass_mover rest pose, its brush centre
+{
+"classname" "kinematic_waypoint"
+"name" "glass_mover_rest"
+"next" "glass_mover_away"
+"origin" "128 508 64"
+}
+// entity 15 -- glass_mover second waypoint, 8 units away; never reached
+{
+"classname" "kinematic_waypoint"
+"name" "glass_mover_away"
+"origin" "128 500 64"
+}
+// entity 16 -- parked mover faced with the tinted carved gloss, beside its static panel on the south wall
+{
+"classname" "kinematic_mover"
+"name" "tinted_mover"
+"path" "tinted_mover_rest"
+"speed" "1"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "0"
+"_tags" "dev specular_texel tinted_mover"
+// brush tinted_mover_slab
+{
+( 704 0 0 ) ( 704 8 128 ) ( 704 8 0 ) test/concrete_carved_tinted_gloss 0 0 0 8 8
+( 640 8 0 ) ( 640 0 128 ) ( 640 0 0 ) test/concrete_carved_tinted_gloss 0 0 0 8 8
+( 704 8 0 ) ( 640 8 128 ) ( 640 8 0 ) test/concrete_carved_tinted_gloss 0 0 0 8 8
+( 640 0 0 ) ( 704 0 128 ) ( 704 0 0 ) test/concrete_carved_tinted_gloss 0 0 0 8 8
+( 640 8 128 ) ( 704 0 128 ) ( 640 0 128 ) test/concrete_carved_tinted_gloss 0 0 0 8 8
+( 640 0 0 ) ( 704 8 0 ) ( 640 8 0 ) test/concrete_carved_tinted_gloss 0 0 0 8 8
+}
+}
+// entity 17 -- tinted_mover rest pose, its brush centre
+{
+"classname" "kinematic_waypoint"
+"name" "tinted_mover_rest"
+"next" "tinted_mover_away"
+"origin" "672 4 64"
+}
+// entity 18 -- tinted_mover second waypoint, 8 units away; never reached
+{
+"classname" "kinematic_waypoint"
+"name" "tinted_mover_away"
+"origin" "672 12 64"
 }

@@ -62,6 +62,52 @@ CARVED_ROW_MORTAR = "M" * 16
 CARVED_ROW_TILE = "MTTTMTTTMTTTMTTT"
 CARVED_MAP = [CARVED_ROW_MORTAR if y % 4 == 0 else CARVED_ROW_TILE for y in range(16)]
 
+# glass_gloss_tiles `_p` regions: M came, S sharp tile, B broad tile. The
+# tiles checker by 4-texel cell.
+GLASS_P_MAP = [
+    "MMMMMMMMMMMMMMMM",
+    "MSSSMBBBMSSSMBBB",
+    "MSSSMBBBMSSSMBBB",
+    "MSSSMBBBMSSSMBBB",
+    "MMMMMMMMMMMMMMMM",
+    "MBBBMSSSMBBBMSSS",
+    "MBBBMSSSMBBBMSSS",
+    "MBBBMSSSMBBBMSSS",
+    "MMMMMMMMMMMMMMMM",
+    "MSSSMBBBMSSSMBBB",
+    "MSSSMBBBMSSSMBBB",
+    "MSSSMBBBMSSSMBBB",
+    "MMMMMMMMMMMMMMMM",
+    "MBBBMSSSMBBBMSSS",
+    "MBBBMSSSMBBBMSSS",
+    "MBBBMSSSMBBBMSSS",
+]
+
+# concrete_carved_tinted_gloss `_p` regions: M mortar, S sharp tile, B broad
+# tile. Sharpness alternates by cell row.
+TINTED_P_MAP = [
+    "MMMMMMMMMMMMMMMM",
+    "MSSSMSSSMSSSMSSS",
+    "MSSSMSSSMSSSMSSS",
+    "MSSSMSSSMSSSMSSS",
+    "MMMMMMMMMMMMMMMM",
+    "MBBBMBBBMBBBMBBB",
+    "MBBBMBBBMBBBMBBB",
+    "MBBBMBBBMBBBMBBB",
+    "MMMMMMMMMMMMMMMM",
+    "MSSSMSSSMSSSMSSS",
+    "MSSSMSSSMSSSMSSS",
+    "MSSSMSSSMSSSMSSS",
+    "MMMMMMMMMMMMMMMM",
+    "MBBBMBBBMBBBMBBB",
+    "MBBBMBBBMBBBMBBB",
+    "MBBBMBBBMBBBMBBB",
+]
+
+# concrete_carved_tinted_gloss `_t` regions: T tinted, U untinted. Tint
+# alternates by cell column, mortar included.
+TINTED_T_MAP = ["TTTTUUUUTTTTUUUU"] * 16
+
 
 def from_map(region_map, values):
     return [[values[c] for c in row] for row in region_map]
@@ -91,6 +137,24 @@ EXPECTED = {
     "concrete_carved_gloss_s.png": ("grey", uniform(220)),
     "concrete_carved_gloss_h.png": ("grey", from_map(CARVED_MAP, {"M": 56, "T": 200})),
     "concrete_carved_gloss_p.png": ("grey", from_map(CARVED_MAP, {"M": 30, "T": 235})),
+    "glass_gloss_tiles.png": (
+        "rgb",
+        from_map(CARVED_MAP, {"M": (44, 48, 52), "T": (140, 180, 190)}),
+    ),
+    "glass_gloss_tiles_s.png": ("grey", uniform(255)),
+    "glass_gloss_tiles_h.png": ("grey", from_map(CARVED_MAP, {"M": 56, "T": 200})),
+    "glass_gloss_tiles_p.png": ("grey", from_map(GLASS_P_MAP, {"M": 30, "S": 235, "B": 120})),
+    "concrete_carved_tinted_gloss.png": (
+        "rgb",
+        from_map(CARVED_MAP, {"M": (110, 60, 34), "T": (60, 140, 170)}),
+    ),
+    "concrete_carved_tinted_gloss_s.png": ("grey", uniform(220)),
+    "concrete_carved_tinted_gloss_h.png": ("grey", from_map(CARVED_MAP, {"M": 56, "T": 200})),
+    "concrete_carved_tinted_gloss_p.png": (
+        "grey",
+        from_map(TINTED_P_MAP, {"M": 30, "S": 235, "B": 120}),
+    ),
+    "concrete_carved_tinted_gloss_t.png": ("grey", from_map(TINTED_T_MAP, {"T": 255, "U": 0})),
 }
 
 
@@ -183,7 +247,13 @@ class GenSpecularTexelFixturesTest(unittest.TestCase):
 
     def test_committed_set_has_no_stray_sibling(self):
         # A stray `_p` or `_t` beside a fixture would widen its slot.
-        stems = ("metal_smoothness_ramp", "metal_tint_inlay", "concrete_carved_gloss")
+        stems = (
+            "metal_smoothness_ramp",
+            "metal_tint_inlay",
+            "concrete_carved_gloss",
+            "glass_gloss_tiles",
+            "concrete_carved_tinted_gloss",
+        )
         present = sorted(
             p.name for p in COMMITTED.iterdir() if p.name.startswith(stems)
         )
@@ -197,6 +267,25 @@ class GenSpecularTexelFixturesTest(unittest.TestCase):
         exponent = lambda p: 2 / (1 - p / 255) ** 4 - 2
         self.assertLessEqual(exponent(24), 1.0)
         self.assertGreaterEqual(exponent(224), 8192.0)
+
+    def test_new_fixtures_carry_every_case_their_pins_name(self):
+        exponent = lambda p: min(max(2 / (1 - p / 255) ** 4 - 2, 1.0), 8192.0)
+        # Glass: `_p` on the one prefix with no Surface Depth tuning, beside a
+        # height map with real relief, so a march that ran would show.
+        _, _, _, _, glass_h = read_png((COMMITTED / "glass_gloss_tiles_h.png").read_bytes())
+        self.assertEqual({b for row in glass_h for b in row}, {56, 200})
+        # Each sharpness reaches a distinct exponent band: cap, mid and broad.
+        self.assertEqual(exponent(235), 8192.0)
+        self.assertTrue(10.0 < exponent(120) < 100.0)
+        self.assertLess(exponent(30), 2.0)
+        # Tinted: every sharpness appears in both a tinted and an untinted
+        # column, so tint and sharpness vary independently.
+        pairs = {
+            (p, t)
+            for p_row, t_row in zip(TINTED_P_MAP, TINTED_T_MAP)
+            for p, t in zip(p_row, t_row)
+        }
+        self.assertEqual(pairs, {(p, t) for p in "MSB" for t in "TU"})
 
 
 if __name__ == "__main__":

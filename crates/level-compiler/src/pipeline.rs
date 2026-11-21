@@ -971,20 +971,17 @@ fn run_after_parsing(
         probe_depth_tile_cap,
         &bounce_plan.request,
     );
-    // Every mover's states have resolved, from its memo or its bake; the
-    // redundant mid-pose skips read each mover's ramp, which no memo keys. A
-    // bake the tile range cut short fails by name before any state skips.
-    let mover_skips = mover_bounce_stage::skip_mid_poses(
-        &mut mover_bounce,
-        &map_data.kinematic_movers,
-        &mover_poses,
-        &sh_volume_section,
-        &probe_depth_tiles,
-        bounce_plan.request.uncompressed,
-        probe_depth_tile_cap,
-    )?;
-    let (mover_bounce_blocks, mover_depth_reservation) = mover_bounce_stage::finish_bounce_half(
-        &mover_bounce.movers,
+    // Every mover finished into its blocks inside the bake, judged against
+    // the tile range before it skipped: a bake past the range fails here by
+    // name.
+    if let Some(refused) = mover_bounce.refused.take() {
+        return Err(refused.into());
+    }
+    let mover_bounce_blocks = std::mem::take(&mut mover_bounce.blocks);
+    let mover_skips = std::mem::take(&mut mover_bounce.skips);
+    let mover_depth_reservation = mover_bounce_stage::finish_bounce_half(
+        &mover_bounce_blocks,
+        !bounce_plan.request.jobs.is_empty(),
         &sh_volume_section,
         &mut probe_depth_tiles,
         probe_depth_tile_cap,

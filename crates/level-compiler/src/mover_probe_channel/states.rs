@@ -270,6 +270,19 @@ impl MoverBounceStates {
         states
     }
 
+    /// A copy the test ledger does not count: what a test keeps to inspect.
+    #[cfg(test)]
+    pub(crate) fn detached(&self) -> Self {
+        Self {
+            mover_id: self.mover_id,
+            pose_count: self.pose_count,
+            bounce: self.bounce.clone(),
+            depth: self.depth.clone(),
+            depth_carried: self.depth_carried,
+            held: crate::live_bytes::Held::default(),
+        }
+    }
+
     /// Whether the mover alone carries depth at more probes than the tile
     /// range `depth_cap`: the build then fails by name, so its poses are
     /// never memoized.

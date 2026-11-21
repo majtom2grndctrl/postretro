@@ -3,7 +3,7 @@
 // hits reduced at once, and the poses left to bake.
 // See: context/lib/build_pipeline.md §Build Cache (Bake fidelity)
 
-use super::bake::{MoverBounceBake, MoverBounceJob, MoverBounceRequest, MoverSlot, PoseSlot};
+use super::bake::{MoverBounceJob, MoverBounceRequest, MoverSlot, PoseSlot};
 use super::depth::MoverAbsentDepth;
 use super::edge_copy::copy_job_bounce_edges;
 use super::pose_memo::{PoseKind, PoseMemo};
@@ -220,16 +220,27 @@ impl<'r, 'c> PoseLookup<'r, 'c> {
         self.pending.iter().any(|job| job.bounces > 0)
     }
 
+    /// The states of the jobs whose every pose hit, taken out of the
+    /// lookup to finish at their slots ([`Self::slots`]).
+    pub(crate) fn take_held(&mut self) -> Vec<Option<MoverBounceStates>> {
+        std::mem::take(&mut self.found)
+    }
+
     /// Every job in request order: held, reduced from the memo, or baked
-    /// pose by pose.
-    pub(crate) fn slots<'s>(&'s self, request: &'s MoverBounceRequest) -> Vec<MoverSlot<'s>> {
+    /// pose by pose. `held` is [`Self::take_held`]'s.
+    pub(crate) fn slots<'s>(
+        &'s self,
+        request: &'s MoverBounceRequest,
+        held: Vec<Option<MoverBounceStates>>,
+    ) -> Vec<MoverSlot<'s>> {
+        debug_assert_eq!(held.len(), request.jobs.len());
         request
             .jobs
             .iter()
-            .zip(&self.found)
+            .zip(held)
             .zip(&self.poses)
             .map(|((job, found), poses)| match found {
-                Some(states) => MoverSlot::Held(states),
+                Some(states) => MoverSlot::Held { job, states },
                 None => MoverSlot::Bake { job, poses },
             })
             .collect()
@@ -266,31 +277,6 @@ impl<'r, 'c> PoseLookup<'r, 'c> {
             .filter(|(_, found)| found.is_some())
             .map(|((job, poses), _)| units(job, poses))
             .sum()
-    }
-
-    /// Merge the baked jobs' states with the held ones, by mover id, short
-    /// of the jobs from the slot the bake stopped at.
-    pub(crate) fn finish(
-        mut self,
-        request: &MoverBounceRequest,
-        baked: MoverBounceBake,
-    ) -> (Vec<MoverBounceStates>, MoverBounceBake) {
-        if let Some(stopped_at) = baked.stopped_at {
-            self.found[stopped_at..].fill(None);
-        }
-        let mut baked = baked;
-        for states in std::mem::take(&mut baked.movers) {
-            if let Some(at) = request
-                .jobs
-                .iter()
-                .position(|job| job.mover_id == states.mover_id)
-            {
-                self.found[at] = Some(states);
-            }
-        }
-        let mut states: Vec<MoverBounceStates> = self.found.into_iter().flatten().collect();
-        states.sort_by_key(|states| states.mover_id);
-        (states, baked)
     }
 }
 

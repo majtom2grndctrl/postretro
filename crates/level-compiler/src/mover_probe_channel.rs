@@ -56,8 +56,10 @@ pub(crate) use bake::{
 };
 pub(crate) use blocks::BounceBlocks;
 pub(crate) use cost::{MoverChannelCost, pose_held_bytes};
+#[cfg(test)]
+pub(crate) use depth::DepthUnion;
 pub(crate) use depth::{
-    CarriedDepth, DepthReservation, MoverAbsentDepth, refuse_cut_short, reserve_mover_tiles,
+    CarriedDepth, DepthReservation, MoverAbsentDepth, MoverTileRangeExceeded, reserve_mover_tiles,
 };
 pub(crate) use direct::{DirectScene, MoverDirectBake, ProbeCells, bake_direct};
 #[cfg(test)]
@@ -83,7 +85,10 @@ pub(crate) use posed_solid::{PosedMovers, enclosure_inset};
 #[cfg(test)]
 pub(crate) use posed_solid::{PosedSolid, box_brush as sided_box_brush};
 pub(crate) use section::{EmittedDirectEntries, MoverPayloadBars, MoverRecords, channel_section};
-pub(crate) use skip::{SkipBars, SkipCounts, skip_redundant_mid_poses};
+pub(crate) use skip::SkipCounts;
+#[cfg(test)]
+pub(crate) use skip::{SkipBars, skip_redundant_mid_poses};
+#[cfg(test)]
 pub(crate) use states::MoverBounceStates;
 #[cfg(test)]
 pub(crate) use states::{BounceProbe, DepthProbe};

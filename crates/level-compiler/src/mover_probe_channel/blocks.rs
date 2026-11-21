@@ -47,71 +47,81 @@ pub(crate) struct BounceBlockCounts {
 
 impl BounceBlocks {
     /// Every mover's states over `cells`, id 34's grid.
+    #[cfg(test)]
     pub(crate) fn new(movers: &[MoverBounceStates], cells: &ProbeCells) -> Self {
         let mut blocks = Self::default();
         for states in movers {
-            // Each cell's affected probes, x-fastest by local index as the
-            // masks read them (dense probe order is not local order).
-            let mut by_cell: BTreeMap<u32, Vec<(usize, &BounceProbe)>> = BTreeMap::new();
-            for probe in &states.bounce {
-                let (cell, local) = cell_of(probe.probe, cells);
-                debug_assert!(
-                    cells.valid_masks[cell as usize] & (1 << local) != 0,
-                    "an affected probe is valid"
-                );
-                by_cell.entry(cell).or_default().push((local, probe));
-            }
-            for (cell, mut probes) in by_cell {
-                probes.sort_unstable_by_key(|&(local, _)| local);
-                let mut poses = vec![BouncePoseMasks::default(); states.pose_count];
-                for &(local, probe) in &probes {
-                    debug_assert_eq!(probe.marks.len(), states.pose_count);
-                    for (masks, mark) in poses.iter_mut().zip(&probe.marks) {
-                        match mark {
-                            PoseMark::Stored => masks.stored |= 1 << local,
-                            PoseMark::Base => masks.base |= 1 << local,
-                            PoseMark::Unmarked => {}
-                        }
-                    }
-                }
-                // A probe's tiles run pose by pose; the section's run pose
-                // after pose, then probe by stored rank.
-                let mut tiles = Vec::new();
-                for pose in 0..states.pose_count {
-                    for &(_, probe) in &probes {
-                        if probe.marks[pose] == PoseMark::Stored {
-                            let at = probe.marks[..pose]
-                                .iter()
-                                .filter(|&&mark| mark == PoseMark::Stored)
-                                .count();
-                            tiles.extend_from_slice(
-                                &probe.tiles[at * MOVER_IRRADIANCE_TILE_F16_COUNT..]
-                                    [..MOVER_IRRADIANCE_TILE_F16_COUNT],
-                            );
-                        }
-                    }
-                }
-                blocks.bounce.push(BounceEntryParts {
-                    cell,
-                    entry: MoverBounceEntry {
-                        mover_id: states.mover_id,
-                        poses,
-                    },
-                    tiles,
-                });
-            }
-            for probe in &states.depth {
-                blocks.depth.push(DepthRecordParts {
-                    record: MoverDepthRecord {
-                        mover_id: states.mover_id,
-                        probe_index: probe.probe,
-                        marks: probe.marks.clone(),
-                    },
-                    tiles: probe.tiles.clone(),
-                });
-            }
+            blocks.push_mover(states, cells);
         }
         blocks
+    }
+
+    /// Append one mover's skipped states over `cells`, id 34's grid. No
+    /// offset spans movers, and assembly sorts bounce entries by (cell,
+    /// mover) and depth records by their order key, so the order movers
+    /// join in never reaches the section's bytes.
+    pub(crate) fn push_mover(&mut self, states: &MoverBounceStates, cells: &ProbeCells) {
+        let blocks = self;
+        // Each cell's affected probes, x-fastest by local index as the
+        // masks read them (dense probe order is not local order).
+        let mut by_cell: BTreeMap<u32, Vec<(usize, &BounceProbe)>> = BTreeMap::new();
+        for probe in &states.bounce {
+            let (cell, local) = cell_of(probe.probe, cells);
+            debug_assert!(
+                cells.valid_masks[cell as usize] & (1 << local) != 0,
+                "an affected probe is valid"
+            );
+            by_cell.entry(cell).or_default().push((local, probe));
+        }
+        for (cell, mut probes) in by_cell {
+            probes.sort_unstable_by_key(|&(local, _)| local);
+            let mut poses = vec![BouncePoseMasks::default(); states.pose_count];
+            for &(local, probe) in &probes {
+                debug_assert_eq!(probe.marks.len(), states.pose_count);
+                for (masks, mark) in poses.iter_mut().zip(&probe.marks) {
+                    match mark {
+                        PoseMark::Stored => masks.stored |= 1 << local,
+                        PoseMark::Base => masks.base |= 1 << local,
+                        PoseMark::Unmarked => {}
+                    }
+                }
+            }
+            // A probe's tiles run pose by pose; the section's run pose
+            // after pose, then probe by stored rank.
+            let mut tiles = Vec::new();
+            for pose in 0..states.pose_count {
+                for &(_, probe) in &probes {
+                    if probe.marks[pose] == PoseMark::Stored {
+                        let at = probe.marks[..pose]
+                            .iter()
+                            .filter(|&&mark| mark == PoseMark::Stored)
+                            .count();
+                        tiles.extend_from_slice(
+                            &probe.tiles[at * MOVER_IRRADIANCE_TILE_F16_COUNT..]
+                                [..MOVER_IRRADIANCE_TILE_F16_COUNT],
+                        );
+                    }
+                }
+            }
+            blocks.bounce.push(BounceEntryParts {
+                cell,
+                entry: MoverBounceEntry {
+                    mover_id: states.mover_id,
+                    poses,
+                },
+                tiles,
+            });
+        }
+        for probe in &states.depth {
+            blocks.depth.push(DepthRecordParts {
+                record: MoverDepthRecord {
+                    mover_id: states.mover_id,
+                    probe_index: probe.probe,
+                    marks: probe.marks.clone(),
+                },
+                tiles: probe.tiles.clone(),
+            });
+        }
     }
 
     pub(crate) fn counts(&self) -> BounceBlockCounts {

@@ -130,25 +130,15 @@ impl CarriedDepth {
         }
     }
 
-    /// `live` distinct probes over `movers`' depth records. Exact unless the
-    /// bake `stopped` before every mover ran, or the range cut one mover's
-    /// records while another mover carries depth too, so their overlap past
-    /// the cut is unknown. Then the larger of `live` and the most one mover
-    /// carries, a lower bound.
-    pub(crate) fn new(live: usize, movers: &[MoverBounceStates], stopped: bool) -> Self {
-        let cut = movers.iter().any(MoverBounceStates::depth_cut);
-        let carrying = movers
-            .iter()
-            .filter(|states| !states.depth.is_empty())
-            .count();
-        let most = movers
-            .iter()
-            .map(|states| states.depth_carried)
-            .max()
-            .unwrap_or(0);
+    /// What `union` carries: `live` distinct probes over the joined movers'
+    /// depth records. Exact unless the bake `stopped` before every mover
+    /// ran, or the range cut one mover's records while another mover carries
+    /// depth too, so their overlap past the cut is unknown. Then the larger
+    /// of `live` and the most one mover carries, a lower bound.
+    fn of(union: &DepthUnion, stopped: bool) -> Self {
         Self {
-            probes: live.max(most),
-            exact: !stopped && (!cut || carrying == 1),
+            probes: union.probes.len().max(union.most),
+            exact: !stopped && (!union.cut || union.carrying == 1),
         }
     }
 }
@@ -175,41 +165,58 @@ pub(crate) struct MoverTileRangeExceeded {
     pub(crate) cap: u32,
 }
 
-/// Refuse a bake whose depth passed the tile range, judged on the count the
-/// bake saw before any mid pose skips: the distinct probes the movers' depth
-/// records carry, past the range. That covers a bake that `stopped` before
-/// every mover ran and one whose range cut a mover's records
-/// ([`super::states::reduce_poses`]), where the movers from the stop on hold
-/// no states and a cut mover's records past the range are gone, and a mover
-/// that keeps exactly one record past it, neither stopped nor cut. Skipping
-/// drops depth records and can bring the count back within the range, so a
-/// verdict after it would hang on job order: the last job could pass where
-/// any earlier one stops the bake. The count is exact unless a stop or a cut
-/// made it a lower bound ([`CarriedDepth::new`]).
-pub(crate) fn refuse_cut_short(
-    movers: &[MoverBounceStates],
-    stopped: bool,
-    tile_cap: u32,
-) -> Result<(), MoverTileRangeExceeded> {
-    let cap = effective_tile_cap(tile_cap);
-    let live = movers
-        .iter()
-        .flat_map(|states| states.depth.iter().map(|probe| probe.probe))
-        .collect::<BTreeSet<_>>()
-        .len();
-    let cut = movers.iter().any(MoverBounceStates::depth_cut);
-    if !stopped && !cut && live <= cap as usize {
-        return Ok(());
+/// The tile-range verdict over the movers finished so far: the distinct
+/// probes their depth records carry, judged before any mover's mid poses
+/// skip. Each mover joins once it reduces and before it skips, so a mover
+/// already skipped never shrinks the count. The union only grows, so the
+/// build fails iff every mover's union passes the range, in any job order:
+/// skipping drops depth records and could bring the count back within the
+/// range, and a verdict after it would hang on job order. A mover whose
+/// records the range cut ([`super::states::reduce_poses`]) fails at once: it
+/// keeps one record past the range.
+#[derive(Debug, Default)]
+pub(crate) struct DepthUnion {
+    probes: BTreeSet<u32>,
+    /// Joined movers carrying any depth record.
+    carrying: usize,
+    /// The most probes one joined mover carries past the floor.
+    most: usize,
+    /// Some joined mover's records were cut.
+    cut: bool,
+}
+
+impl DepthUnion {
+    /// Join one mover's reduced, unskipped states.
+    pub(crate) fn join(&mut self, states: &MoverBounceStates) {
+        self.probes
+            .extend(states.depth.iter().map(|probe| probe.probe));
+        self.carrying += usize::from(!states.depth.is_empty());
+        self.most = self.most.max(states.depth_carried);
+        self.cut |= states.depth_cut();
     }
-    let carried = CarriedDepth::new(live, movers, stopped);
-    // The bake stops only once more distinct probes than the range carry
-    // depth, and a cut keeps one record past it.
-    debug_assert!(
-        carried.probes > cap as usize,
-        "a refused bake saw {} probes carrying depth, within the {cap}-tile range",
-        carried.probes
-    );
-    Err(MoverTileRangeExceeded { carried, cap })
+
+    /// Refuse once the joined movers' depth passes the tile range
+    /// `tile_cap`, or the range cut one of them. `stopped`: movers remain
+    /// that never join, so the count is a lower bound.
+    pub(crate) fn verdict(
+        &self,
+        stopped: bool,
+        tile_cap: u32,
+    ) -> Result<(), MoverTileRangeExceeded> {
+        let cap = effective_tile_cap(tile_cap);
+        if !self.cut && self.probes.len() <= cap as usize {
+            return Ok(());
+        }
+        let carried = CarriedDepth::of(self, stopped);
+        // A refusal holds more distinct probes than the range, and a cut
+        // keeps one record past it.
+        debug_assert!(
+            carried.probes > cap as usize,
+            "a refused bake saw {} probes carrying depth, within the {cap}-tile range",
+            carried.probes
+        );
+        Err(MoverTileRangeExceeded { carried, cap })
+    }
 }
 
 /// What reserving the mover tiles left of id 59.

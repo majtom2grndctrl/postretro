@@ -1,6 +1,7 @@
 // The bounce-and-depth bake over every mover the SH base bake re-bakes: its
-// jobs, what their poses share, and each mover's poses reduced to its states
-// in request order, against the tile range.
+// jobs, what their poses share, and each mover finished in request order,
+// reduced, judged against the tile range, skipped and encoded, before the
+// next runs.
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel)
 
 use std::time::Instant;
@@ -9,14 +10,17 @@ use postretro_level_format::mover_probe_channel::Knot;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
 use super::absent_bounces::AbsentLaterBounces;
+use super::blocks::BounceBlocks;
 use super::bounce::{light_terms, posed_later_progress_units};
-use super::depth::MoverAbsentDepth;
+use super::depth::{DepthUnion, MoverAbsentDepth, MoverTileRangeExceeded};
+use super::direct::ProbeCells;
 use super::edge_copy::copy_job_bounce_edges;
 use super::gather::valid_probes;
 use super::near_field::NearFieldDomain;
 use super::pose_bake::{PoseBaker, PosedBounce};
 use super::pose_memo::{PoseKind, PoseMemo};
 use super::posed_scene::PosedScene;
+use super::skip::{SkipBars, SkipCounts, skip_redundant_mid_poses};
 use super::states::{MoverBounceStates, MoverPoseStates, PoseState, reduce_poses};
 use crate::bake_control::BakeControl;
 use crate::cache::CacheKey;
@@ -159,6 +163,10 @@ pub(crate) struct MoverBounceRequest {
     /// depth record past it ([`super::states::reduce_poses`]), and a mover
     /// past it has none of its poses memoized.
     pub(crate) depth_cap: u32,
+    /// Test only: hand back each finished mover's reduced states, before
+    /// its mid poses skip, detached from the ledger.
+    #[cfg(test)]
+    pub(crate) keep_states: bool,
 }
 
 impl MoverBounceRequest {
@@ -184,7 +192,6 @@ pub(crate) struct PoseSlot {
 }
 
 /// One production job in request order, as the bake meets it.
-#[derive(Clone, Copy)]
 pub(crate) enum MoverSlot<'a> {
     /// Some pose's memo missed: the bake resolves each pose, from the memo
     /// where `poses` holds it, else by baking it, then reduces the mover.
@@ -192,22 +199,31 @@ pub(crate) enum MoverSlot<'a> {
         job: &'a MoverBounceJob,
         poses: &'a [PoseSlot],
     },
-    /// Every pose's memo hit and the mover reduced at lookup: its depth
-    /// probes count toward the tile range where a cold bake would have
-    /// baked it.
-    Held(&'a MoverBounceStates),
+    /// Every pose's memo hit and the mover reduced at lookup: it finishes
+    /// where a cold bake would have baked it.
+    Held {
+        job: &'a MoverBounceJob,
+        states: MoverBounceStates,
+    },
 }
 
 /// What [`bake_mover_bounce`] hands back.
 #[derive(Default)]
 pub(crate) struct MoverBounceBake {
-    /// The baked slots' states, in slot order.
-    pub(crate) movers: Vec<MoverBounceStates>,
+    /// Id 57's bounce and depth blocks from every finished mover.
+    pub(crate) blocks: BounceBlocks,
+    /// Each finished mover with mid poses, in slot order, and what its
+    /// skips kept and dropped.
+    pub(crate) skips: Vec<(u32, SkipCounts)>,
+    /// The tile-range refusal, when the movers' depth passed the range: the
+    /// bake stopped at the mover that passed it, before that mover skipped.
+    pub(crate) refused: Option<MoverTileRangeExceeded>,
     /// Each pose's re-bake, when the request keeps them.
     pub(crate) poses: Vec<PosedBounce>,
-    /// The slot the bake stopped at past the tile range, when it did: no
-    /// slot from it on, baked or held, joins the states.
-    pub(crate) stopped_at: Option<usize>,
+    /// Each finished mover's reduced states before its skips, in slot
+    /// order, when the request keeps them.
+    #[cfg(test)]
+    pub(crate) reduced: Vec<MoverBounceStates>,
 }
 
 /// What every baked pose shares, built at the first slot that bakes.
@@ -251,39 +267,78 @@ pub(crate) struct StaticBounce<'a> {
     pub(crate) absent: Option<&'a AbsentLaterBounces>,
 }
 
+/// What finishing a mover reads beside its states: the skip bars over id 34
+/// and id 59 before mover tiles reserve their range, and id 34's grid.
+struct Finish<'a> {
+    bars: Option<SkipBars<'a>>,
+    cells: Option<ProbeCells>,
+}
+
 /// Re-bake id 34 per pose of each baked slot, each mover posed alone, and
-/// reduce each mover's poses to its states once every pose has resolved,
-/// from `memo` or baked. Slots run in request order, a held slot counting
-/// its depth probes where a cold bake would bake it, so warm and cold stop
-/// at the same slot past the tile range. A pose holds one posed copy of the
-/// patch radiance and the later-bounce buffers while it runs, and drops
-/// them before the next; a mover holds its termini's gathered probes and
-/// its mid poses' states until it reduces them, and the reduction drops its
-/// depth below the significance floor before the next mover runs. Each
-/// baked pose is then written to its memo, unless the mover's depth alone
-/// passes the tile range: the build fails by name, so it is never memoized.
+/// finish each mover before the next runs. Slots run in request order. A
+/// slot resolves its poses, from `memo` or baked, and reduces them (a held
+/// slot reduced at lookup); edge copy runs and its baked poses are written
+/// to their memo, unless its depth alone passes the tile range. Its depth
+/// then joins the union the tile-range verdict reads, before it skips, so
+/// the verdict never hangs on job order ([`DepthUnion`]); past the range
+/// the bake stops there and hands the refusal back. Otherwise its mid poses
+/// skip, its states encode into id 57's blocks and drop, so no two movers'
+/// states are live at once. A pose holds one posed copy of the patch
+/// radiance and the later-bounce buffers while it runs, and drops them
+/// before the next.
 pub(crate) fn bake_mover_bounce(
     sh_ctx: &ShBakeCtx<'_>,
     inputs: &StaticBounce<'_>,
-    slots: &[MoverSlot<'_>],
+    slots: Vec<MoverSlot<'_>>,
     request: &MoverBounceRequest,
     memo: Option<&PoseMemo<'_>>,
     control: &BakeControl,
 ) -> MoverBounceBake {
     let valid = valid_probes(inputs.layout);
     let mut shared: Option<PoseShared<'_>> = None;
+    let mut finish = Finish {
+        bars: None,
+        cells: None,
+    };
     let mut out = MoverBounceBake::default();
-    let mut depth_probes = std::collections::BTreeSet::new();
-    for (at, slot) in slots.iter().enumerate() {
-        if depth_probes.len() > request.depth_cap as usize {
-            // The build fails by name before any mid pose skips; the jobs
+    let mut union = DepthUnion::default();
+    let count = slots.len();
+    let mut slots = slots.into_iter().enumerate();
+    while let Some((at, slot)) = slots.next() {
+        let (job, states) = match slot {
+            MoverSlot::Held { job, states } => (job, states),
+            MoverSlot::Bake { job, poses } => {
+                let shared = shared.get_or_insert_with(|| PoseShared::new(inputs));
+                match bake_slot(
+                    sh_ctx,
+                    inputs,
+                    shared,
+                    job,
+                    poses,
+                    request,
+                    memo,
+                    control,
+                    &valid,
+                    &mut out.poses,
+                ) {
+                    Some(states) => (job, states),
+                    None => continue,
+                }
+            }
+        };
+        #[cfg(test)]
+        if request.keep_states {
+            out.reduced.push(states.detached());
+        }
+        union.join(&states);
+        if let Err(refused) = union.verdict(at + 1 < count, request.depth_cap) {
+            // The build fails by name before this mover skips; the jobs
             // left never run, so their progress lands at once, their held
             // poses' included. A held slot's progress landed with its memo
             // hit.
             control.advance(
-                slots[at..]
-                    .iter()
-                    .filter_map(|slot| match slot {
+                slots
+                    .filter_map(|(_, slot)| match slot {
                         MoverSlot::Bake { job, poses } => Some(poses_progress_units(
                             job,
                             poses,
@@ -292,76 +347,131 @@ pub(crate) fn bake_mover_bounce(
                             inputs.bounce_fill,
                             |_| true,
                         )),
-                        MoverSlot::Held(_) => None,
+                        MoverSlot::Held { .. } => None,
                     })
                     .sum(),
             );
-            out.stopped_at = Some(at);
+            out.refused = Some(refused);
             break;
         }
-        let (job, pose_slots) = match slot {
-            MoverSlot::Bake { job, poses } => (*job, *poses),
-            MoverSlot::Held(states) => {
-                depth_probes.extend(states.depth.iter().map(|probe| probe.probe));
-                continue;
-            }
-        };
-        let shared = shared.get_or_insert_with(|| PoseShared::new(inputs));
-        let started = Instant::now();
-        let baker = PoseBaker {
-            sh_ctx,
-            ctx: sh_ctx.ray_ctx(),
-            inputs,
-            shared,
-            job,
-            request,
-            control,
-            valid: &valid,
-        };
-        let held = read_held_poses(job, pose_slots, memo, inputs.layout);
-        // A pose read back advances now; one whose read fails bakes, and
-        // advances as it bakes.
-        control.advance(poses_progress_units(
-            job,
-            pose_slots,
-            valid.len(),
-            inputs.patches,
-            inputs.bounce_fill,
-            |pose| held[pose].is_some(),
-        ));
-        let bounces: Vec<u32> = pose_slots.iter().map(|slot| slot.bounces).collect();
-        let Some(resolved) = baker.bake(held, &bounces, &mut out.poses) else {
-            continue;
-        };
-        let baked = resolved.baked;
-        let poses = MoverPoseStates::from_poses(resolved.poses);
-        let mut states = reduce_poses(job.mover_id, &poses, &shared.absent, request.depth_cap);
-        copy_job_bounce_edges(&mut states, job, inputs.layout);
-        if let Some(memo) = memo
-            && !states.depth_past_range(request.depth_cap)
-        {
-            write_baked_poses(memo, pose_slots, poses.into_poses(), &baked);
-        } else {
-            drop(poses);
-        }
-        log::info!(
-            "[MoverLight] probe channel bounce: mover `{}` (#{}) re-baked {} posed bounce(s) at {} \
-             of {} pose(s), {} near-field probe(s): {} affected probe(s), {} probe(s) carrying \
-             closed-pose depth, {:.1} s",
-            job.label,
-            job.mover_id,
-            baked_bounces(&bounces, &baked),
-            baked.iter().filter(|&&baked| baked).count(),
-            job.scenes.len(),
-            job.domain_probes.len(),
-            states.bounce.len(),
-            states.depth_carried,
-            started.elapsed().as_secs_f64(),
-        );
-        depth_probes.extend(states.depth.iter().map(|probe| probe.probe));
-        out.movers.push(states);
+        finish_mover(states, job, inputs, request, &mut finish, &mut out);
     }
     out
+}
+
+/// Resolve one baked slot's poses, from the memo where it held them, else
+/// by baking them, and reduce them to the mover's states, edge copy run and
+/// its baked poses memoized. `None` when the request keeps each pose's
+/// re-bake instead.
+#[allow(clippy::too_many_arguments)]
+fn bake_slot(
+    sh_ctx: &ShBakeCtx<'_>,
+    inputs: &StaticBounce<'_>,
+    shared: &PoseShared<'_>,
+    job: &MoverBounceJob,
+    pose_slots: &[PoseSlot],
+    request: &MoverBounceRequest,
+    memo: Option<&PoseMemo<'_>>,
+    control: &BakeControl,
+    valid: &[u32],
+    kept: &mut Vec<PosedBounce>,
+) -> Option<MoverBounceStates> {
+    let started = Instant::now();
+    let baker = PoseBaker {
+        sh_ctx,
+        ctx: sh_ctx.ray_ctx(),
+        inputs,
+        shared,
+        job,
+        request,
+        control,
+        valid,
+    };
+    let held = read_held_poses(job, pose_slots, memo, inputs.layout);
+    // A pose read back advances now; one whose read fails bakes, and
+    // advances as it bakes.
+    control.advance(poses_progress_units(
+        job,
+        pose_slots,
+        valid.len(),
+        inputs.patches,
+        inputs.bounce_fill,
+        |pose| held[pose].is_some(),
+    ));
+    let bounces: Vec<u32> = pose_slots.iter().map(|slot| slot.bounces).collect();
+    let resolved = baker.bake(held, &bounces, kept)?;
+    let baked = resolved.baked;
+    let poses = MoverPoseStates::from_poses(resolved.poses);
+    let mut states = reduce_poses(job.mover_id, &poses, &shared.absent, request.depth_cap);
+    copy_job_bounce_edges(&mut states, job, inputs.layout);
+    if let Some(memo) = memo
+        && !states.depth_past_range(request.depth_cap)
+    {
+        write_baked_poses(memo, pose_slots, poses.into_poses(), &baked);
+    } else {
+        drop(poses);
+    }
+    log::info!(
+        "[MoverLight] probe channel bounce: mover `{}` (#{}) re-baked {} posed bounce(s) at {} \
+         of {} pose(s), {} near-field probe(s): {} affected probe(s), {} probe(s) carrying \
+         closed-pose depth, {:.1} s",
+        job.label,
+        job.mover_id,
+        baked_bounces(&bounces, &baked),
+        baked.iter().filter(|&&baked| baked).count(),
+        job.scenes.len(),
+        job.domain_probes.len(),
+        states.bounce.len(),
+        states.depth_carried,
+        started.elapsed().as_secs_f64(),
+    );
+    Some(states)
+}
+
+/// Skip a mover's redundant mid-pose states, then encode them into the
+/// blocks and drop them. Its knots run through its author ramp first, which
+/// no memo keys, so a ramp edit re-decides skips over memoized states.
+/// Logs one line per mover with mid poses.
+fn finish_mover<'a>(
+    mut states: MoverBounceStates,
+    job: &MoverBounceJob,
+    inputs: &StaticBounce<'a>,
+    request: &MoverBounceRequest,
+    finish: &mut Finish<'a>,
+    out: &mut MoverBounceBake,
+) {
+    if states.pose_count > 2 {
+        let bars = finish.bars.get_or_insert_with(|| {
+            SkipBars::new(
+                inputs.base,
+                MoverAbsentDepth::new(inputs.base, inputs.depth_tiles),
+                request.uncompressed,
+            )
+        });
+        let started = Instant::now();
+        let counts = skip_redundant_mid_poses(&mut states, &job.read_knots, bars);
+        log::info!(
+            "[MoverLight] probe channel skipping: mover `{}` (#{}): bounce keeps {} and skips \
+             {} (probe, mid pose) state(s); depth keeps {} and skips {}; {} of the skipped \
+             never read past the ramp; {:.2} s",
+            job.label,
+            states.mover_id,
+            counts.bounce_stored,
+            counts.bounce_skipped,
+            counts.depth_stored,
+            counts.depth_skipped,
+            counts.squeezed,
+            started.elapsed().as_secs_f64(),
+        );
+        out.skips.push((states.mover_id, counts));
+    }
+    let base = inputs.base;
+    let cells = finish.cells.get_or_insert_with(|| {
+        ProbeCells::new(base.grid_dimensions, |probe| {
+            base.probes[probe].validity != 0
+        })
+    });
+    out.blocks.push_mover(&states, cells);
 }
 
 /// The posed bounces the baked poses re-baked: one count, or each distinct

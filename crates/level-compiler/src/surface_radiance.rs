@@ -54,6 +54,8 @@ mod determinism_tests;
 #[cfg(test)]
 mod layer_cache_tests;
 #[cfg(test)]
+mod layer_cap_tests;
+#[cfg(test)]
 mod pipeline_tests;
 #[cfg(test)]
 mod test_scene;

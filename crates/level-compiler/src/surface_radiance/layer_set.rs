@@ -169,12 +169,20 @@ fn note_cache_io() {
     }
 }
 
+/// The most layers resolve at once: shading's chunk scratch, a cache
+/// write's stream buffer or a hit's raw entry is held per layer in flight,
+/// so the SH base gate prices the largest this many of those, not every
+/// light's. Fixed, not the worker count, so the price is the same on every
+/// machine; enough to keep a desktop's workers busy between batches.
+pub(crate) const LAYERS_IN_FLIGHT: usize = 16;
+
 /// Every planned layer, index-parallel to `plan.layers`: read from `cache`
 /// when it holds the layer, else shaded over the light's reach under
 /// governor permits and written back as soon as it finishes. Cache reads
-/// and writes take no permit. Layers resolve in parallel; each is a pure
-/// function of its keyed inputs, so the result does not depend on worker
-/// count, completion order or cache state.
+/// and writes take no permit. Layers resolve in parallel, at most
+/// [`LAYERS_IN_FLIGHT`] at once; each is a pure function of its keyed
+/// inputs, so the result does not depend on worker count, batching,
+/// completion order or cache state.
 pub(crate) fn resolve_layers(
     ctx: &RaytracingCtx<'_>,
     patches: &PatchSet,
@@ -183,12 +191,31 @@ pub(crate) fn resolve_layers(
     cache: Option<&LayerCache<'_>>,
     control: &BakeControl,
 ) -> Vec<SparseLayer> {
+    resolve_layers_capped(ctx, patches, lights, plan, cache, control, LAYERS_IN_FLIGHT)
+}
+
+/// [`resolve_layers`] with at most `cap` layers in flight. The plan
+/// resolves in batches of `cap`, each batch in parallel and the next only
+/// once it finishes: no permit per layer and no wait inside a rayon task,
+/// which could hold a permit a layer's own chunks wait on, or deadlock
+/// through work stealing. Batches keep plan order.
+pub(crate) fn resolve_layers_capped(
+    ctx: &RaytracingCtx<'_>,
+    patches: &PatchSet,
+    lights: &[&MapLight],
+    plan: &LayerPlan,
+    cache: Option<&LayerCache<'_>>,
+    control: &BakeControl,
+    cap: usize,
+) -> Vec<SparseLayer> {
     // Built by the first miss; a build whose layers all hit never sorts the
     // patches.
     let reach_index: OnceLock<PatchReachIndex<'_>> = OnceLock::new();
-    plan.layers
-        .par_iter()
-        .map(|planned| {
+    let mut resolved = Vec::with_capacity(plan.layers.len());
+    for batch in plan.layers.chunks(cap.max(1)) {
+        resolved.par_extend(batch.par_iter().map(|planned| {
+            #[cfg(test)]
+            let _in_flight = crate::live_bytes::hold(LAYERS_IN_FLIGHT_KIND, 1);
             if let Some(layer) = cache.and_then(|cache| cache.load(planned, patches.len())) {
                 control.advance(layer_progress_units(planned.reach as usize));
                 #[cfg(test)]
@@ -229,6 +256,12 @@ pub(crate) fn resolve_layers(
                 cache.store(planned, &layer, patches.len());
             }
             layer
-        })
-        .collect()
+        }));
+    }
+    resolved
 }
+
+/// Test only: the ledger kind holding one byte per layer in flight, so its
+/// high-water mark is the most layers that resolved at once.
+#[cfg(test)]
+pub(crate) const LAYERS_IN_FLIGHT_KIND: &str = "layers in flight";

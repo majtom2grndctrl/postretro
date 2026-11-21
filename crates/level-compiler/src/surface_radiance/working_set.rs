@@ -7,7 +7,7 @@ use thiserror::Error;
 
 use super::bounce::later_bounce_buffer_bytes;
 use super::layer::{layer_bytes, layer_transient_bytes};
-use super::layer_set::PlannedLayer;
+use super::layer_set::{LAYERS_IN_FLIGHT, PlannedLayer};
 use super::patches::{PatchCountExceeded, PatchSet, Side};
 use super::reach::{PatchReachIndex, REACH_INDEX_BYTES_PER_PATCH};
 use crate::geometry::GeometryResult;
@@ -40,8 +40,9 @@ pub(crate) struct ShBaseWorkingSetProjection {
     /// The gate: the patch set's build, then the reach index that counts
     /// each light's patches.
     pub(crate) gate_phase_bytes: u64,
-    /// Every layer resolving at once, each with its shading scratch, cache
-    /// stream buffer or raw entry, beside the reach index.
+    /// Every finished layer, and the shading scratch, cache stream buffer or
+    /// raw entry of the largest layers in flight together
+    /// ([`LAYERS_IN_FLIGHT`]), beside the reach index.
     pub(crate) layer_phase_bytes: u64,
     /// The layers and the sum they reduce into.
     pub(crate) sum_phase_bytes: u64,
@@ -286,6 +287,19 @@ pub(crate) fn plan_sh_base(
     ))
 }
 
+/// The scratch of the `in_flight` largest of `transients`: what layer
+/// resolution holds beside the finished layers when it admits at most that
+/// many at once, whichever they are. Every light's, priced before
+/// identical lights share a layer, so a conservative bound. `None` on
+/// overflow.
+pub(super) fn in_flight_scratch(mut transients: Vec<u64>, in_flight: usize) -> Option<u64> {
+    transients.sort_unstable_by(|a, b| b.cmp(a));
+    transients
+        .iter()
+        .take(in_flight)
+        .try_fold(0u64, |total, &bytes| total.checked_add(bytes))
+}
+
 struct ProjectionInputs<'a> {
     patches: &'a PatchSet,
     /// [`PatchSet::build_peak_bytes`]; `None` on overflow.
@@ -315,15 +329,18 @@ fn project(
     let light_count = inputs.light_reach.len() as u64;
 
     let mut layer_total = 0u64;
-    let mut layer_transient_total = 0u64;
+    let mut transients = Vec::with_capacity(inputs.light_reach.len());
     for &reach in inputs.light_reach {
         layer_total = layer_bytes(reach)
             .and_then(|bytes| layer_total.checked_add(bytes))
             .ok_or_else(|| overflow("patch layer projection"))?;
-        layer_transient_total = layer_transient_bytes(reach)
-            .and_then(|bytes| layer_transient_total.checked_add(bytes))
-            .ok_or_else(|| overflow("patch layer scratch projection"))?;
+        transients.push(
+            layer_transient_bytes(reach)
+                .ok_or_else(|| overflow("patch layer scratch projection"))?,
+        );
     }
+    let layer_transient_total = in_flight_scratch(transients, LAYERS_IN_FLIGHT)
+        .ok_or_else(|| overflow("patch layer scratch projection"))?;
     let sum_bytes = patch_count
         .checked_mul((Side::BOTH.len() * size_of::<[f32; 3]>()) as u64)
         .ok_or_else(|| overflow("summed patch radiance projection"))?;

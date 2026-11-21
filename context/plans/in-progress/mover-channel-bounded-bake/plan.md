@@ -107,7 +107,7 @@ test against the parent's `prl-build`, named by
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 0 | Before production edits: capture parent goldens (closet family, M5's crafted cache) and build the parent `prl-build` comparison binary for the parity harness; add the parity harness | integrating executor | — | |
+| 0 | Before production edits: capture parent goldens (closet family, M5's crafted cache) and build the parent `prl-build` comparison binary for the parity harness; add the parity harness | integrating executor | — || done: `tests/mover_bounded_bake_goldens.rs` (5 goldens at 10df2fcb; every cache mode and worker count hashed alike), `tests/mover_bounded_bake_parity.rs` (closet identical against the parent binary, low and high, cold/warm/hit); parent `prl-build` kept at `<scratchpad>/parent/prl-build-parent` for this session |
 | 1 | Per-mover finish, the riskiest slice: each slot resolves, reduces, edge-copies, writes memos, joins the depth union, takes the tile-range verdict, skips, encodes into incremental `BounceBlocks` and drops its states; held slots finish at their slot too; id-59 trim once after the last mover; ledger per-kind high-water. Proof rows 1 (closet goldens, setpiece parity), 2, 3, 10 | integrating executor | 0 | |
 | 2 | One finish site: the lookup plans only (reads, decodes, drops); every mover reads back at its slot; a failed slot read builds layers, bounce one and id 34's later bounces lazily on the volume-hit path. Rows 4, 5, 6 | integrating executor | 1 | |
 | 3 | `--mover-payload-max-size`: flag, default 256 MiB, pre-join check, named error, help text. Rows 9, 11 | integrating executor | 1 | |

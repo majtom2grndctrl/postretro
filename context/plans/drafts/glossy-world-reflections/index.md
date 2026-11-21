@@ -35,6 +35,7 @@ Owner-requested capability, for a genre-staple look: polished floors and walls t
   - Dynamic entities in world-face reflections: probe-only means movers, characters, projectiles and dynamic lights never appear there.
   - Fluid surfaces in captures: water stays absent from every capture, as today, so a glossy wall shows the pool's bed, not its surface.
   - Reflections of reflections, and highlights in reflections: captures shade every face with its diffuse and emissive only, so a glossy face appears in other probes' captures without its reflection or its highlights.
+  - Live `emissive_volume` glow in reflections: captures hold each volume at its no-script state, so a pulsing sign's reflection stays steady. A per-probe aggregate glow term could follow it nearly free once `reflection-probe-fluid-pass-performance`'s per-probe sums land, but its share spreads over a whole lobe, so pulsing a sign would dim a quadrant of the reflection while the sign's own image holds (`research.md` §Volume glow share). Revisit if playtests read it wrong.
   - A per-material reflectivity override or opt-out in `materials.toml` (owner, deferred). Strength already uses water's reflectance meaning, so a later override is purely additive.
   - The roughness→`_p` conversion formula: the sharpness brief owns its doc row.
 
@@ -59,7 +60,7 @@ Owner-requested capability, for a genre-staple look: polished floors and walls t
 - [ ] A glossy down-facing ceiling over a floor `light_area` panel takes that light's share on the −Y lobe: pulsing the light moves the reflected panel and its lit floor together.
 **Area lights**
 - [ ] A glossy floor under a static `light_area` skylight reflects its glass at the glow, blurred by each texel's exponent, and draws no highlight from that light.
-- [ ] A script turning that light off dims its reflected glass and the reflected room together on the same frame, to dark; turning it on restores both.
+- [ ] A script turning that light off scales its reflected glass and the reflected room by the same live-lighting ratio on the same frame; in a fixture lit by that light alone, both go dark, and turning it on restores both.
 - [ ] A `light_area` glass face whose material paints sharpness above the floor is a reflector: its glow survives the composite unchanged at W near 1.
 **Shading**
 - [ ] The exponent→mip function is one pinned function shared by the compiler prefilter and the shader, with a GPU-free reference. Blur grows monotonically as the exponent falls; at the exponent cap it returns mip 0 exactly, and it never selects past the header's last colour mip.

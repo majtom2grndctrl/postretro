@@ -330,9 +330,9 @@ Glow and light identity (orderings in `research.md` §Pin table):
   enclosing only an area light's faces warns as empty.
 - [ ] Reflection capture shows an area light's glass at `_e` × `_glow` × its
   reference colour whatever its texture strength, lit whether or not the light
-  starts inactive. A `_start_inactive` area light's reflected glass and
-  reflected room are dark until a script lights it, then brighten together on
-  the same frame.
+  starts inactive. In a fixture lit by a `_start_inactive` area light alone,
+  its reflected glass and reflected room are dark until a script lights it,
+  then brighten together on the same frame.
 - [ ] A `colorShift` moves the glow's colour and the room's colour together.
 - [ ] With `_falloff_range` set, doubling an area light's `light` doubles its
   lightmap and probe output and leaves its faces' emissive term unchanged

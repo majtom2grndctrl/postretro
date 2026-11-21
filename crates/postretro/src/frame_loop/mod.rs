@@ -1023,7 +1023,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                     auto_close_timers: Some(scripting.auto_close_timers.clone()),
                     use_edges: &trigger_use_edges,
                 }),
-                |registry, on_impact| {
+                |registry, projectile_world, on_impact| {
                     let Some((server, owners, open_shots, projectile_presentations, tick)) =
                         host_hit_intake.as_mut()
                     else {
@@ -1042,13 +1042,24 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                         server,
                         registry,
                         collision_world,
-                        hit_zone_store,
                         &identities.allocator(),
                         owners,
                         open_shots,
-                        *tick,
-                        frame_anim_time,
                         std::mem::take(&mut ready_hit_declarations),
+                        |registry| on_impact(registry),
+                        |shot_id, point| projectile_presentations.note_contact(shot_id, point),
+                        |impact| remote_impacts.push(impact),
+                    );
+                    // Client splash shots march here, against this tick's
+                    // poses, and land before AI and before host projectiles.
+                    let _ = netcode::host_step_splash_marches(
+                        server,
+                        registry,
+                        projectile_world,
+                        hit_zone_store,
+                        &identities.allocator(),
+                        open_shots,
+                        *tick,
                         |registry| on_impact(registry),
                         |shot_id, point| projectile_presentations.note_contact(shot_id, point),
                         |impact| remote_impacts.push(impact),
@@ -1145,7 +1156,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 &tick_events.trap_projectile_spawns,
             );
             app.host_note_local_projectile_contacts(&tick_events.local_projectile_contacts);
-            if app.host_flush_pending_hit_declarations(frame_anim_time, &mut remote_impacts) {
+            if app.host_flush_pending_hit_declarations(&mut remote_impacts) {
                 pending_death_events.extend(app.host_run_remote_hit_death_sweep());
             }
             // The tick has settled: every hit this tick authorized, its death

@@ -3,6 +3,8 @@ mod remote;
 #[cfg(any(test, feature = "test-support"))]
 pub(in crate::sim) use local::run_local_weapon_command;
 pub(in crate::sim) use local::{run_client_weapon_equip, run_local_weapon_command_with_content};
+#[cfg(test)]
+pub(crate) use remote::SPLASH_ON_PATH_SLACK;
 pub(in crate::sim) use remote::run_remote_weapon_commands;
 
 use std::cell::RefCell;

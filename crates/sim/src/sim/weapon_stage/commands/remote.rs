@@ -2,6 +2,10 @@
 // See: context/lib/entity_model.md §4, §5 · context/lib/networking.md
 use super::*;
 
+/// Prediction slack in a splash declaration's on-path tolerance: the eye's
+/// prediction error between the client's launch and the host's rebuild.
+pub(crate) const SPLASH_ON_PATH_SLACK: f32 = 0.25;
+
 #[allow(clippy::too_many_arguments)]
 pub(in crate::sim) fn run_remote_weapon_commands(
     registry: &Rc<RefCell<EntityRegistry>>,
@@ -317,30 +321,14 @@ pub(in crate::sim) fn run_remote_weapon_commands(
         } else {
             None
         };
-        // Splash intake replays this ray; freeze where the host's own flight
-        // meets the static world, so the declaration hold can cover it.
-        let projectile_static_contact_distance = match (
-            splash.as_ref(),
-            projectile.as_ref(),
-            projectile_direction,
-            projectile_radius,
-        ) {
-            (Some(_), Some(projectile), Some(direction), Some(radius))
-                if radius.is_finite() && radius >= 0.0 =>
-            {
-                let reach = range.min(projectile.speed * projectile.lifetime_ms / 1_000.0);
-                (reach.is_finite() && reach >= 0.0)
-                    .then(|| {
-                        crate::sim::projectile_static_contact_distance(
-                            collision_world.static_world,
-                            fire_origin,
-                            direction,
-                            radius,
-                            reach,
-                        )
-                    })
-                    .flatten()
-            }
+        // A splash declaration counts where it lies this close to the host's
+        // frozen path. A non-late FIRE's two paths share the eye ray and part by
+        // at most the muzzle's offset from the eye; a late start's part by the
+        // pawn's movement since its start (`networking.md` §Combat authority).
+        let splash_on_path_tolerance = match (splash.as_ref(), projectile_radius) {
+            (Some(_), Some(radius)) if radius.is_finite() && radius >= 0.0 => Some(
+                radius + muzzle_offset.map_or(0.0, |offset| offset.length()) + SPLASH_ON_PATH_SLACK,
+            ),
             _ => None,
         };
         authorized.push(OpenAuthorizedShot {
@@ -370,7 +358,7 @@ pub(in crate::sim) fn run_remote_weapon_commands(
                     .as_ref()
                     .map(|projectile| projectile.lifetime_ms / 1_000.0),
                 projectile_tick_seconds: is_projectile.then_some(tick_dt),
-                projectile_static_contact_distance,
+                splash_on_path_tolerance,
                 is_projectile,
                 fire_origin,
                 timeout_budget_ticks,

@@ -89,7 +89,7 @@ impl HostSimulation {
     fn tick(
         &mut self,
         remote: &[RemotePawnCommand],
-        ingest: impl FnMut(&mut EntityRegistry, &mut dyn FnMut(&mut EntityRegistry)),
+        mut ingest: impl FnMut(&mut EntityRegistry, &mut dyn FnMut(&mut EntityRegistry)),
     ) -> TickEvents {
         let no_edges = HashMap::new();
         simulate_tick_with_presentation_aim(
@@ -122,7 +122,7 @@ impl HostSimulation {
             &no_edges,
             &no_edges,
             None,
-            ingest,
+            |registry, _, on_impact| ingest(registry, on_impact),
             |_| {},
             crate::sim::TimingGate::OFF,
         )

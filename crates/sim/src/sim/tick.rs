@@ -37,7 +37,11 @@ pub fn simulate_started_tick_with_presentation_aim<AiResult>(
     use_pressed: &HashMap<PlayerId, bool>,
     drop_pressed: &HashMap<PlayerId, bool>,
     mut trigger_context: Option<TriggerTickContext<'_>>,
-    mut ingest_ready_remote_hits: impl FnMut(&mut EntityRegistry, &mut dyn FnMut(&mut EntityRegistry)),
+    mut ingest_ready_remote_hits: impl FnMut(
+        &mut EntityRegistry,
+        &CombinedCollisionWorld<'_>,
+        &mut dyn FnMut(&mut EntityRegistry),
+    ),
     mut on_impact: impl FnMut(&mut EntityRegistry),
     timing: postretro_stage_timing::TimingGate,
 ) -> TickEvents
@@ -436,17 +440,18 @@ where
     // but before AI snapshots combat perception. A declaration waiting on this
     // tick's FIRE authorization remains queued for App's post-sim drain.
     let stage = cpu.scope(SimStage::Projectiles);
+    // Projectiles, the remote intake and its splash marches read the table
+    // Movers published this tick, as Ai and Weapons do. The shared borrow
+    // ends before SteerAgents' corpse yields.
+    let projectile_world =
+        CombinedCollisionWorld::new(collision_world, mover_colliders, &*mover_tick_states);
     {
         let mut registry = registry.borrow_mut();
-        ingest_ready_remote_hits(&mut registry, &mut on_impact);
+        ingest_ready_remote_hits(&mut registry, &projectile_world, &mut on_impact);
     }
     // Advance projectiles after this tick's movement settles but before AI
     // snapshots its facts. An impact therefore reaches the Health chokepoint
     // and attacker ledger in time for same-tick retaliation selection.
-    // Projectiles read the table Movers published this tick, as Ai and
-    // Weapons do. The shared borrow ends before SteerAgents' corpse yields.
-    let projectile_world =
-        CombinedCollisionWorld::new(collision_world, mover_colliders, &*mover_tick_states);
     let local_projectile_contacts = projectile_stage::advance(
         &registry,
         &projectile_world,

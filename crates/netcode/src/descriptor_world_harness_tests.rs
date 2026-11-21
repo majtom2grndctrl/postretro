@@ -319,7 +319,7 @@ fn descriptor_hit_credits_owner_and_despawns(meshless: bool) {
         projectile_speed: None,
         projectile_lifetime_seconds: None,
         projectile_tick_seconds: None,
-        projectile_static_contact_distance: None,
+        splash_on_path_tolerance: None,
         is_projectile: false,
         fire_origin: Vec3::ZERO,
         timeout_budget_ticks: 180,

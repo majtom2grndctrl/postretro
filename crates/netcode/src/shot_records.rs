@@ -1,7 +1,7 @@
 // Host open authorized shots and pending hit declarations held for their FIRE.
 // See: context/lib/networking.md §Combat authority: FIRE vs HIT
+use crate::splash_march::SplashMarch;
 use crate::{HostCommandQueues, NetworkIdAllocator, activation_ledger, prediction};
-use glam::Vec3;
 use postretro_combat_model::{AuthorizedShot, OpenAuthorizedShot, ShotId};
 use postretro_entities::EntityId;
 use postretro_net::wire;
@@ -12,62 +12,20 @@ pub(crate) const MAX_PENDING_HIT_DECLARATIONS_PER_CLIENT: usize = 64;
 /// A projectile cannot have struck anything on its own FIRE tick.
 const MIN_PROJECTILE_HOLD_TICKS: u32 = 1;
 
-/// Slack past a splash declaration's contact: the host's reconstructed fire
-/// origin may sit a little behind the client's launch point.
-const SPLASH_HOLD_MARGIN_TICKS: u32 = 1;
-
-/// Host ticks after FIRE before a projectile declaration may resolve. Splash
-/// replays its flight from the host fire tick, which a late-admitted start
-/// pushes past the client's whole flight, so it waits until host travel at its
-/// frozen speed covers the farthest declared contact, capped by frozen range
-/// and lifetime. A declared world contact also waits for the host's own frozen
-/// wall contact: a late start fires from the pawn's live eye along the start's
-/// captured aim, so the host's ray can meet the wall beyond the declared point.
-/// An entity contact waits only for its declared point; a longer wait would
-/// replay against a target that has since moved. The declaration only delays
-/// the replay; the replay still picks the detonation.
-fn projectile_hold_ticks(shot: &AuthorizedShot, declaration: &wire::HitDeclaration) -> u32 {
-    let (Some(_), Some(speed), Some(tick_seconds), Some(lifetime_seconds)) = (
-        shot.splash.as_ref(),
-        shot.projectile_speed,
-        shot.projectile_tick_seconds,
-        shot.projectile_lifetime_seconds,
-    ) else {
-        return MIN_PROJECTILE_HOLD_TICKS;
-    };
-    let step = f64::from(speed) * f64::from(tick_seconds);
-    let reach = f64::from(shot.range).min(f64::from(speed) * f64::from(lifetime_seconds));
-    if !step.is_finite() || step <= 0.0 || !reach.is_finite() || reach < 0.0 {
-        return MIN_PROJECTILE_HOLD_TICKS;
-    }
-    let host_wall = shot
-        .projectile_static_contact_distance
-        .map(f64::from)
-        .filter(|distance| distance.is_finite())
-        .unwrap_or(0.0);
-    let held = declaration
-        .records
-        .iter()
-        .take(shot.pellet_count)
-        .filter(|record| crate::valid_projectile_contact(shot, record))
-        .map(|record| {
-            let declared = f64::from(shot.fire_origin.distance(Vec3::from_array(record.point)));
-            if record.target == crate::PRESENTATION_CONTACT_TARGET {
-                declared.max(host_wall)
-            } else {
-                declared
-            }
-        })
-        .fold(0.0, f64::max);
-    // Bounded by the frozen reach; the clamp keeps the cast inside the
-    // wrap-aware half of the tick clock even for absurd authored tuning.
-    let travel_ticks = (held.min(reach) / step).ceil().min(f64::from(u32::MAX / 2)) as u32;
-    travel_ticks.saturating_add(SPLASH_HOLD_MARGIN_TICKS)
+/// Host ticks after FIRE before a projectile declaration may be taken. A
+/// splash declaration then binds to its shot's march, which decides when the
+/// blast lands (`splash_march`).
+fn projectile_hold_ticks(_shot: &AuthorizedShot, _declaration: &wire::HitDeclaration) -> u32 {
+    MIN_PROJECTILE_HOLD_TICKS
 }
 
 #[derive(Debug, Default)]
 pub struct OpenAuthorizedShots {
     pub(crate) shots: HashMap<ShotId, OpenAuthorizedShot>,
+    /// Each open client splash shot's march. It outlives its shot's HIT
+    /// intake: binding the declaration retires the shot, and the march
+    /// releases the blast when it reaches its deciding point.
+    pub(crate) marches: HashMap<ShotId, SplashMarch>,
 }
 
 impl OpenAuthorizedShots {
@@ -76,6 +34,12 @@ impl OpenAuthorizedShots {
     }
 
     pub fn record(&mut self, shot: AuthorizedShot, owner_client_id: u64) {
+        if shot.is_projectile
+            && shot.splash.is_some()
+            && let Some(march) = SplashMarch::new(shot.clone(), owner_client_id)
+        {
+            self.marches.insert(shot.shot_id, march);
+        }
         self.shots.insert(
             shot.shot_id,
             OpenAuthorizedShot {
@@ -129,16 +93,40 @@ impl OpenAuthorizedShots {
     pub(crate) fn remove_client(&mut self, client_id: u64) {
         self.shots
             .retain(|_, shot| shot.owner_client_id != client_id);
+        self.marches
+            .retain(|_, march| march.owner_client_id != client_id);
     }
 
     pub(crate) fn remove_pawn(&mut self, pawn: EntityId) {
         self.shots.retain(|_, shot| shot.shot.pawn != pawn);
+        self.marches.retain(|_, march| march.shot.pawn != pawn);
     }
 
+    /// A march outlives its open shot only while bound to a declaration, and
+    /// a bound march resolves within its frozen reach, inside the same budget.
     pub(crate) fn prune_stale(&mut self, current_tick: u32) {
         self.shots.retain(|_, shot| {
             current_tick.wrapping_sub(shot.shot.fire_tick) <= shot.shot.timeout_budget_ticks
         });
+        self.marches.retain(|_, march| {
+            current_tick.wrapping_sub(march.shot.fire_tick) <= march.shot.timeout_budget_ticks
+        });
+    }
+
+    pub(crate) fn march(&self, shot_id: ShotId) -> Option<&SplashMarch> {
+        self.marches.get(&shot_id)
+    }
+
+    /// Bind a splash declaration to its shot's march; whether one was open.
+    pub(crate) fn bind_splash_declaration(
+        &mut self,
+        shot_id: ShotId,
+        declaration: &wire::HitDeclaration,
+    ) -> bool {
+        self.marches
+            .get_mut(&shot_id)
+            .map(|march| march.bind(declaration))
+            .is_some()
     }
 
     #[cfg(test)]

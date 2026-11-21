@@ -133,8 +133,7 @@ use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 pub use projectile_stage::advance;
 pub use projectile_stage::{
     PredictedProjectileResolution, ProjectileContactEvent, advance_predicted,
-    correct_predicted_projectile, projectile_splash_occlusion_origin,
-    projectile_static_contact_distance, resolve_projectile_impact,
+    correct_predicted_projectile, projectile_splash_occlusion_origin, resolve_projectile_impact,
     set_predicted_projectile_visible,
 };
 pub use reload::{wieldable_equip_ticks, wieldable_reload_due};
@@ -593,7 +592,7 @@ where
         &touch_edges,
         &touch_edges,
         trigger_context,
-        |_, _| {},
+        |_, _, _| {},
         on_impact,
         crate::sim::TimingGate::OFF,
     )
@@ -1908,7 +1907,7 @@ mod tests {
             &edges,
             &edges,
             None,
-            |_, _| {},
+            |_, _, _| {},
             |_| {},
             timing,
         )
@@ -2036,7 +2035,7 @@ mod tests {
             &edges,
             &edges,
             None,
-            |_, _| {},
+            |_, _, _| {},
             |_| {},
             crate::sim::TimingGate::OFF,
         );
@@ -2170,7 +2169,7 @@ mod tests {
                 auto_close_timers: None,
                 use_edges: &use_edges,
             }),
-            |_, _| {},
+            |_, _, _| {},
             |_| {},
             crate::sim::TimingGate::OFF,
         );

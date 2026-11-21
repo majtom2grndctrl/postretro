@@ -43,18 +43,16 @@ pub struct AuthorizedShot {
     /// Collision radius captured with the projectile launch. It is host-only
     /// authority data used to reproduce the local swept-contact geometry.
     pub projectile_radius: Option<f32>,
-    /// Frozen projectile flight facts. Splash intake replays this ray only as
-    /// far as host time, range, and lifetime permit; the client's point never
-    /// selects the detonation position.
+    /// Frozen projectile flight facts. The host marches a splash shot along
+    /// this path one tick at a time (`networking.md` §Combat authority).
     pub projectile_direction: Option<Vec3>,
     pub projectile_speed: Option<f32>,
     pub projectile_lifetime_seconds: Option<f32>,
     pub projectile_tick_seconds: Option<f32>,
-    /// Host's own static-world first contact along the frozen ray, swept at
-    /// the frozen radius and capped by frozen reach. A splash declaration of a
-    /// world contact waits for host travel to cover it, because a late start's
-    /// live origin can put the host's wall farther than the client's point.
-    pub projectile_static_contact_distance: Option<f32>,
+    /// How far a splash declaration's first valid contact may lie from the
+    /// frozen path and still count as on it: the frozen radius, the muzzle's
+    /// offset from the eye, and prediction slack. `None` for any other shot.
+    pub splash_on_path_tolerance: Option<f32>,
     /// Frozen at FIRE because the weapon may be switched or despawned before a
     /// later projectile declaration arrives. This authority data never crosses
     /// the wire.

@@ -2621,22 +2621,13 @@ mod tests {
         }
     }
 
-    // A late start fires from the pawn's live eye along its captured aim, so
-    // splash intake must hold until the host's own flight can reach the wall it
-    // meets; FIRE freezes that distance with the shot.
+    // A splash FIRE freezes how far a declared contact may lie from its path
+    // and still count: radius, muzzle offset and prediction slack. Other shots
+    // freeze none.
     #[test]
-    fn remote_splash_fire_freezes_the_hosts_static_wall_distance() {
-        const WALL_Z: f32 = -6.0;
+    fn remote_splash_fire_freezes_its_on_path_tolerance() {
         const RADIUS: f32 = 0.25;
-        let wall = CollisionWorld::from_triangles_for_test(
-            vec![
-                Vec3::new(-10.0, -10.0, WALL_Z),
-                Vec3::new(10.0, -10.0, WALL_Z),
-                Vec3::new(10.0, 10.0, WALL_Z),
-                Vec3::new(-10.0, 10.0, WALL_Z),
-            ],
-            vec![[0, 1, 2], [0, 2, 3]],
-        );
+        let muzzle = Vec3::new(0.3, -0.2, -0.4);
         let fire = |splash: Option<SplashDescriptor>| {
             let registry = Rc::new(RefCell::new(EntityRegistry::new()));
             let (pawn, weapon) = {
@@ -2651,19 +2642,21 @@ mod tests {
                 projectile.speed = 30.0;
                 projectile.radius = RADIUS;
                 component.splash = splash;
+                component.muzzle_offset = Some(muzzle);
                 registry
                     .set_component(weapon, component)
                     .expect("remote projectile weapon attaches");
                 (pawn, weapon)
             };
-            // Facing yaw 0 and level pitch aim down -Z, at the wall.
             let remote = remote_command(pawn, Some(weapon), 42, 9, true, false);
             let result = run_remote_weapon_commands(
                 &registry,
                 &[remote],
                 &[],
                 None,
-                &crate::collision::moving::CombinedCollisionWorld::static_only(&wall),
+                &crate::collision::moving::CombinedCollisionWorld::static_only(
+                    &CollisionWorld::new(),
+                ),
                 &HitZoneStore::new(),
                 0.0,
                 1.0 / 60.0,
@@ -2680,19 +2673,15 @@ mod tests {
             min_fraction: 0.0,
             self_damage: true,
         }));
-        let eye_to_wall = rocket.fire_origin.z - WALL_Z;
-        let frozen = rocket
-            .projectile_static_contact_distance
-            .expect("a splash shot freezes its static-world contact");
+        let expected = RADIUS + muzzle.length() + super::commands::SPLASH_ON_PATH_SLACK;
         assert!(
-            (frozen - (eye_to_wall - RADIUS)).abs() <= 1.0e-3,
-            "the swept sphere touches the wall one radius short: {frozen}"
+            rocket
+                .splash_on_path_tolerance
+                .is_some_and(|tolerance| (tolerance - expected).abs() <= 1.0e-6),
+            "{:?}",
+            rocket.splash_on_path_tolerance
         );
-        assert_eq!(
-            fire(None).projectile_static_contact_distance,
-            None,
-            "a direct projectile replays nothing and freezes no wall distance"
-        );
+        assert_eq!(fire(None).splash_on_path_tolerance, None);
     }
 
     #[test]
@@ -4303,7 +4292,7 @@ mod tests {
             &edges,
             &edges,
             None,
-            |_, _| {},
+            |_, _, _| {},
             |_| {},
             timing,
         )

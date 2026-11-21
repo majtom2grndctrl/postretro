@@ -468,6 +468,7 @@ mod same_tick {
         BlockPolicy, KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode,
         MoverCommand,
     };
+    use crate::sim::{FactionRegistry, FactionSentimentState};
     use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 
     const DT: f32 = 1.0 / 60.0;
@@ -684,6 +685,90 @@ mod same_tick {
         assert!(
             next_door.is_some_and(|position| position.z > door_z),
             "the reversal shows from T + 1: {next_door:?}"
+        );
+    }
+
+    // C3, P24: the remote intake and its splash marches run in the Projectiles
+    // stage with the tick's published poses, before host projectiles advance
+    // (a client blast lands before a host rocket on the same tick) and before
+    // AI.
+    #[test]
+    fn remote_intake_runs_with_the_ticks_poses_before_host_projectiles_and_ai() {
+        use std::cell::Cell;
+        let mut world = World::new(BlockPolicy::default());
+        world.tick(false);
+        world.command(MoverCommand::Start);
+        let rocket = world.rocket();
+        let intake_door = Cell::new(None);
+        let rocket_live_at_intake = Cell::new(false);
+        let intake_before_ai = Cell::new(false);
+        let mut ai_door = None;
+        let factions = FactionRegistry::default();
+        let sentiment = RefCell::new(FactionSentimentState::default());
+        let no_edges = std::collections::HashMap::new();
+        crate::sim::simulate_tick_with_presentation_aim(
+            world.registry.clone(),
+            &world.static_world,
+            &HitZoneStore::new(),
+            None,
+            postretro_collision::EnvironmentView::level_only(0.0),
+            false,
+            0.0,
+            (0.0, 0.0),
+            &mut ProgressTracker::new(),
+            |_, _, inputs, _| {
+                intake_before_ai.set(intake_door.get().is_some());
+                ai_door = inputs
+                    .mover_nav
+                    .poses
+                    .pose(DOOR)
+                    .map(|pose| pose.transform.position);
+                crate::ai_host::AiTickResult {
+                    events: Vec::new(),
+                    projectile_spawns: Vec::new(),
+                }
+            },
+            &world.colliders,
+            &mut world.movers,
+            &[],
+            &crate::sim::tests::sim_command(false, false),
+            |_| PostMovementCommand {
+                aim_origin: Vec3::new(0.0, 0.5, 0.0),
+                aim_direction: Vec3::X,
+            },
+            DT,
+            &mut crate::sim::touch::TouchSystem::default(),
+            &mut Default::default(),
+            &[],
+            0,
+            &factions,
+            &sentiment,
+            None,
+            &no_edges,
+            &no_edges,
+            None,
+            |registry, projectile_world, _| {
+                intake_door.set(
+                    projectile_world
+                        .poses
+                        .pose(DOOR)
+                        .map(|pose| pose.transform.position),
+                );
+                rocket_live_at_intake.set(registry.exists(rocket));
+            },
+            |_| {},
+            crate::sim::TimingGate::OFF,
+        );
+        assert_eq!(intake_door.get(), Some(CLOSED), "the tick's published pose");
+        assert_eq!(ai_door, Some(CLOSED));
+        assert!(
+            rocket_live_at_intake.get(),
+            "before host projectiles advance"
+        );
+        assert!(intake_before_ai.get(), "before AI");
+        assert!(
+            !world.registry.borrow().exists(rocket),
+            "the rocket then meets the door"
         );
     }
 }

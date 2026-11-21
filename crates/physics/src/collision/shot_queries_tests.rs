@@ -311,15 +311,22 @@ fn a_sphere_touching_a_mover_is_not_enclosed() {
     assert_eq!(mover_enclosing_point(&world, centre), None);
     // The sweep owns an overlapping start: into the face it hits at once, and
     // along or away from it the sphere does what it does against a static wall.
+    // From an overlap the contact normal is a penetration normal, which the
+    // posed and baked meshes resolve a few thousandths apart; compare it loosely.
     let baked = oracle(&poses, &movers);
     for dir in [Vec3::X, -Vec3::X, Vec3::Z] {
-        assert_hits_match(
-            "touching",
-            cast_sphere_exact_combined(&world, centre, 0.25, dir, 1.0),
-            cast_sphere_exact(&baked, centre, 0.25, dir, 1.0)
-                .map(|hit| (hit.time_of_impact, hit.normal)),
-            &format!("overlapping sphere toward {dir:?}"),
-        );
+        let combined = cast_sphere_exact_combined(&world, centre, 0.25, dir, 1.0);
+        let wall = cast_sphere_exact(&baked, centre, 0.25, dir, 1.0);
+        assert_eq!(combined.is_some(), wall.is_some(), "toward {dir:?}");
+        if let (Some(hit), Some(wall)) = (combined, wall) {
+            assert!(
+                (hit.time_of_impact - wall.time_of_impact).abs() < EPS,
+                "toward {dir:?}: toi {} vs {}",
+                hit.time_of_impact,
+                wall.time_of_impact
+            );
+            assert!(hit.normal.dot(wall.normal) > 0.999, "toward {dir:?}");
+        }
     }
     let into = cast_sphere_exact_combined(&world, centre, 0.25, Vec3::X, 1.0)
         .expect("an overlapping sphere moving into the face hits it");

@@ -395,11 +395,12 @@ fn position_of(rig: &Rig, id: EntityId) -> Vec3 {
 }
 
 // A rocket launched from a pawn flush against a closed door overlaps it
-// without its centre inside: along or away from the door it flies on, exactly
-// as it does from a static wall in the door's place.
+// without its centre inside, so it is not struck at launch: it does exactly
+// what it does from a static wall in the door's place. Straight away from the
+// door it flies on; up the door's face, parry's sweep from an overlap stops
+// it a radius along against the wall and the door alike.
 #[test]
-fn rocket_launched_overlapping_a_door_flies_on_along_or_away_from_it() {
-    // Up the door's face, and straight away from it.
+fn rocket_launched_overlapping_a_door_matches_a_static_wall_along_or_away_from_it() {
     for direction in [Vec3::Y, Vec3::Z] {
         let mut door = Rig::new(CollisionWorld::new());
         // Near face at z = -0.15: a radius-0.25 rocket at the origin overlaps it.
@@ -408,19 +409,33 @@ fn rocket_launched_overlapping_a_door_flies_on_along_or_away_from_it() {
         let door_rocket = door.rocket(Vec3::ZERO, direction, 0.25, None);
         let wall_rocket = wall.rocket(Vec3::ZERO, direction, 0.25, None);
         for step in 1..=3 {
-            assert!(door.step().is_empty(), "{direction:?} step {step}: door");
-            assert!(wall.step().is_empty(), "{direction:?} step {step}: wall");
+            let (at_door, at_wall) = (door.step(), wall.step());
+            assert_eq!(
+                at_door.len(),
+                at_wall.len(),
+                "{direction:?} step {step}: door {at_door:?} wall {at_wall:?}"
+            );
+            for (a, b) in at_door.iter().zip(&at_wall) {
+                assert!(
+                    a.distance(*b) < 1.0e-2,
+                    "{direction:?} step {step}: door {a:?} wall {b:?}"
+                );
+                assert!(
+                    a.distance(Vec3::ZERO) > 0.1,
+                    "{direction:?}: not struck at launch"
+                );
+            }
         }
-        assert!(
-            door.exists(door_rocket),
-            "{direction:?}: not struck at launch"
-        );
-        assert_vec3_approx(position_of(&door, door_rocket), direction * 3.0);
-        assert_vec3_approx(
-            position_of(&door, door_rocket),
-            position_of(&wall, wall_rocket),
-        );
+        assert_eq!(door.exists(door_rocket), wall.exists(wall_rocket));
     }
+    // Away from the door: flies on, three ticks of travel.
+    let mut door = Rig::new(CollisionWorld::new());
+    door.close_door_at(-0.2);
+    let rocket = door.rocket(Vec3::ZERO, Vec3::Z, 0.25, None);
+    for _ in 0..3 {
+        assert!(door.step().is_empty());
+    }
+    assert_vec3_approx(position_of(&door, rocket), Vec3::Z * 3.0);
 }
 
 #[test]

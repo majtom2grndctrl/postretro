@@ -1,7 +1,7 @@
 # mover-channel-bounded-bake — plan of record
 
 mode: resumable
-status: approved
+status: approved (built; awaiting land the plane)
 read at: 1a66523a
 
 Source check: no file under `crates/level-compiler/src/mover_probe_channel/`,
@@ -74,34 +74,34 @@ test against the parent's `prl-build`, named by
 `mover_probe_channel_prl_parity.rs` precedent), over every map under
 `content/dev/maps` whose parent bake reports an analysed mover.
 
-| AC | Proof | Status |
-|---|---|---|
-| 1 Output identity, every fixture (I1) | routine: `mover_sections_match_parent_goldens` (closet and its edits, `low`/`high`, cold/warm, 1 and 4 workers); on demand: `mover_bounded_bake_parent_parity` (every mover fixture, stress-env-volumes included) | achievable as stated |
-| 2 Job order reversed (I2) | `reversed_job_order_keeps_sections_and_the_tile_range_verdict` (two doors of different reach; lowered `--probe-depth-tile-cap` variant puts one past the range) | achievable as stated |
-| 3 No two movers' states live (M1) | `one_movers_states_are_live_at_a_time` (two-door edit, setpiece on demand; cold, warm empty, full hit; per-kind high-water ≤ largest one mover's) | achievable as stated |
-| 4 Held mover not live during the other's bake (M2) | `a_held_door_is_not_live_while_the_other_bakes` (two-door edit primed with one door's `light_bounces` changed, both orders; mover-bake phase price ≥ ledger peak) | achievable as stated |
-| 5 Failed slot read bakes there (M3) | `a_failed_slot_read_bakes_the_pose_and_matches_cold` (test hook fails the read after lookup; `low`/`high`; all held, and one held one pending) | achievable as stated |
-| 6 Corrupt `high`, whole `low`; and slot failure at `high` (M5) | `a_corrupt_high_entry_serves_low_as_the_parent_did` (golden captured at the parent on the same crafted cache) and `a_high_read_failing_at_the_slot_bakes_at_the_high_count` | achievable as stated |
-| 7 Lazy layers at a failed slot routed and priced (M4) | `a_slot_failure_after_blocks_join_is_priced` (two-door edit, `low`, full hit, second door's read fails) | achievable as stated |
-| 8 Layers in flight ≤ cap; no stall at one permit (L1, L2) | `layer_resolution_never_exceeds_its_cap` (cap below workers, fixture with more layers than workers, 1 and 4 workers, cold/warm) and `layer_resolution_completes_at_one_permit` | achievable as stated |
-| 9 Payload cap error and flag parsing (C1) | `the_payload_cap_fails_by_name_and_admits_at_its_bytes` (exact cap admits, one under fails, message names flag, bytes, movers; nothing dropped) and CLI parse tests in `main.rs` (past `u64`, malformed, missing) | achievable as stated |
-| 10 Tile range before cap, single mover (I4) | `a_mover_past_both_fails_by_the_tile_range_before_skipping` | achievable as stated |
-| 11 Cap on one mover, range on another (I3) | `cap_and_range_on_different_movers_fail_by_name_in_both_orders` | achievable as stated |
-| 12 Each priced phase ≥ ledger peak in its window (P1, P2, W1, D1, D3) | routine: `every_priced_phase_covers_its_window_on_the_closet` (whole-pipeline harness; cold, warm empty, full hit, id-34 hit with memo misses, `low` over `high`-primed; cap set to the fixture's block bytes); on demand: same on the setpiece and every mover fixture | achievable as stated |
-| 13 Finish-loop buffers routed and priced (P1) | asserted inside row 12's harness: skip and encode buffers, skip bars, mover records, probe cells held by capacity in the mover-bake phase | achievable as stated |
-| 14 Direct window routes every section ≤ its term (D1, D2) | `the_direct_window_covers_every_section_alive` (closet; animated-light fixture with `--sh-analyze` for the clones) | achievable as stated |
-| 15 `--sh-delta-max-size` below dense, at or above post-drop (D1) | `a_delta_cap_below_dense_still_prices_the_dense_window` | achievable as stated |
-| 16 SH-delta projection covers carried bytes (D3) | `the_sh_delta_projection_covers_what_the_channel_carries` (peak and carried term alone) | achievable as stated |
-| 17 Layer price covers largest in-flight layers, hit payload included (L1) | inside row 8's test: layer-phase price ≥ ledger peak, warm with some layers hit | achievable as stated |
-| 18 Edges: no mover zero; bounces 0; fill 0 | `mover_channel_price_edges` (unit, `cost.rs`/`working_set.rs`) | achievable as stated |
-| 19 Same SH base projection at `low` and `high` | `the_sh_base_projection_ignores_fidelity` over every mover fixture (plan only, no ray; routine closet, on demand the rest) | achievable as stated |
-| 20 One byte under SH base peak refuses by its name (G1) | `one_byte_under_the_sh_base_peak_refuses_by_its_name_through_gate_order` (fixture with delta projection below the base peak, through `run`) | achievable as stated |
-| 21 `build_pipeline.md` rows; `docs/level_design.md` flag | doc edit, reviewed against this table; a grep test that `--mover-payload-max-size` appears in `main.rs` help and `docs/level_design.md` | achievable as stated |
-| 22 stress-env-volumes admitted at 16 GiB, `low`, every gate | stop-at-gate release run of `prl-build` (all gates, no bounce ray); a refusal moved to another gate stops the build for the owner | achievable as stated |
-| 23 Estimate ÷ largest cold window per phase; `--release` admission | `#[ignore]` findings harness on setpiece and stress-env-volumes at `low` and `high`; stress cold may need the owner's machine (this container: 4 cores, 15 GB) | achievable as stated |
-| 24 Block bytes against 256 MiB | the same harness's block counts, both maps, `low`/`high` | achievable as stated |
-| 25 SH base time before and after | parent and branch binaries, cold, same two maps, layer resolution apart; warm full hit on setpiece at `low` | achievable as stated |
-| 26 Owner's 16 GB desktop sampling | owner, cold `--no-cache`, private bytes every 30 s | manual |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| 1 Output identity, every fixture (I1) | routine: `mover_sections_match_parent_goldens` (closet and its edits, `low`/`high`, cold/warm, 1 and 4 workers); on demand: `mover_bounded_bake_parent_parity` (every mover fixture, stress-env-volumes included) | achievable as stated | pass: goldens (closet and two-door edit, `low`/`high`, cold/warm/hit, 1 and 4 workers) after every task; parent parity identical on mover-closet and mover-setpiece, cold/warm/hit, `low`/`high`. **Outstanding:** parity on the other mover fixtures and stress-env-volumes (on demand, hours) |
+| 2 Job order reversed (I2) | `reversed_job_order_keeps_sections_and_the_tile_range_verdict` (two doors of different reach; lowered `--probe-depth-tile-cap` variant puts one past the range) | achievable as stated | pass |
+| 3 No two movers' states live (M1) | `one_movers_states_are_live_at_a_time` (two-door edit, setpiece on demand; cold, warm empty, full hit; per-kind high-water ≤ largest one mover's) | achievable as stated | pass on the two-door closet (cold, warm empty, full hit). **Outstanding:** setpiece variant (`#[ignore]`, on demand) |
+| 4 Held mover not live during the other's bake (M2) | `a_held_door_is_not_live_while_the_other_bakes` (two-door edit primed with one door's `light_bounces` changed, both orders; mover-bake phase price ≥ ledger peak) | achievable as stated | pass (both orders; mover-bake price ≥ window) |
+| 5 Failed slot read bakes there (M3) | `a_failed_slot_read_bakes_the_pose_and_matches_cold` (test hook fails the read after lookup; `low`/`high`; all held, and one held one pending) | achievable as stated | pass (seam proven to fire; `low`/`high`; all held and one pending) |
+| 6 Corrupt `high`, whole `low`; and slot failure at `high` (M5) | `a_corrupt_high_entry_serves_low_as_the_parent_did` (golden captured at the parent on the same crafted cache) and `a_high_read_failing_at_the_slot_bakes_at_the_high_count` | achievable as stated | pass (corrupt-`high` golden; slot failure at `high` count) |
+| 7 Lazy layers at a failed slot routed and priced (M4) | `a_slot_failure_after_blocks_join_is_priced` (two-door edit, `low`, full hit, second door's read fails) | achievable as stated | pass (bounce one proven built at the slot) |
+| 8 Layers in flight ≤ cap; no stall at one permit (L1, L2) | `layer_resolution_never_exceeds_its_cap` (cap below workers, fixture with more layers than workers, 1 and 4 workers, cold/warm) and `layer_resolution_completes_at_one_permit` | achievable as stated | pass |
+| 9 Payload cap error and flag parsing (C1) | `the_payload_cap_fails_by_name_and_admits_at_its_bytes` (exact cap admits, one under fails, message names flag, bytes, movers; nothing dropped) and CLI parse tests in `main.rs` (past `u64`, malformed, missing) | achievable as stated | pass |
+| 10 Tile range before cap, single mover (I4) | `a_mover_past_both_fails_by_the_tile_range_before_skipping` | achievable as stated | pass |
+| 11 Cap on one mover, range on another (I3) | `cap_and_range_on_different_movers_fail_by_name_in_both_orders` | achievable as stated | pass |
+| 12 Each priced phase ≥ ledger peak in its window (P1, P2, W1, D1, D3) | routine: `every_priced_phase_covers_its_window_on_the_closet` (whole-pipeline harness; cold, warm empty, full hit, id-34 hit with memo misses, `low` over `high`-primed; cap set to the fixture's block bytes); on demand: same on the setpiece and every mover fixture | achievable as stated | pass: closet routine in every mode, cap at the blocks in cold, warm, full-hit and id-34-hit runs; on demand setpiece, mover-pins, closet-reveal, enemy-movers at `low`/`high`, cold/warm/hit (run before the review rounds, which only raised prices). **Outstanding:** remaining mover fixtures |
+| 13 Finish-loop buffers routed and priced (P1) | asserted inside row 12's harness: skip and encode buffers, skip bars, mover records, probe cells held by capacity in the mover-bake phase | achievable as stated | pass |
+| 14 Direct window routes every section ≤ its term (D1, D2) | `the_direct_window_covers_every_section_alive` (closet; animated-light fixture with `--sh-analyze` for the clones) | achievable as stated | pass (animated light, `--sh-analyze`) |
+| 15 `--sh-delta-max-size` below dense, at or above post-drop (D1) | `a_delta_cap_below_dense_still_prices_the_dense_window` | achievable as stated | pass (premise asserted) |
+| 16 SH-delta projection covers carried bytes (D3) | `the_sh_delta_projection_covers_what_the_channel_carries` (peak and carried term alone) | achievable as stated | pass |
+| 17 Layer price covers largest in-flight layers, hit payload included (L1) | inside row 8's test: layer-phase price ≥ ledger peak, warm with some layers hit | achievable as stated | pass (hits proven) |
+| 18 Edges: no mover zero; bounces 0; fill 0 | `mover_channel_price_edges` (unit, `cost.rs`/`working_set.rs`) | achievable as stated | pass |
+| 19 Same SH base projection at `low` and `high` | `the_sh_base_projection_ignores_fidelity` over every mover fixture (plan only, no ray; routine closet, on demand the rest) | achievable as stated | pass: closet routine; four fixtures on demand; stress-env-volumes gate figures identical at `low`, `high`, `--release` |
+| 20 One byte under SH base peak refuses by its name (G1) | `one_byte_under_the_sh_base_peak_refuses_by_its_name_through_gate_order` (fixture with delta projection below the base peak, through `run`) | achievable as stated | pass (both SH gates admit at the peak; the lightmap gate may refuse later: clarification) |
+| 21 `build_pipeline.md` rows; `docs/level_design.md` flag | doc edit, reviewed against this table; a grep test that `--mover-payload-max-size` appears in `main.rs` help and `docs/level_design.md` | achievable as stated | pass |
+| 22 stress-env-volumes admitted at 16 GiB, `low`, every gate | stop-at-gate release run of `prl-build` (all gates, no bounce ray); a refusal moved to another gate stops the build for the owner | achievable as stated | pass for both SH gates (SH base 11,426,906,815 B, SH-delta 9,536,186,384 B at 16 GiB, `low`, `high`, `--release`). **Outstanding:** the lightmap gate, which runs after every SH bake (full cold bake) |
+| 23 Estimate ÷ largest cold window per phase; `--release` admission | `#[ignore]` findings harness on setpiece and stress-env-volumes at `low` and `high`; stress cold may need the owner's machine (this container: 4 cores, 15 GB) | achievable as stated | setpiece: estimate ÷ largest cold window 1.59× (`low`), 1.58× (`high`), per phase in Findings. **Outstanding:** stress-env-volumes (full cold bake) |
+| 24 Block bytes against 256 MiB | the same harness's block counts, both maps, `low`/`high` | achievable as stated | setpiece: 21.7 MB (`low`), 22.2 MB (`high`) of 256 MiB. **Outstanding:** stress-env-volumes |
+| 25 SH base time before and after | parent and branch binaries, cold, same two maps, layer resolution apart; warm full hit on setpiece at `low` | achievable as stated | setpiece: no regression cold (33.81→33.00 s `low`, 135.97→137.26 s `high`), full hit +0.18 s; layers apart. **Outstanding:** stress-env-volumes |
+| 26 Owner's 16 GB desktop sampling | owner, cold `--no-cache`, private bytes every 30 s | manual | **outstanding: owner, manual** |
 
 ## Tasks
 
@@ -279,3 +279,15 @@ cap).
 Stress-env-volumes after both rounds (release, stop at the SH gates): SH
 base 11,426,906,815 B (mover direct), SH-delta 9,536,186,384 B (2,530,860,560
 carried); both admit at 16 GiB, the same at `low`, `high` and `--release`.
+
+## Final gate
+
+After review round 3 (`5af4960b`): `cargo fmt --check` ok; `cargo clippy
+--target-dir target/preflight-clippy -- -D warnings` ok (two pre-existing
+unused-dependency manifest warnings in `postretro` and `combat-model`);
+`cargo test --no-fail-fast` 113 targets, 17,541 passed, 0 failed, 157
+ignored; `cargo check --release` ok; `crate-graph --check` up to date;
+telemetry and playback-trace reducer unittests ok. The workspace build
+needed `libasound2-dev` and `libudev-dev` installed in this container.
+On-demand suites not run here: the parity harness beyond the closet and
+setpiece, the setpiece M1 variant, and any stress-env-volumes full bake.

@@ -101,6 +101,16 @@ Not measured. One probe per coplanar glossy face group means a box room with a g
 - **Glow delta tiles** (rival for animated glow; §Glow delta tiles).
 - **Selective glow SSR** (rival for animated glow; §Glow SSR).
 
+## Thin emitters
+
+Why a thin, bright, animated emitter (a neon tube, a strip light, area-light glass) is the hard case for probe reflections. Discussion 2026-11-21.
+
+- **Probe resolution.** A 128² octahedral tile spans about 1.6° per texel. A 5 cm tube seen from 3 m subtends about 1°, so it reflects as a dimmed streak under a texel wide, which coarser mips spread further. Its height is fine: 2 m at 3 m is about 37°.
+- **Share ratio.** Area-light glass counts in its light's share, but a share covers a whole lobe. Switching the tube off removes only its fraction of that lobe. With other lights in the same quadrant, a ghost streak remains, at 40% of the glow when the tube supplies 60% of the lobe, and at default `_glow` the streak can still bloom. The area-lights brief's reflection rows go fully dark only in a fixture lit by that light alone.
+- **Plain glow.** An `emissive_volume` tube's reflection holds its no-script state, so a flickering sign over a wet floor reflects steadily (§Volume glow share).
+- **Considered and set aside: a per-texel glow id.** Store which source each texel shows and scale it at sample time. It is exact at mip 0, but it cannot mix sources under the blurred mips, and a sub-texel tube needs coverage weights even at mip 0. §Glow delta tiles is the exact form of the same idea.
+- **The candidates** are §Glow delta tiles (exact everywhere) and §Glow SSR (exact on screen, reference glow elsewhere). Both are rivals in the brief's Path.
+
 ## Glow delta tiles
 
 A rival to the deferred limit (§Volume glow share) for glow that changes at runtime: area-light glass, `emissive_volume` signs, neon tubes. It follows the delta-SH form: a base plus each animated source's baked contribution × its live value. IP reading: `ip-delta-tiles.md`.

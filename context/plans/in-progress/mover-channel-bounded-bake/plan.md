@@ -181,3 +181,22 @@ entry whole. Stress-env-volumes timings need its full cold bake.
 |---|---|---|
 | mover-setpiece | 21,674,212 B (bounce 6,240,100 + depth 15,434,112), 8.1% | 22,191,776 B (6,757,664 + 15,434,112), 8.3% |
 | stress-env-volumes | needs the full mover bake | needs the full mover bake |
+
+### mover-setpiece, each priced phase against its cold window (in process, 4 workers)
+
+Estimate 1,018,908,526 B at `low` and `high` alike; largest cold window the mover bake: 640,790,538 B at `low` (1.59×), 645,061,930 B at `high` (1.58×).
+
+| Window | Priced | `low` measured | `high` measured |
+|---|---|---|---|
+| gate | 35,300,164 | 26,530,980 (1.33×) | 26,530,980 (1.33×) |
+| plan and probe layout | 56,134,228 | 26,377,340 (2.13×) | 26,377,340 (2.13×) |
+| layers | 56,134,228 | 32,569,876 (1.72×) | 32,093,788 (1.75×) |
+| sum | 45,335,676 | 28,875,556 (1.57×) | 28,875,556 (1.57×) |
+| later bounces | 37,961,620 | 30,492,308 (1.24×) | 30,492,308 (1.24×) |
+| probe gather | 114,485,580 | 59,761,972 (1.92×) | 59,761,972 (1.92×) |
+| mover bake | 747,725,524 | 640,790,538 (1.17×) | 645,061,930 (1.16×) |
+| volume store | 373,391,776 | 56,477,366 (6.61×) | 56,996,166 (6.55×) |
+| sh delta stages | 404,342,880 | 58,278,930 (6.94×) | 58,797,730 (6.88×) |
+| mover direct | 1,018,908,526 | 108,984,202 (9.35×) | 110,021,106 (9.26×) |
+
+Every window of mover-setpiece, mover-pins, closet-reveal and enemy-movers is priced at or above its ledger, at `low` and `high`, cold, warm empty and full hit, each section at or under its term (`every_priced_phase_covers_its_window_on_every_mover_fixture`, 2,037 s). Stress-env-volumes' measured windows need its full cold bake.

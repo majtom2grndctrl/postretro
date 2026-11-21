@@ -97,11 +97,12 @@ light.
     `emissive_volume` claims the face: membership skips `light_area` faces as
     it skips movers and fluids, so the face's glow has one owner, its light. A
     volume that holds only `light_area` faces warns as empty.
-  - Reflection capture shades a `light_area` face at its first-frame glow:
-    `_e` × `_glow` × `_color`, dark when the light starts inactive. This
-    mirrors capture's reference state for volume faces
-    (`build_pipeline.md` §Compiler pipeline step 14). `_glow` therefore keys
-    reflection capture and no lighting bake.
+  - Reflection capture shades a `light_area` face at its light's reference
+    state, as it shades that light's cast light: `_e` × `_glow` × the colour
+    the light enters capture at, whether or not it starts active
+    (`resource_management.md` §5). The glow counts in that light's
+    live-lighting share, so glow and room move together in reflections.
+    `_glow` therefore keys reflection capture and no lighting bake.
 - **`_start_inactive` reserves the animated bake.** On an area light, the key
   means the light starts dark, faces and room together, and a script or mod
   reaction can light it. It takes the same animated reservation `_animated 1`
@@ -327,9 +328,11 @@ Glow and light identity (orderings in `research.md` §Pin table):
   worldspawn `_e` panel: the panel follows the volume's brightness and colour,
   and the glass keeps its light's glow at volume brightness 0 and 1. A volume
   enclosing only an area light's faces warns as empty.
-- [ ] Reflection capture shows an area light's glass at `_e` × `_glow` ×
-  `_color` whatever its texture strength, and dark when the light starts
-  inactive.
+- [ ] Reflection capture shows an area light's glass at `_e` × `_glow` × its
+  reference colour whatever its texture strength, lit whether or not the light
+  starts inactive. A `_start_inactive` area light's reflected glass and
+  reflected room are dark until a script lights it, then brighten together on
+  the same frame.
 - [ ] A `colorShift` moves the glow's colour and the room's colour together.
 - [ ] With `_falloff_range` set, doubling an area light's `light` doubles its
   lightmap and probe output and leaves its faces' emissive term unchanged
@@ -443,7 +446,9 @@ Glow and light identity (orderings in `research.md` §Pin table):
   volume never wins one.
 - **Reflection capture.** Its emissive term reads id 60's strength and each
   volume's max and colour; area faces take their light's glow there instead,
-  and the capture key gains it.
+  and the capture key gains it. The glow joins the light's per-light unit
+  contribution in the same trace, so the share table attributes it to the
+  light; it needs no new share slot.
 - **Strongest rival:** texture-keyed polygon lights, which use the roadmap's
   mark-a-texture-once authoring with this brief's maths. They win for many small
   emitters (screens, signs). The entity wins for the Problem's set pieces: one

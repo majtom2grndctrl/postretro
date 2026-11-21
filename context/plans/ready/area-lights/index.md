@@ -90,16 +90,20 @@ light.
   glows red. Glow is drawn for static lights too.
   - `_glow` is an authored number, independent of `light`, so a game can pair a
     dim glow with strong cast light, or the reverse (`context/lib/index.md` §2,
-    Defaults for novices, controls for experts). Values ≥ 0 are accepted with no
-    upper clamp; a negative value fails the build.
+    Defaults for novices, controls for experts). A value past the emissive
+    ceiling (64) reads the ceiling and warns, naming the light and key, as a
+    `materials.toml` strength does (`resource_management.md` §4.5): it keeps
+    bloom under the HDR target's half-float range. A negative value fails the
+    build.
   - On a `light_area` face, `_glow` replaces the texture's baked strength, so
     the glow is drawn even on a texture whose strength is 0. No
     `emissive_volume` claims the face: membership skips `light_area` faces as
     it skips movers and fluids, so the face's glow has one owner, its light. A
     volume that holds only `light_area` faces warns as empty.
   - Reflection capture shades a `light_area` face at its light's reference
-    state, as it shades that light's cast light: `_e` × `_glow` × the colour
-    the light enters capture at, whether or not it starts active
+    state, as it shades that light's cast light: `_e` × `_glow` × `_color` ×
+    the light's reference brightness, never × `light`, whether or not it
+    starts active
     (`resource_management.md` §5). The glow counts in that light's
     live-lighting share, so glow and room move together in reflections.
     `_glow` therefore keys reflection capture and no lighting bake.
@@ -142,10 +146,10 @@ light.
   - Emissive bounce from ordinary emissive faces, and any change to texture
     strength or `emissive_volume` glow outside `light_area` faces.
   - Flash limiting the glow. It follows its light's animation, which no clamp
-    limits today (`rendering_pipeline.md` §7.8). The E23 source floor
-    (`drafts/E23--photosensitivity-source-floor/`) clamps light animation and
-    so covers glow and room together; an `emissive_volume` clamp never sees an
-    area face.
+    limits today (`rendering_pipeline.md` §7.8), and no `emissive_volume` clamp
+    sees an area face. The E23 source floor
+    (`drafts/E23--photosensitivity-source-floor/`) owns it; its draft records
+    that a light-animation clamp must reach this shader-evaluated glow.
   - Texture-coloured emission. The cast light's colour is `_color`, so one
     texture can serve lights of different colours.
 
@@ -323,16 +327,22 @@ Glow and light identity (orderings in `research.md` §Pin table):
   strength in the same draw, and the strength-0 one stays dark. With `_glow` at
   0, 0.5 and 8 the emissive term scales by that factor and every lightmap, SH,
   scatter, mover-channel and bounce-delta section stays byte-identical. A
-  negative `_glow` fails the build.
+  `_glow` of 100 glows as 64, with one warning naming the light and key; 64
+  compiles silently. A negative `_glow` fails the build.
 - [ ] An `emissive_volume` enclosing an area light's frame and glass and a
   worldspawn `_e` panel: the panel follows the volume's brightness and colour,
   and the glass keeps its light's glow at volume brightness 0 and 1. A volume
   enclosing only an area light's faces warns as empty.
-- [ ] Reflection capture shows an area light's glass at `_e` × `_glow` × its
-  reference colour whatever its texture strength, lit whether or not the light
-  starts inactive. In a fixture lit by a `_start_inactive` area light alone,
+- [ ] Reflection capture shows an area light's glass at `_e` × `_glow` ×
+  `_color` × its reference brightness whatever its texture strength, lit
+  whether or not the light starts inactive. In a fixture lit by a `_start_inactive` area light alone,
   its reflected glass and reflected room are dark until a script lights it,
   then brighten together on the same frame.
+- [ ] With `_falloff_range` set, compiling an animated area light at `light` L
+  and again at 2L leaves its glass in the reflection colour tile unchanged and
+  doubles its reflected room; with a brightness curve whose cycle mean is 0.5,
+  the captured glass reads `_e` × `_glow` × `_color` × 0.5, matching its live
+  glow at that mean (research.md O2).
 - [ ] A `colorShift` moves the glow's colour and the room's colour together.
 - [ ] With `_falloff_range` set, doubling an area light's `light` doubles its
   lightmap and probe output and leaves its faces' emissive term unchanged

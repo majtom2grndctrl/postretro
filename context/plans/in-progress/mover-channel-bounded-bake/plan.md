@@ -157,3 +157,27 @@ Branch SH base phases (bytes): gate 423,648,296; layers 3,147,257,343 (was
 `high` and `--release`. The lightmap stage's own gate runs after every SH
 bake, hours into a cold build here; its verdict at the default needs the
 full bake (row 26's owner runs, or a longer session).
+
+### mover-setpiece, SH base stage time (release binaries, 4 workers, this container)
+
+Both sides log layer resolution apart with the same line (the parent
+binary patched with that log line alone). Every pair of PRLs is
+byte-identical.
+
+| Build | Parent SH Bake | Branch SH Bake | Layers (parent / branch) |
+|---|---|---|---|
+| cold `low` | 33.81 s | 33.00 s | 16 in 0.06 s / 0.05 s |
+| cold `high` | 135.97 s | 137.26 s (+0.9%) | 16 in 0.07 s / 0.06 s |
+| warm fill `low` | 33.70 s | 33.10 s | 16 in 0.07 s / 0.05 s |
+| warm full hit `low` | 2.12 s | 2.30 s (+0.18 s) | none resolved |
+
+The full hit's extra 0.18 s is each pose read twice: the lookup reads and
+drops it, the slot reads it back, which the stage cache needs to call an
+entry whole. Stress-env-volumes timings need its full cold bake.
+
+### Bounce and depth blocks against the 256 MiB cap
+
+| Map | `low` | `high` |
+|---|---|---|
+| mover-setpiece | 21,674,212 B (bounce 6,240,100 + depth 15,434,112), 8.1% | 22,191,776 B (6,757,664 + 15,434,112), 8.3% |
+| stress-env-volumes | needs the full mover bake | needs the full mover bake |

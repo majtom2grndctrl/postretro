@@ -79,17 +79,49 @@ fn create_mip_sampler(
     })
 }
 
-/// Whether a loaded specular slot carries Surface Depth's second channel.
+/// Bytes per texel of a loaded specular slot that is a Surface Depth surface
+/// map, or `None` for a single-channel slot.
 ///
-/// `Rg8Unorm` is the surface map the level compiler bakes when a material has
-/// an `_h.png` sibling (R = specular, G = signed height around the surface
-/// plane). Every other legal specular format is single-channel, and WGSL
-/// expands those to `(r, 0, 0, 1)`. Under the signed encoding `.g == 0` reads
-/// as MAXIMUM RAISE, not flat, so this flag is the only thing keeping a
-/// material without a height map on its true plane: the shader never marches
-/// without it.
+/// The level compiler bakes two surface maps, both with stored height in G:
+/// `Rg8Unorm` for `_h.png` alone, and `Rgba8Unorm` when `_p.png` or `_t.png`
+/// widens the slot (G holds the stored mid-gray plane without `_h`, an empty
+/// band). The single-channel slot and the 1×1 placeholder expand to
+/// `(r, 0, 0, 1)` in WGSL, and under the signed encoding `.g == 0` reads as
+/// MAXIMUM RAISE, not flat, so only a format named here may set has-depth or
+/// report relief. This is the one definition both decisions read.
+pub(crate) fn specular_surface_map_bytes_per_texel(format: wgpu::TextureFormat) -> Option<usize> {
+    use postretro_render_cpu::surface_depth::{
+        SURFACE_MAP_RG_BYTES_PER_TEXEL, SURFACE_MAP_RGBA_BYTES_PER_TEXEL,
+    };
+    match format {
+        wgpu::TextureFormat::Rg8Unorm => Some(SURFACE_MAP_RG_BYTES_PER_TEXEL),
+        wgpu::TextureFormat::Rgba8Unorm => Some(SURFACE_MAP_RGBA_BYTES_PER_TEXEL),
+        _ => None,
+    }
+}
+
+/// Whether a loaded specular slot carries Surface Depth's height channel: any
+/// two- or four-channel slot. The shader never marches without it.
 pub(crate) fn specular_slot_is_surface_map(format: wgpu::TextureFormat) -> bool {
-    matches!(format, wgpu::TextureFormat::Rg8Unorm)
+    specular_surface_map_bytes_per_texel(format).is_some()
+}
+
+/// One material's uniform plan from the facts of its loaded specular slot:
+/// its format (has-depth), its uploaded mip count (the base-mip clamp) and its
+/// measured relief. [`build_material_bind_group`] plans every material here.
+pub(crate) fn material_uniform_plan(
+    material: TextureMaterial,
+    specular_format: wgpu::TextureFormat,
+    specular_mip_count: u32,
+    surface_relief: postretro_render_cpu::surface_depth::SurfaceReliefLevels,
+) -> MaterialUniformPlan {
+    MaterialUniformPlan::new(
+        material.material,
+        material.emissive_strength,
+        specular_slot_is_surface_map(specular_format),
+        specular_mip_count,
+        surface_relief,
+    )
 }
 
 /// One material's group-1 bind group together with the uniform buffer behind
@@ -123,20 +155,21 @@ pub(crate) fn build_material_bind_group(
     label_prefix: &str,
 ) -> MaterialBinding {
     // Surface Depth's has-depth flag is decided HERE, from what actually
-    // loaded, not from the material prefix: only a two-channel `Rg8Unorm`
+    // loaded, not from the material prefix: only a two- or four-channel
     // specular slot is a surface map. A prefix that wants depth but whose
-    // `.prm` has no `_h.png` sibling binds the single-channel specular (or the
-    // 1x1 black placeholder) and must skip the march entirely: the
-    // placeholder's all-zero G would read as maximum raise. The base mip is
-    // clamped to the slot's own uploaded chain so the shader's `textureLoad`
-    // level can never go out of range.
+    // `.prm` has no `_h.png`, `_p.png` or `_t.png` sibling binds the
+    // single-channel specular (or the 1x1 black placeholder) and must skip the
+    // march entirely: the placeholder's all-zero G would read as maximum
+    // raise. A four-channel slot without `_h` stores the plane in G, so its
+    // band is empty and it packs flat. The base mip is clamped to the slot's
+    // own uploaded chain so the shader's `textureLoad` level can never go out
+    // of range.
     //
     // Both facts are recorded in the retained plan rather than folded away, so
     // a later quality rewrite re-derives from the same loaded truth.
-    let uniform_plan = MaterialUniformPlan::new(
-        material.material,
-        material.emissive_strength,
-        specular_slot_is_surface_map(loaded.specular_texture.format()),
+    let uniform_plan = material_uniform_plan(
+        material,
+        loaded.specular_texture.format(),
         loaded.specular_texture.mip_level_count(),
         // Measured at load from the bytes uploaded to that slot, every mip.
         loaded.surface_relief,
@@ -227,13 +260,25 @@ pub(crate) fn rewrite_material_surface_depth(
 mod tests {
     use super::*;
 
+    /// Has-depth comes from the slot's format: the two- and four-channel
+    /// surface maps the bake writes, each read at its own stride. No other
+    /// format, the sRGB four-channel diffuse format included, opens the gate.
     #[test]
-    fn only_the_two_channel_surface_map_sets_the_has_depth_flag() {
-        assert!(specular_slot_is_surface_map(wgpu::TextureFormat::Rg8Unorm));
+    fn only_two_and_four_channel_surface_maps_set_the_has_depth_flag() {
+        for (format, stride) in [
+            (wgpu::TextureFormat::Rg8Unorm, 2),
+            (wgpu::TextureFormat::Rgba8Unorm, 4),
+        ] {
+            assert!(specular_slot_is_surface_map(format), "{format:?}");
+            assert_eq!(
+                specular_surface_map_bytes_per_texel(format),
+                Some(stride),
+                "{format:?}"
+            );
+        }
         for other in [
             wgpu::TextureFormat::R8Unorm,
             wgpu::TextureFormat::Bc4RUnorm,
-            wgpu::TextureFormat::Rgba8Unorm,
             wgpu::TextureFormat::Rgba8UnormSrgb,
             wgpu::TextureFormat::Bc5RgUnorm,
         ] {
@@ -241,6 +286,7 @@ mod tests {
                 !specular_slot_is_surface_map(other),
                 "{other:?} is not a Surface Depth surface map"
             );
+            assert_eq!(specular_surface_map_bytes_per_texel(other), None);
         }
     }
 

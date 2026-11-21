@@ -864,7 +864,8 @@ fn material_parameters_are_prefix_driven_and_gated_on_the_loaded_slot() {
 /// `g = 0` is MAXIMUM RAISE under the signed encoding, so the has-depth bit is
 /// the only thing keeping the R8 placeholder (and any other single-channel
 /// slot) on its true plane. Whatever G byte such a slot would read as, a
-/// non-`Rg8Unorm` slot must never set the bit and must upload no band.
+/// slot that is neither `Rg8Unorm` nor `Rgba8Unorm` must never set the bit and
+/// must upload no band.
 #[test]
 fn a_non_surface_map_slot_never_marches_even_when_its_g_would_read_as_max_raise() {
     // What the shader would decode from a stored G of 0.
@@ -879,7 +880,6 @@ fn a_non_surface_map_slot_never_marches_even_when_its_g_would_read_as_max_raise(
     for format in [
         wgpu::TextureFormat::R8Unorm,
         wgpu::TextureFormat::Bc4RUnorm,
-        wgpu::TextureFormat::Rgba8Unorm,
         wgpu::TextureFormat::Rgba8UnormSrgb,
         wgpu::TextureFormat::Bc5RgUnorm,
     ] {

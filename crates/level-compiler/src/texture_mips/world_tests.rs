@@ -1003,6 +1003,42 @@ fn tint_bundles_bake_four_channel() {
     assert_eq!(fixture.sidecars().len(), 1);
 }
 
+// Row 39: the stage's byte accounting charges a four-channel specular slot
+// four bytes per texel at every mip, for a fresh bake and for a reused
+// sidecar alike. A non-square bundle keeps width and height apart.
+#[test]
+fn byte_accounting_charges_a_four_channel_specular_slot_four_bytes_per_texel_at_every_mip() {
+    let fixture = Fixture::new();
+    let name = "stone/slab".to_owned();
+    fixture.diffuse_png(&name, 8, 4);
+    fixture.gray_png("stone/slab_p", 8, 4, authored_smoothness);
+    fixture.gray_png("stone/slab_t", 8, 4, authored_tint);
+    let names = vec![name.clone()];
+    let (_, _, cold) = fixture.bake(&names);
+    let (_, _, warm) = fixture.bake(&names);
+    for (run, bytes) in [("cold", &cold), ("warm", &warm)] {
+        let (accounted_name, material) = bytes
+            .summary()
+            .entries()
+            .next()
+            .expect("the bundle is accounted");
+        assert_eq!(accounted_name, name, "{run}");
+        let specular = material.slot(1).expect("the specular slot is accounted");
+        assert_eq!(specular.format, PrmFormat::Rgba8Unorm, "{run}");
+        let mips: Vec<(u32, u32, u64)> = specular
+            .levels
+            .iter()
+            .map(|mip| (mip.width, mip.height, mip.bytes))
+            .collect();
+        assert_eq!(
+            mips,
+            [(8, 4, 128), (4, 2, 32), (2, 1, 8), (1, 1, 4)],
+            "{run}: four bytes per texel at every mip"
+        );
+        assert_eq!(specular.total_bytes(), 172, "{run}");
+    }
+}
+
 // A `_p` or `_t` that disagrees with the diffuse or an earlier slot sibling
 // fails the build, naming both files; matching dimensions pass.
 #[test]

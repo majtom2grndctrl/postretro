@@ -11,16 +11,16 @@ const CHECKER_SQUARE: u32 = 8;
 const MAGENTA: [u8; 4] = [255, 0, 0xFF, 255];
 const BLACK_RGBA: [u8; 4] = [0, 0, 0, 255];
 
-/// The placeholder bound to the specular slot when a material has no `_s.png`
-/// and no `_h.png`: a single-channel 1×1 black texel.
+/// The placeholder bound to the specular slot when a material has none of
+/// `_s.png`, `_h.png`, `_p.png` or `_t.png`: a single-channel 1×1 black texel.
 ///
 /// R (specular intensity) is 0 — the zero specular response this placeholder
 /// has always provided. G is NOT flat by itself: WGSL expands a single-channel
 /// sample to `(r, 0, 0, 1)`, and `g = 0` under the signed encoding is MAXIMUM
 /// RAISE. What keeps a material without a height map on its true plane is the
-/// has-depth bit, which `build_material_bind_group` sets only for an
-/// `Rg8Unorm` slot — and this placeholder must therefore stay a non-`Rg8Unorm`
-/// format, so that gate stays clear for it.
+/// has-depth bit, which `build_material_bind_group` sets only for a two- or
+/// four-channel surface map — and this placeholder must therefore stay
+/// single-channel, so that gate stays clear for it.
 ///
 /// `absent_specular_placeholder_is_never_a_surface_map` pins both facts.
 const SPECULAR_PLACEHOLDER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
@@ -141,10 +141,11 @@ mod tests {
     /// Under the signed encoding the placeholder's expanded `(r, 0, 0, 1)` has
     /// `.g == 0`, which reads as MAXIMUM RAISE, so the placeholder is not flat
     /// by itself. The has-depth gate keeps it on the true plane: the bit is set
-    /// only for an `Rg8Unorm` slot. This test pins the placeholder's side of
-    /// that bargain — it must stay a black single-channel texel that the gate
-    /// never classifies as a surface map. Widening it to two channels would
-    /// open the gate and lift every un-mapped material by its full depth.
+    /// only for a two- or four-channel slot. This test pins the placeholder's
+    /// side of that bargain — it must stay a black single-channel texel that
+    /// the gate never classifies as a surface map. Widening it to two or four
+    /// channels would open the gate and lift every un-mapped material by its
+    /// full depth.
     #[test]
     fn absent_specular_placeholder_is_never_a_surface_map() {
         assert_eq!(

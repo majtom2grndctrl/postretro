@@ -24,7 +24,7 @@ pub const SURFACE_HEIGHT_MAX_RAISE: f32 = 127.0 / 128.0;
 
 /// Signed height fraction of one texel from its stored G value.
 ///
-/// `stored_g` is what `textureLoad(..).g` returns for an `Rg8Unorm` slot:
+/// `stored_g` is what `textureLoad(..).g` returns for a surface-map slot:
 /// `G / 255`. The byte is recovered with `floor(x + 0.5)` first, so every step
 /// after it is integer arithmetic over a power-of-two divisor and therefore
 /// exact on every backend. Computing `255 · (1 − g)` directly would not be:
@@ -63,7 +63,7 @@ pub fn surface_height_quantize(s: f32, levels: f32) -> f32 {
 ///
 /// `peak_raise` is the highest raise of any texel (`≥ 0`), `trough` the lowest
 /// sink (`≤ 0`). The march walks only `[trough, peak_raise]` and starts at the
-/// peak. Raw values come from [`surface_relief_from_rg8_levels`] at load;
+/// peak. Raw values come from [`surface_relief_from_surface_map`] at load;
 /// [`Self::quantized`] applies the material's level count when the uniform is
 /// built, and that quantized pair is what the shader reads.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -159,24 +159,45 @@ impl SurfaceReliefLevels {
     }
 }
 
-/// Peak raise and trough, as raw signed fractions, of ONE `Rg8Unorm` mip level:
-/// `bytes` is interleaved `[R specular, G stored]` per texel.
+/// Bytes per texel of the two-channel surface map (`Rg8Unorm`): R specular,
+/// G stored height.
+pub const SURFACE_MAP_RG_BYTES_PER_TEXEL: usize = 2;
+/// Bytes per texel of the four-channel surface map (`Rgba8Unorm`): R specular,
+/// G stored height, B smoothness, A tint.
+pub const SURFACE_MAP_RGBA_BYTES_PER_TEXEL: usize = 4;
+/// Byte offset of the stored height inside a surface-map texel: G, in either form.
+const SURFACE_MAP_HEIGHT_OFFSET: usize = 1;
+
+/// Peak raise and trough, as raw signed fractions, of ONE surface-map mip
+/// level: `bytes` holds `bytes_per_texel` interleaved bytes per texel, the
+/// stored height in G at offset 1. Bytes past G (smoothness, tint) are never
+/// read as height.
 ///
-/// A level whose byte count is not two per texel is a debug assertion; a
-/// release build ignores a trailing odd byte. An empty level is
-/// [`SurfaceRelief::FLAT`].
-pub fn surface_relief_from_rg8_level(width: u32, height: u32, bytes: &[u8]) -> SurfaceRelief {
+/// A level whose byte count is not `bytes_per_texel` per texel is a debug
+/// assertion; a release build ignores a trailing partial texel. An empty level
+/// is [`SurfaceRelief::FLAT`].
+pub fn surface_relief_from_surface_map_level(
+    width: u32,
+    height: u32,
+    bytes: &[u8],
+    bytes_per_texel: usize,
+) -> SurfaceRelief {
+    debug_assert!(
+        bytes_per_texel > SURFACE_MAP_HEIGHT_OFFSET,
+        "a surface map carries its height in G"
+    );
     debug_assert_eq!(
         bytes.len(),
-        2 * width as usize * height as usize,
-        "an Rg8Unorm level is two bytes per texel",
+        bytes_per_texel * width as usize * height as usize,
+        "a surface-map level is {bytes_per_texel} bytes per texel",
     );
     let mut min_stored = u8::MAX;
     let mut max_stored = u8::MIN;
     let mut any = false;
-    for texel in bytes.as_chunks::<2>().0 {
-        min_stored = min_stored.min(texel[1]);
-        max_stored = max_stored.max(texel[1]);
+    for texel in bytes.chunks_exact(bytes_per_texel) {
+        let stored = texel[SURFACE_MAP_HEIGHT_OFFSET];
+        min_stored = min_stored.min(stored);
+        max_stored = max_stored.max(stored);
         any = true;
     }
     if !any {
@@ -189,7 +210,8 @@ pub fn surface_relief_from_rg8_level(width: u32, height: u32, bytes: &[u8]) -> S
     }
 }
 
-/// The relief band of every uploaded mip of an `Rg8Unorm` surface map.
+/// The relief band of every uploaded mip of a surface map, two-channel
+/// (`Rg8Unorm`) or four-channel (`Rgba8Unorm`) by `bytes_per_texel`.
 ///
 /// `levels` is the slot's chain as `(width, height, bytes)`, finest first — the
 /// shape the renderer already slices for upload. Every level is measured: the
@@ -202,11 +224,14 @@ pub fn surface_relief_from_rg8_level(width: u32, height: u32, bytes: &[u8]) -> S
 /// there still skips the self-shadow march.
 ///
 /// An empty chain is [`SurfaceReliefLevels::FLAT`].
-pub fn surface_relief_from_rg8_levels(levels: &[(u32, u32, &[u8])]) -> SurfaceReliefLevels {
+pub fn surface_relief_from_surface_map(
+    levels: &[(u32, u32, &[u8])],
+    bytes_per_texel: usize,
+) -> SurfaceReliefLevels {
     let mut bands = [SurfaceRelief::FLAT; SURFACE_RELIEF_MAX_LEVELS];
     let count = levels.len().min(SURFACE_RELIEF_MAX_LEVELS);
     for (band, &(width, height, bytes)) in bands.iter_mut().zip(levels) {
-        *band = surface_relief_from_rg8_level(width, height, bytes);
+        *band = surface_relief_from_surface_map_level(width, height, bytes, bytes_per_texel);
     }
     SurfaceReliefLevels::from_bands(&bands[..count])
 }

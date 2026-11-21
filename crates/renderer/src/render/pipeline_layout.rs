@@ -285,8 +285,9 @@ pub(crate) fn uniform_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry
     }]
 }
 
-// Group 1: 0=diffuse(sRGB), 1=emissive(sRGB), 2=specular(R8),
-// 3=material uniform, 4=normal(Rgba8Unorm, NOT sRGB; n = sample.rgb*2-1),
+// Group 1: 0=diffuse(sRGB), 1=emissive(sRGB),
+// 2=specular (R8, or an Rg8/Rgba8 surface map), 3=material uniform,
+// 4=normal(Rgba8Unorm, NOT sRGB; n = sample.rgb*2-1),
 // 5=material sampler (filtering selected per material).
 pub(crate) fn material_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
     [

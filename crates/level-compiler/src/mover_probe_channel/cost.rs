@@ -154,10 +154,10 @@ impl MoverChannelCost {
                 .iter()
                 .map(|&dim| u64::from(dim.div_ceil(AFFINITY_FACTOR)))
                 .product(),
-            name_bytes: jobs
-                .iter()
-                .map(|job| job.label.len() as u64 + 2 * size_of::<String>() as u64)
-                .sum(),
+            // Each label, and its slot at up to twice the list's length,
+            // never below the four slots a list's first push allocates.
+            name_bytes: jobs.iter().map(|job| job.label.len() as u64).sum::<u64>()
+                + (2 * jobs.len()).max(4) as u64 * size_of::<String>() as u64,
         }
     }
 
@@ -204,8 +204,9 @@ impl MoverChannelCost {
         let absent_depth = self.total_probes + tiles * ABSENT_TILE_ENTRY_BYTES;
         let slots = self.total_probes * size_of::<u32>() as u64;
         let cells = self.affinity_cells * size_of::<u64>() as u64;
-        // Collected from a filter, so up to twice its length by capacity.
-        let valid = 2 * self.valid_probes * size_of::<u32>() as u64;
+        // Collected from a filter, so up to twice its length by capacity,
+        // and never below a list's first allocation.
+        let valid = (2 * self.valid_probes).max(8) * size_of::<u32>() as u64;
         let union = 2 * (self.valid_probes.min(self.depth_cap) + 1) * UNION_ENTRY_BYTES;
         2 * absent_depth + slots + cells + valid + union + self.name_bytes
     }

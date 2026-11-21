@@ -107,7 +107,7 @@ pub(crate) struct DirectWindow {
 
 impl ShBaseWorkingSetProjection {
     /// Price the mover probe channel into every phase it outlives: the posed
-    /// scenes from the gate on; the summed bounce one kept for the posed
+    /// scenes and the posed solids whole from the gate on; the summed bounce one kept for the posed
     /// bakes and id 34's later bounces kept for them from the sum on; the
     /// blocks at the cap in every phase from the mover bake to the id-34
     /// entry's write; its bake; and its direct window, beside `window`'s
@@ -228,7 +228,8 @@ impl ShBaseWorkingSetProjection {
         self.mover_bounce_phase_bytes = cold.max(resolve).max(warm_tail);
         // After the SH delta and direct-SH stages: id 34 and its analysis
         // clone, id 35 and its clone, the dense deltas, the entity-shadow
-        // selection and the posed solids; the blocks, the id-57 section the
+        // selection, the posed solids and the direct half's affinity cells;
+        // the blocks, the id-57 section the
         // blocks assemble into and the copy they assemble from, each at the
         // cap; and the direct entries at their bound in the bake, in the
         // record parts the section assembles from and in the section.
@@ -749,27 +750,49 @@ mod tests {
     }
 
     // A payload cap too large to price refuses by the gate's overflow error,
-    // never wrapping into a small price or panicking: at u64::MAX, where the
-    // first sum overflows, and at caps just under the overflow of each later
-    // term (the mover bake's terms, then the direct window's three copies).
+    // never wrapping into a small price or panicking. On a quad's patches,
+    // caps swept across the top of the range reach every sum the cap feeds
+    // in the order the gate takes them: each refuses by its own name
+    // somewhere in the sweep, the mover bake's terms included.
     #[test]
     fn a_payload_cap_too_large_to_price_refuses_by_name() {
-        let patches = no_patches();
-        let base = at(&patches, &[3], [2, 2, 2], 1.0, u64::MAX);
-        for cap in [
-            u64::MAX,
-            u64::MAX - base.sum_bytes / 2,
-            u64::MAX - (1 << 20),
-            u64::MAX / 2,
-            u64::MAX / 3,
-        ] {
+        let geometry = super::super::tests::polygon_geometry(&[vec![
+            glam::Vec3::new(0.0, 0.0, 0.0),
+            glam::Vec3::new(0.0, 0.0, 2.0),
+            glam::Vec3::new(2.0, 0.0, 2.0),
+            glam::Vec3::new(2.0, 0.0, 0.0),
+        ]]);
+        let patches = PatchSet::build(&geometry);
+        let base = at(&patches, &[16], [2, 2, 2], 1.0, u64::MAX);
+        assert!(base.sum_bytes > 0, "the quad's patches carry a sum");
+        let mut refused = std::collections::BTreeSet::new();
+        // Under the top by up to 4 MiB, in steps finer than the sum the
+        // cold term adds, so no term's overflow window is stepped over.
+        let step = (base.sum_bytes / 2).max(1);
+        let mut below = 0;
+        while below <= 4 << 20 {
             let mut projection = base.clone();
-            let error = projection
-                .price_movers(&one_mover(true, cap), &DirectWindow::default())
-                .expect_err("the cap overflows the price");
+            match projection
+                .price_movers(&one_mover(true, u64::MAX - below), &DirectWindow::default())
+            {
+                Err(ShBaseWorkingSetGateError::ArithmeticOverflow { calculation }) => {
+                    refused.insert(calculation);
+                }
+                other => panic!("cap {below} under the top: {other:?}"),
+            }
+            below += step;
+        }
+        // `resident`'s fixed terms are smaller than the id-34 entry's, which
+        // the gate takes first, so the entry refuses in its place.
+        for calculation in [
+            "mover id-34 entry projection",
+            "mover pose projection",
+            "mover cold projection",
+            "mover direct blocks projection",
+        ] {
             assert!(
-                matches!(error, ShBaseWorkingSetGateError::ArithmeticOverflow { .. }),
-                "cap {cap}: {error}"
+                refused.contains(calculation),
+                "{calculation} never refused: {refused:?}"
             );
         }
         assert!(base.carried_bytes(&one_mover(true, u64::MAX)).is_err());

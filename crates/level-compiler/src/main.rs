@@ -953,7 +953,7 @@ fn help_text() -> String {
          --baked-root <DIR>         Directory that CONTAINS materials/; .prm sidecars are written to <DIR>/materials/. Pass the engine the same directory. (default: <workspace>/baked)\n    \
          --cache-max-size <SIZE>    Stage-cache budget: the build-start prune keeps every map's last-build entries and evicts the rest, oldest first, down to this; accepts e.g. 2GiB, 512MiB, or a byte count (default: {cache_max})\n    \
          --sh-delta-max-size <SIZE> Aggregate raw payload cap for ids 27, 41, and 45 after the compiler delta policy; accepts e.g. 256MiB or a byte count (default: {delta_max})\n    \
-         --mover-payload-max-size <SIZE> Cap on the mover probe channel's bounce and depth blocks (id 57); past it the build fails by name, never dropping or coarsening; accepts e.g. 512MiB or a byte count (default: {mover_payload_max})\n    \
+         --mover-payload-max-size <SIZE> Cap on the mover probe channel's per-mover lighting blocks (id 57); past it the build fails by name, never dropping or coarsening; accepts e.g. 512MiB or a byte count (default: {mover_payload_max})\n    \
          --working-set-max-size <SIZE> Per-stage host-RAM ceiling for the SH base, SH-delta and lightmap bakes; accepts e.g. 16GiB or a byte count (default: {delta_working_set_max})\n    \
          --no-cache                 Disable the stage cache entirely; wins over --cache-dir (default: off)\n    \
          --release                  Produce a shippable map: the stage cache is neither read nor written (implies --no-cache) and movers bake high fidelity. The interactive default is a fast warm build that reuses cached stages; ship only --release artifacts (default: off)\n    \

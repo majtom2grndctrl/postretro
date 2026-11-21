@@ -202,30 +202,57 @@ fn kinematic_brush_shader_matches_forward_post_retro_sampling() {
         "the sample reconstructs through the shared function, then samples with the original derivatives",
     );
 
-    let fs_calls = wgsl_call_fingerprint(
-        extract_wgsl_fn(kinematic, "fs_main"),
+    // Both entries share one prelude: it takes the UV derivatives before its
+    // first sample, and each entry samples only after it, with its derivatives.
+    let surface_calls = wgsl_call_fingerprint(
+        extract_wgsl_fn(kinematic, "mover_surface"),
         &["dpdx", "dpdy", "sample_post_retro", "textureSample"],
     );
-    let ddx_index = fs_calls
+    let ddx_index = surface_calls
         .iter()
         .position(|call| call == "dpdx")
-        .expect("kinematic brush fragment shader must compute a UV ddx");
-    let ddy_index = fs_calls
+        .expect("the mover prelude must compute a UV ddx");
+    let ddy_index = surface_calls
         .iter()
         .position(|call| call == "dpdy")
-        .expect("kinematic brush fragment shader must compute a UV ddy");
-    let sample_index = fs_calls
+        .expect("the mover prelude must compute a UV ddy");
+    let sample_index = surface_calls
         .iter()
         .position(|call| call == "sample_post_retro")
-        .expect("kinematic brush base texture must sample through the Post Retro helper");
+        .expect("the mover prelude samples through the Post Retro helper");
     assert!(
         ddx_index < sample_index && ddy_index < sample_index,
-        "kinematic brush fragment shader must compute UV derivatives before sampling",
+        "the mover prelude must compute UV derivatives before sampling",
     );
-    assert!(
-        !fs_calls.iter().any(|call| call == "textureSample"),
-        "kinematic brush fragment shader must not bypass the Post Retro helper",
-    );
+    for entry in ["fs_pixel", "fs_smooth"] {
+        let calls = wgsl_call_fingerprint(
+            extract_wgsl_fn(kinematic, entry),
+            &[
+                "mover_surface",
+                "dpdx",
+                "dpdy",
+                "sample_post_retro",
+                "textureSample",
+            ],
+        );
+        assert_eq!(
+            calls.first().map(String::as_str),
+            Some("mover_surface"),
+            "{entry} takes the prelude's derivatives before any sample: {calls:?}"
+        );
+        assert!(
+            calls.iter().any(|call| call == "sample_post_retro"),
+            "{entry} samples its albedo through the Post Retro helper"
+        );
+    }
+    for function in ["mover_surface", "fs_pixel", "fs_smooth", "mover_emissive"] {
+        assert!(
+            !wgsl_call_fingerprint(extract_wgsl_fn(kinematic, function), &["textureSample"])
+                .iter()
+                .any(|call| call == "textureSample"),
+            "{function} must not bypass the Post Retro helper",
+        );
+    }
 }
 
 // The texel-centre functions live once, in `material_shading.wgsl`, and
@@ -293,18 +320,26 @@ fn forward_and_mover_share_the_specular_texel_functions() {
     let forward_fs = squashed(include_str!("../shaders/forward.wgsl"), "fs_main");
     assert_eq!(forward_fs.matches("specular_texel_point(").count(), 1);
     let mover = include_str!("../shaders/kinematic_brush.wgsl");
-    let mover_fs = squashed(mover, "fs_main");
-    assert!(!mover_fs.contains("specular_texel_point("));
-    assert!(mover_fs.contains(
-        "letspec_point=mover_specular_point(smooth_style,depth,in.uv,in.world_position,\
-         mesh_n,V,camera.camera_position,\
-         vec2<f32>(textureDimensions(base_texture,0)),ddx,ddy,ddx_world,ddy_world,);"
+    let surface = squashed(mover, "mover_surface");
+    let pixel_fs = squashed(mover, "fs_pixel");
+    let smooth_fs = squashed(mover, "fs_smooth");
+    for fs in [&surface, &pixel_fs, &smooth_fs] {
+        assert!(!fs.contains("specular_texel_point("));
+    }
+    assert!(pixel_fs.contains(
+        "letspec_point=mover_specular_point(s.depth,in.uv,in.world_position,\
+         s.mesh_n,s.view,camera.camera_position,\
+         vec2<f32>(textureDimensions(base_texture,0)),s.ddx,s.ddy,s.ddx_world,s.ddy_world,);"
     ));
+    assert!(
+        !smooth_fs.contains("mover_specular_point("),
+        "smooth evaluates every highlight input per fragment"
+    );
     let mover_point = squashed(mover, "mover_specular_point");
     assert_eq!(mover_point.matches("specular_texel_point(").count(), 1);
     assert!(
         mover_point.contains(
-            "returnspecular_texel_point(smooth_style,\
+            "returnspecular_texel_point(false,\
              SpecularPoint(depth.world_position,view_to_eye),uv,depth.uv,\
              world_position+geo_normal*top_height_m,eye,albedo_dims,ddx,ddy,\
              ddx_world,ddy_world,);"
@@ -313,7 +348,13 @@ fn forward_and_mover_share_the_specular_texel_functions() {
          struck texel's height, and reconstructs the marched UV"
     );
     // `depth.uv` is the mover's marched UV, the one its texture reads use.
-    assert!(mover_fs.contains("letshade_uv=depth.uv;"));
+    assert!(surface.contains("letshade_uv=depth.uv;"));
+    for fs in [&pixel_fs, &smooth_fs] {
+        assert!(
+            fs.contains("sample_post_retro(base_texture,aniso_sampler,s.depth.uv,s.ddx,s.ddy)")
+        );
+        assert!(fs.contains("mover_emissive(s.depth.uv,s.ddx,s.ddy)"));
+    }
 
     // Sharpness and tint: each pass reads the slot once and decodes it
     // through the shared functions, so the mover reads them exactly as
@@ -323,26 +364,55 @@ fn forward_and_mover_share_the_specular_texel_functions() {
     let mover_slot_read = "letspec_texel=specular_texel(sample_post_retro(spec_texture,\
                            aniso_sampler,shade_uv,ddx,ddy),max(material.shininess,1.0),);";
     assert!(forward_fs.contains(forward_slot_read));
-    assert!(mover_fs.contains(mover_slot_read));
-    for fs in [&forward_fs, &mover_fs] {
-        assert_eq!(
-            fs.matches("spec_texture").count(),
-            1,
-            "one read of the slot"
-        );
-        assert_eq!(
-            fs.matches("specular_tint(base_color.rgb,spec_texel.tint)")
-                .count(),
-            1
+    assert!(surface.contains(mover_slot_read));
+    assert_eq!(
+        forward_fs.matches("spec_texture").count(),
+        1,
+        "one read of the slot"
+    );
+    assert_eq!(
+        surface.matches("spec_texture").count(),
+        1,
+        "one read of the slot"
+    );
+    for fs in [&pixel_fs, &smooth_fs] {
+        assert!(
+            !fs.contains("spec_texture"),
+            "the prelude's read is the only one"
         );
     }
-    assert!(
-        mover_fs.contains("spec_point,spec_texel.exponent,spec_texel.intensity,spec_texel.tinted,")
+    assert_eq!(
+        forward_fs
+            .matches("specular_tint(base_color.rgb,spec_texel.tint)")
+            .count(),
+        1
     );
-    assert!(mover_fs.contains(
-        "returnvec4<f32>(base_color.rgb*lighting+emissive*material.emissive_strength\
-         +tinted_specular,base_color.a,);"
+    assert!(pixel_fs.contains("s.spec_texel.exponent,s.spec_texel.intensity,s.spec_texel.tinted,"));
+    assert!(pixel_fs.contains(
+        "returnvec4<f32>(mover_pixel_shade(base_color.rgb,s.lighting,dynamic,emissive,\
+         s.spec_texel),base_color.a,);"
     ));
+    assert!(smooth_fs.contains(
+        "returnvec4<f32>(mover_smooth_shade(base_color.rgb,s.lighting,dynamic,emissive,\
+         s.spec_texel),base_color.a,);"
+    ));
+    // Pixel mixes the tint into its tinted sum alone, the tinted term last,
+    // so an untinted fragment keeps its pre-tint expression; smooth gives
+    // its one specular sum the albedo or the tint colour.
+    assert_eq!(
+        squashed(mover, "mover_pixel_shade"),
+        "fnmover_pixel_shade(base_color:vec3<f32>,lighting:vec3<f32>,dynamic:MoverPixelDirect,\
+         emissive:vec3<f32>,spec_texel:SpecularTexel,)->vec3<f32>{letlit=lighting+dynamic.lit;\
+         lettinted_specular=dynamic.tinted_specular*specular_tint(base_color,spec_texel.tint);\
+         returnbase_color*lit+emissive+tinted_specular;}"
+    );
+    assert_eq!(
+        squashed(mover, "mover_smooth_shade"),
+        "fnmover_smooth_shade(base_color:vec3<f32>,lighting:vec3<f32>,dynamic:MoverSmoothDirect,\
+         emissive:vec3<f32>,spec_texel:SpecularTexel,)->vec3<f32>{letlit=lighting+dynamic.diffuse;\
+         letspec_color=select(base_color,specular_tint(base_color,spec_texel.tint),\
+         spec_texel.tinted,);returnbase_color*lit+emissive+dynamic.specular*spec_color;}"
+    );
     assert!(forward_fs.contains(
         "specular_texel_point(specular_style_smooth(),SpecularPoint(in.world_position,V),\
          in.uv,shade_uv,"
@@ -501,7 +571,12 @@ fn kinematic_material_uniform_mirrors_emissive_layout() {
     assert!(shader.contains("shininess: f32,"));
     assert!(shader.contains("emissive_strength: f32,"));
     assert!(shader.contains("emissive_texture"));
-    assert!(shader.contains("base_color.rgb * lighting + emissive * material.emissive_strength"));
+    assert!(shader.contains("return emissive * material.emissive_strength;"));
+    assert_eq!(
+        shader.matches("base_color * lit + emissive + ").count(),
+        2,
+        "both compositions add the glow after the lit albedo"
+    );
 }
 
 #[test]
@@ -554,8 +629,7 @@ fn kinematic_light_layout_requires_32_byte_params_uniform() {
 }
 
 #[test]
-fn kinematic_light_params_uploads_counts_and_specular_style_in_second_uniform_row() {
-    use postretro_render_cpu::frame_uniforms::KINEMATIC_SPECULAR_STYLE_SMOOTH;
+fn kinematic_light_params_uploads_counts_in_second_uniform_row_and_pads_its_last_word() {
     let bytes = build_light_params_bytes(KinematicLightParams {
         light_count: 11,
         time: 1.5,
@@ -564,7 +638,6 @@ fn kinematic_light_params_uploads_counts_and_specular_style_in_second_uniform_ro
         dynamic_light_count: 7,
         scripted_light_count: 10,
         indirect_scale: 0.625,
-        specular_style: KINEMATIC_SPECULAR_STYLE_SMOOTH,
     });
 
     assert_eq!(bytes.len(), KINEMATIC_LIGHT_PARAMS_SIZE);
@@ -575,23 +648,8 @@ fn kinematic_light_params_uploads_counts_and_specular_style_in_second_uniform_ro
     assert_eq!(bytes[16..20], 7u32.to_ne_bytes());
     assert_eq!(bytes[20..24], 10u32.to_ne_bytes());
     assert_eq!(bytes[24..28], 0.625f32.to_ne_bytes());
-    assert_eq!(bytes[28..], KINEMATIC_SPECULAR_STYLE_SMOOTH.to_ne_bytes());
-}
-
-// The style word's smooth value is one constant on both sides, so a zeroed
-// word reads the default pixel style in the shader.
-#[test]
-fn kinematic_specular_style_word_matches_the_cpu_constant() {
-    use postretro_render_cpu::frame_uniforms::KINEMATIC_SPECULAR_STYLE_SMOOTH;
-    let line = include_str!("../shaders/kinematic_brush.wgsl")
-        .lines()
-        .find(|line| line.starts_with("const KINEMATIC_SPECULAR_STYLE_SMOOTH: u32 = "))
-        .expect("the mover shader declares the smooth style constant");
-    assert_eq!(
-        line,
-        format!("const KINEMATIC_SPECULAR_STYLE_SMOOTH: u32 = {KINEMATIC_SPECULAR_STYLE_SMOOTH}u;")
-    );
-    assert_ne!(KINEMATIC_SPECULAR_STYLE_SMOOTH, 0, "zero reads pixel");
+    // The specular style picks a pipeline; no word carries it.
+    assert_eq!(bytes[28..], [0; 4]);
 }
 
 #[test]
@@ -632,7 +690,7 @@ fn kinematic_light_params_wgsl_layout_matches_rust_upload() {
             Some("dynamic_light_count"),
             Some("scripted_light_count"),
             Some("indirect_scale"),
-            Some("specular_style"),
+            Some("_pad"),
         ],
     );
     assert_eq!(
@@ -723,6 +781,17 @@ fn kinematic_shader_source_validates_without_cube_arrays() {
     )
     .validate(&module)
     .expect("no-cube kinematic brush shader should pass Naga validation");
+    // Validation covers every entry; both beauty entries are among them.
+    for style in SpecularStyle::ALL {
+        let entry = beauty_fragment_entry(style);
+        assert!(
+            module
+                .entry_points
+                .iter()
+                .any(|e| e.name == entry && e.stage == naga::ShaderStage::Fragment),
+            "{style:?}: the no-cube source declares fragment entry {entry}"
+        );
+    }
 }
 
 #[test]
@@ -771,10 +840,13 @@ fn kinematic_shader_uses_shared_material_helpers_for_promoted_static_specular() 
         .split_whitespace()
         .collect()
     };
-    let dynamic_loop = squashed("accumulate_dynamic_direct");
+    let pixel_loop = squashed("accumulate_pixel_direct");
+    let smooth_loop = squashed("accumulate_smooth_direct");
     assert!(
-        dynamic_loop.contains("ifuse_specular&&i>=kinematic_light_params.scripted_light_count{"),
-        "only promoted records with LightTermMask specular enabled may add mover specular",
+        pixel_loop.contains(
+            "lettexel_specular=use_specular&&i>=kinematic_light_params.scripted_light_count;"
+        ) && pixel_loop.contains("iftexel_specular{"),
+        "only promoted records with LightTermMask specular enabled may add pixel mover specular",
     );
     let mover_src = include_str!("../shaders/kinematic_brush.wgsl");
     assert!(
@@ -782,50 +854,76 @@ fn kinematic_shader_uses_shared_material_helpers_for_promoted_static_specular() 
             && mover_src.contains("let use_specular = (light_terms & 0x40u) != 0u;"),
         "mover dynamic and specular gates must derive independently from LightTermMask bits 5 and 6",
     );
-    // An untinted texel adds its term into `total` right after the light's
-    // diffuse, as before tint; a tinted texel's term joins its own sum.
-    let split = "iftinted{tinted_total=tinted_total+term;}else{total=total+term;}";
+    // Smooth: one specular sum, every promoted record's term behind the
+    // front-lit gate, tinted or not.
     assert!(
-        dynamic_loop.contains(&format!(
-            "ifsmooth_style{{ifn_dot_l>0.0{{letterm=blinn_phong(L,spec_point.view,n,\
-             effective_color,spec_exp,spec_int)*attenuation;{split}}}}}"
-        )),
+        smooth_loop.contains(
+            "ifuse_specular&&i>=kinematic_light_params.scripted_light_count&&n_dot_l>0.0{\
+             specular=specular+blinn_phong(L,view,n,drive.color,spec_exp,spec_int)*attenuation;}"
+        ),
         "smooth mover specular keeps the front-lit gate and the runtime attenuation, cone, \
          shadow, and promotion color factors",
     );
     assert!(
-        dynamic_loop.contains(&format!(
-            "letterm=mover_texel_specular(light,effective_color,effective_aim,spec_point,\
+        !smooth_loop.contains("tinted"),
+        "smooth keeps one specular sum"
+    );
+    // Pixel: an untinted texel adds its term into `total` right after the
+    // light's diffuse, as before tint; a tinted texel's term joins its own sum.
+    let split = "iftinted{tinted_total=tinted_total+term;}else{total=total+term;}";
+    assert!(
+        pixel_loop.contains(&format!(
+            "letterm=mover_texel_specular(light,drive.color,drive.aim,spec_point,\
              n,mesh_n,depth.hit_top,shadow,spec_exp,spec_int,);{split}"
         )),
         "pixel mover specular takes the texel's point, this fragment's shadow and the \
          promotion color",
     );
-    assert_eq!(dynamic_loop.matches(split).count(), 2);
+    assert_eq!(pixel_loop.matches(split).count(), 1);
     assert!(
         squashed("mover_texel_specular")
             .contains("blinn_phong(L,point.view,n,color,spec_exp,spec_int)*(geometry.w*shadow)"),
         "pixel mover specular keeps the point's attenuation and cone, times the shadow",
     );
+    // Both loops share every per-record helper, so their diffuse, shadows
+    // and animation cannot drift apart.
+    for helper in [
+        "mover_light_cache_layer(i)",
+        "mover_light_drive(i,light)",
+        "mover_light_geometry(light,drive.aim,depth.world_position)",
+        "mover_light_shadow(i,light,cache_layer,world_pos,mesh_n)",
+        "mover_light_n_dot_l(depth,n,above_plane,L)",
+        "mover_light_diffuse(i,depth,L,n_dot_l,above_plane,attenuation,drive.color,\
+         &depth_shadow_marches,)",
+    ] {
+        for (name, body) in [("pixel", &pixel_loop), ("smooth", &smooth_loop)] {
+            assert_eq!(
+                body.matches(helper).count(),
+                1,
+                "{name} loop calls {helper}"
+            );
+        }
+    }
 }
 
 #[test]
 fn kinematic_animated_descriptors_cover_the_raw_animated_tail_only() {
-    let dynamic_loop = extract_wgsl_fn(
-        include_str!("../shaders/kinematic_brush.wgsl"),
-        "accumulate_dynamic_direct",
-    );
+    let mover = include_str!("../shaders/kinematic_brush.wgsl");
+    let drive = extract_wgsl_fn(mover, "mover_light_drive");
     assert!(
-        dynamic_loop.contains("if i < kinematic_light_params.scripted_light_count {")
-            && dynamic_loop.contains("let scripted_desc = scripted_light_descriptors[i];"),
+        drive.contains("if i < kinematic_light_params.scripted_light_count {")
+            && drive.contains("let scripted_desc = scripted_light_descriptors[i];"),
         "only selected-static records append after the descriptor-upload prefix and must not read stale descriptor tail bytes",
     );
+    let cache_layer = extract_wgsl_fn(mover, "mover_light_cache_layer");
+    let shadow = extract_wgsl_fn(mover, "mover_light_shadow");
     assert!(
-        dynamic_loop.contains("if i >= kinematic_light_params.dynamic_light_count {")
-            && dynamic_loop
+        cache_layer.contains("if i >= kinematic_light_params.dynamic_light_count {")
+            && cache_layer
                 .contains("let promoted_index = i - kinematic_light_params.dynamic_light_count;")
-            && dynamic_loop.contains("sample_spot_shadow_with_static(")
-            && dynamic_loop.contains("sample_point_shadow_with_static("),
+            && shadow.contains("if i >= kinematic_light_params.dynamic_light_count {")
+            && shadow.contains("sample_spot_shadow_with_static(")
+            && shadow.contains("sample_point_shadow_with_static("),
         "raw section-45 mover tails must keep descriptors while reading their static-world cache metadata after the dynamic prefix",
     );
 }
@@ -862,4 +960,144 @@ fn mover_mirror_cull_skips_movers_off_the_mirror_view_or_under_the_water() {
     );
     assert!(!reaches(Vec3::new(50.0, 1.0, -10.0)), "off to the side");
     assert!(!reaches(Vec3::new(0.0, 1.0, 10.0)), "behind the eye");
+}
+
+/// `fn name(`'s source, matched exactly so a name that prefixes another
+/// (`sample_point_shadow`, `sample_point_shadow_with_static`) finds its own.
+fn wgsl_fn_exact<'a>(source: &'a str, name: &str) -> &'a str {
+    let needle = format!("fn {name}(");
+    let start = source
+        .find(&needle)
+        .unwrap_or_else(|| panic!("shader should declare fn {name}"));
+    extract_wgsl_fn(&source[start..], name)
+}
+
+// FXC refuses an implicit-derivative sample inside a varying-length loop or a
+// helper such a loop calls (rendering_pipeline.md §8, DX12 portability), and
+// only a Windows DX12 build would catch it. Walk the smooth loop's whole call
+// graph in the composed source instead.
+#[test]
+fn smooth_light_loop_and_its_helpers_take_no_implicit_derivative_sample() {
+    let source = strip_wgsl_comments(SHADER_SOURCE);
+    let mut pending = vec!["accumulate_smooth_direct".to_owned()];
+    let mut seen = std::collections::BTreeSet::new();
+    while let Some(name) = pending.pop() {
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        let body = wgsl_fn_exact(&source, &name);
+        for (start, ident) in wgsl_identifiers(body) {
+            if !body[start + ident.len()..].trim_start().starts_with('(') {
+                continue;
+            }
+            assert!(
+                !matches!(
+                    ident,
+                    "textureSample" | "textureSampleBias" | "textureSampleCompare"
+                ),
+                "{name}, reached from the smooth light loop, calls {ident}"
+            );
+            if ident != name && source.contains(&format!("fn {ident}(")) {
+                pending.push(ident.to_owned());
+            }
+        }
+    }
+    for helper in [
+        "mover_light_shadow",
+        "sample_spot_shadow_with_static",
+        "sample_point_shadow_with_static",
+        "surface_depth_light_visibility",
+        "blinn_phong",
+    ] {
+        assert!(seen.contains(helper), "the walk reaches {helper}: {seen:?}");
+    }
+}
+
+// Each beauty pipeline is built with its own style's fragment entry, and
+// `record_draws` reports the very style it selects the pipeline by, so a
+// report cannot name a style the bound pipeline does not draw.
+#[test]
+fn each_beauty_pipeline_builds_its_styles_entry_and_reports_the_style_it_selected_by() {
+    assert_eq!(beauty_fragment_entry(SpecularStyle::Pixel), "fs_pixel");
+    assert_eq!(beauty_fragment_entry(SpecularStyle::Smooth), "fs_smooth");
+    let module = naga::front::wgsl::parse_str(SHADER_SOURCE).expect("the mover shader parses");
+    for style in SpecularStyle::ALL {
+        let entry = beauty_fragment_entry(style);
+        assert!(
+            module
+                .entry_points
+                .iter()
+                .any(|e| e.name == entry && e.stage == naga::ShaderStage::Fragment),
+            "{style:?}: the mover shader declares fragment entry {entry}"
+        );
+    }
+    let squashed = |text: &str| -> String { text.split_whitespace().collect() };
+    let pass = squashed(include_str!("kinematic_brush.rs"));
+    for pin in [
+        // Creation: each style's pipeline takes that style's entry.
+        "pixel:build(SpecularStyle::Pixel),smooth:build(SpecularStyle::Smooth),",
+        "entry_point:Some(beauty_fragment_entry(style)),",
+        "SpecularStyle::Pixel=>&self.pixel,SpecularStyle::Smooth=>&self.smooth,",
+        // Selection: one style both binds the pipeline and is reported.
+        "pass.set_pipeline(self.beauty_pipelines.for_style(style));#[cfg(test)]\
+         self.bound_styles.lock().expect(\"bound_styles\").push((view.kind(),style));",
+    ] {
+        assert_eq!(
+            pass.matches(pin).count(),
+            1,
+            "kinematic_brush.rs pins {pin}"
+        );
+    }
+    let record = pass
+        .split("pub(crate)fnrecord_draws(")
+        .nth(1)
+        .and_then(|rest| rest.split("fninstance_model(").next())
+        .expect("record_draws");
+    assert_eq!(record.matches("set_pipeline(").count(), 1);
+}
+
+// The mover pass builds both beauty pipelines and its depth pipeline when it
+// is built, at full init, and nothing later: exactly three render pipelines,
+// with cube-array shadows on and off (the no-cube source carries both
+// fragment entries).
+#[test]
+fn building_the_mover_pass_creates_both_beauty_pipelines_and_its_depth_pipeline() {
+    use crate::render::gpu_create::gpu_creation_counts;
+    let test = "building_the_mover_pass_creates_both_beauty_pipelines_and_its_depth_pipeline";
+    let Some(renderer) = crate::render::gpu_test_harness::offscreen_renderer_or_skip(test, 16, 16)
+    else {
+        return;
+    };
+    let device = &renderer.device;
+    let layout = |entries: &[wgpu::BindGroupLayoutEntry]| {
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries,
+        })
+    };
+    let camera = layout(&crate::render::pipeline_layout::uniform_bind_group_layout_entries());
+    let material = layout(&crate::render::pipeline_layout::material_bind_group_layout_entries());
+    let sh = layout(&crate::render::sh_volume::mesh_bind_group_layout_entries());
+    for cube_array_supported in [true, false] {
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let before = gpu_creation_counts();
+        let _pass = KinematicBrushPass::new(
+            device,
+            crate::render::DEPTH_FORMAT,
+            &camera,
+            &material,
+            &sh,
+            cube_array_supported,
+        );
+        let built = gpu_creation_counts().since(before);
+        let error = pollster::block_on(scope.pop());
+        assert!(
+            error.is_none(),
+            "cube arrays {cube_array_supported}: the mover pipelines build: {error:?}"
+        );
+        assert_eq!(
+            built.pipelines, 3,
+            "cube arrays {cube_array_supported}: smooth beauty, pixel beauty and depth"
+        );
+    }
 }

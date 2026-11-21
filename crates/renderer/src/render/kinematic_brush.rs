@@ -4,6 +4,7 @@
 use crate::render::gpu_create::GpuCreate;
 use std::collections::HashMap;
 
+use postretro_render_cpu::frame_uniforms::SpecularStyle;
 use postretro_render_cpu::planar_reflection::aabb_in_planes;
 use postretro_render_data::cone_frustum::Aabb;
 
@@ -31,9 +32,6 @@ struct KinematicLightParams {
     /// Descriptor-bearing prefix: dynamic tier plus section-45 animated tail.
     scripted_light_count: u32,
     indirect_scale: f32,
-    /// `KINEMATIC_SPECULAR_STYLE_SMOOTH` for the smooth specular style; zero
-    /// is pixel.
-    specular_style: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,7 +69,10 @@ pub(crate) struct ActiveMoverDraw {
 /// instance buffer and draw lists. Mover geometry and its light groups are a
 /// level's (`KinematicLevelState`).
 pub(crate) struct KinematicBrushPass {
-    pipeline: wgpu::RenderPipeline,
+    /// One beauty pipeline per specular style, both built here at full init,
+    /// so a style change compiles nothing (rendering_pipeline.md §4, Style
+    /// transport).
+    beauty_pipelines: MoverBeautyPipelines,
     /// Depth-only `vs_depth` pipeline recorded into a view's depth pre-pass.
     depth_pipeline: wgpu::RenderPipeline,
     instance_buffer: wgpu::Buffer,
@@ -89,6 +90,36 @@ pub(crate) struct KinematicBrushPass {
     /// Camera-visible subset of `active_draws` for the beauty pass.
     beauty_draws: Vec<ActiveMoverDraw>,
     instance_bytes: Vec<u8>,
+    /// The style each `record_draws` bound, per view, in record order: what
+    /// tests read to prove which pipeline drew.
+    #[cfg(test)]
+    bound_styles: std::sync::Mutex<Vec<(MoverViewKind, SpecularStyle)>>,
+}
+
+/// The mover beauty pipelines, one per specular style.
+struct MoverBeautyPipelines {
+    pixel: wgpu::RenderPipeline,
+    smooth: wgpu::RenderPipeline,
+}
+
+impl MoverBeautyPipelines {
+    fn for_style(&self, style: SpecularStyle) -> &wgpu::RenderPipeline {
+        match style {
+            SpecularStyle::Pixel => &self.pixel,
+            SpecularStyle::Smooth => &self.smooth,
+        }
+    }
+}
+
+/// The fragment entry each style's beauty pipeline is built with. Both share
+/// one module, its vertex entry and its bindings; each compiles only its own
+/// style's light loop, which keeps each under the register cliff
+/// (rendering_pipeline.md §7.3, Mover register cliff).
+pub(crate) const fn beauty_fragment_entry(style: SpecularStyle) -> &'static str {
+    match style {
+        SpecularStyle::Pixel => "fs_pixel",
+        SpecularStyle::Smooth => "fs_smooth",
+    }
 }
 
 /// One level's mover geometry, its lookups, and the group-2 light bind
@@ -167,8 +198,8 @@ fn build_instance_entry(model: glam::Mat4) -> [u8; INSTANCE_ENTRY_SIZE] {
 
 /// Serialize the 32-byte uniform row shared with `KinematicLightParams` in
 /// `kinematic_brush.wgsl`. The dynamic-tier count sits at byte 16, the
-/// descriptor-bearing dynamic-plus-animated count at byte 20 and the specular
-/// style word at byte 28.
+/// descriptor-bearing dynamic-plus-animated count at byte 20; bytes 28..32
+/// are padding. The specular style picks a pipeline instead of riding here.
 fn build_light_params_bytes(params: KinematicLightParams) -> [u8; KINEMATIC_LIGHT_PARAMS_SIZE] {
     let mut bytes = [0u8; KINEMATIC_LIGHT_PARAMS_SIZE];
     bytes[0..4].copy_from_slice(&params.light_count.to_ne_bytes());
@@ -178,7 +209,6 @@ fn build_light_params_bytes(params: KinematicLightParams) -> [u8; KINEMATIC_LIGH
     bytes[16..20].copy_from_slice(&params.dynamic_light_count.to_ne_bytes());
     bytes[20..24].copy_from_slice(&params.scripted_light_count.to_ne_bytes());
     bytes[24..28].copy_from_slice(&params.indirect_scale.to_ne_bytes());
-    bytes[28..32].copy_from_slice(&params.specular_style.to_ne_bytes());
     bytes
 }
 
@@ -429,6 +459,14 @@ pub(crate) enum MoverView {
     },
 }
 
+/// A [`MoverView`] without its cull data, as the bound-style report names it.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MoverViewKind {
+    Main,
+    Mirror,
+}
+
 impl KinematicBrushPass {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -477,39 +515,11 @@ impl KinematicBrushPass {
             immediate_size: 0,
         });
 
-        // Colour draws test `Equal` against the depth `vs_depth` wrote in the
-        // depth pre-pass and write none, so each mover pixel shades once.
-        let pipeline = device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Kinematic Brush Pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[Some(mover_vertex_layout())],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            primitive: mover_primitive_state(),
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: depth_format,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::Equal),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: SCENE_COLOR_FORMAT,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        let build = |style| beauty_pipeline(device, &pipeline_layout, &shader, depth_format, style);
+        let beauty_pipelines = MoverBeautyPipelines {
+            pixel: build(SpecularStyle::Pixel),
+            smooth: build(SpecularStyle::Smooth),
+        };
         // Vertex-only, from the colour shader's own module so the two clip
         // paths cannot drift: camera and instance transforms only.
         let depth_pipeline_layout =
@@ -568,7 +578,7 @@ impl KinematicBrushPass {
         });
 
         Self {
-            pipeline,
+            beauty_pipelines,
             depth_pipeline,
             instance_buffer,
             instance_capacity: 1,
@@ -582,6 +592,8 @@ impl KinematicBrushPass {
             active_draw_lookup: HashMap::new(),
             beauty_draws: Vec::new(),
             instance_bytes: Vec::new(),
+            #[cfg(test)]
+            bound_styles: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -933,7 +945,6 @@ impl KinematicBrushPass {
         light_term_mask: u32,
         ambient_floor: f32,
         indirect_scale: f32,
-        specular_style: postretro_render_cpu::frame_uniforms::SpecularStyle,
     ) {
         queue.write_buffer(
             &self.light_params_buffer,
@@ -946,8 +957,6 @@ impl KinematicBrushPass {
                 light_term_mask,
                 ambient_floor,
                 indirect_scale,
-                // Shared by the main view and the planar mirror.
-                specular_style: specular_style.kinematic_word(),
             }),
         );
     }
@@ -1015,7 +1024,9 @@ impl KinematicBrushPass {
     }
 
     /// `view`'s mover colour draws, `Equal` against the depth
-    /// [`Self::record_depth`] wrote for the same view. The mirror reads its
+    /// [`Self::record_depth`] wrote for the same view, through `style`'s
+    /// beauty pipeline. `style` is the frame's snapshot, taken with group 0,
+    /// so the main view and the mirror draw one style. The mirror reads its
     /// own light records (group 2) on a frame a mirror-only light holds a
     /// shadow slot. The caller binds groups 0 and 4.
     pub(crate) fn record_draws(
@@ -1024,13 +1035,19 @@ impl KinematicBrushPass {
         level: &KinematicLevelState,
         materials: &[GpuTexture],
         view: MoverView,
+        style: SpecularStyle,
     ) {
         if !self.has_draws(level) {
             return;
         }
         let mirror_light_records =
             matches!(view, MoverView::Mirror { .. }) && self.mirror_light_records;
-        pass.set_pipeline(&self.pipeline);
+        pass.set_pipeline(self.beauty_pipelines.for_style(style));
+        #[cfg(test)]
+        self.bound_styles
+            .lock()
+            .expect("bound_styles")
+            .push((view.kind(), style));
         pass.set_bind_group(2, level.light_groups.select(mirror_light_records), &[]);
         pass.set_bind_group(3, &self.instance_bind_group, &[]);
         pass.set_vertex_buffer(0, level.vertex_buffer.slice(..));
@@ -1068,6 +1085,72 @@ impl KinematicBrushPass {
             *value = f32::from_ne_bytes(*word);
         }
         Some(glam::Mat4::from_cols_array(&cols))
+    }
+}
+
+/// `style`'s beauty pipeline. Colour draws test `Equal` against the depth
+/// `vs_depth` wrote in the depth pre-pass and write none, so each mover pixel
+/// shades once.
+fn beauty_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    depth_format: wgpu::TextureFormat,
+    style: SpecularStyle,
+) -> wgpu::RenderPipeline {
+    let label = match style {
+        SpecularStyle::Pixel => "Kinematic Brush Pipeline (pixel)",
+        SpecularStyle::Smooth => "Kinematic Brush Pipeline (smooth)",
+    };
+    device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_main"),
+            buffers: &[Some(mover_vertex_layout())],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        primitive: mover_primitive_state(),
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: depth_format,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::Equal),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some(beauty_fragment_entry(style)),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: SCENE_COLOR_FORMAT,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+#[cfg(test)]
+impl MoverView {
+    fn kind(self) -> MoverViewKind {
+        match self {
+            MoverView::Main => MoverViewKind::Main,
+            MoverView::Mirror { .. } => MoverViewKind::Mirror,
+        }
+    }
+}
+
+#[cfg(test)]
+impl KinematicBrushPass {
+    /// Every `(view, style)` the beauty records bound since the last take,
+    /// in record order.
+    pub(crate) fn take_bound_styles(&self) -> Vec<(MoverViewKind, SpecularStyle)> {
+        std::mem::take(&mut *self.bound_styles.lock().expect("bound_styles"))
     }
 }
 

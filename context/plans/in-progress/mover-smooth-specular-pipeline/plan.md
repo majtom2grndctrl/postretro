@@ -9,7 +9,11 @@ read at: 1a66523ae (no source change to c56f894e7; Decision reads reused)
 
 ## Delegated answers
 - Whether the mover's style word survives — **retired.** Each pipeline is its own style, so a word nothing reads would be a second style signal that can drift from the bound pipeline. Bytes 28..32 of `KinematicLightParams` become padding; `SpecularStyle::kinematic_word` and `KINEMATIC_SPECULAR_STYLE_SMOOTH` go; their tests move to pin pipeline selection.
-- Albedo read before or after the loop in the smooth pipeline — pending the Task 1 screen.
+- Albedo read before or after the loop in the smooth pipeline — **after, pending the re-time.** Both placements screen at 119 VGPRs, so the screen does not separate them. After is the spike's measured V5s shape; before is an extra smooth arm in the M2 re-time, and wins only if it times lower.
+
+## Shape (Task 1)
+- One module, two fragment entries over shared code: `mover_surface` (the prelude, as fluid's `fluid_shade`), per-record helpers both loops call (`mover_light_cache_layer`, `mover_light_drive`, `mover_light_shadow`, `mover_light_diffuse`, `mover_light_n_dot_l`), one loop per style (`accumulate_pixel_direct`, `accumulate_smooth_direct`) and one composition per style (`mover_pixel_shade`, `mover_smooth_shade`). The pixel loop is today's with the smooth branch compiled out.
+- Register screen (this machine, Radeon Pro 5300M): `fs_pixel` 127 VGPRs / 104 SGPRs, `fs_smooth` 119 / 104. Both hold 8 waves/SIMD under wave32. Today's single pipeline: 128.
 
 ## AC-to-proof
 
@@ -39,10 +43,10 @@ read at: 1a66523ae (no source change to c56f894e7; Decision reads reused)
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Smooth entry (V5s shape) and pixel entry (smooth compiled out) over shared code; both beauty pipelines built in `KinematicBrushPass::new`; screen tool names its entry; screen both (and the smooth albedo-before arm). Stop if either leaves the tier. | integrating executor | — | |
-| 2 | Split `kinematic_brush.rs` tests into a sibling file, own commit | integrating executor | 1 | |
-| 3 | Per-frame selection from the style snapshot, main and mirror; test-only bound-style report; retire the style word | integrating executor | 2 | |
-| 4 | Harness and readback tests: smooth composition row, pixel splices, tint rows, A9 source test | integrating executor | 1 | |
-| 5 | Frame tests: A5–A8, A10–A14 | integrating executor | 3 | |
-| 6 | Bring the kit from `spike/specular-mover-cost` without the hook commit | integrating executor | — | |
+| 1 | Smooth entry (V5s shape) and pixel entry (smooth compiled out) over shared code; both beauty pipelines built in `KinematicBrushPass::new`; screen tool names its entry; screen both (and the smooth albedo-before arm). Stop if either leaves the tier. | integrating executor | — | done: 127 / 119, both in tier |
+| 2 | Split `kinematic_brush.rs` tests into a sibling file, own commit | integrating executor | 1 | done (269f84100) |
+| 3 | Per-frame selection from the style snapshot, main and mirror; test-only bound-style report; retire the style word | integrating executor | 2 | done |
+| 4 | Harness and readback tests: smooth composition row, pixel splices, tint rows, A9 source test | integrating executor | 1 | done: `kinematic_specular_test` 13/13 under `POSTRETRO_REQUIRE_GPU=1` |
+| 5 | Frame tests: A5–A8, A10–A14 | integrating executor | 3 | done: renderer lib 1438 passed |
+| 6 | Bring the kit from `spike/specular-mover-cost` without the hook commit | integrating executor | — | done (4f7efaa3d) |
 | 7 | Preflight, review panel, fixes | integrating executor | 1–6 | |

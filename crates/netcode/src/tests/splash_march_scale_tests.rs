@@ -76,12 +76,7 @@ fn shooter_origin(k: u32) -> Vec3 {
 fn shot(k: u32, n: u32, fire_tick: u32) -> AuthorizedShot {
     let pawn = EntityId::from_raw(1 + k);
     let mut shot = authorized_test_shot(
-        ShotId::from_parts(
-            10 + k,
-            n,
-            postretro_foundation::ActivationLane::Primary,
-            0,
-        ),
+        ShotId::from_parts(10 + k, n, postretro_foundation::ActivationLane::Primary, 0),
         pawn,
         EntityId::from_raw(100 + k),
         fire_tick,
@@ -223,8 +218,7 @@ fn splash_march_scale_row() {
         let poses = door_poses(tick);
         let combined = CombinedCollisionWorld::new(&world, &movers, &poses);
         let started = Instant::now();
-        let contacts =
-            crate::sim::advance(&registry, &combined, &hit_zones, 0.0, DT, &mut |_| {});
+        let contacts = crate::sim::advance(&registry, &combined, &hit_zones, 0.0, DT, &mut |_| {});
         let elapsed = started.elapsed();
         std::hint::black_box(contacts);
         if tick > WARM_TICKS {

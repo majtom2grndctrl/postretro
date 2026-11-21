@@ -439,7 +439,7 @@ fn opened(shot: OpenAuthorizedShot) -> OpenAuthorizedShots {
 }
 
 #[test]
-fn connected_obstructed_muzzle_declaration_replays_host_splash_from_eye() {
+fn connected_obstructed_muzzle_declaration_marches_host_splash_from_eye() {
     let name = "weapon.test.obstructed";
     let registry = Rc::new(RefCell::new(EntityRegistry::new()));
     let (pawn, weapon, splash_target) = {
@@ -516,7 +516,7 @@ fn connected_obstructed_muzzle_declaration_replays_host_splash_from_eye() {
 }
 
 #[test]
-fn connected_lateral_muzzle_convergence_matches_host_splash_replay() {
+fn connected_lateral_muzzle_convergence_matches_host_splash_march() {
     let name = "weapon.test.lateral";
     let placement = WeaponPlacementDescriptor {
         offset: PlacementOffset {

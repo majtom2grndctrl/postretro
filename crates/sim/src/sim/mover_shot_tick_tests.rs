@@ -462,13 +462,13 @@ mod same_tick {
     use super::*;
     use crate::kinematic_mover::{MoverTickStateTable, apply_mover_command};
     use crate::sim::tests::{sim_command_at, weapon_component};
+    use crate::sim::{FactionRegistry, FactionSentimentState};
     use crate::sim::{PostMovementCommand, simulate_tick};
     use postretro_entities::components::inventory::Inventory;
     use postretro_entities::{
         BlockPolicy, KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode,
         MoverCommand,
     };
-    use crate::sim::{FactionRegistry, FactionSentimentState};
     use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 
     const DT: f32 = 1.0 / 60.0;

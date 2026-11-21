@@ -58,7 +58,6 @@ mod player_locomotion;
 pub mod presentation_pool;
 pub mod presentation_projection;
 mod projectile_stage;
-pub use mover_blast::blast_sightline_origin;
 #[cfg(test)]
 mod remote_presence_tests;
 #[cfg(test)]
@@ -99,6 +98,7 @@ use crate::weapon;
 use crate::weapon::FireButtonState;
 pub use descriptor_health::install_descriptor_player_health_range;
 pub use mesh_bindings::{resolve_mesh_entity_bindings, resolve_mesh_entity_bindings_for_entities};
+pub use mover_blast::blast_sightline_origin;
 pub use player_locomotion::{
     CrouchTier, FALL_DELAY_TICKS, JUMP_LOOP_STATE, JumpStates, LocomotionFooting, LocomotionInput,
     LocomotionPosture, LocomotionStance, LocomotionTier, LocomotionTierKind,

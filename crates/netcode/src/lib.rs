@@ -2713,8 +2713,8 @@ pub fn remote_entity_positions(endpoint: &NetEndpoint, registry: &EntityRegistry
 mod tests {
     mod life_state_projectile_tests;
     mod mover_shot_tests;
-    mod splash_march_tests;
     mod splash_march_scale_tests;
+    mod splash_march_tests;
     use super::*;
     use glam::Vec3;
     use postretro_entities::components::health::Hitbox;

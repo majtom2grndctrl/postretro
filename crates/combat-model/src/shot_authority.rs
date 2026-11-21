@@ -33,7 +33,7 @@ pub struct AuthorizedShot {
     pub pellet_count: usize,
     pub credit_source: String,
     /// The weapon's registered damage type captured at FIRE; a client hit
-    /// replays with it, never with anything the client declares.
+    /// applies it, never anything the client declares.
     pub damage_type: Option<u16>,
     /// Direct impulse tuning captured at FIRE; never taken from client hit data.
     pub knockback: Option<KnockbackDescriptor>,

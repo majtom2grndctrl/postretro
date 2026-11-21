@@ -125,8 +125,9 @@ struct WorldHit {
     normal: Vec3,
 }
 
-/// A zero-radius sphere reaches an exact static-triangle contact, so a splash
-/// sightline starting at that point immediately re-hits the same triangle.
+/// A zero-radius sphere reaches an exact triangle contact (level or mover), so
+/// a splash sightline starting at that point immediately re-hits the same
+/// triangle.
 /// This moves only that sightline origin, by less than a millimetre, toward the
 /// projectile side of the contact. Damage and falloff remain centered exactly
 /// at the impact point.
@@ -251,9 +252,9 @@ fn credited_attacker(
         .then_some(component.owner_pawn)
 }
 
-/// Return the origin for a splash static-world sightline. `WorldHit::normal`
-/// is the engine collision cast's static-world contact normal, oriented toward
-/// the projectile side at a non-penetrating hit.
+/// Return the origin for a splash sightline. `WorldHit::normal` is the
+/// combined (static or mover) contact normal, oriented toward the projectile
+/// side at a non-penetrating hit.
 pub fn projectile_splash_occlusion_origin(projectile_radius: f32, impact: &WeaponImpact) -> Vec3 {
     if projectile_radius != 0.0 || impact.target.is_some() {
         return impact.point;

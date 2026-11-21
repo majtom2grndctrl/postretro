@@ -26,6 +26,7 @@ pub(in crate::sim) fn run_local_weapon_command(
         select_slot,
         command,
         reload_pressed,
+        // The headless wrapper has no movers; shots see the static world alone.
         &CombinedCollisionWorld::static_only(collision_world),
         EnvironmentView::level_only(0.0),
         hit_zone_store,

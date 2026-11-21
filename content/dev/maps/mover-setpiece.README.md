@@ -164,8 +164,10 @@ Three `reference_enemy` instances, all tagged `enemy`. This map ships no
 combat script of its own, so they use the dev mod's shipped behavior. Until the
 player comes within 16 m (about 630 units) each walks a back-and-forth patrol
 through three points measured from its spawn: (0, 0), (6, 0) and (6, 6) m on the
-engine's floor axes. Once the player is within 16 m it chases and melees. Walls
-and movers do not hide the player from that check.
+engine's floor axes. Once the player is within 16 m it chases and melees. That
+wake is a distance-only check, so a closed wall does not stop it; sight and fire
+still stop at the wall, and an enemy that wakes behind one loses the player and
+goes to search within a second.
 
 The chaser's patrol runs through the sliding wall's opening. In map units its
 points are the enemy spot (368, 1232), (368, 996) just south of the wall in the

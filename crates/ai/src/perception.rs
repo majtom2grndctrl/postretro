@@ -1,4 +1,4 @@
-//! Shared enemy-to-pawn perception endpoints and debounced static-world LOS.
+//! Shared enemy-to-pawn perception endpoints and debounced LOS through static geometry and movers at the tick's pose.
 //! See: context/lib/entity_model.md §7c.
 
 use std::collections::HashMap;
@@ -19,7 +19,7 @@ use postretro_entities::{EntityId, EntityRegistry};
 /// authored health hitbox does not define the exact top-center origin.
 pub(super) const EYE_FACTOR: f32 = 0.9;
 
-/// Ticks that a retained target remains visible after raw static-world LOS is
+/// Ticks that a retained target remains visible after raw LOS is
 /// first lost. This is host-only feel state; fresh acquisition never uses it.
 pub(super) const LOS_GRACE_TICKS: u32 = 3;
 
@@ -46,7 +46,7 @@ pub(super) struct EnemyTargetPerception {
 
 /// The undebounced LOS result computed while admitting a fresh target. The
 /// selected candidate carries this into perception so acquisition and debounce
-/// share one static-world ray on that tick.
+/// share one LOS ray on that tick.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct RawTargetPerception {
     pub(super) target: EntityId,

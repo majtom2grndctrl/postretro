@@ -1,5 +1,6 @@
 // GPU readback tests of forward.wgsl's world static specular: per-face owners,
-// the SDF selection, and the pixel style's one point per albedo texel.
+// the SDF selection, the pixel style's one point per albedo texel, and the
+// specular slot's per-texel sharpness (B) and tint (A).
 // See: context/lib/rendering_pipeline.md §4 (Static specular ownership,
 // Texel-centre highlight)
 //
@@ -10,8 +11,9 @@ use std::collections::HashMap;
 use super::gpu_test_harness::{gpu_or_skip, wgsl_const_line, wgsl_function};
 use super::world_specular_harness::{
     Case, EMPTY, FORWARD_WGSL, Face, Geometry, LATTICE, Light, MATERIAL_SHADING_WGSL, March,
-    NO_OWNERS, PIXELS_PER_TEXEL, Style, TEXEL_TARGET, TexelCase, WIDTH, fragment_visibility,
-    key_is_centre, reconstructed_texel_key, render, render_texels,
+    MaterialCase, MaterialObserve, MaterialPath, NO_OWNERS, PIXELS_PER_TEXEL, Style, TEXEL_TARGET,
+    TexelCase, WIDTH, fragment_visibility, key_is_centre, reconstructed_texel_key, render,
+    render_material, render_texels,
 };
 
 fn one_face(owners: [u16; 4]) -> [Face; 1] {
@@ -1065,4 +1067,716 @@ fn spec_shadowmask_flag_bits_match_the_cpu_constants() {
             .unwrap_or_else(|| panic!("`{line}` must be a decimal u32 literal"));
         assert_eq!(value, cpu, "{name}");
     }
+}
+
+// --- Per-texel sharpness and tint (specular slot B and A) ---
+
+/// Owners 0..=3 of `material_lights`: point, spot, directional and ranged.
+const MATERIAL_OWNERS: [u16; 4] = [0, 1, 2, 3];
+
+fn material_lights() -> [Light; 4] {
+    [flank_light(), spot_light(), sun(), ranged_light()]
+}
+
+fn rgba_bits(value: [f32; 4]) -> [u32; 4] {
+    value.map(f32::to_bits)
+}
+
+/// The interior fragment of each of the `LATTICE`² texels, with its texel.
+fn texel_interiors() -> impl Iterator<Item = ((u32, u32), usize)> {
+    (0..LATTICE).flat_map(|ty| {
+        (0..LATTICE).map(move |tx| {
+            let index = pixel_index(
+                tx * PIXELS_PER_TEXEL + PIXELS_PER_TEXEL / 2,
+                ty * PIXELS_PER_TEXEL + PIXELS_PER_TEXEL / 2,
+            );
+            ((tx, ty), index)
+        })
+    })
+}
+
+/// How the floor maps onto the target, and the texture size it samples.
+#[derive(Clone, Copy, Debug)]
+enum Footprint {
+    /// `LATTICE`² texels magnified 8×, every seam band crossed.
+    Magnified,
+    /// 2.5 texels per pixel: trilinear between mips 1 and 2.
+    Minified,
+    /// Half a texel per pixel along x and seven along y: an anisotropic,
+    /// grazing footprint.
+    Grazing,
+}
+
+const FOOTPRINTS: [Footprint; 3] = [
+    Footprint::Magnified,
+    Footprint::Minified,
+    Footprint::Grazing,
+];
+
+impl Footprint {
+    fn texture_size(self) -> u32 {
+        match self {
+            Footprint::Magnified => LATTICE,
+            Footprint::Minified | Footprint::Grazing => 64,
+        }
+    }
+
+    fn uv_per_pixel(self) -> [f32; 2] {
+        let pixel = 1.0 / TEXEL_TARGET as f32;
+        match self {
+            Footprint::Magnified => [pixel; 2],
+            Footprint::Minified => [pixel * 2.5; 2],
+            Footprint::Grazing => [pixel * 0.5, pixel * 7.0],
+        }
+    }
+}
+
+/// A `_p` slot: smoothness byte 1 on every texel, no tint (P15).
+const SHARP_MARKER_TEXEL: [u8; 4] = [255, 127, 1, 255];
+/// A `_t` slot: no smoothness, tint byte 254 (t = 1) on every texel (P15).
+const TINT_MARKER_TEXEL: [u8; 4] = [255, 127, 0, 254];
+
+/// Smoothness bytes across the decode's bands: 0 (no `_p`), the flat band
+/// 1–24, the curve, and the cap band 224–255.
+fn smoothness_byte(tx: u32, ty: u32) -> u8 {
+    const LISTED: [u8; 45] = [
+        0, 1, 2, 12, 24, 25, 26, 30, 40, 50, 64, 80, 96, 100, 110, 120, 127, 128, 129, 140, 150,
+        160, 170, 180, 190, 200, 205, 210, 215, 220, 222, 223, 224, 225, 226, 230, 235, 240, 245,
+        250, 251, 252, 253, 254, 255,
+    ];
+    let i = (ty * LATTICE + tx) as usize;
+    LISTED.get(i).copied().unwrap_or(((i * 37) % 256) as u8)
+}
+
+#[test]
+fn sharpness_decode_matches_the_cpu_reference() {
+    use super::specular_slot_fixtures::{SlotFormat, white_material};
+    use postretro_render_cpu::specular_texel::texel_exponent;
+    let Some(ctx) = gpu_or_skip("sharpness_decode_matches_the_cpu_reference") else {
+        return;
+    };
+    let material = white_material(&ctx, LATTICE, SlotFormat::Rgba8, &|tx, ty| {
+        [200, 127, smoothness_byte(tx, ty), 255]
+    });
+    let prefix = 64.0;
+    for style in [Style::Pixel, Style::Smooth] {
+        let case = MaterialCase {
+            prefix_exponent: prefix,
+            ..MaterialCase::new(style)
+        };
+        let lights = material_lights();
+        let slot = render_material(
+            &ctx,
+            &lights,
+            MATERIAL_OWNERS,
+            &material,
+            case,
+            MaterialObserve::Slot,
+        );
+        let texel = render_material(
+            &ctx,
+            &lights,
+            MATERIAL_OWNERS,
+            &material,
+            case,
+            MaterialObserve::Texel,
+        );
+        for ((tx, ty), i) in texel_interiors() {
+            let byte = smoothness_byte(tx, ty);
+            let b = slot[i][2];
+            let what = format!("{style:?}: texel ({tx}, {ty}), byte {byte}");
+            assert!(
+                (b - f32::from(byte) / 255.0).abs() <= 0.5 / 255.0,
+                "{what}: sampled B {b}"
+            );
+            let exponent = texel[i][0];
+            let expected = texel_exponent(b, prefix);
+            match byte {
+                0 => assert_eq!(exponent, prefix, "{what}: no `_p` keeps the prefix"),
+                1..=24 => assert_eq!(exponent, 1.0, "{what}"),
+                224..=255 => assert_eq!(exponent, 8192.0, "{what}: past the cap"),
+                _ => assert!(
+                    (exponent - expected).abs() <= expected * 2.0e-6,
+                    "{what}: {exponent} vs the CPU's {expected}"
+                ),
+            }
+        }
+        // The decoded exponent is the one the highlight shades at: the wiring
+        // before tint, fed that exponent, draws the same bits.
+        let current = render_material(
+            &ctx,
+            &lights,
+            MATERIAL_OWNERS,
+            &material,
+            case,
+            MaterialObserve::Shade,
+        );
+        let oracle = render_material(
+            &ctx,
+            &lights,
+            MATERIAL_OWNERS,
+            &material,
+            MaterialCase {
+                path: MaterialPath::Oracle,
+                oracle_decodes: true,
+                ..case
+            },
+            MaterialObserve::Shade,
+        );
+        for (i, (c, o)) in current.iter().zip(&oracle).enumerate() {
+            assert_eq!(rgba_bits(*c), rgba_bits(*o), "{style:?}: fragment {i}");
+        }
+        let raw = render_material(
+            &ctx,
+            &lights,
+            MATERIAL_OWNERS,
+            &material,
+            case,
+            MaterialObserve::RawSpecular,
+        );
+        let interior: Vec<[f32; 4]> = texel_interiors().map(|(_, i)| raw[i]).collect();
+        assert!(
+            interior.iter().any(|p| p[0] > 0.0) && interior.windows(2).any(|w| w[0] != w[1]),
+            "{style:?}: the lights reach the floor and the exponent varies the highlight"
+        );
+    }
+}
+
+/// Albedo rows (sRGB bytes) for the tint cases: a dark green, a bronze, grey,
+/// black, a bright and a dim orange of near one hue, a saturated blue, white.
+const TINT_ALBEDOS: [[u8; 4]; LATTICE as usize] = [
+    [28, 64, 40, 255],
+    [150, 96, 44, 255],
+    [128, 128, 128, 255],
+    [0, 0, 0, 255],
+    [255, 140, 60, 255],
+    [128, 70, 30, 255],
+    [20, 40, 230, 255],
+    [255, 255, 255, 255],
+];
+/// Tint bytes by column: t = 0, three mid values, t = 1, untinted, and t = 0
+/// and 1 again under the other intensity.
+const TINT_BYTES: [u8; LATTICE as usize] = [0, 64, 127, 190, 254, 255, 0, 254];
+
+fn tint_intensity(tx: u32) -> u8 {
+    if tx < 6 { 255 } else { 96 }
+}
+
+fn assert_rgb_close(actual: [f32; 4], expected: [f32; 3], what: &str) {
+    for c in 0..3 {
+        assert!(
+            (actual[c] - expected[c]).abs() <= 2.0e-6 + expected[c].abs() * 2.0e-5,
+            "{what}: channel {c} is {actual:?}, expected {expected:?}"
+        );
+    }
+}
+
+#[test]
+fn tint_mix_matches_the_cpu_reference() {
+    use super::specular_slot_fixtures::{SlotFormat, material_textures};
+    use postretro_render_cpu::specular_texel::{tint_amount, tint_color};
+    let Some(ctx) = gpu_or_skip("tint_mix_matches_the_cpu_reference") else {
+        return;
+    };
+    let material = material_textures(
+        &ctx,
+        LATTICE,
+        &|_, ty| TINT_ALBEDOS[ty as usize],
+        SlotFormat::Rgba8,
+        &|tx, _| [tint_intensity(tx), 127, 0, TINT_BYTES[tx as usize]],
+    );
+    let lights = material_lights();
+    for style in [Style::Pixel, Style::Smooth] {
+        let case = MaterialCase::new(style);
+        let observe =
+            |observe| render_material(&ctx, &lights, MATERIAL_OWNERS, &material, case, observe);
+        let slot = observe(MaterialObserve::Slot);
+        let texel = observe(MaterialObserve::Texel);
+        let albedo = observe(MaterialObserve::Albedo);
+        let raw = observe(MaterialObserve::RawSpecular);
+        let out = observe(MaterialObserve::SpecularOut);
+        for ((tx, ty), i) in texel_interiors() {
+            let what = format!(
+                "{style:?}: texel ({tx}, {ty}), tint byte {}",
+                TINT_BYTES[tx as usize]
+            );
+            let rgb = |p: [f32; 4]| [p[0], p[1], p[2]];
+            assert!(raw[i][0] > 0.0, "{what}: the lights reach the texel");
+            match tint_amount(slot[i][3]) {
+                Some(t) => {
+                    assert_eq!(texel[i][2], 1.0, "{what}: tinted");
+                    assert!(
+                        (texel[i][3] - t).abs() <= 1.0e-6,
+                        "{what}: t {} vs {t}",
+                        texel[i][3]
+                    );
+                    let tint = tint_color(rgb(albedo[i]), t);
+                    let expected = std::array::from_fn(|c| raw[i][c] * tint[c]);
+                    assert_rgb_close(out[i], expected, &what);
+                }
+                None => {
+                    assert_eq!(TINT_BYTES[tx as usize], 255, "{what}");
+                    assert_eq!(texel[i][2], 0.0, "{what}: untinted");
+                    let expected = std::array::from_fn(|c| raw[i][c] * albedo[i][c]);
+                    assert_rgb_close(out[i], expected, &what);
+                }
+            }
+            // The AC's cases, on the GPU's own output: t = 0 glints white
+            // times intensity; grey, black and white glint white at any t.
+            let white = TINT_BYTES[tx as usize] == 0 || matches!(ty, 2 | 3 | 7);
+            if white && TINT_BYTES[tx as usize] != 255 {
+                assert_rgb_close(out[i], rgb(raw[i]), &format!("{what}: glints white"));
+            }
+        }
+        // A mid tint lies between its row's t = 0 and t = 1 results, per
+        // unit of raw specular.
+        for ty in [0, 1, 4, 5, 6] {
+            let ratio = |tx: u32| {
+                let i = texel_interiors().find(|(t, _)| *t == (tx, ty)).unwrap().1;
+                [0, 1, 2].map(|c| out[i][c] / raw[i][c])
+            };
+            let (white, hue) = (ratio(0), ratio(4));
+            for tx in 1..=3 {
+                let mid = ratio(tx);
+                for c in 0..3 {
+                    let (lo, hi) = (white[c].min(hue[c]), white[c].max(hue[c]));
+                    assert!(
+                        lo - 1.0e-5 <= mid[c] && mid[c] <= hi + 1.0e-5,
+                        "{style:?}: row {ty} column {tx} channel {c}: {mid:?} between {white:?} and {hue:?}"
+                    );
+                }
+            }
+        }
+        // Bright and dim orange share a hue to within 8-bit sRGB rounding:
+        // their t = 1 glints agree per unit of raw specular far closer than
+        // their albedos do.
+        let unit = |ty: u32| {
+            let i = texel_interiors().find(|(t, _)| *t == (4, ty)).unwrap().1;
+            [0, 1, 2].map(|c| out[i][c] / raw[i][c])
+        };
+        let (bright, dim) = (unit(4), unit(5));
+        for c in 0..3 {
+            assert!(
+                (bright[c] - dim[c]).abs() < 0.03,
+                "{style:?}: {bright:?} vs {dim:?}"
+            );
+        }
+    }
+}
+
+/// A specular slot of `format` whose intensity, height and (four-channel)
+/// smoothness vary per texel; never tinted.
+fn untinted_slot(
+    format: super::specular_slot_fixtures::SlotFormat,
+) -> impl Fn(u32, u32) -> [u8; 4] {
+    use super::specular_slot_fixtures::SlotFormat;
+    move |tx, ty| {
+        let intensity = (40 + 29 * tx + 11 * ty) as u8;
+        let height = (60 + 17 * ty) as u8;
+        let smoothness = if format == SlotFormat::Rgba8 {
+            smoothness_byte(tx, ty).max(1)
+        } else {
+            0
+        };
+        [intensity, height, smoothness, 255]
+    }
+}
+
+fn varied_albedo(tx: u32, ty: u32) -> [u8; 4] {
+    let (tx, ty) = (tx % 8, ty % 8);
+    [
+        (30 + 25 * tx) as u8,
+        (200 - 20 * ty) as u8,
+        (90 + 13 * (tx ^ ty)) as u8,
+        255,
+    ]
+}
+
+#[test]
+fn untinted_specular_matches_the_frozen_pre_change_function() {
+    use super::specular_slot_fixtures::{SlotFormat, material_textures};
+    let Some(ctx) = gpu_or_skip("untinted_specular_matches_the_frozen_pre_change_function") else {
+        return;
+    };
+    let lights = material_lights();
+    let shadowing = [
+        Case::default(),
+        Case {
+            mask: [0.9, 0.6, 0.3, 0.15],
+            ..Case::default()
+        },
+    ];
+    for format in [SlotFormat::R8, SlotFormat::Rg8, SlotFormat::Rgba8] {
+        let material = material_textures(
+            &ctx,
+            LATTICE,
+            &varied_albedo,
+            format,
+            &untinted_slot(format),
+        );
+        for style in [Style::Pixel, Style::Smooth] {
+            for shadowing in shadowing {
+                let case = MaterialCase {
+                    shadowing,
+                    ..MaterialCase::new(style)
+                };
+                let current = render_material(
+                    &ctx,
+                    &lights,
+                    MATERIAL_OWNERS,
+                    &material,
+                    case,
+                    MaterialObserve::Shade,
+                );
+                // A `_p` slot with A = 255 shades at its texel exponent; the
+                // oracle takes that exponent and everything else from before.
+                let oracle = render_material(
+                    &ctx,
+                    &lights,
+                    MATERIAL_OWNERS,
+                    &material,
+                    MaterialCase {
+                        path: MaterialPath::Oracle,
+                        oracle_decodes: format == SlotFormat::Rgba8,
+                        ..case
+                    },
+                    MaterialObserve::Shade,
+                );
+                for (i, (c, o)) in current.iter().zip(&oracle).enumerate() {
+                    assert_eq!(
+                        rgba_bits(*c),
+                        rgba_bits(*o),
+                        "{format:?}, {style:?}, {shadowing:?}: fragment {i} is {c:?}, before tint {o:?}"
+                    );
+                }
+                let texel = render_material(
+                    &ctx,
+                    &lights,
+                    MATERIAL_OWNERS,
+                    &material,
+                    case,
+                    MaterialObserve::Texel,
+                );
+                for ((tx, ty), i) in texel_interiors() {
+                    assert_eq!(
+                        texel[i][2], 0.0,
+                        "{format:?}: texel ({tx}, {ty}) is untinted"
+                    );
+                    if format != SlotFormat::Rgba8 {
+                        assert_eq!(texel[i][0], case.prefix_exponent, "no `_p`: the prefix");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn diffuse_is_identical_with_and_without_tint() {
+    use super::specular_slot_fixtures::{SlotFormat, material_textures};
+    let Some(ctx) = gpu_or_skip("diffuse_is_identical_with_and_without_tint") else {
+        return;
+    };
+    let lights = material_lights();
+    // No `_t` (narrow, and four-channel at A = 255), then t = 0 and t = 1.
+    let slots: [(&str, SlotFormat, u8); 4] = [
+        ("one-channel", SlotFormat::R8, 255),
+        ("no `_t`", SlotFormat::Rgba8, 255),
+        ("t = 0", SlotFormat::Rgba8, 0),
+        ("t = 1", SlotFormat::Rgba8, 254),
+    ];
+    for style in [Style::Pixel, Style::Smooth] {
+        // Specular masked off, as LightTermMask bit 6 does.
+        let case = MaterialCase {
+            use_specular: false,
+            ..MaterialCase::new(style)
+        };
+        let mut renders = Vec::new();
+        for (name, format, tint) in slots {
+            let material = material_textures(&ctx, LATTICE, &varied_albedo, format, &|tx, ty| {
+                [200, 127, smoothness_byte(tx, ty), tint]
+            });
+            let shade = render_material(
+                &ctx,
+                &lights,
+                MATERIAL_OWNERS,
+                &material,
+                case,
+                MaterialObserve::Shade,
+            );
+            let before = render_material(
+                &ctx,
+                &lights,
+                MATERIAL_OWNERS,
+                &material,
+                MaterialCase {
+                    path: MaterialPath::Oracle,
+                    ..case
+                },
+                MaterialObserve::Shade,
+            );
+            for (i, (c, o)) in shade.iter().zip(&before).enumerate() {
+                assert_eq!(
+                    rgba_bits(*c),
+                    rgba_bits(*o),
+                    "{style:?}, {name}: fragment {i}"
+                );
+            }
+            renders.push((name, shade));
+        }
+        let (_, first) = &renders[0];
+        for (name, shade) in &renders[1..] {
+            for (i, (a, b)) in first.iter().zip(shade).enumerate() {
+                assert_eq!(
+                    rgba_bits(*a),
+                    rgba_bits(*b),
+                    "{style:?}: {name} vs one-channel, fragment {i}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn marker_slots_keep_their_meaning_through_filtering() {
+    use super::specular_slot_fixtures::{SlotFormat, white_material};
+    let Some(ctx) = gpu_or_skip("marker_slots_keep_their_meaning_through_filtering") else {
+        return;
+    };
+    let lights = material_lights();
+    let prefix = 64.0;
+    for footprint in FOOTPRINTS {
+        for (name, marker) in [
+            ("`_p` at B = 1", SHARP_MARKER_TEXEL),
+            ("`_t` at A = 254", TINT_MARKER_TEXEL),
+        ] {
+            let material = white_material(
+                &ctx,
+                footprint.texture_size(),
+                SlotFormat::Rgba8,
+                &|_, _| marker,
+            );
+            let case = MaterialCase {
+                prefix_exponent: prefix,
+                uv_per_pixel: footprint.uv_per_pixel(),
+                ..MaterialCase::new(Style::Pixel)
+            };
+            let texel = render_material(
+                &ctx,
+                &lights,
+                MATERIAL_OWNERS,
+                &material,
+                case,
+                MaterialObserve::Texel,
+            );
+            for (i, [exponent, intensity, tinted, tint]) in texel.into_iter().enumerate() {
+                let what = format!("{footprint:?}, {name}: fragment {i}");
+                assert!(
+                    (intensity - 1.0).abs() <= 0.5 / 255.0,
+                    "{what}: intensity {intensity}"
+                );
+                if marker == SHARP_MARKER_TEXEL {
+                    assert_eq!(exponent, 1.0, "{what}: smoothness byte 1 is exponent 1");
+                    assert_eq!(tinted, 0.0, "{what}: raw albedo");
+                } else {
+                    assert_eq!(exponent, prefix, "{what}: no `_p` keeps the prefix");
+                    assert_eq!(tinted, 1.0, "{what}: tinted");
+                    assert!(
+                        (tint - 1.0).abs() <= 0.5 / 254.0,
+                        "{what}: t = 1, read {tint}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn narrow_specular_slots_shade_in_raw_albedo() {
+    use super::specular_slot_fixtures::{SlotFormat, material_textures};
+    let Some(ctx) = gpu_or_skip("narrow_specular_slots_shade_in_raw_albedo") else {
+        return;
+    };
+    let lights = material_lights();
+    for footprint in FOOTPRINTS {
+        for format in [SlotFormat::R8, SlotFormat::Rg8, SlotFormat::Placeholder] {
+            let material = material_textures(
+                &ctx,
+                footprint.texture_size(),
+                &varied_albedo,
+                format,
+                &untinted_slot(format),
+            );
+            for style in [Style::Pixel, Style::Smooth] {
+                let case = MaterialCase {
+                    uv_per_pixel: footprint.uv_per_pixel(),
+                    ..MaterialCase::new(style)
+                };
+                let what = format!("{footprint:?}, {format:?}, {style:?}");
+                let texel = render_material(
+                    &ctx,
+                    &lights,
+                    MATERIAL_OWNERS,
+                    &material,
+                    case,
+                    MaterialObserve::Texel,
+                );
+                for (i, [exponent, _, tinted, _]) in texel.into_iter().enumerate() {
+                    assert_eq!(
+                        exponent, case.prefix_exponent,
+                        "{what}: fragment {i}: the prefix"
+                    );
+                    assert_eq!(tinted, 0.0, "{what}: fragment {i}: raw albedo");
+                }
+                let current = render_material(
+                    &ctx,
+                    &lights,
+                    MATERIAL_OWNERS,
+                    &material,
+                    case,
+                    MaterialObserve::Shade,
+                );
+                let before = render_material(
+                    &ctx,
+                    &lights,
+                    MATERIAL_OWNERS,
+                    &material,
+                    MaterialCase {
+                        path: MaterialPath::Oracle,
+                        ..case
+                    },
+                    MaterialObserve::Shade,
+                );
+                for (i, (c, o)) in current.iter().zip(&before).enumerate() {
+                    assert_eq!(rgba_bits(*c), rgba_bits(*o), "{what}: fragment {i}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn tint_only_bundles_shade_at_each_prefix_exponent() {
+    use super::specular_slot_fixtures::{SlotFormat, white_material};
+    use postretro_render_data::material::Material;
+    let Some(ctx) = gpu_or_skip("tint_only_bundles_shade_at_each_prefix_exponent") else {
+        return;
+    };
+    // One `_t`-only bundle's bytes, as the content-addressed sidecar two
+    // prefixes share.
+    let material = white_material(&ctx, LATTICE, SlotFormat::Rgba8, &|tx, _| {
+        [255, 127, 0, TINT_BYTES[tx as usize].min(254)]
+    });
+    let lights = material_lights();
+    let mut raws = Vec::new();
+    for prefix in [Material::Metal, Material::Concrete] {
+        let exponent = prefix.shininess().max(1.0);
+        let case = MaterialCase {
+            prefix_exponent: exponent,
+            ..MaterialCase::new(Style::Pixel)
+        };
+        let texel = render_material(
+            &ctx,
+            &lights,
+            MATERIAL_OWNERS,
+            &material,
+            case,
+            MaterialObserve::Texel,
+        );
+        for (i, p) in texel.iter().enumerate() {
+            assert_eq!(
+                p[0], exponent,
+                "{prefix:?}: fragment {i} shades at its prefix"
+            );
+            assert_eq!(p[2], 1.0, "{prefix:?}: fragment {i} is tinted");
+        }
+        raws.push(render_material(
+            &ctx,
+            &lights,
+            MATERIAL_OWNERS,
+            &material,
+            case,
+            MaterialObserve::RawSpecular,
+        ));
+    }
+    assert!(
+        raws[0].iter().zip(&raws[1]).any(|(a, b)| a != b),
+        "the two prefixes' exponents shape different highlights"
+    );
+}
+
+/// The decode's and mix's constants exist twice: the GPU-free authority in
+/// render-cpu `specular_texel` and `material_shading.wgsl`. Pinned by value
+/// (a literal or `a / b` of literals), so the CPU reference tests prove the
+/// shader's numbers.
+#[test]
+fn specular_texel_shader_constants_match_the_cpu_reference() {
+    use postretro_render_cpu::specular_texel as cpu;
+    fn declared(name: &str) -> f32 {
+        let line = wgsl_const_line(MATERIAL_SHADING_WGSL, name);
+        let rhs = line
+            .split_once('=')
+            .and_then(|(_, rhs)| rhs.trim().strip_suffix(';'))
+            .unwrap_or_else(|| panic!("`{line}` must assign a value"));
+        let literal = |text: &str| -> f32 {
+            text.trim()
+                .parse()
+                .unwrap_or_else(|_| panic!("{name}: `{text}` must be an f32 literal"))
+        };
+        match rhs.split_once('/') {
+            Some((num, den)) => literal(num) / literal(den),
+            None => literal(rhs),
+        }
+    }
+    for (name, cpu) in [
+        ("SPECULAR_EXPONENT_MIN", cpu::SPECULAR_EXPONENT_MIN),
+        ("SPECULAR_EXPONENT_MAX", cpu::SPECULAR_EXPONENT_MAX),
+        ("SPECULAR_ROUGHNESS4_FLOOR", cpu::SPECULAR_ROUGHNESS4_FLOOR),
+        (
+            "SPECULAR_SMOOTHNESS_MARKER",
+            cpu::SPECULAR_SMOOTHNESS_MARKER,
+        ),
+        ("SPECULAR_TINT_MARKER", cpu::SPECULAR_TINT_MARKER),
+        ("SPECULAR_TINT_SCALE", cpu::SPECULAR_TINT_SCALE),
+        ("SPECULAR_HUE_EPSILON", cpu::SPECULAR_HUE_EPSILON),
+    ] {
+        assert_eq!(declared(name).to_bits(), cpu.to_bits(), "{name}");
+    }
+}
+
+/// Pin P12 and the one-read rule: forward reads the slot once, decodes it
+/// through the shared functions, floors r⁴ before the divide, and moves only a
+/// tinted texel's highlight out of the albedo multiply.
+#[test]
+fn forward_fs_main_reads_sharpness_and_tint_from_one_slot_sample() {
+    let fs = squashed_code(wgsl_function(FORWARD_WGSL, "fs_main"));
+    assert_eq!(
+        fs.matches("spec_texture").count(),
+        1,
+        "one read of the slot"
+    );
+    assert!(fs.contains(
+        "letspec_texel=specular_texel(sample_color(spec_texture,shade_uv,ddx,ddy),\
+         max(material.shininess,1.0),);"
+    ));
+    assert!(fs.contains("spec_point.view,spec_texel.exponent,spec_texel.intensity,"));
+    assert!(fs.contains(
+        "ifspec_texel.tinted{tinted_specular=specular_sum*specular_tint(base_color.rgb,\
+         spec_texel.tint);specular_sum=vec3<f32>(0.0);}}total_light=total_light+specular_sum;"
+    ));
+    assert!(fs.contains("letrgb=base_color.rgb*total_light+emissive+tinted_specular;"));
+    let decode = squashed_code(wgsl_function(
+        MATERIAL_SHADING_WGSL,
+        "specular_texel_exponent",
+    ));
+    let floor = decode
+        .find("letr4=max(r2*r2,SPECULAR_ROUGHNESS4_FLOOR);")
+        .expect("r⁴ is floored");
+    let divide = decode.find("2.0/r4").expect("the decode divides by r⁴");
+    assert!(floor < divide, "the floor comes before the divide");
+    assert_eq!(
+        decode.matches('/').count(),
+        1,
+        "the floored r⁴ is the only divisor"
+    );
 }

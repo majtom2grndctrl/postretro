@@ -76,6 +76,71 @@ fn specular_texel_point(smooth_style: bool, per_pixel: SpecularPoint, uv: vec2<f
     return SpecularPoint(position, normalize(eye - position));
 }
 
+// Per-texel sharpness and tint from the specular slot (resource_management.md
+// §4.7). Mirrors render-cpu `specular_texel`, pinned by
+// `specular_texel_shader_constants_match_the_cpu_reference`.
+const SPECULAR_EXPONENT_MIN: f32 = 1.0;
+const SPECULAR_EXPONENT_MAX: f32 = 8192.0;
+// r⁴ at an exponent of 8198, a hair past the cap: byte 255 (r = 0) never
+// divides by zero (clamp() does not reliably sanitize Inf in WGSL), and an
+// approximate divide at the floor still clamps to exactly the cap.
+const SPECULAR_ROUGHNESS4_FLOOR: f32 = 2.0 / 8200.0;
+// Half a step inside each marker: B = 0 is "no `_p`", A = 255 "no `_t`", the
+// values a narrower slot and the placeholder read. Filter rounding never
+// crosses either.
+const SPECULAR_SMOOTHNESS_MARKER: f32 = 0.5 / 255.0;
+const SPECULAR_TINT_MARKER: f32 = 254.5 / 255.0;
+// Stored A runs 0..=254, so t = A·255/254.
+const SPECULAR_TINT_SCALE: f32 = 255.0 / 254.0;
+// At or below this largest channel an albedo has no hue; it glints white.
+const SPECULAR_HUE_EPSILON: f32 = 1.0e-4;
+
+// What one read of the specular slot says about a texel's highlight: R
+// intensity, B smoothness (the exponent; the prefix's without it), A tint.
+// G is the Surface Depth march's height and is read there.
+struct SpecularTexel {
+    intensity: f32,
+    exponent: f32,
+    // Tinted: the highlight leaves the albedo multiply and takes
+    // `specular_tint(albedo, tint)`. Untinted keeps the raw-albedo multiply.
+    tinted: bool,
+    tint: f32,
+};
+
+fn specular_texel(slot: vec4<f32>, prefix_exponent: f32) -> SpecularTexel {
+    return SpecularTexel(
+        slot.r,
+        specular_texel_exponent(slot.b, prefix_exponent),
+        slot.a < SPECULAR_TINT_MARKER,
+        min(slot.a * SPECULAR_TINT_SCALE, 1.0),
+    );
+}
+
+// Smoothness to a Blinn-Phong exponent: r = 1 − B, n = 2/r⁴ − 2, clamped to
+// 1..=8192, with r⁴ floored before the divide. Without smoothness (B below the
+// marker) the material's prefix exponent, unchanged.
+fn specular_texel_exponent(smoothness: f32, prefix_exponent: f32) -> f32 {
+    let r = 1.0 - smoothness;
+    let r2 = r * r;
+    let r4 = max(r2 * r2, SPECULAR_ROUGHNESS4_FLOOR);
+    let decoded = clamp(2.0 / r4 - 2.0, SPECULAR_EXPONENT_MIN, SPECULAR_EXPONENT_MAX);
+    return select(prefix_exponent, decoded, smoothness >= SPECULAR_SMOOTHNESS_MARKER);
+}
+
+// A tinted highlight's colour: a mix from white (t = 0) to the albedo's hue at
+// full brightness (t = 1), the albedo over its largest channel, white where it
+// has none. It multiplies the highlight in place of the albedo, so an author
+// can dim a metal's diffuse without dimming its glint. Diffuse never changes.
+fn specular_tint(albedo: vec3<f32>, tint: f32) -> vec3<f32> {
+    let peak = max(albedo.r, max(albedo.g, albedo.b));
+    let hue = select(
+        vec3<f32>(1.0),
+        albedo / max(peak, SPECULAR_HUE_EPSILON),
+        peak > SPECULAR_HUE_EPSILON,
+    );
+    return mix(vec3<f32>(1.0), hue, tint);
+}
+
 // Normal-map dispatch: BC5 stores only tangent-space (x, y) in RG, so decode
 // those (`* 2 - 1`) and reconstruct z = sqrt(1 - x² - y²). Renormalize
 // unconditionally — BC5 endpoint quantisation plus bilinear filtering leaves

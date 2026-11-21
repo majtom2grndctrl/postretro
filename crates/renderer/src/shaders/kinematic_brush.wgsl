@@ -14,7 +14,8 @@ struct CameraUniforms {
 @group(1) @binding(2) var spec_texture: texture_2d<f32>;
 
 struct MaterialUniform {
-    // Blinn-Phong specular exponent; constant per-material variant.
+    // The prefix's Blinn-Phong exponent: what a texel shades at without
+    // smoothness in the specular slot's B (resource_management.md §4.7).
     shininess: f32,
     // The texture's baked glow strength (PRL id 60) on its emissive map.
     emissive_strength: f32,
@@ -404,6 +405,14 @@ fn mover_texel_specular(
     return blinn_phong(L, point.view, n, color, spec_exp, spec_int) * (geometry.w * shadow);
 }
 
+// The runtime light loop's two sums. `lit` is what the albedo multiplies:
+// diffuse, plus an untinted texel's specular. `tinted_specular` holds a tinted
+// texel's specular apart for `specular_tint` (resource_management.md §4.7).
+struct MoverDirect {
+    lit: vec3<f32>,
+    tinted_specular: vec3<f32>,
+};
+
 fn accumulate_dynamic_direct(
     world_pos: vec3<f32>,
     n: vec3<f32>,
@@ -411,12 +420,16 @@ fn accumulate_dynamic_direct(
     spec_point: SpecularPoint,
     spec_exp: f32,
     spec_int: f32,
+    tinted: bool,
     use_dynamic: bool,
     use_specular: bool,
     smooth_style: bool,
     depth: SurfaceDepthResult,
-) -> vec3<f32> {
+) -> MoverDirect {
     var total = vec3<f32>(0.0);
+    // Only a tinted texel's specular lands here; an untinted texel adds its
+    // specular into `total` right after each light's diffuse, as before tint.
+    var tinted_total = vec3<f32>(0.0);
     let light_count = select(0u, kinematic_light_params.light_count, use_dynamic);
     // Surface Depth self-shadowing is budgeted per fragment by
     // `depth.shadow_light_budget` (the player's on/off switch, carried in the
@@ -590,15 +603,20 @@ fn accumulate_dynamic_direct(
         // Animated direct tails are diffuse-only. Selected-static records begin
         // after the descriptor-bearing prefix. Smooth style keeps the per-pixel
         // evaluation and its gates exactly; pixel style evaluates the texel's
-        // point. Either way the term adds right after this light's diffuse.
+        // point. Either way an untinted term adds right after this light's
+        // diffuse; a tinted one joins its own sum.
         if use_specular && i >= kinematic_light_params.scripted_light_count {
             if smooth_style {
                 if n_dot_l > 0.0 {
-                    total = total
-                        + blinn_phong(L, spec_point.view, n, effective_color, spec_exp, spec_int) * attenuation;
+                    let term = blinn_phong(L, spec_point.view, n, effective_color, spec_exp, spec_int) * attenuation;
+                    if tinted {
+                        tinted_total = tinted_total + term;
+                    } else {
+                        total = total + term;
+                    }
                 }
             } else {
-                total = total + mover_texel_specular(
+                let term = mover_texel_specular(
                     light,
                     effective_color,
                     effective_aim,
@@ -610,10 +628,15 @@ fn accumulate_dynamic_direct(
                     spec_exp,
                     spec_int,
                 );
+                if tinted {
+                    tinted_total = tinted_total + term;
+                } else {
+                    total = total + term;
+                }
             }
         }
     }
-    return total;
+    return MoverDirect(total, tinted_total);
 }
 
 // Post Retro sample. Reconstructs the texel grid in UV space through the
@@ -671,7 +694,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     );
     let shade_uv = depth.uv;
 
-    let base_color = sample_post_retro(base_texture, aniso_sampler, shade_uv, ddx, ddy);
     let n_ts = sample_normal(t_normal, shade_uv, ddx, ddy);
     let n_bump = reconstruct_tbn_normal(mesh_n, in.world_tangent, in.bitangent_sign, n_ts);
     // The normal map still applies on TOP faces; a side wall uses the exact
@@ -694,9 +716,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Depth-derived ambient occlusion, INDIRECT term only, behind its own
     // LightTermMask bit. The baked direct SH term is untouched.
     indirect = indirect * surface_depth_indirect_ao(depth, light_terms);
-    let spec_exp = max(material.shininess, 1.0);
-    // The surface map's R channel; the march read its G channel.
-    let spec_int = sample_post_retro(spec_texture, aniso_sampler, shade_uv, ddx, ddy).r;
+    // One read of the slot: R intensity, B smoothness, A tint; the march read
+    // its G channel.
+    let spec_texel = specular_texel(
+        sample_post_retro(spec_texture, aniso_sampler, shade_uv, ddx, ddy),
+        max(material.shininess, 1.0),
+    );
     let smooth_style = mover_specular_style_smooth();
     let spec_point = mover_specular_point(
         smooth_style,
@@ -717,8 +742,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         n,
         mesh_n,
         spec_point,
-        spec_exp,
-        spec_int,
+        spec_texel.exponent,
+        spec_texel.intensity,
+        spec_texel.tinted,
         use_dynamic,
         use_specular,
         smooth_style,
@@ -729,10 +755,20 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if use_ambient_floor {
         lighting = vec3<f32>(kinematic_light_params.ambient_floor) + lighting;
     }
-    lighting = lighting + dynamic;
+    lighting = lighting + dynamic.lit;
+    // Albedo is read after the light loop, not before it: held across the
+    // loop beside the tint accumulator it took the shader from 128 to 224
+    // VGPRs on AMD Metal (tools/metal_register_screen). Screen before moving it.
+    let base_color = sample_post_retro(base_texture, aniso_sampler, shade_uv, ddx, ddy);
     var emissive = vec3<f32>(0.0);
     if material.emissive_strength > 0.0 {
         emissive = sample_post_retro(emissive_texture, aniso_sampler, shade_uv, ddx, ddy).rgb;
     }
-    return vec4<f32>(base_color.rgb * lighting + emissive * material.emissive_strength, base_color.a);
+    // The tint mix runs once, after the loop. An untinted fragment adds an
+    // exact zero after the expression it had before tint.
+    let tinted_specular = dynamic.tinted_specular * specular_tint(base_color.rgb, spec_texel.tint);
+    return vec4<f32>(
+        base_color.rgb * lighting + emissive * material.emissive_strength + tinted_specular,
+        base_color.a,
+    );
 }

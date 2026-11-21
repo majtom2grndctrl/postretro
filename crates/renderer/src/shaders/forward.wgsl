@@ -85,16 +85,18 @@ fn animated_baked_light_tail_count() -> u32 {
 // Per-material emissive color. `Rgba8UnormSrgb` decodes to linear through the
 // hardware texture path, like base_texture; the black placeholder is a no-op.
 @group(1) @binding(1) var emissive_texture: texture_2d<f32>;
-// Per-material specular slot, sampled as .r: R8Unorm specular, or the
-// Rg8Unorm surface map (R specular, G stored height) when the diffuse has an
-// `_h.png` sibling. 1×1 black R8Unorm when neither sibling exists, which zeros
-// `spec_int` without a branch; its G reads as maximum raise, so the has-depth
-// bit is the only guard keeping Surface Depth off it. See
-// context/lib/resource_management.md §4.1, §4.6.
+// Per-material specular slot: R8Unorm specular, the Rg8Unorm surface map (R
+// specular, G stored height) when the diffuse has an `_h.png` sibling, or
+// Rgba8Unorm (B smoothness, A tint) with `_p.png` or `_t.png`. 1×1 black
+// R8Unorm when no sibling exists, which zeros the intensity without a branch;
+// its G reads as maximum raise, so the has-depth bit is the only guard keeping
+// Surface Depth off it. A narrower slot reads B = 0 and A = 1, the no-`_p` and
+// no-`_t` markers. See context/lib/resource_management.md §4.1, §4.6, §4.7.
 @group(1) @binding(2) var spec_texture: texture_2d<f32>;
 
 struct MaterialUniform {
-    // Blinn-Phong specular exponent; constant per-material variant.
+    // The prefix's Blinn-Phong exponent: what a texel shades at without
+    // smoothness in the specular slot's B (resource_management.md §4.7).
     shininess: f32,
     // The texture's baked glow strength (PRL id 60) on its emissive map.
     emissive_strength: f32,
@@ -1345,10 +1347,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         + static_direct;
 
     var specular_sum = vec3<f32>(0.0);
+    // A tinted texel's highlight, held out of the albedo multiply
+    // (resource_management.md §4.7). Zero for an untinted texel, whose
+    // highlight stays in `total_light` exactly as before tint existed.
+    var tinted_specular = vec3<f32>(0.0);
     if use_specular {
-        // The surface map's R channel; the march read its G channel.
-        let spec_int = sample_color(spec_texture, shade_uv, ddx, ddy).r;
-        let spec_exp = max(material.shininess, 1.0);
+        // One read of the slot: R intensity, B smoothness, A tint; the march
+        // read its G channel.
+        let spec_texel = specular_texel(
+            sample_color(spec_texture, shade_uv, ddx, ddy),
+            max(material.shininess, 1.0),
+        );
         // World static specular is the face's owners plus the SDF selection,
         // never the chunk light list. Owners read their channels only from a
         // bound mask at a resident block: a refused, absent or placeholder
@@ -1388,8 +1397,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             spec_point.position,
             N_shade,
             spec_point.view,
-            spec_exp,
-            spec_int,
+            spec_texel.exponent,
+            spec_texel.intensity,
             in.spec_owners,
             specular_shadowmask,
             owners_readable,
@@ -1397,6 +1406,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             sdf_factor,
             sdf_force_lit,
         );
+        if spec_texel.tinted {
+            tinted_specular = specular_sum * specular_tint(base_color.rgb, spec_texel.tint);
+            specular_sum = vec3<f32>(0.0);
+        }
     }
     total_light = total_light + specular_sum;
 
@@ -1595,7 +1608,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             * material.emissive_strength
             * volume_factor;
     }
-    let rgb = base_color.rgb * total_light + emissive;
+    // The tinted highlight joins after the albedo multiply and the glow, so an
+    // untinted fragment keeps the exact expression it had before tint.
+    let rgb = base_color.rgb * total_light + emissive + tinted_specular;
     // `SdfShadowMode::Visualize` (2) replaces the shaded color with a
     // grayscale view of the first per-light visibility slice (R = slot 0,
     // the most-influential sdf light) — sampled through the same bilateral

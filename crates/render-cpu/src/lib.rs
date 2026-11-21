@@ -30,6 +30,7 @@ pub mod sh_depth_tiles;
 pub mod sh_residency;
 pub mod sh_volume;
 pub mod shadow_reach;
+pub mod specular_texel;
 pub mod surface_depth;
 pub mod texture_prep;
 pub mod uv_normalize;

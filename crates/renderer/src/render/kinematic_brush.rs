@@ -1350,6 +1350,13 @@ mod tests {
                 "fn specular_texel_point(",
                 "struct SpecularPoint {",
                 "const SPECULAR_POINT_AXES_EPSILON:",
+                "fn specular_texel(",
+                "fn specular_texel_exponent(",
+                "fn specular_tint(",
+                "struct SpecularTexel {",
+                "const SPECULAR_ROUGHNESS4_FLOOR:",
+                "const SPECULAR_SMOOTHNESS_MARKER:",
+                "const SPECULAR_TINT_MARKER:",
             ] {
                 assert!(
                     material_shading.contains(declaration),
@@ -1399,6 +1406,36 @@ mod tests {
         );
         // `depth.uv` is the mover's marched UV, the one its texture reads use.
         assert!(mover_fs.contains("letshade_uv=depth.uv;"));
+
+        // Sharpness and tint: each pass reads the slot once and decodes it
+        // through the shared functions, so the mover reads them exactly as
+        // forward does.
+        let forward_slot_read = "letspec_texel=specular_texel(sample_color(spec_texture,\
+                                 shade_uv,ddx,ddy),max(material.shininess,1.0),);";
+        let mover_slot_read = "letspec_texel=specular_texel(sample_post_retro(spec_texture,\
+                               aniso_sampler,shade_uv,ddx,ddy),max(material.shininess,1.0),);";
+        assert!(forward_fs.contains(forward_slot_read));
+        assert!(mover_fs.contains(mover_slot_read));
+        for fs in [&forward_fs, &mover_fs] {
+            assert_eq!(
+                fs.matches("spec_texture").count(),
+                1,
+                "one read of the slot"
+            );
+            assert_eq!(
+                fs.matches("specular_tint(base_color.rgb,spec_texel.tint)")
+                    .count(),
+                1
+            );
+        }
+        assert!(
+            mover_fs
+                .contains("spec_point,spec_texel.exponent,spec_texel.intensity,spec_texel.tinted,")
+        );
+        assert!(mover_fs.contains(
+            "returnvec4<f32>(base_color.rgb*lighting+emissive*material.emissive_strength\
+             +tinted_specular,base_color.a,);"
+        ));
         assert!(forward_fs.contains(
             "specular_texel_point(specular_style_smooth(),SpecularPoint(in.world_position,V),\
              in.uv,shade_uv,"
@@ -1843,22 +1880,26 @@ mod tests {
                 && mover_src.contains("let use_specular = (light_terms & 0x40u) != 0u;"),
             "mover dynamic and specular gates must derive independently from LightTermMask bits 5 and 6",
         );
+        // An untinted texel adds its term into `total` right after the light's
+        // diffuse, as before tint; a tinted texel's term joins its own sum.
+        let split = "iftinted{tinted_total=tinted_total+term;}else{total=total+term;}";
         assert!(
-            dynamic_loop.contains(
-                "ifsmooth_style{ifn_dot_l>0.0{total=total+blinn_phong(L,spec_point.view,n,\
-                 effective_color,spec_exp,spec_int)*attenuation;}}"
-            ),
+            dynamic_loop.contains(&format!(
+                "ifsmooth_style{{ifn_dot_l>0.0{{letterm=blinn_phong(L,spec_point.view,n,\
+                 effective_color,spec_exp,spec_int)*attenuation;{split}}}}}"
+            )),
             "smooth mover specular keeps the front-lit gate and the runtime attenuation, cone, \
              shadow, and promotion color factors",
         );
         assert!(
-            dynamic_loop.contains(
-                "total=total+mover_texel_specular(light,effective_color,effective_aim,spec_point,\
-                 n,mesh_n,depth.hit_top,shadow,spec_exp,spec_int,);"
-            ),
+            dynamic_loop.contains(&format!(
+                "letterm=mover_texel_specular(light,effective_color,effective_aim,spec_point,\
+                 n,mesh_n,depth.hit_top,shadow,spec_exp,spec_int,);{split}"
+            )),
             "pixel mover specular takes the texel's point, this fragment's shadow and the \
              promotion color",
         );
+        assert_eq!(dynamic_loop.matches(split).count(), 2);
         assert!(
             squashed("mover_texel_specular").contains(
                 "blinn_phong(L,point.view,n,color,spec_exp,spec_int)*(geometry.w*shadow)"

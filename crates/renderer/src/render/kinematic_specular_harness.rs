@@ -1,7 +1,9 @@
 // GPU readback harness for the mover pass's selected-static specular: the
 // runtime light loop (`accumulate_dynamic_direct`), the pixel-style point
 // (`mover_specular_point`) and the per-light texel term (`mover_texel_specular`),
-// beside a frozen copy of the 1c7fc9e3a loop.
+// beside frozen copies of the 1c7fc9e3a and 74fcfd4b9 loops. Its material path
+// reads a real albedo and specular slot and shades sharpness and tint as the
+// mover's `fs_main` does.
 // See: context/lib/rendering_pipeline.md §4 (Texel-centre highlight), §7.3
 //
 // Intentional exception to testing_guide.md §3 "No GPU context in tests": the
@@ -17,6 +19,8 @@ use super::gpu_test_harness::{GpuCtx, wgsl_const_line, wgsl_function, wgsl_item}
 use postretro_render_cpu::frame_uniforms::KINEMATIC_SPECULAR_STYLE_SMOOTH;
 use wgpu::util::DeviceExt;
 
+use super::specular_slot_fixtures::{MaterialTextures, SlotFormat, white_material};
+
 pub(super) const KINEMATIC_WGSL: &str = include_str!("../shaders/kinematic_brush.wgsl");
 const MATERIAL_SHADING_WGSL: &str = include_str!("../shaders/material_shading.wgsl");
 const SURFACE_DEPTH_WGSL: &str = include_str!("../shaders/surface_depth.wgsl");
@@ -25,6 +29,7 @@ const LIGHT_EVAL_WGSL: &str = include_str!("../shaders/light_eval.wgsl");
 const CURVE_EVAL_WGSL: &str = include_str!("../shaders/curve_eval.wgsl");
 const SHADOW_SAMPLE_WGSL: &str = include_str!("../shaders/shadow_sample.wgsl");
 const FROZEN_WGSL: &str = include_str!("kinematic_specular_frozen.wgsl");
+const FROZEN_PRETINT_WGSL: &str = include_str!("kinematic_specular_frozen_pretint.wgsl");
 
 /// `LATTICE`² albedo (and height) texels magnified onto `TARGET`² pixels.
 pub(super) const TARGET: u32 = 64;
@@ -66,6 +71,10 @@ struct Harness {
     modes: vec4<u32>,
     // x use_dynamic.
     flags: vec4<u32>,
+    // xy UV per pixel along x and y.
+    uv_per_pixel: vec4<f32>,
+    // x material path (0 none), y the oracle takes the decoded exponent.
+    material_modes: vec4<u32>,
 };
 @group(0) @binding(0) var<storage, read> lights: array<GpuLight>;
 @group(0) @binding(1) var<storage, read> light_influence: array<vec4<f32>>;
@@ -76,6 +85,14 @@ struct Harness {
 @group(0) @binding(6) var spec_texture: texture_2d<f32>;
 @group(0) @binding(7) var<uniform> material: MaterialUniform;
 @group(0) @binding(8) var<uniform> harness: Harness;
+@group(0) @binding(9) var base_texture: texture_2d<f32>;
+@group(0) @binding(10) var aniso_sampler: sampler;
+
+// Stand-ins for the light the mover's `fs_main` sums ahead of its loop and
+// for its glow.
+const HARNESS_LIGHT_BEFORE_LOOP: vec3<f32> = vec3<f32>(0.21, 0.17, 0.13);
+const HARNESS_EMISSIVE: vec3<f32> = vec3<f32>(0.02, 0.0, 0.04);
+const HARNESS_EMISSIVE_STRENGTH: f32 = 1.5;
 
 // 1, 0.5 or 0 by (x + 2y) mod 3 of the fragment's own pixel, read back from
 // its plane position; `fragment_shadow` mirrors it.
@@ -117,7 +134,7 @@ fn vs_main(@builtin(vertex_index) vertex: u32) -> @builtin(position) vec4<f32> {
 fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     // The mover's `fs_main` up to its light loop, on a magnified floor facing
     // +Y with no normal map.
-    let uv = (position.xy + vec2<f32>(SUBPIXEL_OFFSET)) * UV_PER_PIXEL;
+    let uv = (position.xy + vec2<f32>(SUBPIXEL_OFFSET)) * harness.uv_per_pixel.xy;
     let world = vec3<f32>(uv.x, 0.0, uv.y) * METRES_PER_UV;
     let ddx = dpdx(uv);
     let ddy = dpdy(uv);
@@ -135,15 +152,73 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     }
     let smooth_style = mover_specular_style_smooth();
     let spec_point = mover_specular_point(
-        smooth_style, depth, uv, world, mesh_n, V, eye, vec2<f32>(LATTICE),
-        ddx, ddy, ddx_world, ddy_world,
+        smooth_style, depth, uv, world, mesh_n, V, eye,
+        vec2<f32>(textureDimensions(base_texture, 0)), ddx, ddy, ddx_world, ddy_world,
     );
     let exponent = harness.eye_and_exponent.w;
     let use_specular = harness.modes.w != 0u;
     let use_dynamic = harness.flags.x != 0u;
 
     var shade: vec3<f32>;
-    if harness.modes.x == OUTPUT_FROZEN {
+    var observed_material = vec4<f32>(0.0);
+    if harness.material_modes.x != MATERIAL_NONE {
+        // The mover's `fs_main` from its slot read on: one sample of the
+        // slot, the loop, the albedo read after it, the tint mix.
+        let slot = sample_post_retro(spec_texture, aniso_sampler, depth.uv, ddx, ddy);
+        let prefix_exponent = max(material.shininess, 1.0);
+        if harness.material_modes.x == MATERIAL_ORACLE {
+            // Before tint: R intensity, the prefix exponent (a `_p` slot's
+            // decoded one when asked), the raw-albedo multiply.
+            let exponent = select(
+                prefix_exponent,
+                specular_texel_exponent(slot.b, prefix_exponent),
+                harness.material_modes.y != 0u,
+            );
+            var dynamic: vec3<f32>;
+            if smooth_style {
+                dynamic = frozen_accumulate_dynamic_direct(
+                    world, n, mesh_n, V, exponent, slot.r, use_dynamic, use_specular, depth,
+                );
+            } else {
+                dynamic = pretint_accumulate_dynamic_direct(
+                    world, n, mesh_n, spec_point, exponent, slot.r, use_dynamic, use_specular,
+                    smooth_style, depth,
+                );
+            }
+            var lighting = HARNESS_LIGHT_BEFORE_LOOP;
+            lighting = lighting + dynamic;
+            let base_color = sample_post_retro(base_texture, aniso_sampler, depth.uv, ddx, ddy);
+            shade = base_color.rgb * lighting + HARNESS_EMISSIVE * HARNESS_EMISSIVE_STRENGTH;
+        } else {
+            let spec_texel = specular_texel(slot, prefix_exponent);
+            let dynamic = accumulate_dynamic_direct(
+                world, n, mesh_n, spec_point, spec_texel.exponent, spec_texel.intensity,
+                spec_texel.tinted, use_dynamic, use_specular, smooth_style, depth,
+            );
+            var lighting = HARNESS_LIGHT_BEFORE_LOOP;
+            lighting = lighting + dynamic.lit;
+            let base_color = sample_post_retro(base_texture, aniso_sampler, depth.uv, ddx, ddy);
+            let tinted_specular = dynamic.tinted_specular
+                * specular_tint(base_color.rgb, spec_texel.tint);
+            shade = base_color.rgb * lighting + HARNESS_EMISSIVE * HARNESS_EMISSIVE_STRENGTH
+                + tinted_specular;
+            switch harness.modes.z {
+                case 3u: {
+                    observed_material = vec4<f32>(
+                        spec_texel.exponent,
+                        spec_texel.intensity,
+                        select(0.0, 1.0, spec_texel.tinted),
+                        spec_texel.tint,
+                    );
+                }
+                case 4u: { observed_material = base_color; }
+                case 5u: { observed_material = vec4<f32>(dynamic.tinted_specular, 1.0); }
+                case 6u: { observed_material = vec4<f32>(tinted_specular, 1.0); }
+                case 7u: { observed_material = slot; }
+                default: {}
+            }
+        }
+    } else if harness.modes.x == OUTPUT_FROZEN {
         shade = frozen_accumulate_dynamic_direct(
             world, n, mesh_n, V, exponent, 1.0, use_dynamic, use_specular, depth,
         );
@@ -157,9 +232,9 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
         );
     } else {
         shade = accumulate_dynamic_direct(
-            world, n, mesh_n, spec_point, exponent, 1.0, use_dynamic, use_specular,
+            world, n, mesh_n, spec_point, exponent, 1.0, false, use_dynamic, use_specular,
             smooth_style, depth,
-        );
+        ).lit;
     }
 
     // Observation: the result, the point, or the texel the fragment shows.
@@ -171,6 +246,7 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     switch harness.modes.z {
         case 1u: { return vec4<f32>(spec_point.position, depth.height_m); }
         case 2u: { return vec4<f32>(texel, face, select(0.0, 1.0, depth.carved)); }
+        case 3u, 4u, 5u, 6u, 7u: { return observed_material; }
         default: { return vec4<f32>(shade, 1.0); }
     }
 }
@@ -182,6 +258,13 @@ fn shader_source() -> String {
         (KINEMATIC_WGSL, "KINEMATIC_SPECULAR_STYLE_SMOOTH"),
         (SHADOW_SAMPLE_WGSL, "MOVER_RECEIVER_BIAS_SCALE"),
         (MATERIAL_SHADING_WGSL, "SPECULAR_POINT_AXES_EPSILON"),
+        (MATERIAL_SHADING_WGSL, "SPECULAR_EXPONENT_MIN"),
+        (MATERIAL_SHADING_WGSL, "SPECULAR_EXPONENT_MAX"),
+        (MATERIAL_SHADING_WGSL, "SPECULAR_ROUGHNESS4_FLOOR"),
+        (MATERIAL_SHADING_WGSL, "SPECULAR_SMOOTHNESS_MARKER"),
+        (MATERIAL_SHADING_WGSL, "SPECULAR_TINT_MARKER"),
+        (MATERIAL_SHADING_WGSL, "SPECULAR_TINT_SCALE"),
+        (MATERIAL_SHADING_WGSL, "SPECULAR_HUE_EPSILON"),
     ]
     .map(|(source, name)| wgsl_const_line(source, name))
     .join("\n");
@@ -191,10 +274,14 @@ fn shader_source() -> String {
          const METRES_PER_UV: f32 = {METRES_PER_UV:?};\n\
          const SUBPIXEL_OFFSET: f32 = {SUBPIXEL_OFFSET:?};\n\
          const OUTPUT_FROZEN: u32 = {};\n\
-         const OUTPUT_TEXEL_TERM: u32 = {};\n",
+         const OUTPUT_TEXEL_TERM: u32 = {};\n\
+         const MATERIAL_NONE: u32 = {};\n\
+         const MATERIAL_ORACLE: u32 = {};\n",
         f64::from(LATTICE),
         Output::Frozen as u32,
         Output::TexelTerm as u32,
+        MaterialPath::None as u32,
+        MaterialPath::Oracle as u32,
     );
     let items = [
         wgsl_item(KINEMATIC_WGSL, "struct GpuLight {"),
@@ -203,6 +290,8 @@ fn shader_source() -> String {
         wgsl_item(KINEMATIC_WGSL, "struct MaterialUniform {"),
         wgsl_item(KINEMATIC_WGSL, "struct LightSpaceMatrices {"),
         wgsl_item(MATERIAL_SHADING_WGSL, "struct SpecularPoint {"),
+        wgsl_item(MATERIAL_SHADING_WGSL, "struct SpecularTexel {"),
+        wgsl_item(KINEMATIC_WGSL, "struct MoverDirect {"),
         wgsl_function(KINEMATIC_WGSL, "mover_specular_style_smooth"),
         wgsl_function(KINEMATIC_WGSL, "mover_specular_point"),
         wgsl_function(KINEMATIC_WGSL, "mover_light_geometry"),
@@ -211,11 +300,15 @@ fn shader_source() -> String {
         wgsl_function(MATERIAL_SHADING_WGSL, "specular_texel_point"),
         wgsl_function(MATERIAL_SHADING_WGSL, "post_retro_texel_uv"),
         wgsl_function(MATERIAL_SHADING_WGSL, "blinn_phong"),
+        wgsl_function(MATERIAL_SHADING_WGSL, "specular_texel"),
+        wgsl_function(MATERIAL_SHADING_WGSL, "specular_texel_exponent"),
+        wgsl_function(MATERIAL_SHADING_WGSL, "specular_tint"),
+        wgsl_function(KINEMATIC_WGSL, "sample_post_retro"),
     ]
     .join("\n\n");
     format!(
         "{consts}\n{harness_consts}\n{items}\n\n{SURFACE_DEPTH_WGSL}\n{LIGHT_FALLOFF_WGSL}\n\
-         {LIGHT_EVAL_WGSL}\n{CURVE_EVAL_WGSL}\n{FROZEN_WGSL}\n{ENTRY}"
+         {LIGHT_EVAL_WGSL}\n{CURVE_EVAL_WGSL}\n{FROZEN_WGSL}\n{FROZEN_PRETINT_WGSL}\n{ENTRY}"
     )
 }
 
@@ -346,6 +439,30 @@ pub(super) enum Observe {
     /// The reconstructed albedo texel coordinate of the marched UV, the face
     /// (0 top, 1..=4 a side) and whether the march carved.
     Texel = 2,
+    /// Material path: the decoded slot (exponent, intensity, tinted 0 or 1,
+    /// tint).
+    SpecularTexel = 3,
+    /// Material path: the albedo, sampled after the loop.
+    Albedo = 4,
+    /// Material path: the loop's tinted specular sum, before the tint mix.
+    RawTinted = 5,
+    /// Material path: the tinted highlight the fragment adds.
+    TintedOut = 6,
+    /// Material path: the specular slot's filtered sample.
+    Slot = 7,
+}
+
+/// Whether, and through which wiring, the fragment reads a real material.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum MaterialPath {
+    /// The bare loop at the case's exponent and unit intensity (`Output`).
+    None = 0,
+    /// The mover's `fs_main` today: decode, loop with the tint split, mix.
+    Current = 1,
+    /// `fs_main` before tint: the slot's R, the prefix exponent, the
+    /// raw-albedo multiply; smooth through the 1c7fc9e3a loop, pixel through
+    /// the 74fcfd4b9 one.
+    Oracle = 2,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -363,6 +480,13 @@ pub(super) struct MoverCase {
     /// (dynamic plus animated tail); records past it are selected-static.
     pub dynamic_light_count: u32,
     pub scripted_light_count: u32,
+    pub uv_per_pixel: [f32; 2],
+    pub material: MaterialPath,
+    /// The oracle shades a `_p` slot at its decoded exponent.
+    pub oracle_decodes: bool,
+    /// The material uniform's 32 bytes, in place of the harness's own (whose
+    /// shininess is `exponent`).
+    pub material_uniform: Option<[u8; 32]>,
 }
 
 impl MoverCase {
@@ -380,6 +504,18 @@ impl MoverCase {
             use_specular: true,
             dynamic_light_count: 0,
             scripted_light_count: 0,
+            uv_per_pixel: [UV_PER_PIXEL as f32; 2],
+            material: MaterialPath::None,
+            oracle_decodes: false,
+            material_uniform: None,
+        }
+    }
+
+    /// The material path under `style`, every light selected-static.
+    pub fn material(style: Style, path: MaterialPath) -> Self {
+        Self {
+            material: path,
+            ..Self::new(style, Output::Loop)
         }
     }
 
@@ -411,6 +547,12 @@ impl MoverCase {
         ];
         let mut out: Vec<u8> = floats.iter().flat_map(|f| f.to_ne_bytes()).collect();
         out.extend(words.iter().flat_map(|w| w.to_ne_bytes()));
+        for f in [self.uv_per_pixel[0], self.uv_per_pixel[1], 0.0, 0.0] {
+            out.extend(f.to_ne_bytes());
+        }
+        for w in [self.material as u32, u32::from(self.oracle_decodes), 0, 0] {
+            out.extend(w.to_ne_bytes());
+        }
         out
     }
 
@@ -432,6 +574,9 @@ impl MoverCase {
     }
 
     fn material_bytes(self) -> Vec<u8> {
+        if let Some(bytes) = self.material_uniform {
+            return bytes.to_vec();
+        }
         let (meters, march) = if self.march {
             (
                 RELIEF_TEXELS,
@@ -440,7 +585,7 @@ impl MoverCase {
         } else {
             (0.0, 0)
         };
-        let mut out: Vec<u8> = [8.0f32, 0.0, RAISED, SUNK, meters, 1000.0, 0.0]
+        let mut out: Vec<u8> = [self.exponent, 0.0, RAISED, SUNK, meters, 1000.0, 0.0]
             .iter()
             .flat_map(|f| f.to_ne_bytes())
             .collect();
@@ -503,6 +648,18 @@ pub(super) fn render(
     case: MoverCase,
     observe: Observe,
 ) -> Vec<[f32; 4]> {
+    let material = height_material(ctx);
+    render_material(ctx, lights, case, observe, &material)
+}
+
+/// [`render`] over `material`'s albedo and specular slot.
+pub(super) fn render_material(
+    ctx: &GpuCtx,
+    lights: &[MoverLight],
+    case: MoverCase,
+    observe: Observe,
+    material: &MaterialTextures,
+) -> Vec<[f32; 4]> {
     let device = &ctx.device;
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("kinematic_specular_test shader"),
@@ -553,9 +710,7 @@ pub(super) fn render(
         uniform("params", &case.params_bytes(light_count)),
         uniform("light space", &vec![0u8; 96 * 64]),
     ];
-    let height_texture = height_texture(ctx);
-    let height_view = height_texture.create_view(&Default::default());
-    let material = uniform("material", &case.material_bytes());
+    let material_uniform = uniform("material", &case.material_bytes());
     let harness = uniform("harness", &case.harness_bytes(observe));
 
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -597,15 +752,23 @@ pub(super) fn render(
     entries.extend([
         wgpu::BindGroupEntry {
             binding: 6,
-            resource: wgpu::BindingResource::TextureView(&height_view),
+            resource: wgpu::BindingResource::TextureView(&material.specular),
         },
         wgpu::BindGroupEntry {
             binding: 7,
-            resource: material.as_entire_binding(),
+            resource: material_uniform.as_entire_binding(),
         },
         wgpu::BindGroupEntry {
             binding: 8,
             resource: harness.as_entire_binding(),
+        },
+        wgpu::BindGroupEntry {
+            binding: 9,
+            resource: wgpu::BindingResource::TextureView(&material.base),
+        },
+        wgpu::BindGroupEntry {
+            binding: 10,
+            resource: wgpu::BindingResource::Sampler(&material.sampler),
         },
     ]);
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -704,36 +867,18 @@ pub(super) fn render(
 }
 
 /// The height checker as the bake stores it: `Rg8Unorm`, R intensity, G the
-/// inverted height byte.
-fn height_texture(ctx: &GpuCtx) -> wgpu::Texture {
-    let mut texels = Vec::with_capacity((LATTICE * LATTICE * 2) as usize);
-    for ty in 0..LATTICE {
-        for tx in 0..LATTICE {
-            let authored = if texel_height(tx, ty) == RAISED {
-                HEIGHT_RAISED
-            } else {
-                HEIGHT_SUNK
-            };
-            texels.extend([255, 255 - authored]);
-        }
+/// inverted height byte; under a white albedo.
+fn height_material(ctx: &GpuCtx) -> MaterialTextures {
+    white_material(ctx, LATTICE, SlotFormat::Rg8, &|tx, ty| {
+        [255, checker_height_byte(tx, ty), 0, 255]
+    })
+}
+
+/// The stored G byte of the checker's texel (tx, ty): `255 - authored`.
+pub(super) fn checker_height_byte(tx: u32, ty: u32) -> u8 {
+    255 - if texel_height(tx, ty) == RAISED {
+        HEIGHT_RAISED
+    } else {
+        HEIGHT_SUNK
     }
-    ctx.device.create_texture_with_data(
-        &ctx.queue,
-        &wgpu::TextureDescriptor {
-            label: Some("kinematic_specular_test height"),
-            size: wgpu::Extent3d {
-                width: LATTICE,
-                height: LATTICE,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rg8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        },
-        wgpu::util::TextureDataOrder::LayerMajor,
-        &texels,
-    )
 }

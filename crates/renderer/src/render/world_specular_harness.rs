@@ -1,6 +1,8 @@
 // GPU readback harness for forward.wgsl's world static specular: the owner and
 // SDF sums (`world_static_specular`) and the pixel-style point that feeds them
-// (`specular_texel_point`), beside a frozen copy of the 1c7fc9e3a function.
+// (`specular_texel_point`), beside a frozen copy of the 1c7fc9e3a function. Its
+// material harness reads a real albedo and specular slot and shades sharpness
+// and tint as forward `fs_main` does.
 // See: context/lib/rendering_pipeline.md §4 (Static specular ownership,
 // Texel-centre highlight)
 //
@@ -12,6 +14,7 @@
 // value other than `0` to make a missing adapter fail instead.
 
 use super::gpu_test_harness::{GpuCtx, wgsl_const_line, wgsl_function, wgsl_item};
+use super::specular_slot_fixtures::MaterialTextures;
 use postretro_render_cpu::frame_uniforms::{
     SPEC_SHADOWMASK_FLAG_FORCE_ONE, SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH,
 };
@@ -372,7 +375,7 @@ pub(super) struct Face {
     pub owners: [u16; 4],
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(super) struct Case {
     pub mask: [f32; 4],
     pub sdf_factor: [f32; 4],
@@ -588,6 +591,292 @@ pub(super) fn render_texels(
     )
 }
 
+// --- Material harness: the slot's sharpness and tint through forward fs_main ---
+
+/// The production functions forward `fs_main` reads its material slots and
+/// shades sharpness and tint with, by name.
+fn production_material_source() -> String {
+    let consts = [
+        "SPECULAR_EXPONENT_MIN",
+        "SPECULAR_EXPONENT_MAX",
+        "SPECULAR_ROUGHNESS4_FLOOR",
+        "SPECULAR_SMOOTHNESS_MARKER",
+        "SPECULAR_TINT_MARKER",
+        "SPECULAR_TINT_SCALE",
+        "SPECULAR_HUE_EPSILON",
+    ]
+    .map(|name| wgsl_const_line(MATERIAL_SHADING_WGSL, name))
+    .join("\n");
+    let items = [
+        wgsl_item(MATERIAL_SHADING_WGSL, "struct SpecularTexel {"),
+        wgsl_function(MATERIAL_SHADING_WGSL, "specular_texel"),
+        wgsl_function(MATERIAL_SHADING_WGSL, "specular_texel_exponent"),
+        wgsl_function(MATERIAL_SHADING_WGSL, "specular_tint"),
+        wgsl_function(FORWARD_WGSL, "sample_post_retro"),
+        wgsl_function(FORWARD_WGSL, "sample_color"),
+    ]
+    .join("\n\n");
+    format!("{consts}\n{items}\n")
+}
+
+/// The material harness: a floor facing +Y whose fragments sample a real
+/// albedo and specular slot, then shade them through forward `fs_main`'s
+/// wiring, or through the wiring before tint (the oracle).
+fn material_shader_source() -> String {
+    let fields = r#"
+    // xyz eye, w the prefix exponent (`max(material.shininess, 1.0)`).
+    eye_and_exponent: vec4<f32>,
+    // xy UV per pixel along x and y.
+    uv_per_pixel: vec4<f32>,
+    // x path, y the oracle takes the decoded exponent, z observe,
+    // w use_specular.
+    material_modes: vec4<u32>,
+"#;
+    let consts = format!(
+        "const METRES_PER_UV: f32 = {METRES_PER_UV:?};\n\
+         const SUBPIXEL_OFFSET: f32 = {SUBPIXEL_OFFSET:?};\n\
+         const PATH_ORACLE: u32 = {};\n\
+         const OBSERVE_TEXEL: u32 = {};\n\
+         const OBSERVE_ALBEDO: u32 = {};\n\
+         const OBSERVE_RAW_SPECULAR: u32 = {};\n\
+         const OBSERVE_SPECULAR_OUT: u32 = {};\n\
+         const OBSERVE_SLOT: u32 = {};\n",
+        MaterialPath::Oracle as u32,
+        MaterialObserve::Texel as u32,
+        MaterialObserve::Albedo as u32,
+        MaterialObserve::RawSpecular as u32,
+        MaterialObserve::SpecularOut as u32,
+        MaterialObserve::Slot as u32,
+    );
+    let entry = r#"
+@group(0) @binding(2) var base_texture: texture_2d<f32>;
+@group(0) @binding(3) var spec_texture: texture_2d<f32>;
+@group(0) @binding(4) var aniso_sampler: sampler;
+
+// Stand-ins for the lighting fs_main sums around specular: ambient, indirect
+// and static direct before it, the dynamic loop after it, and the glow.
+fn harness_light_before_specular(pixel: vec2<f32>) -> vec3<f32> {
+    return vec3<f32>(0.21, 0.17, 0.13) + vec3<f32>(f32(u32(pixel.x) % 7u) * 0.013);
+}
+const HARNESS_LIGHT_AFTER_SPECULAR: vec3<f32> = vec3<f32>(0.05, 0.07, 0.03);
+const HARNESS_EMISSIVE: vec3<f32> = vec3<f32>(0.02, 0.0, 0.04);
+
+@fragment
+fn fs_main(in: HarnessVaryings) -> @location(0) vec4<f32> {
+    let uv = (in.position.xy + vec2<f32>(SUBPIXEL_OFFSET)) * uniforms.uv_per_pixel.xy;
+    let world = vec3<f32>(uv.x, 0.0, uv.y) * METRES_PER_UV;
+    let ddx = dpdx(uv);
+    let ddy = dpdy(uv);
+    let ddx_world = dpdx(world);
+    let ddy_world = dpdy(world);
+    let up = vec3<f32>(0.0, 1.0, 0.0);
+    let eye = uniforms.eye_and_exponent.xyz;
+    let prefix_exponent = uniforms.eye_and_exponent.w;
+    let V = normalize(eye - world);
+    let owners_readable = uniforms.owners_readable != 0u;
+    let sdf_force_lit = uniforms.sdf_force_lit != 0u;
+    let use_specular = uniforms.material_modes.w != 0u;
+    let base_color = sample_color(base_texture, uv, ddx, ddy);
+    let slot = sample_color(spec_texture, uv, ddx, ddy);
+
+    var total_light = harness_light_before_specular(in.position.xy);
+    if uniforms.material_modes.x == PATH_ORACLE {
+        // fs_main before tint: R intensity, the prefix exponent (a `_p`
+        // slot's decoded one when asked), the raw-albedo multiply.
+        let exponent = select(
+            prefix_exponent,
+            specular_texel_exponent(slot.b, prefix_exponent),
+            uniforms.material_modes.y != 0u,
+        );
+        var specular = vec3<f32>(0.0);
+        if use_specular {
+            if specular_style_smooth() {
+                specular = frozen_fs_main_static_specular(
+                    world, eye, up, exponent, slot.r, in.owners, uniforms.mask,
+                    owners_readable, harness_sdf_selection(), uniforms.sdf_factor, sdf_force_lit,
+                );
+            } else {
+                let point = specular_texel_point(
+                    false, SpecularPoint(world, V), uv, uv, world, eye,
+                    vec2<f32>(textureDimensions(base_texture, 0)), ddx, ddy, ddx_world, ddy_world,
+                );
+                specular = world_static_specular(
+                    point.position, up, point.view, exponent, slot.r, in.owners, uniforms.mask,
+                    owners_readable, harness_sdf_selection(), uniforms.sdf_factor, sdf_force_lit,
+                );
+            }
+        }
+        total_light = total_light + specular;
+        total_light = total_light + HARNESS_LIGHT_AFTER_SPECULAR;
+        let rgb = base_color.rgb * total_light + HARNESS_EMISSIVE;
+        return vec4<f32>(rgb, 1.0);
+    }
+
+    // forward fs_main's wiring.
+    var specular_sum = vec3<f32>(0.0);
+    var tinted_specular = vec3<f32>(0.0);
+    var raw_specular = vec3<f32>(0.0);
+    var observed_texel = vec4<f32>(0.0);
+    if use_specular {
+        let spec_texel = specular_texel(slot, prefix_exponent);
+        observed_texel = vec4<f32>(
+            spec_texel.exponent,
+            spec_texel.intensity,
+            select(0.0, 1.0, spec_texel.tinted),
+            spec_texel.tint,
+        );
+        let spec_point = specular_texel_point(
+            specular_style_smooth(), SpecularPoint(world, V), uv, uv, world, eye,
+            vec2<f32>(textureDimensions(base_texture, 0)), ddx, ddy, ddx_world, ddy_world,
+        );
+        specular_sum = world_static_specular(
+            spec_point.position, up, spec_point.view, spec_texel.exponent, spec_texel.intensity,
+            in.owners, uniforms.mask, owners_readable, harness_sdf_selection(),
+            uniforms.sdf_factor, sdf_force_lit,
+        );
+        raw_specular = specular_sum;
+        if spec_texel.tinted {
+            tinted_specular = specular_sum * specular_tint(base_color.rgb, spec_texel.tint);
+            specular_sum = vec3<f32>(0.0);
+        }
+    }
+    total_light = total_light + specular_sum;
+    total_light = total_light + HARNESS_LIGHT_AFTER_SPECULAR;
+    let rgb = base_color.rgb * total_light + HARNESS_EMISSIVE + tinted_specular;
+    let observe = uniforms.material_modes.z;
+    if observe == OBSERVE_TEXEL {
+        return observed_texel;
+    } else if observe == OBSERVE_ALBEDO {
+        return base_color;
+    } else if observe == OBSERVE_RAW_SPECULAR {
+        return vec4<f32>(raw_specular, 1.0);
+    } else if observe == OBSERVE_SPECULAR_OUT {
+        return vec4<f32>(base_color.rgb * specular_sum + tinted_specular, 1.0);
+    } else if observe == OBSERVE_SLOT {
+        return slot;
+    }
+    return vec4<f32>(rgb, 1.0);
+}
+"#;
+    format!(
+        "struct Case {{{CASE_SHADOWING_FIELDS}{fields}}};\n{PRELUDE_TAIL}\n{consts}\n{}\n{}\n{FROZEN_WGSL}\n{ENTRY_VERTEX}\n{entry}",
+        production_specular_source(),
+        production_material_source(),
+    )
+}
+
+/// Which wiring the material harness shades through.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum MaterialPath {
+    /// Forward `fs_main` today: decode, tint split.
+    Current = 0,
+    /// `fs_main` before tint: the slot's R, the prefix exponent and the
+    /// raw-albedo multiply; smooth through the frozen 1c7fc9e3a function.
+    Oracle = 1,
+}
+
+/// What the material harness writes per pixel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum MaterialObserve {
+    /// The shaded colour (RGB, alpha 1).
+    Shade = 0,
+    /// The decoded slot: exponent, intensity, tinted (0 or 1), tint.
+    Texel = 1,
+    /// The sampled albedo.
+    Albedo = 2,
+    /// The specular sum before the tint split.
+    RawSpecular = 3,
+    /// What specular adds to the shaded colour: the albedo times an untinted
+    /// sum, or the tinted highlight.
+    SpecularOut = 4,
+    /// The specular slot's filtered sample.
+    Slot = 5,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct MaterialCase {
+    pub shadowing: Case,
+    pub style: Style,
+    pub eye: [f32; 3],
+    pub prefix_exponent: f32,
+    pub uv_per_pixel: [f32; 2],
+    pub use_specular: bool,
+    pub path: MaterialPath,
+    /// The oracle shades a `_p` slot at its decoded exponent.
+    pub oracle_decodes: bool,
+}
+
+impl MaterialCase {
+    /// `LATTICE`² texels magnified onto the target, as the texel harness.
+    pub fn new(style: Style) -> Self {
+        Self {
+            shadowing: Case::default(),
+            style,
+            eye: [-1.0, 3.0, -1.0],
+            prefix_exponent: 8.0,
+            uv_per_pixel: [UV_PER_PIXEL as f32; 2],
+            use_specular: true,
+            path: MaterialPath::Current,
+            oracle_decodes: false,
+        }
+    }
+
+    fn bytes(self, observe: MaterialObserve) -> Vec<u8> {
+        let style = match self.style {
+            Style::Pixel => 0,
+            Style::Smooth => SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH,
+        };
+        let mut out = self.shadowing.bytes(style);
+        let floats = [
+            self.eye[0],
+            self.eye[1],
+            self.eye[2],
+            self.prefix_exponent,
+            self.uv_per_pixel[0],
+            self.uv_per_pixel[1],
+            0.0,
+            0.0,
+        ];
+        for f in floats {
+            out.extend_from_slice(&f.to_ne_bytes());
+        }
+        let modes = [
+            self.path as u32,
+            u32::from(self.oracle_decodes),
+            observe as u32,
+            u32::from(self.use_specular),
+        ];
+        for word in modes {
+            out.extend_from_slice(&word.to_ne_bytes());
+        }
+        out
+    }
+}
+
+/// Render the material harness over the texel target, one face owned by
+/// `owners`, sampling `material`; one RGBA per pixel, row-major.
+pub(super) fn render_material(
+    ctx: &GpuCtx,
+    lights: &[Light],
+    owners: [u16; 4],
+    material: &MaterialTextures,
+    case: MaterialCase,
+    observe: MaterialObserve,
+) -> Vec<[f32; 4]> {
+    draw_rgba(
+        ctx,
+        &material_shader_source(),
+        (TEXEL_TARGET, TEXEL_TARGET),
+        &case.bytes(observe),
+        lights,
+        &[Face {
+            columns: (0, TEXEL_TARGET),
+            owners,
+        }],
+        Some(material),
+    )
+}
+
 /// Draw `faces`, each a run of whole columns, into a `width`×`height`
 /// `Rgba32Float` target; returns every pixel's RGB, row-major.
 fn draw(
@@ -598,6 +887,26 @@ fn draw(
     lights: &[Light],
     faces: &[Face],
 ) -> Vec<[f32; 3]> {
+    draw_rgba(ctx, source, (width, height), uniform, lights, faces, None)
+        .into_iter()
+        .map(|[r, g, b, a]| {
+            assert_eq!(a, 1.0, "every pixel must be covered by a face");
+            [r, g, b]
+        })
+        .collect()
+}
+
+/// [`draw`], binding `material` at bindings 2..=4 when given, returning every
+/// pixel's RGBA.
+fn draw_rgba(
+    ctx: &GpuCtx,
+    source: &str,
+    (width, height): (u32, u32),
+    uniform: &[u8],
+    lights: &[Light],
+    faces: &[Face],
+    material: Option<&MaterialTextures>,
+) -> Vec<[f32; 4]> {
     use wgpu::util::DeviceExt;
 
     let device = &ctx.device;
@@ -649,50 +958,6 @@ fn draw(
         usage: wgpu::BufferUsages::STORAGE,
     });
 
-    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("world_specular_test layout"),
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-        ],
-    });
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("world_specular_test bind group"),
-        layout: &layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniforms.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: light_buffer.as_entire_binding(),
-            },
-        ],
-    });
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("world_specular_test pipeline layout"),
-        bind_group_layouts: &[Some(&layout)],
-        immediate_size: 0,
-    });
     let target_format = wgpu::TextureFormat::Rgba32Float;
     let position_attributes = [wgpu::VertexAttribute {
         format: wgpu::VertexFormat::Float32x2,
@@ -707,7 +972,7 @@ fn draw(
     }];
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("world_specular_test pipeline"),
-        layout: Some(&pipeline_layout),
+        layout: None,
         vertex: wgpu::VertexState {
             module: &module,
             entry_point: Some("vs_main"),
@@ -740,6 +1005,38 @@ fn draw(
         multisample: wgpu::MultisampleState::default(),
         multiview_mask: None,
         cache: None,
+    });
+
+    let mut entries = vec![
+        wgpu::BindGroupEntry {
+            binding: 0,
+            resource: uniforms.as_entire_binding(),
+        },
+        wgpu::BindGroupEntry {
+            binding: 1,
+            resource: light_buffer.as_entire_binding(),
+        },
+    ];
+    if let Some(material) = material {
+        entries.extend([
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(&material.base),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(&material.specular),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::Sampler(&material.sampler),
+            },
+        ]);
+    }
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("world_specular_test bind group"),
+        layout: &pipeline.get_bind_group_layout(0),
+        entries: &entries,
     });
 
     let target = device.create_texture(&wgpu::TextureDescriptor {
@@ -828,8 +1125,6 @@ fn draw(
             .as_chunks::<{ TEXEL_BYTES as usize }>()
             .0
         {
-            let alpha = f32::from_ne_bytes(texel[12..16].try_into().unwrap());
-            assert_eq!(alpha, 1.0, "every pixel must be covered by a face");
             texels.push(std::array::from_fn(|c| {
                 f32::from_ne_bytes(texel[c * 4..c * 4 + 4].try_into().unwrap())
             }));

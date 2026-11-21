@@ -49,6 +49,14 @@ water, neon water, sludge, lava and slime, each on a periodic domain and quantiz
 small palette so single-texel motion stays visible. Standard library only, fixed seeds.
 Run with `python3 tools/gen_fluid_textures.py --out content/dev/textures/fluids`.
 
+### `metal_register_screen/`
+
+Reads the VGPR and SGPR counts AMD's Metal compiler gives the mover pipeline's
+fragment shader, which sits near a register cliff on the Mac target. Run
+`tools/metal_register_screen/screen_mover.sh <out dir>` on a Mac with an AMD RDNA
+GPU after any edit to `kinematic_brush.wgsl` or a snippet it composes. Its README
+gives the method and the recorded counts.
+
 ### `gen_specular_texel_fixtures.py`
 
 Generates the exact-value specular fixtures in `content/dev/textures/test/` used by the

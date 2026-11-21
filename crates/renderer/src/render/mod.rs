@@ -98,6 +98,8 @@ pub(crate) mod gpu_test_harness;
 #[cfg(test)]
 pub(crate) mod install_cost_model;
 #[cfg(test)]
+mod kinematic_register_screen_capture;
+#[cfg(test)]
 mod kinematic_specular_harness;
 #[cfg(test)]
 mod kinematic_specular_test;
@@ -119,6 +121,8 @@ mod shadowmask_union_fixtures;
 mod shadowmask_union_harness;
 #[cfg(test)]
 mod shadowmask_union_test;
+#[cfg(test)]
+mod specular_slot_fixtures;
 #[cfg(test)]
 mod world_specular_harness;
 #[cfg(test)]

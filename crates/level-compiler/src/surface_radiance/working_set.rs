@@ -99,8 +99,9 @@ pub(crate) struct DirectWindow {
     /// The entity-shadow light selection.
     pub(crate) entity_shadow_bytes: u64,
     /// The delta sections' per-cell vectors (CSR offsets, levels, valid
-    /// masks) and light lists, in every copy the dense bound counts: they
-    /// scale with the grid, not the payload.
+    /// masks) and light lists, in each copy the window holds (the copy
+    /// chain less its base-copy share): they scale with the grid, not the
+    /// payload.
     pub(crate) delta_metadata_bytes: u64,
 }
 
@@ -111,9 +112,9 @@ impl ShBaseWorkingSetProjection {
     /// blocks at the cap in every phase from the mover bake to the id-34
     /// entry's write; its bake; and its direct window, beside `window`'s
     /// sections. Movers finish one at a time, so one mover's states are
-    /// priced, never every mover's. The peak is re-taken. Every term is
-    /// checked: `--mover-payload-max-size` feeds it directly, so a cap too
-    /// large to price refuses by name.
+    /// priced, never every mover's. The peak is re-taken. Every term the cap
+    /// feeds is checked: `--mover-payload-max-size` reaches it directly, so
+    /// a cap too large to price refuses by name.
     pub(crate) fn price_movers(
         &mut self,
         cost: &MoverChannelCost,
@@ -135,7 +136,12 @@ impl ShBaseWorkingSetProjection {
                 .ok_or_else(|| overflow(calculation))
         };
         let patch_count = self.patch_count;
-        let scenes = cost.scene_bytes;
+        // The posed scenes, and the posed solids whole beside them: the
+        // scenes' share counts only the solids' geometry.
+        let scenes = sum(
+            "mover scenes projection",
+            &[cost.scene_bytes, cost.solid_bytes],
+        )?;
         let blocks = cost.payload_cap;
         let kept = cost.kept_later_bytes(patch_count);
         let bounce_one = if cost.radiance_movers > 0 {
@@ -191,7 +197,7 @@ impl ShBaseWorkingSetProjection {
                 cost.finish_bytes(),
             ],
         )?;
-        let cold = pose.max(finish) + self.sum_bytes;
+        let cold = sum("mover cold projection", &[pose.max(finish), self.sum_bytes])?;
         // Warm, a slot whose read-back fails builds what its pose reads, its
         // other poses read back and everything the loop holds beside it:
         // the layers resolving or summing, with the slot's own reach index
@@ -236,6 +242,7 @@ impl ShBaseWorkingSetProjection {
                 window.delta_metadata_bytes,
                 window.entity_shadow_bytes,
                 cost.solid_bytes,
+                cost.affinity_cells * size_of::<u64>() as u64,
                 times(3, blocks, "mover direct blocks projection")?,
                 times(
                     3,
@@ -742,23 +749,30 @@ mod tests {
     }
 
     // A payload cap too large to price refuses by the gate's overflow error,
-    // never wrapping into a small price or panicking.
+    // never wrapping into a small price or panicking: at u64::MAX, where the
+    // first sum overflows, and at caps just under the overflow of each later
+    // term (the mover bake's terms, then the direct window's three copies).
     #[test]
     fn a_payload_cap_too_large_to_price_refuses_by_name() {
         let patches = no_patches();
-        let mut projection = at(&patches, &[3], [2, 2, 2], 1.0, u64::MAX);
-        let error = projection
-            .price_movers(&one_mover(true, u64::MAX), &DirectWindow::default())
-            .expect_err("u64::MAX overflows the price");
-        assert!(
-            matches!(error, ShBaseWorkingSetGateError::ArithmeticOverflow { .. }),
-            "{error}"
-        );
-        assert!(
-            projection
-                .carried_bytes(&one_mover(true, u64::MAX))
-                .is_err()
-        );
+        let base = at(&patches, &[3], [2, 2, 2], 1.0, u64::MAX);
+        for cap in [
+            u64::MAX,
+            u64::MAX - base.sum_bytes / 2,
+            u64::MAX - (1 << 20),
+            u64::MAX / 2,
+            u64::MAX / 3,
+        ] {
+            let mut projection = base.clone();
+            let error = projection
+                .price_movers(&one_mover(true, cap), &DirectWindow::default())
+                .expect_err("the cap overflows the price");
+            assert!(
+                matches!(error, ShBaseWorkingSetGateError::ArithmeticOverflow { .. }),
+                "cap {cap}: {error}"
+            );
+        }
+        assert!(base.carried_bytes(&one_mover(true, u64::MAX)).is_err());
     }
 
     #[test]

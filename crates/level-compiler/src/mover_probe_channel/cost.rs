@@ -32,9 +32,6 @@ const MARK_BYTES: u64 = size_of::<PoseMark>() as u64;
 /// One id-59 tile reference in the mover-absent depth's B-tree: its key,
 /// its slice and the node's share around them.
 const ABSENT_TILE_ENTRY_BYTES: u64 = 48;
-/// A finished mover's name, kept for the payload cap's error: its label,
-/// `kinematic_mover '<name>'`, at a generous authored name, and its slot.
-const MOVER_NAME_BYTES: u64 = 256;
 /// One probe in the tile-range union's B-tree, with the node's share.
 const UNION_ENTRY_BYTES: u64 = 16;
 
@@ -85,6 +82,9 @@ pub(crate) struct MoverChannelCost {
     /// Id 34's affinity cells: one valid-probe mask each in the finish
     /// loop's cells.
     pub(crate) affinity_cells: u64,
+    /// The finished movers' names the loop keeps for the cap's error: each
+    /// label and its slot, the list's growth slack included.
+    pub(crate) name_bytes: u64,
 }
 
 impl MoverChannelCost {
@@ -154,6 +154,10 @@ impl MoverChannelCost {
                 .iter()
                 .map(|&dim| u64::from(dim.div_ceil(AFFINITY_FACTOR)))
                 .product(),
+            name_bytes: jobs
+                .iter()
+                .map(|job| job.label.len() as u64 + 2 * size_of::<String>() as u64)
+                .sum(),
         }
     }
 
@@ -188,9 +192,10 @@ impl MoverChannelCost {
     /// every pose's bake and every mover's finish: the bake's mover-absent
     /// depth and the skip bars' own (each a validity byte per probe and an
     /// id-59 tile reference per tiled probe), the bars' compact slots, id
-    /// 34's affinity cells, the valid probes, the tile-range union (at most
-    /// one past the range, plus one mover's records), and the finished
-    /// movers' names.
+    /// 34's affinity cells, the valid probes, the tile-range union (the
+    /// joined movers' probes, at most one past the range, plus the joining
+    /// mover's records, at most one past it too: twice that many entries),
+    /// and the finished movers' names.
     pub(crate) fn loop_bytes(&self) -> u64 {
         if self.movers == 0 {
             return 0;
@@ -199,10 +204,10 @@ impl MoverChannelCost {
         let absent_depth = self.total_probes + tiles * ABSENT_TILE_ENTRY_BYTES;
         let slots = self.total_probes * size_of::<u32>() as u64;
         let cells = self.affinity_cells * size_of::<u64>() as u64;
-        let valid = self.valid_probes * size_of::<u32>() as u64;
+        // Collected from a filter, so up to twice its length by capacity.
+        let valid = 2 * self.valid_probes * size_of::<u32>() as u64;
         let union = 2 * (self.valid_probes.min(self.depth_cap) + 1) * UNION_ENTRY_BYTES;
-        let names = self.movers * MOVER_NAME_BYTES;
-        2 * absent_depth + slots + cells + valid + union + names
+        2 * absent_depth + slots + cells + valid + union + self.name_bytes
     }
 
     /// What finishing one mover holds beyond its states, the blocks and the

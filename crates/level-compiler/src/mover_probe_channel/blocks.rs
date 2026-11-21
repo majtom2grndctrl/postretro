@@ -275,7 +275,8 @@ impl BounceBlocks {
             .collect()
     }
 
-    /// Log the blocks once per build. Where each payload is placed is
+    /// Log the blocks' contents once per build; the bake logs their bytes
+    /// against the cap. Where each payload is placed is
     /// decided with the direct block, when id 57 assembles.
     pub(crate) fn log(&self) {
         let counts = self.counts();

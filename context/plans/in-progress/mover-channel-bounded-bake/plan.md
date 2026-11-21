@@ -253,3 +253,29 @@ Left, with reasons:
   before the SH stage begins); not asserted by a counter.
 - Test-file headers longer than two lines follow the existing mover test
   files' precedent.
+
+## Review round 2
+
+A pricing re-trace and a hygiene pass over the round-1 fix commit. Every
+round-1 claim checked held. Fixed:
+- `cold` in `price_movers` was still an unchecked add the cap reached (both
+  reviewers): checked; the overflow test now covers caps just under each
+  later term's overflow, not only u64::MAX.
+- The posed solids were priced whole only in the direct window: now beside
+  the scenes in every SH base phase. `valid` priced at its growth capacity;
+  the finished movers' names priced exactly from the jobs' labels; the
+  direct window adds the direct half's own cells.
+- The lazy-build progress test now proves its seam fires.
+- Doc wording: `price_movers`, `delta_metadata_bytes`, `loop_bytes`'
+  union, `BounceBlocks::log`, the build_pipeline Report bullet (the
+  summary's cap line), the modder error row ("while the movers' lighting is
+  assembled").
+
+Left: `animation_descriptor_indices` in the delta metadata term (a u32 per
+animated light, negligible); the direct half's `geometry_vertices` copy and
+reach decomposition (pre-existing, inside the window's slack at the default
+cap).
+
+Stress-env-volumes after both rounds (release, stop at the SH gates): SH
+base 11,426,906,815 B (mover direct), SH-delta 9,536,186,384 B (2,530,860,560
+carried); both admit at 16 GiB, the same at `low`, `high` and `--release`.

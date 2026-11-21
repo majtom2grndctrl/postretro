@@ -691,7 +691,13 @@ fn progress_of(
 fn progress_ends_at_its_total_when_a_failed_read_back_builds_its_inputs() {
     let maps = tempfile::tempdir().expect("maps dir");
     let fixture = second_door_bounces(maps.path(), 2);
-    let check = |what: &str, (completed, total): (usize, Option<usize>)| {
+    // The seam must fire, or the slot never builds anything.
+    let check = |what: &str,
+                 ((completed, total), counts): (
+        (usize, Option<usize>),
+        crate::bake_counters::BakeCounts,
+    )| {
+        assert_eq!(counts.read_backs_failed, 1, "{what}: the read-back fails");
         assert_eq!(Some(completed), total, "{what}: progress ends at its total");
     };
     let full = tempfile::tempdir().expect("cache");
@@ -699,30 +705,36 @@ fn progress_ends_at_its_total_when_a_failed_read_back_builds_its_inputs() {
     let copy = cache_copy(full.path());
     check(
         "full hit",
-        progress_of(&fixture, LOW, Some(&open(copy.path())), |request| {
-            request.fail_read_back = vec![(request.jobs[1].mover_id, 1)];
+        counted(4, || {
+            progress_of(&fixture, LOW, Some(&open(copy.path())), |request| {
+                request.fail_read_back = vec![(request.jobs[1].mover_id, 1)];
+            })
         }),
     );
     let depth_only = second_door_bounces(maps.path(), 0);
     let copy = cache_copy(full.path());
     check(
         "a depth-only door pending",
-        progress_of(&depth_only, LOW, Some(&open(copy.path())), |request| {
-            let held = request
-                .jobs
-                .iter()
-                .find(|job| job.bounces > 0)
-                .expect("a door re-baking radiance")
-                .mover_id;
-            request.fail_read_back = vec![(held, 0)];
+        counted(4, || {
+            progress_of(&depth_only, LOW, Some(&open(copy.path())), |request| {
+                let held = request
+                    .jobs
+                    .iter()
+                    .find(|job| job.bounces > 0)
+                    .expect("a door re-baking radiance")
+                    .mover_id;
+                request.fail_read_back = vec![(held, 0)];
+            })
         }),
     );
     let high = tempfile::tempdir().expect("cache");
     emitted_with(&fixture, HIGH, Some(&open(high.path())), |_| {});
     check(
         "low over high",
-        progress_of(&fixture, LOW, Some(&open(high.path())), |request| {
-            request.fail_read_back = vec![(request.jobs[0].mover_id, 0)];
+        counted(4, || {
+            progress_of(&fixture, LOW, Some(&open(high.path())), |request| {
+                request.fail_read_back = vec![(request.jobs[0].mover_id, 0)];
+            })
         }),
     );
 }

@@ -9,7 +9,7 @@ read at: 1a66523ae (no source change to c56f894e7; Decision reads reused)
 
 ## Delegated answers
 - Whether the mover's style word survives — **retired.** Each pipeline is its own style, so a word nothing reads would be a second style signal that can drift from the bound pipeline. Bytes 28..32 of `KinematicLightParams` become padding; `SpecularStyle::kinematic_word` and `KINEMATIC_SPECULAR_STYLE_SMOOTH` go; their tests move to pin pipeline selection.
-- Albedo read before or after the loop in the smooth pipeline — **after, pending the re-time.** Both placements screen at 119 VGPRs, so the screen does not separate them. After is the spike's measured V5s shape; before is an extra smooth arm in the M2 re-time, and wins only if it times lower.
+- Albedo read before or after the loop in the smooth pipeline — **after.** Both placements screen at 119 VGPRs and time within noise in the M2 re-time (before: +0.12 ms setpiece, −0.03 ms ramp, identical output), so the spike's measured V5s placement stays.
 
 ## Shape (Task 1)
 - One module, two fragment entries over shared code: `mover_surface` (the prelude, as fluid's `fluid_shade`), per-record helpers both loops call (`mover_light_cache_layer`, `mover_light_drive`, `mover_light_shadow`, `mover_light_diffuse`, `mover_light_n_dot_l`), one loop per style (`accumulate_pixel_direct`, `accumulate_smooth_direct`) and one composition per style (`mover_pixel_shade`, `mover_smooth_shade`). The pixel loop is today's with the smooth branch compiled out.
@@ -34,7 +34,7 @@ read at: 1a66523ae (no source change to c56f894e7; Decision reads reused)
 | A13 committed before full init / rebuild / install / load in flight → first frame | `specular_style_reaches_the_first_frame_of_each_install`, `specular_style_committed_mid_build_reaches_the_published_level` | achievable as stated | pass |
 | A14 smooth keeps highlights through Surface Depth Off→On; style change at Off leaves the march off | `sharpness_and_tint_hold_through_surface_depth_off_and_on` (specular reaches at every step); `surface_depth_toggles_and_specular_style_changes_leave_each_other_alone` over a Concrete surface map whose Off and On bytes differ | achievable as stated | pass |
 | M1 register screen of both pipelines holds 8 waves/SIMD wave32 | `tools/metal_register_screen`, counts in its README | manual (run here) | pass: `fs_pixel` 127, `fs_smooth` 119 VGPRs |
-| M2 clock-pinned re-time, both poses, smooth ≤ pre-feature, pixel ≤ 1a66523ae + 0.15 ms | `measurements/specular-mover-cost/` kit; arms: pre-feature smooth, 1a66523ae pixel, branch smooth and pixel, branch smooth with albedo before the loop | manual | outstanding |
+| M2 clock-pinned re-time, both poses, smooth ≤ pre-feature, pixel ≤ 1a66523ae + 0.15 ms | `measurements/specular-mover-cost/` kit; arms: pre-feature smooth, 1a66523ae pixel, branch smooth and pixel, branch smooth with albedo before the loop | manual | pass: 36/36 runs valid. Smooth −2.45 ms (setpiece) / −2.01 ms (ramp) vs pre-feature; pixel −2.68 / −3.32 ms vs 1a66523ae. Albedo before ≈ after (+0.12 / −0.03 ms). Pixel output bit-identical to 1a66523ae; smooth within 1/255 on 2 / 8 px. Kit README §Re-time |
 | M3 dev map movers unchanged per style; toggle with mirror in view, no stall | owner, in-engine | manual | outstanding |
 | M4 §7.3, §4, §8 text | land-the-plane context update | manual | outstanding (at landing) |
 | M5 kit and README on the branch, no hook commit | 4f7efaa3d; no branch commit touches `capture/setup.rs`, no `POSTRETRO_CAPTURE_SURFACE_DEPTH_OFF` in `crates/` | manual | pass |
@@ -48,6 +48,8 @@ read at: 1a66523ae (no source change to c56f894e7; Decision reads reused)
 - fmt, `clippy --workspace --all-targets --features postretro/dev-tools,postretro/capture -D warnings`, `cargo check --release`, crate-graph, both reducers: pass.
 - `POSTRETRO_REQUIRE_GPU=1 cargo test --workspace --no-fail-fast`: 17516 passed, 2 failed. Both are `postretro --test telemetry_run`, a windowed engine run that stalls 30 s because the screen was locked (`CGSSessionScreenIsLocked=Yes`); environmental.
 - Same with `--features postretro/dev-tools,postretro/capture` on renderer and app: also `playback_ring_times_marked_drain_and_frame_encoders_on_the_gpu`, which requires timestamp queries the 5300M lacks; it skips without `POSTRETRO_REQUIRE_GPU`.
+
+- M2 re-time (2026-11-21): hooked binaries for 1c7fc9e3a, 1a66523ae, 68843610d and an albedo-before arm in a throwaway worktree; 1 pilot + 2 interleaved rounds, 12 arms, 36/36 valid. The first 16 runs had the screen locked (kit gate lifted by a logging wrapper; headless captures complete under lock); per-run medians agree across locked and unlocked runs and the old/head arms reproduce the spike within 0.04 ms.
 
 ## Tasks
 

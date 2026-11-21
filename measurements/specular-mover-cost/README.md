@@ -153,8 +153,60 @@ The one-sum shape (V3, V5s) moves the summation order, so smooth is no longer by
    - **Mover register cliff (§7.3).** Record the rule found here: a smooth-only mover with two light-loop accumulators lands at 216 or more.
 5. **Optional extra.** Albedo before the loop on the smooth variant (V5s plus B1's reverse) is untested. Screen it first; it could recover more, or flip the allocation.
 
+## Re-time of the production shape (mover-smooth-specular-pipeline, M2)
+
+The shape that landed, two beauty pipelines (`fs_pixel`, `fs_smooth`) over shared helpers, re-timed with this kit on 2026-11-21 on the same machine.
+
+**Builds.** These are hooked release binaries (`apply_hook.py`, `--features capture`, `CARGO_INCREMENTAL=0`) built in a throwaway worktree:
+
+| Arm | Commit |
+|---|---|
+| old | 1c7fc9e3a, the pre-feature build |
+| head | 1a66523ae, the merge of PR #690 |
+| branch | 68843610d, the feature branch |
+| albedo | 68843610d with `fs_smooth`'s albedo read moved before its light loop |
+
+Both maps came from the branch's `prl-build`. `specular-texel-sharpness` is byte-identical to the main checkout's.
+
+**Runs.** Same poses, settings and validity rules as the spike: one pilot round (abort-on-invalid), then rounds 2 (reversed) and 3 (forward) over 12 arms. All 36 runs are valid.
+- Busy-clock medians: 1140–1225 MHz.
+- Peak temperature: 82 °C.
+- No screen saver and no foreign process.
+
+**Screen lock.** The first 16 runs (the pilot and the first four of round 2) ran with the screen locked. The kit's lock gate was lifted for them through a wrapper, which logged the real lock state every 20 s. Headless `--capture` runs complete under lock. Every arm's per-run medians agree within 0.3 ms across the locked and unlocked runs, and the old and head arms reproduce the spike's pooled medians within 0.04 ms. The lock did not move the regime.
+
+| Pose | Arm | Mover median / p95 (ms) | Δ vs old | Δ vs head, same style |
+|---|---|---|---|---|
+| setpiece | old | 21.662 / 22.000 | — | — |
+| setpiece | head smooth | 24.070 / 24.339 | +2.408 | — |
+| setpiece | **branch smooth** | **19.216** / 19.847 | **−2.446 (−11.3%)** [−2.505..−2.195] | −4.854 (−20.2%) |
+| setpiece | albedo smooth | 19.340 / 19.758 | −2.322 | −4.730 |
+| setpiece | head pixel | 25.736 / 26.009 | +4.074 | — |
+| setpiece | **branch pixel** | **23.058** / 23.314 | +1.396 | **−2.678 (−10.4%)** [−2.726..−2.634] |
+| ramp | old | 20.692 / 21.026 | — | — |
+| ramp | head smooth | 23.234 / 23.400 | +2.542 | — |
+| ramp | **branch smooth** | **18.684** / 18.765 | **−2.008 (−9.7%)** [−2.117..−1.973] | −4.550 (−19.6%) |
+| ramp | albedo smooth | 18.652 / 18.752 | −2.040 | −4.582 |
+| ramp | head pixel | 24.303 / 24.420 | +3.611 | — |
+| ramp | **branch pixel** | **20.982** / 21.329 | +0.290 | **−3.321 (−13.7%)** [−3.360..−3.288] |
+
+Full tables: `pooled-retime.md`, `pooled-retime.json`.
+
+- **Smooth** beats the pre-feature build by 2.0–2.4 ms, about 1.6–2.1 ms more than the spike's V5s, though the shipped shape adds no work over V5s.
+- **Pixel** beats 1a66523ae by 2.7–3.3 ms. The spike's pixel-only ablations recovered at most 0.14 ms, so the shared-helper restructure itself, not removing the smooth branch, is the likely source. The registers do not explain it: 127 against 128.
+- **Albedo before the loop** is within noise of after: +0.12 ms on the setpiece and −0.03 ms on the ramp, inside the per-run spread. It stays after the loop.
+
+**Output identity** (single 1920×1080 captures, all channels):
+
+| Pair | Setpiece | Ramp |
+|---|---|---|
+| head pixel vs branch pixel | 0 px differ | 0 px differ |
+| head smooth vs branch smooth | 2 px, max 1/255 | 8 px, max 1/255 |
+| branch smooth vs albedo smooth | 0 px | 0 px |
+
 ## Files
 
 - `run.py`, `gpu_time.py`, `pooled.py`, `apply_hook.py`: the Task 9 kit, adapted for variant×style arms, `SPIKE_OUT`, `--start-round`, an opt-in caffeinate, and the 5-incomplete-frame rule.
+- `pooled-retime.md`, `pooled-retime.json`: the production re-time's pooled tables.
 - `variants/`: every variant shader, `build_variant.sh` (commit, screen, build, copy out) and `screen_only.sh`.
 - `pooled-all.md`, `pooled-all.json`: the pooled tables.

@@ -3,10 +3,12 @@
 
 use postretro_scripting_core::runtime::{
     ModBloomResolution, ModGhostTransparency, ModReflectionStyle, ModRenderProfile,
+    ModSpecularStyle,
 };
 
 use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
 use postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle;
+use postretro_render_cpu::frame_uniforms::SpecularStyle;
 use postretro_render_cpu::ghost_transparency::GhostTransparency;
 use postretro_render_cpu::render_extent::RenderResolutionPolicy;
 use postretro_render_cpu::surface_depth::SurfaceDepthQuality as RendererSurfaceDepthQuality;
@@ -121,6 +123,16 @@ pub(crate) const fn renderer_reflection_style(style: ModReflectionStyle) -> Flui
     }
 }
 
+/// Translate the authored specular style into the renderer's. The `match` is
+/// exhaustive with no `_` arm: a new authored style must fail to compile here
+/// rather than silently draw pixel.
+pub(crate) const fn renderer_specular_style(style: ModSpecularStyle) -> SpecularStyle {
+    match style {
+        ModSpecularStyle::Pixel => SpecularStyle::Pixel,
+        ModSpecularStyle::Smooth => SpecularStyle::Smooth,
+    }
+}
+
 /// Translate the authored ghost transparency into the renderer's. The `match`
 /// is exhaustive with no `_` arm: a new authored mode must fail to compile
 /// here rather than silently blend.
@@ -223,6 +235,20 @@ impl App {
         }
     }
 
+    /// Commit a mod's specular style (`render.specular.style`) to the
+    /// renderer, which keeps it in boot state across a full-renderer rebuild
+    /// and writes it into every frame's forward and mover uniforms. Called
+    /// beside the reflection commit at boot and on every committed staged
+    /// reload; a committed reload with no start script restores pixel.
+    ///
+    /// A `None` renderer is a no-op for the bloom profile's reason: resume
+    /// replays splash frame one, which re-applies the committed style.
+    pub(crate) fn apply_mod_specular_style(&mut self, profile: ModRenderProfile) {
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.set_specular_style(renderer_specular_style(profile.specular.style));
+        }
+    }
+
     /// Commit a mod's ghost transparency (`render.ghosts`) to the renderer,
     /// which keeps it in boot state across a full-renderer rebuild. Called
     /// beside the bloom and reflection commits at boot and on every committed
@@ -241,7 +267,22 @@ impl App {
 mod tests {
     use super::*;
     use postretro_render_cpu::render_extent::{Extent, RenderExtents, resolve_divisor};
-    use postretro_scripting_core::runtime::{ModBloomProfile, ModReflectionProfile};
+    use postretro_scripting_core::runtime::{
+        ModBloomProfile, ModReflectionProfile, ModSpecularProfile,
+    };
+
+    /// Every Rust source under `dir`, walked so a new capture file is covered
+    /// without an edit.
+    fn capture_rust_sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("capture directory is readable") {
+            let path = entry.expect("capture directory entry is readable").path();
+            if path.is_dir() {
+                capture_rust_sources(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                out.push(path);
+            }
+        }
+    }
 
     fn authored(resolution: ModBloomResolution, pixelated: bool) -> ModRenderProfile {
         ModRenderProfile {
@@ -291,6 +332,57 @@ mod tests {
         );
     }
 
+    // AC 8 (renderer half): each authored specular style reaches the
+    // renderer's. Drift guard both ways: the chokepoint's match is exhaustive
+    // over the authored styles, and walking the renderer's own `ALL` back
+    // through an exhaustive match makes a new renderer style a compile error
+    // here too. An omitted style draws pixel, as a renderer no manifest has
+    // spoken to (frame capture's) does.
+    #[test]
+    fn every_authored_specular_style_maps_to_its_renderer_style() {
+        for authored in ModSpecularStyle::ALL {
+            let expected = match authored {
+                ModSpecularStyle::Pixel => SpecularStyle::Pixel,
+                ModSpecularStyle::Smooth => SpecularStyle::Smooth,
+            };
+            assert_eq!(renderer_specular_style(authored), expected);
+        }
+        for renderer_style in SpecularStyle::ALL {
+            let authored = match renderer_style {
+                SpecularStyle::Pixel => ModSpecularStyle::Pixel,
+                SpecularStyle::Smooth => ModSpecularStyle::Smooth,
+            };
+            assert_eq!(renderer_specular_style(authored), renderer_style);
+        }
+        assert_eq!(
+            renderer_specular_style(ModRenderProfile::default().specular.style),
+            SpecularStyle::default(),
+        );
+        assert_eq!(SpecularStyle::default(), SpecularStyle::Pixel);
+        let smooth = ModRenderProfile {
+            specular: ModSpecularProfile {
+                style: ModSpecularStyle::Smooth,
+            },
+            ..ModRenderProfile::default()
+        };
+        assert_eq!(
+            renderer_specular_style(smooth.specular.style),
+            SpecularStyle::Smooth
+        );
+    }
+
+    // AC 18 (dev half): content/dev's own start script, initialized as at
+    // boot, authors no specular style, so the dev mod draws pixel.
+    #[test]
+    fn content_dev_leaves_the_default_pixel_specular_style() {
+        let dev = crate::startup::fluids_swim_surface_tests::dev_manifest();
+        assert_eq!(dev.render.specular, ModSpecularProfile::default());
+        assert_eq!(
+            renderer_specular_style(dev.render.specular.style),
+            SpecularStyle::Pixel
+        );
+    }
+
     // Drift guard both ways, as for the reflection style: the authored modes
     // map exhaustively onto the renderer's, and an omitted mode draws what a
     // renderer no manifest has spoken to draws (frame capture's): blend.
@@ -318,8 +410,8 @@ mod tests {
     }
 
     // The style commits beside bloom at both points a mod's render profile
-    // lands: boot mod init and a committed staged reload. So does the ghost
-    // transparency.
+    // lands: boot mod init and a committed staged reload. So do the specular
+    // style (AC 10) and the ghost transparency.
     #[test]
     fn the_reflection_style_commits_beside_bloom_at_boot_and_on_staged_reload() {
         let code_only = |source: &str| -> String {
@@ -334,12 +426,14 @@ mod tests {
         assert!(boot.contains(
             "self.apply_mod_bloom_render_profile(committed_render_profile);\
              self.apply_mod_reflection_profile(committed_render_profile);\
+             self.apply_mod_specular_style(committed_render_profile);\
              self.apply_mod_ghost_transparency(committed_render_profile);"
         ));
         let reload = code_only(include_str!("staged_manifest_lifecycle.rs"));
         assert!(reload.contains(
             "self.apply_mod_bloom_render_profile(render_profile);\
              self.apply_mod_reflection_profile(render_profile);\
+             self.apply_mod_specular_style(render_profile);\
              self.apply_mod_ghost_transparency(render_profile);"
         ));
         // Frame capture loads no manifest: it may set the style from its own
@@ -355,14 +449,42 @@ mod tests {
             let code = code_only(capture);
             assert!(!code.contains("apply_mod_reflection_profile"));
             assert!(!code.contains("apply_mod_ghost_transparency"));
+            assert!(!code.contains("apply_mod_specular_style"));
             assert!(!code.contains("ModRenderProfile"));
             assert!(!code.contains("ModReflection"));
+            assert!(!code.contains("ModSpecular"));
         }
         let setup = code_only(include_str!("../capture/setup.rs"));
         assert!(setup.contains(
             "ifletSome(style)=scene.reflection_style{\
              renderer.set_fluid_reflection_style(style.renderer());}"
         ));
+        // Capture's specular style comes from its scene key alone, applied
+        // once, and the renderer is never told it anywhere else in capture.
+        assert!(setup.contains(
+            "ifletSome(style)=scene.specular_style{\
+             renderer.set_specular_style(style.renderer());}"
+        ));
+        let mut capture_files = Vec::new();
+        capture_rust_sources(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/capture"),
+            &mut capture_files,
+        );
+        // Test files drive the renderer directly on purpose.
+        let setters: usize = capture_files
+            .iter()
+            .filter(|path| {
+                !path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().ends_with("tests.rs"))
+            })
+            .map(|path| {
+                code_only(&std::fs::read_to_string(path).expect("capture source reads"))
+                    .matches("set_specular_style(")
+                    .count()
+            })
+            .sum();
+        assert_eq!(setters, 1, "capture sets the specular style in one place");
     }
 
     // The kept tier reaches the renderer before anything sizes a reflection
@@ -426,19 +548,8 @@ mod tests {
             "an accepted menu change applies live"
         );
 
-        // Walk the directory so a new capture file is covered without an edit.
-        fn capture_sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-            for entry in std::fs::read_dir(dir).expect("capture directory is readable") {
-                let path = entry.expect("capture directory entry is readable").path();
-                if path.is_dir() {
-                    capture_sources(&path, out);
-                } else if path.extension().is_some_and(|ext| ext == "rs") {
-                    out.push(path);
-                }
-            }
-        }
         let mut capture_files = Vec::new();
-        capture_sources(
+        capture_rust_sources(
             &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/capture"),
             &mut capture_files,
         );

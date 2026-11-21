@@ -130,6 +130,54 @@ fn committed_sdk_types_contain_reflection_style_and_surface_reflectivity() {
     }
 }
 
+// `render.specular.style` reaches both committed SDK type files and the
+// generator alike, typed beside `reflections`.
+#[test]
+fn committed_sdk_types_contain_the_specular_render_profile() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+
+    let mut registry = PrimitiveRegistry::new();
+    register_all(&mut registry, ScriptCtx::new());
+    let generated_ts = generate_typescript(&registry);
+    let generated_luau = generate_luau(&registry);
+    let committed_ts = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../sdk/types/postretro.d.ts"
+    ))
+    .expect("read committed postretro.d.ts");
+    let committed_luau = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../sdk/types/postretro.d.luau"
+    ))
+    .expect("read committed postretro.d.luau");
+
+    for output in [&generated_ts, &committed_ts] {
+        assert!(output.contains("export type SpecularStyle ="));
+        assert!(output.contains("export type SpecularRenderProfile = {"));
+        assert!(output.contains("style?: SpecularStyle;"));
+        let reflections = output
+            .find("reflections?: ReflectionRenderProfile;")
+            .expect("reflections typed");
+        let specular = output
+            .find("specular?: SpecularRenderProfile;")
+            .expect("specular typed");
+        assert!(reflections < specular, "specular sits beside reflections");
+    }
+    for output in [&generated_luau, &committed_luau] {
+        assert!(output.contains("export type SpecularStyle ="));
+        assert!(output.contains("export type SpecularRenderProfile = {"));
+        assert!(output.contains("style: SpecularStyle?,"));
+        let reflections = output
+            .find("reflections: ReflectionRenderProfile?,")
+            .expect("reflections typed");
+        let specular = output
+            .find("specular: SpecularRenderProfile?,")
+            .expect("specular typed");
+        assert!(reflections < specular, "specular sits beside reflections");
+    }
+}
+
 // Ghost styles and `render.ghosts` reach both committed SDK type files and
 // the generator alike.
 #[test]

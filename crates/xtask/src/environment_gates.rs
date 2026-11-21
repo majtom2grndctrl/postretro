@@ -1,7 +1,8 @@
 // Repository grep gates over source and the FGD: environment volumes (projectile
 // flight makes no environment query, no volume FGD key authors swim tuning),
 // the audio crate's public API (the muffle included) names no kira type, player
-// option names (reflections take no style option, only the cost tier), and the
+// option names (reflections take no style option, only the cost tier; no option
+// names a specular style, sharpness or tint), and the
 // world material inputs (material prefixes, texture suffixes, FGD classes and
 // keys take no reflection input; no prefix table names the retired `neon`;
 // TrenchBroom's config hides every pinned sibling suffix).
@@ -66,6 +67,23 @@ const ALLOWED_REFLECTION_OPTION_NAMES: &[&str] =
 /// Words that make a name a reflection setting, matched against the start of
 /// each of its snake_case, dotted or camelCase words.
 const REFLECTION_WORDS: &[&str] = &["reflect", "ssr", "mirror"];
+
+/// Words that make a name a specular setting, matched against the start of
+/// each of its snake_case, dotted or camelCase words. Specular style,
+/// smoothness (sharpness) and tint are the author's (`render.specular.style`,
+/// `_p`, `_t`), never the player's, and no specular option exists, so every
+/// match is a violation. A bare `tint` or `sharpness` is not specular (an
+/// accessibility tint, a post-process sharpen); a specular one carries one of
+/// these words (`specular_tint`, `specSharpness`).
+const SPECULAR_WORDS: &[&str] = &[
+    "specular",
+    "highlight",
+    "gloss",
+    "shininess",
+    "smoothness",
+    "roughness",
+    "metallic",
+];
 
 /// Material vocabulary and texture-name rules: the material enum, its prefix
 /// table and per-material properties, and the sibling-suffix rules that bind
@@ -349,6 +367,17 @@ fn names_reflection(name: &str) -> bool {
     })
 }
 
+/// Whether a name names a specular setting: one of its words is `spec` or
+/// starts with a specular word.
+fn names_specular(name: &str) -> bool {
+    name_words(name).iter().any(|word| {
+        word == "spec"
+            || SPECULAR_WORDS
+                .iter()
+                .any(|specular| word.starts_with(specular))
+    })
+}
+
 /// Every string literal in each `const` declaration typed over `str` (a
 /// `&str`, or an array of them) in `code`.
 ///
@@ -579,9 +608,11 @@ fn volume_fgd_keys_name_no_swim_field() {
 // The player owns reflection cost, never style: the only reflection name
 // among the settings keys, option slots and `PlayerOptions` fields is the
 // cost tier, so no option can name the author's `render.reflections.style`.
-#[test]
-fn player_options_name_no_reflection_style() {
-    let root = workspace_root();
+/// Every player-option name the gates scan, with where it was found: each
+/// `str` constant under the options directory (settings keys and slot names),
+/// each `PlayerOptions` and `AccessibilityOptions` field, and each
+/// `options.*` wire name in the engine-state catalog.
+fn player_option_names(root: &Path) -> Vec<(String, String)> {
     let mut names = Vec::new();
     for path in rust_files(&root.join(OPTIONS_DIR)) {
         // Test files spell rejected names on purpose.
@@ -593,7 +624,7 @@ fn player_options_name_no_reflection_style() {
         }
         let source = std::fs::read_to_string(&path).expect("options source reads");
         let file = path
-            .strip_prefix(&root)
+            .strip_prefix(root)
             .unwrap_or(&path)
             .to_string_lossy()
             .replace('\\', "/");
@@ -625,6 +656,13 @@ fn player_options_name_no_reflection_style() {
         }
     }
 
+    names
+}
+
+#[test]
+fn player_options_name_no_reflection_style() {
+    let root = workspace_root();
+    let names = player_option_names(&root);
     // The scan reads what it claims: the tier is found as settings key, slot,
     // catalog wire name and field.
     for (source, expected) in [
@@ -657,6 +695,73 @@ fn player_options_name_no_reflection_style() {
          reflection style is the author's `render.reflections.style`:\n{}",
         violations.join("\n")
     );
+}
+
+// AC 17: specular style, sharpness (smoothness) and tint are the author's
+// (`render.specular.style`, `_p`, `_t`), never the player's: no settings key,
+// option slot or `PlayerOptions` field names a specular setting at all.
+#[test]
+fn player_options_name_no_specular_style_sharpness_or_tint() {
+    let root = workspace_root();
+    let names = player_option_names(&root);
+    // The scan reads what it claims: it finds the option homes the
+    // reflection gate pins, so a moved home cannot pass this gate empty.
+    for (source, expected) in [
+        ("crates/postretro/src/options/mod.rs", "reflection_quality"),
+        (ENGINE_STATE_CATALOG, "options.reflectionQuality"),
+        ("PlayerOptions field", "reflection_quality"),
+    ] {
+        assert!(
+            names
+                .iter()
+                .any(|(file, name)| file == source && name == expected),
+            "the scan found no `{expected}` in {source}; point this gate at the option's new home"
+        );
+    }
+    let violations: Vec<String> = names
+        .iter()
+        .filter(|(_, name)| names_specular(name))
+        .map(|(file, name)| format!("{file}: `{name}`"))
+        .collect();
+    assert!(
+        violations.is_empty(),
+        "a player option names a specular style, sharpness or tint; these are the \
+         author's `render.specular.style` and `_p`/`_t` maps:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn specular_gate_reads_every_spelling_of_a_specular_name() {
+    for name in [
+        "specular_style",
+        "specularStyle",
+        "options.specular.style",
+        "options.specularStyle",
+        "spec_sharpness",
+        "specSharpness",
+        "specular_tint",
+        "specularTint",
+        "highlight_style",
+        "glossiness",
+        "texel_smoothness",
+        "shininess",
+        "roughness_scale",
+        "metallic_tint",
+    ] {
+        assert!(names_specular(name), "{name}");
+    }
+    for name in [
+        "fog_quality",
+        "options.surfaceDepthQuality",
+        "reflection_quality",
+        "damage_tint",
+        "sharpness",
+        "spectator_mode",
+        "inspect",
+    ] {
+        assert!(!names_specular(name), "{name}");
+    }
 }
 
 // Reflections take no world-material input: no material, material property,

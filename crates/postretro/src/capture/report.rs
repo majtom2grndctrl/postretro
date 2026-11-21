@@ -829,6 +829,7 @@ mod tests {
             mask_pool_layers: None,
             reflection_quality: None,
             reflection_style: None,
+            specular_style: None,
             reflection_march: None,
             planar_reflection: None,
             ghost_styles: None,

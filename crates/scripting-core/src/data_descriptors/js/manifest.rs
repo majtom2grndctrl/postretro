@@ -171,8 +171,9 @@ pub fn drain_default_weapon_placement_js<'js>(
 
 /// Drain the optional static renderer profile from a QuickJS mod manifest.
 /// Every malformed field degrades independently so presentation preferences
-/// never reject an otherwise valid manifest: `bloom` and `reflections` parse
-/// apart, so a missing or malformed one never resets the other.
+/// never reject an otherwise valid manifest: `bloom`, `reflections`,
+/// `specular` and `ghosts` parse apart, so a missing or malformed one never
+/// resets another.
 pub fn drain_render_profile_js<'js>(
     obj: &Object<'js>,
     scope: &str,
@@ -199,6 +200,7 @@ pub fn drain_render_profile_js<'js>(
     Ok(ModRenderProfile {
         bloom: drain_bloom_profile_js(render, scope)?,
         reflections: drain_reflection_profile_js(render, scope)?,
+        specular: drain_specular_profile_js(render, scope)?,
         ghosts: drain_ghost_transparency_js(render, scope)?,
     })
 }
@@ -306,6 +308,46 @@ fn drain_reflection_profile_js<'js>(
     Ok(ModReflectionProfile { style })
 }
 
+/// `render.specular`; absent or malformed is the default (pixel) style.
+fn drain_specular_profile_js<'js>(
+    render: &Object<'js>,
+    scope: &str,
+) -> Result<ModSpecularProfile, DescriptorError> {
+    if !render.contains_key("specular").map_err(js_err)? {
+        return Ok(ModSpecularProfile::default());
+    }
+    let raw_specular: JsValue = render.get("specular").map_err(js_err)?;
+    if raw_specular.is_null() || raw_specular.is_undefined() {
+        return Ok(ModSpecularProfile::default());
+    }
+    if !raw_specular.is_object() || raw_specular.is_array() {
+        warn_specular_profile(scope, "an object");
+        return Ok(ModSpecularProfile::default());
+    }
+    let specular = raw_specular
+        .as_object()
+        .expect("object type was checked before borrowing");
+    if !specular.contains_key("style").map_err(js_err)? {
+        return Ok(ModSpecularProfile::default());
+    }
+    let raw: JsValue = specular.get("style").map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(ModSpecularProfile::default());
+    }
+    let authored = raw.as_string().and_then(|value| value.to_string().ok());
+    let style = match authored
+        .as_deref()
+        .and_then(ModSpecularStyle::from_authored)
+    {
+        Some(style) => style,
+        None => {
+            warn_specular_style(scope);
+            ModSpecularStyle::default()
+        }
+    };
+    Ok(ModSpecularProfile { style })
+}
+
 /// `render.ghosts`; absent or malformed is blend, the default.
 fn drain_ghost_transparency_js<'js>(
     render: &Object<'js>,
@@ -344,6 +386,22 @@ pub(crate) fn warn_ghost_transparency(scope: &str) {
 pub(crate) fn warn_reflection_style(scope: &str) {
     log::warn!(
         "[Scripting] {scope}: `render.reflections.style` must be `pixel` or `smooth`; using `pixel`"
+    );
+}
+
+/// The one diagnostic for a non-table `render.specular`, shared by both
+/// runtimes; `shape` names the runtime's container ("an object", "a table").
+pub(crate) fn warn_specular_profile(scope: &str, shape: &str) {
+    log::warn!(
+        "[Scripting] {scope}: `render.specular` must be {shape}; using the default specular profile"
+    );
+}
+
+/// The one diagnostic for an unusable `render.specular.style`, shared by both
+/// runtimes so their warnings match word for word.
+pub(crate) fn warn_specular_style(scope: &str) {
+    log::warn!(
+        "[Scripting] {scope}: `render.specular.style` must be `pixel` or `smooth`; using `pixel`"
     );
 }
 

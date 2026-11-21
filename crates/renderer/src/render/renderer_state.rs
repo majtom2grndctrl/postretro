@@ -123,6 +123,24 @@ impl Renderer {
         self.ghost_transparency
     }
 
+    /// Commit the mod's specular style (`render.specular.style`). CPU-only
+    /// boot state, so it is safe before full init and with no level loaded,
+    /// survives a full-renderer rebuild, and never enters a level build's
+    /// snapshot. Each frame's forward and mover uniform uploads read it, so
+    /// a change reaches the next frame with no pipeline or bind-group
+    /// rebuild. A renderer never told draws pixel, as frame capture does.
+    pub fn set_specular_style(
+        &mut self,
+        style: postretro_render_cpu::frame_uniforms::SpecularStyle,
+    ) {
+        self.specular_style = style;
+    }
+
+    /// The specular style the next frame draws.
+    pub fn specular_style(&self) -> postretro_render_cpu::frame_uniforms::SpecularStyle {
+        self.specular_style
+    }
+
     /// Runtime bloom state. `POSTRETRO_BLOOM=0` seeds this false for the
     /// manual no-bloom observation; dev-tools can then change it live.
     #[cfg(feature = "dev-tools")]

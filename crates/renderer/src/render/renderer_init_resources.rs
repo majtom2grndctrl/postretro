@@ -524,6 +524,8 @@ pub(crate) fn build_initial_uniform_data(
         spec_shadowmask_force_one: false,
         // No mask pool before a level installs.
         static_spec_mask_present: false,
+        // Rewritten from boot state by every frame's upload.
+        specular_style: Default::default(),
     })
 }
 

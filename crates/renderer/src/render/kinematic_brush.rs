@@ -933,6 +933,7 @@ impl KinematicBrushPass {
         light_term_mask: u32,
         ambient_floor: f32,
         indirect_scale: f32,
+        specular_style: postretro_render_cpu::frame_uniforms::SpecularStyle,
     ) {
         queue.write_buffer(
             &self.light_params_buffer,
@@ -945,9 +946,8 @@ impl KinematicBrushPass {
                 light_term_mask,
                 ambient_floor,
                 indirect_scale,
-                // The default pixel style until the mod's
-                // `render.specular.style` is threaded here.
-                specular_style: 0,
+                // Shared by the main view and the planar mirror.
+                specular_style: specular_style.kinematic_word(),
             }),
         );
     }

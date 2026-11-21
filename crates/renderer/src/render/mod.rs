@@ -124,6 +124,8 @@ mod shadowmask_union_test;
 #[cfg(test)]
 mod specular_slot_fixtures;
 #[cfg(test)]
+mod specular_style_frame_tests;
+#[cfg(test)]
 mod world_specular_harness;
 #[cfg(test)]
 mod world_specular_test;

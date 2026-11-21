@@ -114,6 +114,7 @@ fn a_malformed_render_ghosts_warns_uses_blend_and_keeps_bloom_and_reflections() 
         reflections: ModReflectionProfile {
             style: ModReflectionStyle::Smooth,
         },
+        specular: Default::default(),
         ghosts: ModGhostTransparency::Blend,
     };
     for (js_ghosts, luau_ghosts) in [

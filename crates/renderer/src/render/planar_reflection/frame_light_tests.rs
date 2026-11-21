@@ -393,3 +393,67 @@ fn planar_gpu_mirror_only_light_shows_only_in_the_reflection() {
     );
     renderer.release_level_resources();
 }
+
+// AC 13 (mirror): the mirror's group 0 is a copy of the main frame's, and
+// its movers read the main view's one mover params buffer, so on the frame
+// a style is committed the planar mirror reads it for static faces and
+// movers alike, with no frame of lag in either direction.
+#[test]
+fn planar_mirror_reads_the_committed_specular_style_on_the_same_frame() {
+    use crate::render::gpu_test_harness::read_uniform_bytes;
+    use postretro_render_cpu::frame_uniforms::{
+        KINEMATIC_SPECULAR_STYLE_SMOOTH, SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH, SpecularStyle,
+        UNIFORM_SIZE,
+    };
+    let Some((mut renderer, view)) = lit_renderer() else {
+        return;
+    };
+    let word =
+        |bytes: &[u8], at: usize| u32::from_ne_bytes(bytes[at..at + 4].try_into().expect("a word"));
+    for style in [
+        SpecularStyle::Smooth,
+        SpecularStyle::Pixel,
+        SpecularStyle::Smooth,
+    ] {
+        renderer.set_specular_style(style);
+        capture_lit(&mut renderer, view, &[], &[MIRROR_CELLS]);
+        let full = renderer.full();
+        assert!(
+            full.planar_reflection.camera.is_some(),
+            "{style:?}: the planar mirror drew this frame"
+        );
+        let main = read_uniform_bytes(&renderer, &full.uniform_buffer, UNIFORM_SIZE as u64);
+        let mirror = read_uniform_bytes(
+            &renderer,
+            &full.planar_reflection.uniform_buffer,
+            UNIFORM_SIZE as u64,
+        );
+        let movers = read_uniform_bytes(
+            &renderer,
+            full.kinematic_brush.light_params_buffer_for_test(),
+            32,
+        );
+        let (bit, mover_word) = match style {
+            SpecularStyle::Pixel => (0, 0),
+            SpecularStyle::Smooth => (
+                SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH,
+                KINEMATIC_SPECULAR_STYLE_SMOOTH,
+            ),
+        };
+        assert_eq!(
+            word(&main, 124) & SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH,
+            bit,
+            "{style:?}: main view"
+        );
+        assert_eq!(
+            word(&mirror, 124),
+            word(&main, 124),
+            "{style:?}: the mirror's static faces read the main frame's style word"
+        );
+        assert_eq!(
+            word(&movers, 28),
+            mover_word,
+            "{style:?}: shared mover word"
+        );
+    }
+}

@@ -261,6 +261,15 @@ pub struct Renderer {
     /// blend, the default.
     pub(super) ghost_transparency: postretro_render_cpu::ghost_transparency::GhostTransparency,
 
+    /// The mod's specular style (`render.specular.style`). Boot state, like
+    /// the ghost transparency: a full-renderer rebuild keeps it, and it never
+    /// enters a level build's snapshot, so a style committed with no level,
+    /// before a rebuild or during an in-flight load reaches the next frame
+    /// of whatever level is installed. Written into the forward and mover
+    /// per-frame uniforms every frame. Offscreen capture sets it only from
+    /// its scene: pixel, the default.
+    pub(super) specular_style: postretro_render_cpu::frame_uniforms::SpecularStyle,
+
     /// The player's fluid reflection tier. Boot state, like Surface Depth, so
     /// a change before full init or with no level holds until the next full
     /// init and fluid install consult it, and a full-renderer rebuild after

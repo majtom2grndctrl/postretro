@@ -21,7 +21,8 @@ pub use super::runtime::{
     Frontend, MenuCamera, ModAttenuation, ModAttenuationCurve, ModAudioProfile, ModBloomProfile,
     ModBloomResolution, ModGhostAudio, ModGhostTransparency, ModInputBinding, ModInputBlock,
     ModInputCommand, ModInputGlyphs, ModLoading, ModMapEntry, ModMoverDefaults,
-    ModReflectionProfile, ModReflectionStyle, ModRenderProfile, SavesManifest,
+    ModReflectionProfile, ModReflectionStyle, ModRenderProfile, ModSpecularProfile,
+    ModSpecularStyle, SavesManifest,
 };
 pub use crate::ir::IrType;
 pub use crate::ui::descriptor::{

@@ -5058,7 +5058,13 @@ impl App {
             };
             sim::advance_predicted(
                 &session.scripting.script_ctx.registry,
-                &self.collision_world,
+                // Predicted projectiles meet movers where this client's
+                // movement prediction has them, never the presented pose.
+                &collision::moving::CombinedCollisionWorld::new(
+                    &self.collision_world,
+                    &self.kinematic_mover_colliders,
+                    &self.kinematic_mover_tick_states,
+                ),
                 &session.hit_zone_store,
                 frame_anim_time,
                 frame_dt,

@@ -16,7 +16,10 @@ use postretro_foundation::{
     WeaponPlacementDescriptor,
 };
 
-use crate::collision::{CollisionWorld, cast_ray, cast_sphere_exact};
+#[cfg(test)]
+use crate::collision::CollisionWorld;
+use crate::collision::moving::{CombinedCollisionWorld, cast_ray_combined};
+use crate::collision::shot_queries::cast_sphere_exact_combined;
 #[cfg(test)]
 use crate::scripting_systems::hit_zones::nearest_entity_hit;
 use crate::scripting_systems::hit_zones::{
@@ -28,6 +31,8 @@ pub mod activation_prediction;
 pub mod execution;
 #[cfg(test)]
 mod execution_tests;
+#[cfg(test)]
+mod mover_shot_tests;
 pub mod pawn_gate;
 mod shot;
 pub use shot::{ResolvedWeaponShot, freeze_weapon_shot};
@@ -595,7 +600,7 @@ pub fn tick_resolved(
         0,
         command,
         &WeaponPlacementDescriptor::default(),
-        collision_world,
+        &CombinedCollisionWorld::static_only(collision_world),
         EnvironmentView::level_only(0.0),
         hit_zone_store,
         anim_time,
@@ -615,7 +620,7 @@ pub fn tick_resolved_component(
     active_slot: usize,
     command: &WeaponFireCommand,
     placement: &WeaponPlacementDescriptor,
-    collision_world: &CollisionWorld,
+    collision_world: &CombinedCollisionWorld<'_>,
     environment: EnvironmentView<'_>,
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
@@ -710,7 +715,7 @@ pub fn resolve_activation_shot(
     active_slot: usize,
     command: &WeaponFireCommand,
     placement: &WeaponPlacementDescriptor,
-    collision_world: &CollisionWorld,
+    collision_world: &CombinedCollisionWorld<'_>,
     environment: EnvironmentView<'_>,
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
@@ -742,7 +747,7 @@ pub fn resolve_activation_shot_owned(
     active_slot: usize,
     command: &WeaponFireCommand,
     placement: &WeaponPlacementDescriptor,
-    collision_world: &CollisionWorld,
+    collision_world: &CombinedCollisionWorld<'_>,
     environment: EnvironmentView<'_>,
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
@@ -809,7 +814,7 @@ fn fire_hitscan(
     owner_pawn: Option<EntityId>,
     origin: Vec3,
     direction: Vec3,
-    collision_world: &CollisionWorld,
+    collision_world: &CombinedCollisionWorld<'_>,
     environment: EnvironmentView<'_>,
     registry: &EntityRegistry,
     hit_zone_store: &HitZoneStore,
@@ -949,7 +954,7 @@ pub fn resolve_projectile_launch_pose(
     placement: &WeaponPlacementDescriptor,
     muzzle_offset: Option<Vec3>,
     projectile_radius: f32,
-    collision_world: &CollisionWorld,
+    collision_world: &CombinedCollisionWorld<'_>,
     registry: &EntityRegistry,
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
@@ -1021,7 +1026,7 @@ fn resolve_muzzle_launch_origin(
     placement: &WeaponPlacementDescriptor,
     muzzle_local: Vec3,
     projectile_radius: f32,
-    collision_world: &CollisionWorld,
+    collision_world: &CombinedCollisionWorld<'_>,
     range: f32,
 ) -> ProjectileLaunchOrigin {
     let muzzle = muzzle_world_origin(aim_origin, aim_direction, placement, muzzle_local);
@@ -1040,7 +1045,7 @@ fn resolve_muzzle_launch_origin(
         && muzzle_segment_length_squared > MUZZLE_DIRECTION_EPSILON_SQUARED;
     let muzzle_segment_obstructed = valid_muzzle_segment
         && if projectile_radius > 0.0 {
-            cast_sphere_exact(
+            cast_sphere_exact_combined(
                 collision_world,
                 aim_origin,
                 projectile_radius,
@@ -1120,13 +1125,13 @@ impl NearestHit {
 /// both clamped to `range`, and return whichever is nearer. On a tie (entity toi
 /// == world toi) the wall wins (`entity.toi < world.toi`); an entity behind a
 /// wall is never reached because its toi exceeds the wall's. Both the sim fire
-/// path (`fire_hitscan`) and the client prediction path (`resolve_client_hitscan`)
+/// path (`fire_hitscan`) and the client prediction path (`resolve_client_shot`)
 /// resolve through here so the tie-break lives in one place.
 struct NearestHitQuery<'a> {
     owner_pawn: Option<EntityId>,
     origin: Vec3,
     direction: Vec3,
-    collision_world: &'a CollisionWorld,
+    collision_world: &'a CombinedCollisionWorld<'a>,
     registry: &'a EntityRegistry,
     hit_zone_store: &'a HitZoneStore,
     anim_time: f64,
@@ -1146,10 +1151,19 @@ fn resolve_nearest_hit(query: NearestHitQuery<'_>) -> Option<NearestHit> {
 fn resolve_world_hit(
     origin: Vec3,
     direction: Vec3,
-    collision_world: &CollisionWorld,
+    collision_world: &CombinedCollisionWorld<'_>,
     range: f32,
 ) -> Option<WorldHit> {
-    cast_ray(collision_world, origin, direction, range).map(|hit| WorldHit {
+    // A mover contact is a world contact: same tie rule and presentation.
+    cast_ray_combined(
+        collision_world.static_world,
+        collision_world.movers,
+        collision_world.poses,
+        origin,
+        direction,
+        range,
+    )
+    .map(|hit| WorldHit {
         toi: hit.time_of_impact,
         point: origin + direction * hit.time_of_impact,
         normal: hit.normal,
@@ -1250,7 +1264,7 @@ pub(crate) mod tests {
         (a - b).abs() < EPSILON
     }
 
-    fn assert_vec3_approx(actual: Vec3, expected: Vec3) {
+    pub(crate) fn assert_vec3_approx(actual: Vec3, expected: Vec3) {
         assert!(
             approx_eq(actual.x, expected.x)
                 && approx_eq(actual.y, expected.y)
@@ -1271,7 +1285,7 @@ pub(crate) mod tests {
         assert_eq!(actual.z.to_bits(), expected.z.to_bits());
     }
 
-    fn only_impact(events: &WeaponFireEvents) -> &WeaponImpact {
+    pub(crate) fn only_impact(events: &WeaponFireEvents) -> &WeaponImpact {
         let [impact] = events.impacts.as_slice() else {
             panic!("expected exactly one impact, got {}", events.impacts.len());
         };
@@ -1380,7 +1394,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn projectile_weapon_component(muzzle_offset: Option<Vec3>) -> WeaponComponent {
+    pub(crate) fn projectile_weapon_component(muzzle_offset: Option<Vec3>) -> WeaponComponent {
         let mut descriptor = weapon_descriptor(FireMode::Semi, 100.0);
         descriptor.resolution = ResolutionMode::Projectile;
         descriptor.muzzle_offset = muzzle_offset.map(|offset| offset.to_array());
@@ -1452,7 +1466,7 @@ pub(crate) mod tests {
     /// Spawn a `Health` entity carrying a hitbox at a world position. Default
     /// `half_extents` make a unit cube (0.5 in each axis); `offset` defaults to
     /// zero so the AABB centers on `position`.
-    fn spawn_hitbox_entity(
+    pub(crate) fn spawn_hitbox_entity(
         registry: &mut EntityRegistry,
         position: Vec3,
         half_extents: Vec3,
@@ -1604,7 +1618,7 @@ pub(crate) mod tests {
             &placement,
             muzzle,
             0.0,
-            &CollisionWorld::new(),
+            &CombinedCollisionWorld::static_only(&CollisionWorld::new()),
             &registry,
             &zones,
             0.0,
@@ -1623,7 +1637,7 @@ pub(crate) mod tests {
             &placement,
             muzzle,
             0.0,
-            &wall_world(),
+            &CombinedCollisionWorld::static_only(&wall_world()),
             &registry,
             &zones,
             0.0,
@@ -1656,7 +1670,7 @@ pub(crate) mod tests {
             &placement,
             Some(muzzle),
             0.0,
-            &wall_world_at(-0.5),
+            &CombinedCollisionWorld::static_only(&wall_world_at(-0.5)),
             &registry,
             &zones,
             0.0,
@@ -1677,7 +1691,8 @@ pub(crate) mod tests {
         let projectile_radius = 0.2;
         let wall = lateral_wall_world_at(0.6);
         assert!(
-            resolve_world_hit(eye, aim, &wall, 10.0).is_none(),
+            resolve_world_hit(eye, aim, &CombinedCollisionWorld::static_only(&wall), 10.0)
+                .is_none(),
             "the crosshair ray must miss the lateral wall"
         );
         assert!(
@@ -1691,7 +1706,7 @@ pub(crate) mod tests {
             &WeaponPlacementDescriptor::default(),
             Some(muzzle),
             projectile_radius,
-            &wall,
+            &CombinedCollisionWorld::static_only(&wall),
             &EntityRegistry::new(),
             &HitZoneStore::new(),
             0.0,
@@ -1733,7 +1748,7 @@ pub(crate) mod tests {
             &placement,
             Some(muzzle),
             0.0,
-            &ground_world(),
+            &CombinedCollisionWorld::static_only(&ground_world()),
             &EntityRegistry::new(),
             &HitZoneStore::new(),
             0.0,
@@ -1783,7 +1798,7 @@ pub(crate) mod tests {
             1,
             &[0.0, 0.0],
             &[],
-            &CollisionWorld::new(),
+            &CombinedCollisionWorld::static_only(&CollisionWorld::new()),
             &EntityRegistry::new(),
             &HitZoneStore::new(),
             0.0,
@@ -1839,7 +1854,7 @@ pub(crate) mod tests {
             0,
             &command,
             &placement,
-            &CollisionWorld::new(),
+            &CombinedCollisionWorld::static_only(&CollisionWorld::new()),
             EnvironmentView::level_only(0.0),
             &HitZoneStore::new(),
             0.0,
@@ -1895,7 +1910,7 @@ pub(crate) mod tests {
             7,
             &[0.0],
             &[],
-            &world,
+            &CombinedCollisionWorld::static_only(&world),
             &registry,
             &store,
             0.0,
@@ -1926,7 +1941,7 @@ pub(crate) mod tests {
             8,
             &[0.0],
             &[],
-            &world,
+            &CombinedCollisionWorld::static_only(&world),
             &registry,
             &store,
             0.0,
@@ -2141,7 +2156,7 @@ pub(crate) mod tests {
             1,
             &[0.0],
             &[],
-            &wall_world(),
+            &CombinedCollisionWorld::static_only(&wall_world()),
             &EntityRegistry::new(),
             &HitZoneStore::new(),
             0.0,
@@ -2418,7 +2433,7 @@ pub(crate) mod tests {
             7,
             &[0.0],
             &[],
-            &wall_world(),
+            &CombinedCollisionWorld::static_only(&wall_world()),
             &registry,
             &HitZoneStore::new(),
             0.0,
@@ -2541,7 +2556,7 @@ pub(crate) mod tests {
             7,
             &[0.0],
             &[],
-            &CollisionWorld::new(),
+            &CombinedCollisionWorld::static_only(&CollisionWorld::new()),
             &registry,
             &HitZoneStore::new(),
             0.0,
@@ -2595,7 +2610,7 @@ pub(crate) mod tests {
             7,
             &[0.0],
             &[],
-            &CollisionWorld::new(),
+            &CombinedCollisionWorld::static_only(&CollisionWorld::new()),
             &registry,
             &HitZoneStore::new(),
             0.0,
@@ -2664,7 +2679,7 @@ pub(crate) mod tests {
             0,
             &command,
             &WeaponPlacementDescriptor::default(),
-            &CollisionWorld::new(),
+            &CombinedCollisionWorld::static_only(&CollisionWorld::new()),
             EnvironmentView::level_only(0.0),
             &zones,
             0.0,
@@ -2696,7 +2711,7 @@ pub(crate) mod tests {
             1,
             &[0.0],
             &[],
-            &CollisionWorld::new(),
+            &CombinedCollisionWorld::static_only(&CollisionWorld::new()),
             &registry,
             &zones,
             0.0,
@@ -2723,7 +2738,7 @@ pub(crate) mod tests {
             2,
             &[0.0],
             &[],
-            &CollisionWorld::new(),
+            &CombinedCollisionWorld::static_only(&CollisionWorld::new()),
             &registry,
             &zones,
             0.0,
@@ -2761,7 +2776,7 @@ pub(crate) mod tests {
             7,
             &[0.0],
             &[],
-            &CollisionWorld::new(),
+            &CombinedCollisionWorld::static_only(&CollisionWorld::new()),
             &registry,
             &HitZoneStore::new(),
             0.0,
@@ -3239,7 +3254,7 @@ pub(crate) mod tests {
             77,
             &[0.0],
             &[],
-            &CollisionWorld::new(),
+            &CombinedCollisionWorld::static_only(&CollisionWorld::new()),
             &registry,
             &store,
             0.0,

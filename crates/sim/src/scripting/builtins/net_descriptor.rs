@@ -2255,7 +2255,9 @@ mod tests {
             7,
             &[0.0],
             &[],
-            &crate::collision::CollisionWorld::new(),
+            &postretro_physics::collision::moving::CombinedCollisionWorld::static_only(
+                &crate::collision::CollisionWorld::new(),
+            ),
             &registry,
             &crate::scripting_systems::hit_zones::HitZoneStore::new(),
             0.0,

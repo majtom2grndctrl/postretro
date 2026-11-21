@@ -8,7 +8,8 @@ use glam::Vec3;
 use postretro_entities::components::projectile::ProjectileComponent;
 use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
 
-use crate::collision::{CollisionWorld, cast_sphere_exact};
+use crate::collision::moving::CombinedCollisionWorld;
+use crate::collision::shot_queries::cast_sphere_exact_combined;
 use crate::emission::{Emitter, ImpactContact, WeaponEmission};
 use crate::scripting_systems::hit_zones::{
     EntityRayHit, HitZoneStore, nearest_entity_hit_ignoring,
@@ -129,7 +130,7 @@ struct WorldHit {
 /// This moves only that sightline origin, by less than a millimetre, toward the
 /// projectile side of the contact. Damage and falloff remain centered exactly
 /// at the impact point.
-const WORLD_IMPACT_SPLASH_OCCLUSION_EPSILON: f32 = 1.0e-3;
+pub(super) const WORLD_IMPACT_SPLASH_OCCLUSION_EPSILON: f32 = 1.0e-3;
 
 enum NearestProjectileHit {
     World(WorldHit),
@@ -144,7 +145,7 @@ enum NearestProjectileHit {
 /// frame delta for the later connected-client prediction path.
 pub fn advance(
     registry: &Rc<RefCell<EntityRegistry>>,
-    collision_world: &CollisionWorld,
+    collision_world: &CombinedCollisionWorld<'_>,
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
     dt: f32,
@@ -200,7 +201,12 @@ pub fn advance(
                     hit_zone_store,
                     collision_world,
                     impact.point,
-                    projectile_splash_occlusion_origin(component.radius, impact),
+                    super::mover_blast::blast_sightline_origin(
+                        collision_world,
+                        impact,
+                        component.radius,
+                        Vec3::from_array(component.direction),
+                    ),
                     splash,
                     component.damage,
                     component.owner_weapon,
@@ -292,7 +298,7 @@ pub(crate) fn finish_spawn_tick(
 /// valid, including the first client's first shot (`0`).
 pub fn advance_predicted(
     registry: &Rc<RefCell<EntityRegistry>>,
-    collision_world: &CollisionWorld,
+    collision_world: &CombinedCollisionWorld<'_>,
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
     dt: f32,
@@ -342,7 +348,7 @@ pub fn advance_predicted(
 #[allow(clippy::too_many_arguments)]
 fn advance_matching(
     registry: &Rc<RefCell<EntityRegistry>>,
-    collision_world: &CollisionWorld,
+    collision_world: &CombinedCollisionWorld<'_>,
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
     dt: f32,
@@ -411,19 +417,30 @@ fn advance_matching(
             || component.remaining_range <= 0.0
             || component.remaining_lifetime <= 0.0;
 
-        if let Some(mut impact) = resolve_projectile_impact(
+        // Enclosure is a contact, and contact wins over expiry, so it is
+        // asked before the sweep even with nothing left to travel.
+        let enclosed = super::mover_blast::enclosed_step_impact(
             collision_world,
-            &registry.borrow(),
-            hit_zone_store,
-            anim_time,
             transform.position,
             direction,
-            segment_length,
             component.radius,
-            Some(projectile_id),
-            component.owner_pawn,
             component.damage,
-        ) {
+        );
+        if let Some(mut impact) = enclosed.or_else(|| {
+            resolve_projectile_impact(
+                collision_world,
+                &registry.borrow(),
+                hit_zone_store,
+                anim_time,
+                transform.position,
+                direction,
+                segment_length,
+                component.radius,
+                Some(projectile_id),
+                component.owner_pawn,
+                component.damage,
+            )
+        }) {
             if let ActivationOutcome::Hit(payload) = &mut impact.outcome {
                 payload.impulse = Vec3::from_array(component.knockback_impulse);
                 payload.damage_type = component.damage_type;
@@ -521,19 +538,19 @@ fn advance_matching(
 /// swept at `radius`, within `reach`. The same sweep the projectile's world
 /// contact uses, so a host replay of that ray meets the wall at this distance.
 pub fn projectile_static_contact_distance(
-    collision_world: &CollisionWorld,
+    collision_world: &crate::collision::CollisionWorld,
     origin: Vec3,
     direction: Vec3,
     radius: f32,
     reach: f32,
 ) -> Option<f32> {
-    cast_sphere_exact(collision_world, origin, radius, direction, reach)
+    crate::collision::cast_sphere_exact(collision_world, origin, radius, direction, reach)
         .map(|hit| hit.time_of_impact.max(0.0))
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn resolve_projectile_impact(
-    collision_world: &CollisionWorld,
+    collision_world: &CombinedCollisionWorld<'_>,
     registry: &EntityRegistry,
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
@@ -585,7 +602,7 @@ pub fn resolve_projectile_impact(
 
 #[allow(clippy::too_many_arguments)]
 fn nearest_projectile_hit(
-    collision_world: &CollisionWorld,
+    collision_world: &CombinedCollisionWorld<'_>,
     registry: &EntityRegistry,
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
@@ -596,8 +613,9 @@ fn nearest_projectile_hit(
     active_projectile: Option<EntityId>,
     owner_pawn: EntityId,
 ) -> Option<NearestProjectileHit> {
-    let world_hit =
-        cast_sphere_exact(collision_world, origin, radius, direction, range).map(|hit| WorldHit {
+    // A mover contact is a world contact: the same tie rule against entities.
+    let world_hit = cast_sphere_exact_combined(collision_world, origin, radius, direction, range)
+        .map(|hit| WorldHit {
             toi: hit.time_of_impact.max(0.0),
             point: origin + direction * hit.time_of_impact.max(0.0),
             normal: hit.normal,
@@ -734,6 +752,7 @@ pub fn correct_predicted_projectile(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::collision::CollisionWorld;
     use glam::Vec3;
     use postretro_entities::components::deferred_effect::{
         DeferredEffectComponent, DeferredEffectKind,
@@ -817,7 +836,14 @@ mod tests {
         let world = CollisionWorld::default();
         let zones = HitZoneStore::new();
         let mut ignore_impact = |_: &mut EntityRegistry| {};
-        advance(registry, &world, &zones, 0.0, dt, &mut ignore_impact);
+        advance(
+            registry,
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&world),
+            &zones,
+            0.0,
+            dt,
+            &mut ignore_impact,
+        );
     }
 
     #[test]
@@ -980,8 +1006,22 @@ mod tests {
         let zones = HitZoneStore::new();
         let mut ignore_impact = |_: &mut EntityRegistry| {};
 
-        advance(&registry, &world, &zones, 0.0, 1.0, &mut ignore_impact);
-        advance(&registry, &world, &zones, 0.0, 1.0, &mut ignore_impact);
+        advance(
+            &registry,
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&world),
+            &zones,
+            0.0,
+            1.0,
+            &mut ignore_impact,
+        );
+        advance(
+            &registry,
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&world),
+            &zones,
+            0.0,
+            1.0,
+            &mut ignore_impact,
+        );
 
         let registry_ref = registry.borrow();
         assert!(!registry_ref.exists(projectile));
@@ -1240,8 +1280,22 @@ mod tests {
         let mut ignore_impact = |_: &mut EntityRegistry| {};
         // The launch consumes its grace tick before the zero-radius flight
         // reaches the static-world wall.
-        advance(&registry, &world, &zones, 0.0, 1.0, &mut ignore_impact);
-        advance(&registry, &world, &zones, 0.0, 1.0, &mut ignore_impact);
+        advance(
+            &registry,
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&world),
+            &zones,
+            0.0,
+            1.0,
+            &mut ignore_impact,
+        );
+        advance(
+            &registry,
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&world),
+            &zones,
+            0.0,
+            1.0,
+            &mut ignore_impact,
+        );
 
         let registry = registry.borrow();
         assert!(
@@ -1359,8 +1413,22 @@ mod tests {
         let zones = HitZoneStore::new();
         let mut ignore_impact = |_: &mut EntityRegistry| {};
         // A launch consumes its grace tick before advancing and detonating.
-        advance(&registry, &world, &zones, 0.0, 1.0, &mut ignore_impact);
-        advance(&registry, &world, &zones, 0.0, 1.0, &mut ignore_impact);
+        advance(
+            &registry,
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&world),
+            &zones,
+            0.0,
+            1.0,
+            &mut ignore_impact,
+        );
+        advance(
+            &registry,
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&world),
+            &zones,
+            0.0,
+            1.0,
+            &mut ignore_impact,
+        );
 
         let registry = registry.borrow();
         let current = |entity| {
@@ -1589,8 +1657,25 @@ mod tests {
 
             let world = CollisionWorld::default();
             let zones = HitZoneStore::new();
-            assert!(advance(&registry, &world, &zones, 0.0, 1.0, &mut |_| {}).is_empty());
-            let contacts = advance(&registry, &world, &zones, 0.0, 1.0, &mut |_| {});
+            assert!(
+                advance(
+                    &registry,
+                    &crate::collision::moving::CombinedCollisionWorld::static_only(&world),
+                    &zones,
+                    0.0,
+                    1.0,
+                    &mut |_| {}
+                )
+                .is_empty()
+            );
+            let contacts = advance(
+                &registry,
+                &crate::collision::moving::CombinedCollisionWorld::static_only(&world),
+                &zones,
+                0.0,
+                1.0,
+                &mut |_| {},
+            );
             assert_eq!(contacts.len(), 1);
 
             let dispatches = registry.borrow_mut().take_impact_dispatches();
@@ -1636,8 +1721,25 @@ mod tests {
         let world = CollisionWorld::default();
         let zones = HitZoneStore::new();
         // The spawn tick only clears the launch grace; the next tick hits.
-        assert!(advance(&registry, &world, &zones, 0.0, 1.0, &mut |_| {}).is_empty());
-        let contacts = advance(&registry, &world, &zones, 0.0, 1.0, &mut |_| {});
+        assert!(
+            advance(
+                &registry,
+                &crate::collision::moving::CombinedCollisionWorld::static_only(&world),
+                &zones,
+                0.0,
+                1.0,
+                &mut |_| {}
+            )
+            .is_empty()
+        );
+        let contacts = advance(
+            &registry,
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&world),
+            &zones,
+            0.0,
+            1.0,
+            &mut |_| {},
+        );
 
         assert!(
             !registry.borrow().exists(projectile),
@@ -1749,8 +1851,22 @@ mod tests {
         let zones = HitZoneStore::new();
         let mut ignore_impact = |_: &mut EntityRegistry| {};
 
-        advance(&registry, &world, &zones, 0.0, 1.0, &mut ignore_impact);
-        advance(&registry, &world, &zones, 0.0, 1.0, &mut ignore_impact);
+        advance(
+            &registry,
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&world),
+            &zones,
+            0.0,
+            1.0,
+            &mut ignore_impact,
+        );
+        advance(
+            &registry,
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&world),
+            &zones,
+            0.0,
+            1.0,
+            &mut ignore_impact,
+        );
 
         let current = registry
             .borrow()
@@ -1779,8 +1895,22 @@ mod tests {
         let zones = HitZoneStore::new();
         let mut ignore_impact = |_: &mut EntityRegistry| {};
 
-        advance(&registry, &world, &zones, 0.0, 1.0, &mut ignore_impact);
-        advance(&registry, &world, &zones, 0.0, 1.0, &mut ignore_impact);
+        advance(
+            &registry,
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&world),
+            &zones,
+            0.0,
+            1.0,
+            &mut ignore_impact,
+        );
+        advance(
+            &registry,
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&world),
+            &zones,
+            0.0,
+            1.0,
+            &mut ignore_impact,
+        );
 
         let current = registry
             .borrow()
@@ -1910,10 +2040,17 @@ mod tests {
         let world = CollisionWorld::default();
         let zones = HitZoneStore::new();
         let mut policy_fires = 0;
-        advance(&registry, &world, &zones, 0.0, 1.0, &mut |registry| {
-            policy_fires += 1;
-            crate::impact_effects::despawn(registry, target, Some(1000.0));
-        });
+        advance(
+            &registry,
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&world),
+            &zones,
+            0.0,
+            1.0,
+            &mut |registry| {
+                policy_fires += 1;
+                crate::impact_effects::despawn(registry, target, Some(1000.0));
+            },
+        );
 
         let registry = registry.borrow();
         let health = registry
@@ -1967,7 +2104,7 @@ mod tests {
         let mut ignore_impact = |_: &mut EntityRegistry| {};
         advance(
             &authoritative_registry,
-            &world,
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&world),
             &zones,
             0.0,
             0.25,
@@ -1976,7 +2113,7 @@ mod tests {
         let mut no_predicted_resolution = |_resolution: PredictedProjectileResolution| {};
         advance_predicted(
             &predicted_registry,
-            &world,
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&world),
             &zones,
             0.0,
             0.25,
@@ -2005,7 +2142,7 @@ mod tests {
 
         advance(
             &authoritative_registry,
-            &world,
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&world),
             &zones,
             0.0,
             0.25,
@@ -2013,7 +2150,7 @@ mod tests {
         );
         advance_predicted(
             &predicted_registry,
-            &world,
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&world),
             &zones,
             0.0,
             0.25,
@@ -2063,17 +2200,27 @@ mod tests {
         let world = CollisionWorld::default();
         let zones = HitZoneStore::new();
         let mut resolutions = Vec::new();
-        advance_predicted(&registry, &world, &zones, 0.0, 1.0, &mut |resolution| {
-            resolutions.push(resolution)
-        });
+        advance_predicted(
+            &registry,
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&world),
+            &zones,
+            0.0,
+            1.0,
+            &mut |resolution| resolutions.push(resolution),
+        );
         assert!(
             resolutions.is_empty(),
             "spawn pass never resolves an impact"
         );
 
-        advance_predicted(&registry, &world, &zones, 0.0, 1.0, &mut |resolution| {
-            resolutions.push(resolution)
-        });
+        advance_predicted(
+            &registry,
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&world),
+            &zones,
+            0.0,
+            1.0,
+            &mut |resolution| resolutions.push(resolution),
+        );
 
         assert_eq!(resolutions.len(), 1);
         match &resolutions[0] {
@@ -2131,12 +2278,22 @@ mod tests {
         let world = CollisionWorld::default();
         let zones = HitZoneStore::new();
         let mut resolutions = Vec::new();
-        advance_predicted(&registry, &world, &zones, 0.0, 0.0, &mut |resolution| {
-            resolutions.push(resolution)
-        });
-        advance_predicted(&registry, &world, &zones, 0.0, 1.0, &mut |resolution| {
-            resolutions.push(resolution)
-        });
+        advance_predicted(
+            &registry,
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&world),
+            &zones,
+            0.0,
+            0.0,
+            &mut |resolution| resolutions.push(resolution),
+        );
+        advance_predicted(
+            &registry,
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&world),
+            &zones,
+            0.0,
+            1.0,
+            &mut |resolution| resolutions.push(resolution),
+        );
 
         let registry = registry.borrow();
         assert!(resolutions.is_empty());
@@ -2170,7 +2327,7 @@ mod tests {
         let mut policies = 0;
         let contacts = advance(
             &registry,
-            &CollisionWorld::new(),
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&CollisionWorld::new()),
             &HitZoneStore::new(),
             0.0,
             1.0,

@@ -1746,7 +1746,9 @@ fn conditioned_client_dummy_hit_commits_host_damage_owner_credit_and_despawn() {
         h.tick,
         &[],
         &[],
-        &crate::collision::CollisionWorld::new(),
+        &postretro_physics::collision::moving::CombinedCollisionWorld::static_only(
+            &crate::collision::CollisionWorld::new(),
+        ),
         &client_ctx.registry.borrow(),
         &postretro_sim::scripting_systems::hit_zones::HitZoneStore::new(),
         0.0,

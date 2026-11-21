@@ -223,7 +223,9 @@ fn descriptor_hit_credits_owner_and_despawns(meshless: bool) {
         1,
         &[],
         &[],
-        &crate::collision::CollisionWorld::new(),
+        &postretro_physics::collision::moving::CombinedCollisionWorld::static_only(
+            &crate::collision::CollisionWorld::new(),
+        ),
         &h.client_registry,
         &HitZoneStore::new(),
         0.0,

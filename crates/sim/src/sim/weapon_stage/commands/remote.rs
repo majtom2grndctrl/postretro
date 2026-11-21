@@ -8,7 +8,7 @@ pub(in crate::sim) fn run_remote_weapon_commands(
     remote_pawn_commands: &[RemotePawnCommand],
     descriptors: &[EntityTypeDescriptor],
     default_weapon_placement: Option<&WeaponPlacementDescriptor>,
-    collision_world: &CollisionWorld,
+    collision_world: &CombinedCollisionWorld<'_>,
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
     tick_dt: f32,
@@ -332,7 +332,7 @@ pub(in crate::sim) fn run_remote_weapon_commands(
                 (reach.is_finite() && reach >= 0.0)
                     .then(|| {
                         crate::sim::projectile_static_contact_distance(
-                            collision_world,
+                            collision_world.static_world,
                             fire_origin,
                             direction,
                             radius,

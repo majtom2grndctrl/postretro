@@ -11,6 +11,7 @@ use std::rc::Rc;
 use glam::{Quat, Vec3};
 
 use crate::collision::CollisionWorld;
+use crate::collision::moving::CombinedCollisionWorld;
 use crate::emission::{WeaponEmission, descriptor_name, entity_emitter, reload_emission};
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::sprite_collection::derive_collection_id;

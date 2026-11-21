@@ -49,12 +49,16 @@ pub use tick_start::{
     PendingTickStart, RespawnTurn, StartedTick, begin_tick, finish_tick_start,
     simulate_tick_scheduled, simulate_tick_with_presentation_aim,
 };
+mod mover_blast;
+#[cfg(test)]
+mod mover_shot_tick_tests;
 #[cfg(test)]
 mod player_life_tests;
 mod player_locomotion;
 pub mod presentation_pool;
 pub mod presentation_projection;
 mod projectile_stage;
+pub use mover_blast::blast_sightline_origin;
 #[cfg(test)]
 mod remote_presence_tests;
 #[cfg(test)]

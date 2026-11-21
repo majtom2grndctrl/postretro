@@ -298,7 +298,7 @@ fn hitscan_strikes_the_standing_players_legs_and_passes_over_its_head() {
             1,
             &[0.0],
             &[],
-            &collision,
+            &postretro_physics::collision::moving::CombinedCollisionWorld::static_only(&collision),
             &registry,
             store,
             0.0,

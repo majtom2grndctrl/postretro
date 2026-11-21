@@ -336,6 +336,7 @@ use postretro_net::wire::{
 };
 
 use crate::collision::CollisionWorld;
+use crate::collision::moving::CombinedCollisionWorld;
 use crate::movement::{MovementCollisionSource, MovementEvents};
 use crate::sim::SimCommand;
 use crate::weapon::{ActivationOutcome, WeaponImpact};
@@ -2316,7 +2317,7 @@ fn ingest_hit_declaration(
         let hit_accepted = crate::sim::splash::emit_shot_splash_damage(
             context.registry,
             context.hit_zone_store,
-            context.collision_world,
+            &CombinedCollisionWorld::static_only(context.collision_world),
             point,
             crate::sim::projectile_splash_occlusion_origin(
                 open.shot
@@ -2468,7 +2469,7 @@ fn resolve_authorized_splash_projectile_impact(
     }
 
     crate::sim::resolve_projectile_impact(
-        context.collision_world,
+        &CombinedCollisionWorld::static_only(context.collision_world),
         context.registry,
         context.hit_zone_store,
         context.anim_time,
@@ -2803,6 +2804,7 @@ pub fn remote_entity_positions(endpoint: &NetEndpoint, registry: &EntityRegistry
 #[cfg(test)]
 mod tests {
     mod life_state_projectile_tests;
+    mod mover_shot_tests;
     use super::*;
     use glam::Vec3;
     use postretro_entities::components::health::Hitbox;
@@ -6787,7 +6789,9 @@ mod tests {
         let mut fixture = HitIngestFixture::new(wall_at_x(1.0));
         fixture.configure_projectile_splash(0.25);
         let local_impact = crate::sim::resolve_projectile_impact(
-            &fixture.collision_world,
+            &postretro_physics::collision::moving::CombinedCollisionWorld::static_only(
+                &fixture.collision_world,
+            ),
             &fixture.registry,
             &fixture.hit_zone_store,
             0.0,

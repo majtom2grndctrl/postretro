@@ -39,6 +39,8 @@ mod capsule_triangle;
 pub mod moving;
 mod overlap;
 pub mod shot_queries;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_movers;
 pub use overlap::{MAP_UNIT_METRES, OverlapCheckTimer, StaticOverlap};
 mod skin_cast;
 mod solid_cells;

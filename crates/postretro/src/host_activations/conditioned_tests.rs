@@ -874,7 +874,7 @@ impl Fixture {
                 Vec3::new(0.0, 0.5, 0.0),
                 Vec3::NEG_Z,
                 &queued.placement,
-                &self.world,
+                &crate::collision::moving::CombinedCollisionWorld::static_only(&self.world),
                 postretro_collision::EnvironmentView::level_only(0.0),
                 &self.local.borrow(),
                 &self.zones,
@@ -958,7 +958,7 @@ impl Fixture {
         let mut results = Vec::new();
         sim::advance_predicted(
             &self.local,
-            &self.world,
+            &postretro_physics::collision::moving::CombinedCollisionWorld::static_only(&self.world),
             &self.zones,
             0.0,
             DT,
@@ -2053,7 +2053,7 @@ fn conditioned_activation_stale_full_projection_refuses_damage_and_old_verdict_p
         Vec3::new(0.0, 0.5, 0.0),
         Vec3::NEG_Z,
         &WeaponPlacementDescriptor::default(),
-        &fixture.world,
+        &crate::collision::moving::CombinedCollisionWorld::static_only(&fixture.world),
         postretro_collision::EnvironmentView::level_only(0.0),
         &fixture.local.borrow(),
         &fixture.zones,

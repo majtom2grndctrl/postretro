@@ -1,80 +1,21 @@
 // Combined shot and sight queries against an oracle: the same posed geometry
 // baked into one static world.
 use super::*;
-use crate::collision::moving::{
-    CollisionSource, MoverCollider, MoverPose, MoverPoseSource, cast_ray_combined,
-};
+use crate::collision::moving::{CollisionSource, MoverCollider, cast_ray_combined};
+use crate::collision::test_movers::{DoorPoses, door_slab, door_slab_triangles};
 use crate::collision::{CollisionWorld, cast_sphere_exact, line_of_sight};
 use glam::Quat;
-use postretro_entities::Transform;
-use std::collections::HashMap;
 
 const EPS: f32 = 1.0e-4;
 
-#[derive(Default)]
-struct Poses(HashMap<u32, Transform>);
+type Poses = DoorPoses;
 
-impl Poses {
-    fn place(mut self, mover_id: u32, position: Vec3, rotation: Quat) -> Self {
-        self.0.insert(
-            mover_id,
-            Transform {
-                position,
-                rotation,
-                scale: Vec3::ONE,
-            },
-        );
-        self
-    }
-}
-
-impl MoverPoseSource for Poses {
-    fn pose(&self, mover_id: u32) -> Option<MoverPose> {
-        self.0.get(&mover_id).map(|transform| MoverPose {
-            transform: *transform,
-            linear_velocity: Vec3::ZERO,
-            tick_delta: Vec3::ZERO,
-            angular_velocity: Vec3::ZERO,
-            tick_rotation_delta: Quat::IDENTITY,
-            carry_yaw: false,
-            tick_dt: 0.1,
-        })
-    }
-}
-
-/// A closed door slab: 0.2 thick along X, 2 tall from its origin, 2 wide.
 fn slab() -> (Vec<Vec3>, Vec<[u32; 3]>) {
-    let (x, y0, y1, z) = (0.1, 0.0, 2.0, 1.0);
-    let vertices = vec![
-        Vec3::new(-x, y0, -z),
-        Vec3::new(x, y0, -z),
-        Vec3::new(x, y1, -z),
-        Vec3::new(-x, y1, -z),
-        Vec3::new(-x, y0, z),
-        Vec3::new(x, y0, z),
-        Vec3::new(x, y1, z),
-        Vec3::new(-x, y1, z),
-    ];
-    let triangles = vec![
-        [0, 2, 1],
-        [0, 3, 2],
-        [4, 5, 6],
-        [4, 6, 7],
-        [0, 1, 5],
-        [0, 5, 4],
-        [3, 6, 2],
-        [3, 7, 6],
-        [0, 4, 7],
-        [0, 7, 3],
-        [1, 2, 6],
-        [1, 6, 5],
-    ];
-    (vertices, triangles)
+    door_slab_triangles(0.1, 2.0, 1.0)
 }
 
 fn slab_collider(mover_id: u32) -> MoverCollider {
-    let (vertices, triangles) = slab();
-    MoverCollider::from_local_triangles(mover_id, &vertices, &triangles).unwrap()
+    door_slab(mover_id, 0.1, 2.0, 1.0)
 }
 
 /// A back wall at x = 10, spanning the shot fixtures.

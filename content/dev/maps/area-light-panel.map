@@ -1,0 +1,94 @@
+// Game: Generic
+// Format: Standard
+// area-light-panel: a sealed 256 x 256 x 128 room lit only by one ceiling
+// light_area. The entity holds a concrete frame brush and a 64 x 64 glass
+// brush whose bottom face alone carries neon/glow_panel (an _e texture).
+// entity 0
+{
+"classname" "worldspawn"
+"wad" ""
+// floor
+{
+( -16 0 0 ) ( -16 1 0 ) ( -16 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 272 0 0 ) ( 272 0 1 ) ( 272 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 -16 0 ) ( 0 -16 1 ) ( 1 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 272 0 ) ( 1 272 0 ) ( 0 272 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 -16 ) ( 1 0 -16 ) ( 0 1 -16 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 0 1 0 ) ( 1 0 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// ceiling
+{
+( -16 0 0 ) ( -16 1 0 ) ( -16 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 272 0 0 ) ( 272 0 1 ) ( 272 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 -16 0 ) ( 0 -16 1 ) ( 1 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 272 0 ) ( 1 272 0 ) ( 0 272 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 128 ) ( 1 0 128 ) ( 0 1 128 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 144 ) ( 0 1 144 ) ( 1 0 144 ) concrete_pavement_036 0 0 0 1 1
+}
+// west wall
+{
+( -16 0 0 ) ( -16 1 0 ) ( -16 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 0 0 1 ) ( 0 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 -16 0 ) ( 0 -16 1 ) ( 1 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 272 0 ) ( 1 272 0 ) ( 0 272 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) concrete_pavement_036 0 0 0 1 1
+}
+// east wall
+{
+( 256 0 0 ) ( 256 1 0 ) ( 256 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 272 0 0 ) ( 272 0 1 ) ( 272 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 -16 0 ) ( 0 -16 1 ) ( 1 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 272 0 ) ( 1 272 0 ) ( 0 272 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) concrete_pavement_036 0 0 0 1 1
+}
+// south wall
+{
+( 0 0 0 ) ( 0 1 0 ) ( 0 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 256 0 0 ) ( 256 0 1 ) ( 256 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 -16 0 ) ( 0 -16 1 ) ( 1 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) concrete_pavement_036 0 0 0 1 1
+}
+// north wall
+{
+( 0 0 0 ) ( 0 1 0 ) ( 0 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 256 0 0 ) ( 256 0 1 ) ( 256 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 256 0 ) ( 0 256 1 ) ( 1 256 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 272 0 ) ( 1 272 0 ) ( 0 272 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) concrete_pavement_036 0 0 0 1 1
+}
+}
+// entity 1
+{
+"classname" "light_area"
+"light" "300"
+"_color" "255 255 255"
+// frame
+{
+( 80 0 0 ) ( 80 1 0 ) ( 80 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 176 0 0 ) ( 176 0 1 ) ( 176 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 80 0 ) ( 0 80 1 ) ( 1 80 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 176 0 ) ( 1 176 0 ) ( 0 176 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 124 ) ( 1 0 124 ) ( 0 1 124 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) concrete_pavement_036 0 0 0 1 1
+}
+// glass
+{
+( 96 0 0 ) ( 96 1 0 ) ( 96 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 160 0 0 ) ( 160 0 1 ) ( 160 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 96 0 ) ( 0 96 1 ) ( 1 96 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 160 0 ) ( 1 160 0 ) ( 0 160 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 120 ) ( 1 0 120 ) ( 0 1 120 ) neon/glow_panel 0 0 0 1 1
+( 0 0 124 ) ( 0 1 124 ) ( 1 0 124 ) concrete_pavement_036 0 0 0 1 1
+}
+}
+// entity 2
+{
+"classname" "info_player_start"
+"origin" "64 64 24"
+"angle" "45"
+}

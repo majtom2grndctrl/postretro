@@ -159,7 +159,7 @@ impl TexelFootprint {
         rotation: (f32, f32),
     ) -> EmitterPairing {
         let axis = match light.light_type {
-            LightType::Point | LightType::Spot => (light.origin.as_vec3()
+            LightType::Point | LightType::Spot | LightType::Area => (light.origin.as_vec3()
                 - (site.world_p + site.normal * RAY_EPSILON))
                 .normalize_or_zero(),
             LightType::Directional => sun_axis(light),

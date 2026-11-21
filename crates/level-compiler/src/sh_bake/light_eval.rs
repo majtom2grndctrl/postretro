@@ -63,6 +63,10 @@ pub(crate) fn incident_radiance_at_point(light: &MapLight, point: Vec3) -> Optio
             let radiance = Vec3::from(light.color) * light.intensity;
             Some((radiance, l))
         }
+        // No single direction carries a polygon's light; area-lights task 4
+        // projects it over the polygon. Until then it adds nothing to direct
+        // SH, scatter, patches or bounce.
+        LightType::Area => None,
     }
 }
 
@@ -117,6 +121,10 @@ pub(crate) fn light_reaches_point(light: &MapLight, point: Vec3) -> bool {
                 light.origin.z as f32,
             );
             point.distance(light_origin) <= light.falloff_range.max(1.0e-4)
+        }
+        LightType::Area => {
+            let (centre, radius) = light.reach_sphere();
+            point.as_dvec3().distance(centre) <= radius.max(1.0e-4)
         }
     }
 }

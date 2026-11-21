@@ -92,6 +92,8 @@ impl LightDigest {
             LightType::Point => 0,
             LightType::Spot => 1,
             LightType::Directional => 2,
+            // Area-lights task 4 folds the polygons in beside this tag.
+            LightType::Area => 3,
         }]);
         for v in light.origin.to_array() {
             hasher.update(&v.to_le_bytes());

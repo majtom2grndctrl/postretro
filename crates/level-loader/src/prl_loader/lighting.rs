@@ -25,15 +25,31 @@ use crate::prl_lightmap::{LoadedLightmap, LoadedShadowmask};
 use crate::sh_stream::ShStreamManifest;
 use crate::{FalloffModel, LightType, MapLight, PortalData, PrlLoadError, ShadowType};
 
-pub(crate) fn convert_alpha_lights(section: AlphaLightsSection) -> Vec<MapLight> {
+/// Converts AlphaLights records to runtime lights. An area record fails the
+/// load: the runtime has no area light type yet, and reading one as a point
+/// would light and script it wrongly. Runtime support lands in area-lights
+/// task 8.
+pub(crate) fn convert_alpha_lights(
+    section: AlphaLightsSection,
+) -> Result<Vec<MapLight>, PrlLoadError> {
     section
         .lights
         .into_iter()
-        .map(|r| {
+        .enumerate()
+        .map(|(index, r)| {
             let light_type = match r.light_type {
                 AlphaLightType::Point => LightType::Point,
                 AlphaLightType::Spot => LightType::Spot,
                 AlphaLightType::Directional => LightType::Directional,
+                AlphaLightType::Area => {
+                    return Err(PrlLoadError::SectionValidation {
+                        section: "AlphaLights",
+                        message: format!(
+                            "light {index} is an area light, which this engine cannot load yet \
+                             (runtime area lights arrive in area-lights task 8)"
+                        ),
+                    });
+                }
             };
             let falloff_model = match r.falloff_model {
                 AlphaFalloffModel::Linear => FalloffModel::Linear,
@@ -44,7 +60,7 @@ pub(crate) fn convert_alpha_lights(section: AlphaLightsSection) -> Vec<MapLight>
                 AlphaShadowType::StaticLightMap => ShadowType::StaticLightMap,
                 AlphaShadowType::Sdf => ShadowType::Sdf,
             };
-            MapLight {
+            Ok(MapLight {
                 origin: r.origin,
                 light_type,
                 intensity: r.intensity,
@@ -60,7 +76,7 @@ pub(crate) fn convert_alpha_lights(section: AlphaLightsSection) -> Vec<MapLight>
                 tags: vec![],        // populated by LightTags section pass below
                 cell_index: r.leaf_index,
                 shadow_type,
-            }
+            })
         })
         .collect()
 }
@@ -105,7 +121,7 @@ pub(super) fn decode_lighting(
         Some(data) => {
             let section = AlphaLightsSection::from_bytes(&data)?;
             let count = section.lights.len();
-            let converted = convert_alpha_lights(section);
+            let converted = convert_alpha_lights(section)?;
             log::info!("[PRL] AlphaLights: {count} lights loaded");
             converted
         }

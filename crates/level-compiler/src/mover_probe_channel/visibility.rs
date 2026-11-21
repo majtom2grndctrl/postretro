@@ -65,7 +65,8 @@ impl PosedOccluder {
     pub(crate) fn may_meet(&self, probe: Vec3, light: &MapLight) -> bool {
         match light.light_type {
             LightType::Directional => self.sun_cone_may_meet(probe, light),
-            LightType::Point | LightType::Spot => {
+            // Area: its samples aim at the centroid until area-lights task 4.
+            LightType::Point | LightType::Spot | LightType::Area => {
                 let reach = DVec3::splat(f64::from(emitter_radius(light).max(0.0)));
                 let probe = probe.as_dvec3();
                 let span = Aabb {

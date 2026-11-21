@@ -123,6 +123,7 @@ fn point_light(origin: DVec3, range: f32, size: f32) -> MapLight {
         is_animated: false,
         tags: vec![],
         shadow_type: ShadowType::StaticLightMap,
+        area: None,
     }
 }
 

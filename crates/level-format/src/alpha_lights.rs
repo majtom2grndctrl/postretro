@@ -15,6 +15,11 @@ pub enum AlphaLightType {
     Point = 0,
     Spot = 1,
     Directional = 2,
+    /// Polygon area light. Its record carries the polygons' area-weighted
+    /// centroid as `origin`, the resolved reach as `falloff_range`,
+    /// `falloff_model` InverseSquared and zero cone fields; no polygon
+    /// payload ships until a runtime consumer reads one.
+    Area = 3,
 }
 
 impl AlphaLightType {
@@ -23,6 +28,7 @@ impl AlphaLightType {
             0 => Some(Self::Point),
             1 => Some(Self::Spot),
             2 => Some(Self::Directional),
+            3 => Some(Self::Area),
             _ => None,
         }
     }
@@ -139,13 +145,15 @@ pub const ALPHA_LIGHT_RECORD_SIZE: usize = 73;
 /// the record layout changes so the loader decodes the right fields and
 /// rejects stale layouts with a clear error.
 ///
-/// - v4 (current): the dead `cast_shadows` byte was removed (every authored
-///   light cast shadows; the flag was never read at runtime). 73-byte records,
-///   trailing `shadow_type` byte. This is a BREAKING wire change — any `.prl`
-///   predating v4 must be rebuilt via `prl-build`; there is no in-place
-///   migration. The dynamic-tier distinction rides the separate `is_dynamic`
-///   field, not the `shadow_type` byte.
-pub const ALPHA_LIGHTS_VERSION: u32 = 4;
+/// - v5 (current): adds `light_type` 3, `Area`. Records are unchanged
+///   (73 bytes). A loader rejects any other version, so a v4 `.prl` must be
+///   rebuilt via `prl-build`.
+/// - v4: the dead `cast_shadows` byte was removed (every authored light cast
+///   shadows; the flag was never read at runtime). 73-byte records, trailing
+///   `shadow_type` byte. There is no in-place migration. The dynamic-tier
+///   distinction rides the separate `is_dynamic` field, not the `shadow_type`
+///   byte.
+pub const ALPHA_LIGHTS_VERSION: u32 = 5;
 
 /// AlphaLights section (ID 18).
 ///
@@ -417,6 +425,52 @@ mod tests {
         assert_eq!(section, restored);
     }
 
+    /// An area record round-trips beside a point record (acceptance row 38).
+    #[test]
+    fn area_and_non_area_records_round_trip() {
+        let area = AlphaLightRecord {
+            origin: [2.0, 3.5, -1.25],
+            light_type: AlphaLightType::Area,
+            intensity: 1.0,
+            color: [1.0, 0.9, 0.8],
+            falloff_model: AlphaFalloffModel::InverseSquared,
+            falloff_range: 16.0,
+            cone_angle_inner: 0.0,
+            cone_angle_outer: 0.0,
+            cone_direction: [0.0, 0.0, 0.0],
+            is_dynamic: false,
+            casts_entity_shadows: false,
+            leaf_index: ALPHA_LIGHT_LEAF_UNASSIGNED,
+            shadow_type: AlphaShadowType::StaticLightMap,
+        };
+        let section = AlphaLightsSection {
+            lights: vec![sample_record(), area],
+        };
+        let bytes = section.to_bytes();
+        assert_eq!(bytes.len(), 8 + 2 * ALPHA_LIGHT_RECORD_SIZE);
+        // light_type byte of the second record.
+        assert_eq!(bytes[8 + ALPHA_LIGHT_RECORD_SIZE + 24], 3);
+        let restored = AlphaLightsSection::from_bytes(&bytes).unwrap();
+        assert_eq!(restored, section);
+    }
+
+    /// A v4 section, which knew no area type, is rejected rather than read.
+    #[test]
+    fn rejects_v4_section() {
+        let mut bytes = AlphaLightsSection {
+            lights: vec![sample_record()],
+        }
+        .to_bytes();
+        bytes[..4].copy_from_slice(&4u32.to_le_bytes());
+        let msg = AlphaLightsSection::from_bytes(&bytes)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            msg.contains("unsupported AlphaLights section version 4"),
+            "unexpected: {msg}"
+        );
+    }
+
     #[test]
     fn rejects_truncated_header() {
         let err = AlphaLightsSection::from_bytes(&[0u8; 3]).unwrap_err();
@@ -471,11 +525,14 @@ mod tests {
             lights: vec![sample_record()],
         };
         let mut bytes = section.to_bytes();
-        // light_type byte: version(4) + count(4) + 24 (origin) = 32.
-        bytes[32] = 99;
-        let err = AlphaLightsSection::from_bytes(&bytes).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("invalid light_type"), "unexpected: {msg}");
+        // light_type byte: version(4) + count(4) + 24 (origin) = 32. Four is
+        // the first value past `Area`.
+        for unknown in [4, 99] {
+            bytes[32] = unknown;
+            let err = AlphaLightsSection::from_bytes(&bytes).unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.contains("invalid light_type"), "unexpected: {msg}");
+        }
     }
 
     #[test]

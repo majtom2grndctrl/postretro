@@ -41,6 +41,21 @@ use cache::{
 };
 use resolution::{build_name_to_path_map, resolve_texture_bundle_paths};
 
+/// Whether a map texture name's bundle has an `_e` map under `texture_root`,
+/// resolved as the material stage resolves it but from the directory listing
+/// alone: nothing is read or decoded. Area-light exposure runs before the
+/// material stage, so this is how it tells an emitting face.
+// The library target bakes textures but resolves no area light.
+#[allow(dead_code)]
+pub(crate) fn emissive_map_lookup(texture_root: &Path) -> impl Fn(&str) -> bool + use<> {
+    let name_to_path = build_name_to_path_map(texture_root);
+    move |name| {
+        resolve_texture_bundle_paths(&name_to_path, &normalize_map_texture_name(name))
+            .emissive
+            .is_some()
+    }
+}
+
 // -- Gamma helpers --------------------------------------------------------
 
 /// 256-entry sRGB → linear lookup. Built once per world-bundle bake.

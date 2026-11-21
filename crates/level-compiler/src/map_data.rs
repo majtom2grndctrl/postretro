@@ -4,6 +4,8 @@
 use glam::DVec3;
 use serde::{Deserialize, Serialize};
 
+use crate::area_light::emitter::AreaEmitter;
+
 impl Default for TextureProjection {
     fn default() -> Self {
         TextureProjection::Standard {
@@ -365,6 +367,11 @@ pub enum LightType {
     /// Parallel directional light (e.g., sunlight). Ignores `falloff_range`;
     /// uses `cone_direction` as the aim vector.
     Directional,
+    /// Polygon area light: emits one-sided from the convex polygons in
+    /// `MapLight::area`. `origin` is their area-weighted centroid and
+    /// `falloff_range` the resolved reach. Last, so postcard's variant indices
+    /// for the other types, and every cache key over them, are unchanged.
+    Area,
 }
 
 /// How intensity falls off with distance. Directional lights ignore this.
@@ -570,6 +577,42 @@ pub struct MapLight {
     /// not on this field. The dynamic tier rides `is_dynamic` (set by
     /// classname), not a shadow-type value.
     pub shadow_type: ShadowType,
+
+    /// The emitter of an `Area` light, resolved from its emitting faces after
+    /// partitioning; `None` for every other type. Last and skipped when
+    /// `None`, so a Point, Spot or Directional light encodes to the same
+    /// postcard bytes as before the field existed. No reader decodes a
+    /// `MapLight` from postcard; its bytes only feed hashes and seeds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub area: Option<AreaEmitter>,
+}
+
+impl MapLight {
+    /// The ball holding every point this light can light: (centre, radius).
+    /// For a resolved `Area` light, its reach sphere (centroid, circumradius
+    /// + `falloff_range`); otherwise the origin and `falloff_range`.
+    pub fn reach_sphere(&self) -> (DVec3, f64) {
+        let range = f64::from(self.falloff_range.max(0.0));
+        match &self.area {
+            Some(emitter) => emitter.reach_sphere(range),
+            None => (self.origin, range),
+        }
+    }
+}
+
+/// An area light's compiler-side facts beside its `MapLight`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MapAreaLight {
+    /// Its record's index in `MapData::lights`.
+    pub light_index: usize,
+    /// Its brushes' indices in `MapData::brush_volumes`, which is what
+    /// `Face::brush_index` counts: only their faces may emit.
+    pub brush_indices: Vec<usize>,
+    /// Authored reach in metres; `None` derives it from the emitter.
+    pub reach_override: Option<f32>,
+    /// The emitting faces' visible glow strength (`_glow`, fixed). Kept off
+    /// `MapLight` so it enters no lighting bake key.
+    pub glow: f32,
 }
 
 /// Compiler-resolved relation between a dynamic light and one mover. The
@@ -741,6 +784,9 @@ pub struct MapData {
     /// adapter in its own vocabulary so a mapper can find the light in the
     /// editor. Shared stages print it verbatim and never parse it.
     pub light_source_labels: Vec<String>,
+    /// One entry per area light, in `lights` order: what its emitter
+    /// resolves from after partitioning, and its `_glow`.
+    pub area_lights: Vec<MapAreaLight>,
     /// Optional path to a data-script source file (`.ts`/`.js`/`.luau`), taken
     /// verbatim from the `data_script` worldspawn KVP. Resolved relative to the
     /// `.map` file's directory by the compile pipeline; the compiled output is
@@ -1060,5 +1106,96 @@ mod keyframe_resample_tests {
         for v in out {
             assert!((v - 0.42).abs() < 1e-6);
         }
+    }
+}
+
+// Guards bake cache keys and the id-27 seed axis for maps with no area light:
+// every lighting key hashes a light's postcard bytes, and the delta bounce seeds
+// from them, so a Point or Spot record must encode exactly as before
+// `LightType::Area` and `MapLight::area` existed.
+#[cfg(test)]
+mod light_wire_drift_tests {
+    use super::*;
+
+    fn point_light() -> MapLight {
+        MapLight {
+            origin: DVec3::new(1.25, -2.5, 3.75),
+            light_type: LightType::Point,
+            carrier: "lift_a".to_owned(),
+            intensity: 1.5,
+            color: [0.25, 0.5, 0.75],
+            falloff_model: FalloffModel::InverseSquared,
+            falloff_range: 12.5,
+            light_size: 0.125,
+            angular_diameter: 0.0,
+            cone_angle_inner: None,
+            cone_angle_outer: None,
+            cone_direction: None,
+            animation: Some(LightAnimation {
+                period: 2.0,
+                phase: 0.25,
+                brightness: Some(vec![0.0, 0.5, 1.0]),
+                color: Some(vec![[1.0, 0.5, 0.25]]),
+                direction: None,
+                start_active: false,
+            }),
+            bake_only: true,
+            is_dynamic: false,
+            casts_entity_shadows: false,
+            is_animated: true,
+            tags: vec!["warm".to_owned(), "fill".to_owned()],
+            shadow_type: ShadowType::Sdf,
+            area: None,
+        }
+    }
+
+    fn spot_light() -> MapLight {
+        MapLight {
+            origin: DVec3::new(-4.0, 8.5, 0.125),
+            light_type: LightType::Spot,
+            carrier: String::new(),
+            intensity: 0.75,
+            color: [1.0, 0.0, 0.5],
+            falloff_model: FalloffModel::Linear,
+            falloff_range: 6.0,
+            light_size: 0.25,
+            angular_diameter: 0.5,
+            cone_angle_inner: Some(0.5),
+            cone_angle_outer: Some(0.75),
+            cone_direction: Some([0.0, -1.0, 0.0]),
+            animation: None,
+            bake_only: false,
+            is_dynamic: true,
+            casts_entity_shadows: true,
+            is_animated: false,
+            tags: Vec::new(),
+            shadow_type: ShadowType::StaticLightMap,
+            area: None,
+        }
+    }
+
+    fn hex(light: &MapLight) -> String {
+        postcard::to_allocvec(light)
+            .expect("a light encodes")
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    #[test]
+    fn point_and_spot_postcard_bytes_match_the_pre_area_encoding() {
+        // Captured from the encoder before area lights existed.
+        const POINT: &str = concat!(
+            "000000000000f43f00000000000004c00000000000000e4000066c6966745f610000c03f",
+            "0000803e0000003f0000403f02000048410000003e0000000000000001000000400000803e01030000",
+            "00000000003f0000803f01010000803f0000003f0000803e00000100000102047761726d0466696c6c01",
+        );
+        const SPOT: &str = concat!(
+            "00000000000010c00000000000002140000000000000c03f01000000403f0000803f0000",
+            "00000000003f000000c0400000803e0000003f010000003f010000403f0100000000000080bf00000000",
+            "00000101000000",
+        );
+        assert_eq!(hex(&point_light()), POINT);
+        assert_eq!(hex(&spot_light()), SPOT);
     }
 }

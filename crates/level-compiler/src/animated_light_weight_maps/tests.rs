@@ -270,6 +270,7 @@ fn animated_point_light_above() -> MapLight {
         casts_entity_shadows: false,
         tags: vec![],
         shadow_type: crate::map_data::ShadowType::StaticLightMap,
+        area: None,
     }
 }
 

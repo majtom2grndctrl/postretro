@@ -546,6 +546,7 @@ fn penumbra_floor() -> (GeometryResult, Vec<crate::map_data::MapLight>) {
         is_animated: false,
         tags: Vec::new(),
         shadow_type: crate::map_data::ShadowType::StaticLightMap,
+        area: None,
     };
     (geometry, vec![light])
 }

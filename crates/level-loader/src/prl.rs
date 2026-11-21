@@ -1956,8 +1956,19 @@ mod tests {
     }
 
     #[test]
+    fn convert_alpha_lights_rejects_an_area_record_until_runtime_support_lands() {
+        let mut alpha = sample_alpha_lights();
+        alpha.lights[1].light_type = AlphaLightType::Area;
+        let err = convert_alpha_lights(alpha).unwrap_err().to_string();
+        assert!(
+            err.contains("light 1 is an area light") && err.contains("area-lights task 8"),
+            "expected an area-record rejection naming the light and task, got {err}",
+        );
+    }
+
+    #[test]
     fn validate_entity_shadow_lights_accepts_static_lightmap_point_or_spot() {
-        let lights = convert_alpha_lights(sample_alpha_lights());
+        let lights = convert_alpha_lights(sample_alpha_lights()).expect("no area records");
 
         assert!(validate_entity_shadow_light_selection(&[0], &lights).is_ok());
     }
@@ -1966,7 +1977,7 @@ mod tests {
     fn validate_entity_shadow_lights_rejects_dynamic_directional_and_sdf_lights() {
         let mut alpha = sample_alpha_lights();
         alpha.lights[0].shadow_type = AlphaShadowType::Sdf;
-        let lights = convert_alpha_lights(alpha);
+        let lights = convert_alpha_lights(alpha).expect("no area records");
 
         let sdf = validate_entity_shadow_light_selection(&[0], &lights).unwrap_err();
         assert!(

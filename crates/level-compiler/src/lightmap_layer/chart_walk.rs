@@ -237,7 +237,10 @@ fn walk_chart(
     // wait on this init while holding their permits, which is safe only
     // because `ShaftScene::new` is serial and takes no lock or permit: keep
     // it that way.
-    let shaft = if traces && exact_skips.shaft_cull && light.light_type != LightType::Directional {
+    // An area light traces no shadow ray yet, so no tile of it is shadowed
+    // (area-lights task 3 gives the shaft its emitter sphere).
+    let shaft_eligible = !matches!(light.light_type, LightType::Directional | LightType::Area);
+    let shaft = if traces && exact_skips.shaft_cull && shaft_eligible {
         let scene = shaft_scene.get_or_init(|| ShaftScene::new(primitives, geometry));
         ShaftCull::new(
             light, chart, &sampler, &frame, scene, bvh, primitives, geometry,

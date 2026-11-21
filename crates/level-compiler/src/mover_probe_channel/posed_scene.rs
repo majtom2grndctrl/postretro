@@ -57,7 +57,8 @@ impl PosedScene {
     pub(crate) fn may_shadow(&self, point: Vec3, light: &MapLight) -> bool {
         let radius = f64::from(emitter_radius(light).max(0.0));
         let (centre, reach) = match light.light_type {
-            LightType::Point | LightType::Spot => (light.origin, radius),
+            // Area: its samples aim at the centroid until area-lights task 4.
+            LightType::Point | LightType::Spot | LightType::Area => (light.origin, radius),
             LightType::Directional => {
                 let centre = hard_ray_target(point, light).as_dvec3();
                 let length = centre.distance(point.as_dvec3());
@@ -89,6 +90,13 @@ impl PosedScene {
                 let bounds = self.solid.bounds();
                 !origin.is_finite()
                     || origin.distance(origin.clamp(bounds.min, bounds.max)) <= reach
+            }
+            LightType::Area => {
+                let (centre, radius) = light.reach_sphere();
+                let reach = radius + f64::from(RAY_EPSILON) + BOX_SLACK_M;
+                let bounds = self.solid.bounds();
+                !centre.is_finite()
+                    || centre.distance(centre.clamp(bounds.min, bounds.max)) <= reach
             }
         }
     }

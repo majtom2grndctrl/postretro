@@ -134,6 +134,7 @@ pub fn encode_alpha_lights(lights: &AlphaLightsNs<'_>, tree: &BspTree) -> AlphaL
                 LightType::Point => AlphaLightType::Point,
                 LightType::Spot => AlphaLightType::Spot,
                 LightType::Directional => AlphaLightType::Directional,
+                LightType::Area => AlphaLightType::Area,
             };
             let falloff_model = match l.falloff_model {
                 FalloffModel::Linear => AlphaFalloffModel::Linear,
@@ -145,7 +146,12 @@ pub fn encode_alpha_lights(lights: &AlphaLightsNs<'_>, tree: &BspTree) -> AlphaL
                 ALPHA_LIGHT_LEAF_UNASSIGNED
             } else {
                 let idx = find_leaf_for_point(tree, l.origin);
-                if tree.leaves[idx].is_solid {
+                if tree.leaves[idx].is_solid && l.light_type == LightType::Area {
+                    // An area light's centroid may sit inside a pillar its
+                    // faces wrap. Only promotion reads the leaf at runtime,
+                    // and an area light never promotes.
+                    ALPHA_LIGHT_LEAF_UNASSIGNED
+                } else if tree.leaves[idx].is_solid {
                     log::warn!(
                         "[Compiler] AlphaLights: light {src_index} at origin ({:.3}, {:.3}, {:.3}) is inside a solid leaf; marking unassigned",
                         l.origin.x,
@@ -213,6 +219,10 @@ pub fn encode_light_influence(lights: &AlphaLightsNs<'_>) -> LightInfluenceSecti
                     let cy = l.origin.y as f32;
                     let cz = l.origin.z as f32;
                     ([cx, cy, cz], l.falloff_range)
+                }
+                LightType::Area => {
+                    let (center, radius) = l.reach_sphere();
+                    (center.as_vec3().to_array(), radius as f32)
                 }
             };
             InfluenceRecord { center, radius }
@@ -2958,6 +2968,7 @@ mod tests {
                 is_animated: false,
                 tags: vec![],
                 shadow_type: crate::map_data::ShadowType::StaticLightMap,
+                area: None,
             },
             MapLight {
                 origin: DVec3::new(-4.0, 1.0, 0.5),
@@ -2979,6 +2990,7 @@ mod tests {
                 is_animated: false,
                 tags: vec![],
                 shadow_type: crate::map_data::ShadowType::StaticLightMap,
+                area: None,
             },
             MapLight {
                 origin: DVec3::new(0.0, 100.0, 0.0),
@@ -3000,6 +3012,7 @@ mod tests {
                 is_animated: false,
                 tags: vec![],
                 shadow_type: crate::map_data::ShadowType::StaticLightMap,
+                area: None,
             },
         ];
 
@@ -3073,6 +3086,7 @@ mod tests {
             is_animated: false,
             tags: vec![],
             shadow_type: crate::map_data::ShadowType::StaticLightMap,
+            area: None,
         };
 
         let lights = vec![

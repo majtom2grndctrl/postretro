@@ -784,6 +784,8 @@ fn build_receiver_triangle_bins(
 fn overlaps_chunk(light: &MapLight, chunk_min: Vec3, chunk_max: Vec3) -> bool {
     match light.light_type {
         LightType::Directional => true,
+        // An area light draws no specular, so it enters no chunk list.
+        LightType::Area => false,
         LightType::Point | LightType::Spot => {
             // Spot lights use a conservative sphere; cone refinement is a runtime concern.
             let center = Vec3::new(
@@ -916,7 +918,8 @@ fn any_receiver_unoccluded(
 
 fn receiver_to_light_direction(light: &MapLight, sample: Vec3) -> Vec3 {
     match light.light_type {
-        LightType::Point | LightType::Spot => (Vec3::new(
+        // Area never reaches here: `overlaps_chunk` refuses it first.
+        LightType::Point | LightType::Spot | LightType::Area => (Vec3::new(
             light.origin.x as f32,
             light.origin.y as f32,
             light.origin.z as f32,
@@ -1012,7 +1015,8 @@ fn segment_clear_brute_force(geometry: &GeometryResult, light: &MapLight, sample
 /// when the segment is too short to trace.
 fn sample_ray(light: &MapLight, sample: Vec3) -> Option<(TraceRay, f32)> {
     let (from, to) = match light.light_type {
-        LightType::Point | LightType::Spot => (
+        // Area never reaches here: `overlaps_chunk` refuses it first.
+        LightType::Point | LightType::Spot | LightType::Area => (
             Vec3::new(
                 light.origin.x as f32,
                 light.origin.y as f32,
@@ -1091,6 +1095,7 @@ mod tests {
             is_animated: false,
             tags: vec![],
             shadow_type: crate::map_data::ShadowType::StaticLightMap,
+            area: None,
         }
     }
 
@@ -1173,6 +1178,7 @@ mod tests {
             is_animated: false,
             tags: vec![],
             shadow_type: crate::map_data::ShadowType::StaticLightMap,
+            area: None,
         }
     }
 

@@ -85,6 +85,8 @@ pub(crate) fn light_movers(light: &MapLight, movers: &PosedMovers) -> Vec<LightM
                 + BOX_SLACK_M
                 + f64::from(RAY_EPSILON),
         ),
+        // Its reach sphere is centred on its origin, the centroid.
+        LightType::Area => Some(light.reach_sphere().1 + BOX_SLACK_M + f64::from(RAY_EPSILON)),
     };
     movers
         .movers()

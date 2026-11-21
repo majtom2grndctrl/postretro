@@ -173,6 +173,7 @@ fn light_over(face: usize, intensity: f32) -> MapLight {
         is_animated: false,
         tags: Vec::new(),
         shadow_type: ShadowType::StaticLightMap,
+        area: None,
     }
 }
 

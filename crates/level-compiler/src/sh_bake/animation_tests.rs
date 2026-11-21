@@ -43,6 +43,7 @@ fn animated_light_produces_descriptor() {
         is_animated: false,
         tags: vec![],
         shadow_type: crate::map_data::ShadowType::StaticLightMap,
+        area: None,
     };
     let exterior: HashSet<usize> = HashSet::new();
     let lights = std::slice::from_ref(&animated);
@@ -105,6 +106,7 @@ fn animation_descriptor_base_color_includes_intensity() {
         is_animated: false,
         tags: vec![],
         shadow_type: crate::map_data::ShadowType::StaticLightMap,
+        area: None,
     };
     let exterior: HashSet<usize> = HashSet::new();
     let lights = std::slice::from_ref(&light);

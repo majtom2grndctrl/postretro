@@ -440,6 +440,15 @@ fn run_after_parsing(
         partition::log_stats(&result.tree, &result.faces);
     }
 
+    // Area lights take their polygons from the faces that survived the BSP,
+    // before buried classification, the script's light table and every bake
+    // read their origin and reach (research.md O11, O18, O22).
+    if !map_data.area_lights.is_empty() {
+        let has_emissive_map =
+            crate::texture_mips::emissive_map_lookup(&resolve_texture_root(&args.input));
+        crate::area_light::resolve_area_lights(&mut map_data, &result.faces, has_emissive_map)?;
+    }
+
     // Classify buried lights before the data script runs, so the script's
     // light table already omits lights that will have no runtime entity
     // (`buried_lights.rs`). Classification reads only fields the membership

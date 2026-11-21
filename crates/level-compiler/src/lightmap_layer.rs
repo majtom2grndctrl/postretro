@@ -430,7 +430,8 @@ pub fn layer_influence_aabb(
 ) -> (DVec3, DVec3) {
     let (min, max) = light_aabb(light, world_aabb);
     match light.light_type {
-        LightType::Point | LightType::Spot => {
+        // An area light's `light_size` is 0, so only the footprint pads it.
+        LightType::Point | LightType::Spot | LightType::Area => {
             let reach = f64::from((light.falloff_range + AABB_PADDING_METERS).max(0.01));
             let emitter_beyond_reach = f64::from(light.light_size) - reach;
             let pad = f64::from(footprint_radius).max(emitter_beyond_reach);
@@ -495,6 +496,11 @@ pub(crate) fn light_may_reach(light: &MapLight, bounds: Option<(Vec3, Vec3)>) ->
             let origin = light.origin.as_vec3();
             let nearest = origin.clamp(min, max);
             origin.distance(nearest) <= light.falloff_range.max(1.0e-4)
+        }
+        LightType::Area => {
+            let (centre, radius) = light.reach_sphere();
+            let nearest = centre.clamp(min.as_dvec3(), max.as_dvec3());
+            centre.distance(nearest) <= radius.max(1.0e-4)
         }
     }
 }

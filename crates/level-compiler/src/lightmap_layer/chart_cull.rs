@@ -148,6 +148,9 @@ pub(crate) fn chart_may_cover(light: &MapLight, chart: &Chart) -> bool {
                 .max(0.0)
                 > 0.0
         }
+        // No polygon-aware test yet: every chart `light_may_reach` passes
+        // is kept (area-lights task 3).
+        LightType::Area => true,
         LightType::Point | LightType::Spot => {
             // The bake measures from the light's `f32` origin.
             let origin = light.origin.as_vec3().as_dvec3();

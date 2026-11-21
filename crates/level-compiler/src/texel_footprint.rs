@@ -125,7 +125,7 @@ impl TexelFootprint {
             .map(|index| {
                 let direction = probe_sample_direction(light, index, full_samples);
                 match light.light_type {
-                    LightType::Point | LightType::Spot => direction,
+                    LightType::Point | LightType::Spot | LightType::Area => direction,
                     LightType::Directional => {
                         let axis = sun_axis(light);
                         direction - axis * axis.dot(direction)
@@ -204,7 +204,9 @@ enum EmitterKey {
 
 fn emitter_key(light: &MapLight) -> EmitterKey {
     match light.light_type {
-        LightType::Point | LightType::Spot => EmitterKey::Sphere,
+        // Area's placeholder lattice is the sphere's; area-lights task 3
+        // keys its polygon lattice outside this memo.
+        LightType::Point | LightType::Spot | LightType::Area => EmitterKey::Sphere,
         LightType::Directional => EmitterKey::Cone {
             angular_diameter: light.angular_diameter.to_bits(),
             direction: light
@@ -434,6 +436,12 @@ impl TexelSampler {
         reach: impl Fn(Vec3, Vec3) -> bool,
         lead_in: impl Fn(Vec3, Vec3) -> bool,
     ) -> f32 {
+        // An area light is unshadowed for now: every texel it lights sees all
+        // of it. The one place its texel visibility is decided; area-lights
+        // task 3 replaces this with integrand-weighted polygon samples.
+        if light.light_type == LightType::Area {
+            return 1.0;
+        }
         match self {
             Self::Centre(probes) => soft_visibility_with(
                 site.world_p,
@@ -537,6 +545,8 @@ fn footprint_visibility(
     let hard = match light.light_type {
         LightType::Point | LightType::Spot => light.light_size <= 0.0,
         LightType::Directional => light.angular_diameter <= 0.0,
+        // Never reached: `TexelSampler::visibility` answers Area first.
+        LightType::Area => true,
     };
     let rotation = footprint_rotation(site.seed);
     // A hard emitter traces one target from every point, so it pairs nothing.

@@ -139,7 +139,7 @@ pub fn load_fixture(name: &str) -> FixturePipeline {
 /// `.map`, as `pipeline.rs` runs those stages.
 pub fn load_map(path: &Path) -> FixturePipeline {
     let name = path.display();
-    let map_data = parse::parse_map_file(path, MapFormat::IdTech2)
+    let mut map_data = parse::parse_map_file(path, MapFormat::IdTech2)
         .unwrap_or_else(|e| panic!("parse {name}: {e}"));
 
     let ShippedCells {
@@ -148,6 +148,12 @@ pub fn load_map(path: &Path) -> FixturePipeline {
         runtime,
     } = ShippedCells::build(&map_data.brush_volumes, &map_data.kinematic_movers)
         .unwrap_or_else(|e| panic!("partition {name}: {e}"));
+    if !map_data.area_lights.is_empty() {
+        let has_emissive_map =
+            crate::texture_mips::emissive_map_lookup(&crate::resolve_texture_root(path));
+        crate::area_light::resolve_area_lights(&mut map_data, &result.faces, has_emissive_map)
+            .unwrap_or_else(|e| panic!("area lights {name}: {e}"));
+    }
     let RuntimeCells { cells, portals } = runtime;
 
     let geometry = extract_geometry(&result.faces, &cells.tree, &cells.exterior_cells);

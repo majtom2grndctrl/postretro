@@ -91,6 +91,17 @@ pub(crate) fn light_candidates(light: &MapLight, poses: &MoverPoses) -> Vec<Cand
                                 .any(|brush| point_touches_brush(light.origin, brush))
                         })
                     }
+                    // Texels it lights lie in its reach sphere; their segments
+                    // end on its centroid until area-lights task 3 aims them
+                    // at the polygons.
+                    LightType::Area => {
+                        let (centre, radius) = light.reach_sphere();
+                        sphere_touches_box(centre, radius + BOX_SLACK_M, &pose.bounds).then(|| {
+                            pose.brushes
+                                .iter()
+                                .any(|brush| point_touches_brush(light.origin, brush))
+                        })
+                    }
                 }
             });
             let light_inside = Terminus::BOTH.map(|terminus| {
@@ -215,7 +226,7 @@ fn segment_hull(light: &MapLight, (min, max): (Vec3, Vec3)) -> Aabb {
     let (min, max) = ((min - lift).as_dvec3(), (max + lift).as_dvec3());
     let mut hull = Aabb { min, max };
     match light.light_type {
-        LightType::Point | LightType::Spot => hull.expand_point(light.origin),
+        LightType::Point | LightType::Spot | LightType::Area => hull.expand_point(light.origin),
         LightType::Directional => {
             // A sun's target sits a fixed offset from its texel.
             let offset = hard_ray_target(Vec3::ZERO, light).as_dvec3();

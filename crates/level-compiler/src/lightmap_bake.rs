@@ -693,6 +693,26 @@ pub(crate) fn light_contribution_and_direction(
             }
             (Vec3::from(light.color) * (light.intensity * ndotl), l)
         }
+        LightType::Area => {
+            // The windowed polygon term, in f64 like the rest of the polygon
+            // maths; its direction is the clipped irradiance vector.
+            let Some(emitter) = light.area.as_ref() else {
+                return (Vec3::ZERO, Vec3::ZERO);
+            };
+            let (irradiance, vector) = emitter.windowed_irradiance(
+                surface_point.as_dvec3(),
+                surface_normal.as_dvec3(),
+                f64::from(light.falloff_range),
+            );
+            if irradiance <= 0.0 {
+                return (Vec3::ZERO, Vec3::ZERO);
+            }
+            let direction = vector.normalize_or_zero().as_vec3();
+            (
+                Vec3::from(light.color) * (light.intensity * irradiance as f32),
+                direction,
+            )
+        }
     }
 }
 
@@ -986,7 +1006,12 @@ fn probe_indices(light: &MapLight, full_samples: u32) -> [u32; SOFT_PROBE_SAMPLE
 /// relies on it too.
 pub(crate) fn probe_sample_direction(light: &MapLight, i: u32, count: u32) -> Vec3 {
     match light.light_type {
-        LightType::Point | LightType::Spot => fibonacci_sphere_sample(i, count, 0),
+        // An area light's texels take visibility 1 for now
+        // (`TexelSampler::visibility`), so this lattice is never traced for
+        // one; area-lights task 3 replaces the arm with the polygon lattice.
+        LightType::Point | LightType::Spot | LightType::Area => {
+            fibonacci_sphere_sample(i, count, 0)
+        }
         LightType::Directional => {
             let aim = Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0]));
             let to_light = (-aim).normalize_or_zero();
@@ -1106,7 +1131,9 @@ impl SoftProbes {
                 memo.set(Some((full_samples, probes)));
                 probes
             }),
-            LightType::Directional => probe_indices(light, full_samples),
+            // An area light never reads or writes the count-keyed memo
+            // (research.md O9).
+            LightType::Directional | LightType::Area => probe_indices(light, full_samples),
         };
         Self {
             full_samples,
@@ -1235,6 +1262,9 @@ pub(crate) fn emitter_radius(light: &MapLight) -> f32 {
     match light.light_type {
         LightType::Point | LightType::Spot => light.light_size,
         LightType::Directional => light.angular_diameter,
+        // Translation normalises `light_size` to 0; area-lights task 3 gives
+        // the polygons' emitter sphere to every reader that needs one.
+        LightType::Area => 0.0,
     }
 }
 
@@ -1243,7 +1273,9 @@ pub(crate) fn emitter_radius(light: &MapLight) -> f32 {
 /// Point/Spot, or a far point along `-cone_direction` for Directional.
 pub(crate) fn hard_ray_target(surface_point: Vec3, light: &MapLight) -> Vec3 {
     match light.light_type {
-        LightType::Point | LightType::Spot => Vec3::new(
+        // An area light's origin is its centroid, which can sit inside a
+        // pillar; area-lights task 3 aims its rays at lifted polygon samples.
+        LightType::Point | LightType::Spot | LightType::Area => Vec3::new(
             light.origin.x as f32,
             light.origin.y as f32,
             light.origin.z as f32,
@@ -1271,7 +1303,8 @@ pub(crate) fn area_sample_target(
     full_samples: u32,
 ) -> Vec3 {
     match light.light_type {
-        LightType::Point | LightType::Spot => {
+        // Area: `light_size` is 0, so its centroid (area-lights task 3).
+        LightType::Point | LightType::Spot | LightType::Area => {
             let center = Vec3::new(
                 light.origin.x as f32,
                 light.origin.y as f32,
@@ -1304,7 +1337,7 @@ pub(crate) fn emitter_lattice_spin(light: &MapLight, seed: u64) -> Quat {
     match light.light_type {
         // `fibonacci_sphere_sample` adds the angle to an azimuth that runs
         // from +X toward +Z: a negative turn about +Y.
-        LightType::Point | LightType::Spot => Quat::from_rotation_y(-angle),
+        LightType::Point | LightType::Spot | LightType::Area => Quat::from_rotation_y(-angle),
         LightType::Directional => {
             let aim = Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0]));
             Quat::from_axis_angle((-aim).normalize_or_zero(), angle)

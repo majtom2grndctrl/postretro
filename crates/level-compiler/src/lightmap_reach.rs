@@ -59,9 +59,15 @@ pub(crate) struct ReachLight<'a> {
 
 /// Whether a light's pairs may be culled: a point or spot light the stage
 /// does not flag as embedded, whose `f32` origin lies in an open leaf. Every
-/// other light is never culled.
+/// other light is never culled; an area light floods from its polygons once
+/// area-lights task 3 lands, not from its centroid.
 fn eligible(tree: &BspTree, closed: &[bool], light: ReachLight<'_>) -> bool {
-    if light.embedded_emitter || light.light.light_type == LightType::Directional {
+    if light.embedded_emitter
+        || matches!(
+            light.light.light_type,
+            LightType::Directional | LightType::Area
+        )
+    {
         return false;
     }
     let emitter = Emitter::of(light.light);

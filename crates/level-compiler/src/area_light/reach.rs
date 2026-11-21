@@ -1,9 +1,5 @@
-// Area-light reach, its smooth window, and the emitter and reach cull spheres.
+// Area-light reach and its smooth window.
 // See: context/lib/build_pipeline.md §Compiler pipeline (Area lights)
-
-use glam::DVec3;
-
-use super::AreaEmitter;
 
 /// Reach is where the bound L·A/d² falls to this fraction of what a `light 300`
 /// point light (intensity 1, inverse squared) gives at 1 m.
@@ -31,19 +27,4 @@ pub(crate) fn reach_window(distance: f64, reach: f64) -> f64 {
     let ratio = distance.max(0.0) / reach;
     let falloff = 1.0 - ratio * ratio * ratio * ratio;
     falloff * falloff
-}
-
-impl AreaEmitter {
-    /// (centroid, circumradius): holds every polygon. Shadow-ray and occluder
-    /// tests read it; each caller adds its own 1 mm slack, which also holds the
-    /// tracer-tolerance lift of every sample target.
-    pub(crate) fn emitter_sphere(&self) -> (DVec3, f64) {
-        (self.centroid, self.circumradius)
-    }
-
-    /// (centroid, circumradius + reach): holds every point within `reach` of a
-    /// polygon. Reach, influence and cache-key slice culls read it.
-    pub(crate) fn reach_sphere(&self, reach: f64) -> (DVec3, f64) {
-        (self.centroid, self.circumradius + reach.max(0.0))
-    }
 }

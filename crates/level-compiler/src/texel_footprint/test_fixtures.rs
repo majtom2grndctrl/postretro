@@ -237,6 +237,7 @@ pub(super) fn point_light(origin: [f64; 3], light_size: f32) -> MapLight {
         is_animated: false,
         tags: Vec::new(),
         shadow_type: ShadowType::StaticLightMap,
+        area: None,
     }
 }
 
@@ -271,7 +272,9 @@ pub(super) fn hard_sun(aim: [f32; 3]) -> MapLight {
 pub(super) fn toward_light(light: &MapLight, at: Vec3) -> Vec3 {
     match light.light_type {
         LightType::Directional => -Vec3::from(light.cone_direction.unwrap()).normalize(),
-        LightType::Point | LightType::Spot => (light.origin.as_vec3() - at).normalize(),
+        LightType::Point | LightType::Spot | LightType::Area => {
+            (light.origin.as_vec3() - at).normalize()
+        }
     }
 }
 

@@ -120,6 +120,7 @@ fn bake_is_deterministic() {
         is_animated: false,
         tags: vec![],
         shadow_type: crate::map_data::ShadowType::StaticLightMap,
+        area: None,
     };
     let exterior: HashSet<usize> = HashSet::new();
     let lights = std::slice::from_ref(&light);
@@ -185,6 +186,7 @@ fn sh_volume_bake_produces_byte_identical_output_on_repeated_runs() {
             is_animated: false,
             tags: vec![],
             shadow_type: crate::map_data::ShadowType::StaticLightMap,
+            area: None,
         },
         MapLight {
             origin: DVec3::new(3.0, 2.0, 3.0),
@@ -206,6 +208,7 @@ fn sh_volume_bake_produces_byte_identical_output_on_repeated_runs() {
             is_animated: false,
             tags: vec![],
             shadow_type: crate::map_data::ShadowType::StaticLightMap,
+            area: None,
         },
     ];
     let exterior: HashSet<usize> = HashSet::new();
@@ -381,6 +384,7 @@ fn is_dynamic_lights_skipped_by_bake() {
         is_animated: false,
         tags: vec![],
         shadow_type: crate::map_data::ShadowType::StaticLightMap,
+        area: None,
     };
     // Dynamic-tier lights are selected by classname → `is_dynamic`; the
     // namespace filter keys on this position axis, excluding them from both
@@ -468,6 +472,7 @@ fn sdf_typed_light_remains_in_sh_indirect_bake() {
         // Tagged sdf: its DIRECT term goes runtime, but its bounce must
         // still reach SH — the namespace keeps it (position axis).
         shadow_type: crate::map_data::ShadowType::Sdf,
+        area: None,
     };
 
     let with_sdf = {

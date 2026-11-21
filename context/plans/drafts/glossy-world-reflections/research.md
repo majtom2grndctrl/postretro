@@ -187,7 +187,7 @@ Estimate, 2026-11-21, against the code at `e9495f27`. [M] read from code; [E] es
 
 ## Glow SSR
 
-A second rival for glow that changes at runtime, beside §Glow delta tiles. A screen-space march fixes only the glow; the probe keeps everything else. IP reading: `ip-glow-ssr.md` (in progress).
+A second rival for glow that changes at runtime, beside §Glow delta tiles. A screen-space march fixes only the glow; the probe keeps everything else. IP reading: `ip-glow-ssr.md`.
 
 - **Shape.**
   - *Glow pass.* After forward, an `IndirectDrawPlan` redraws only the selected faces, with depth `Equal`, into a small screen target. Selected faces are animated `light_area` glass and `emissive_volume` faces whose presented value is off reference. Each pixel writes current − reference glow, never full glow. The forward shader is untouched, as the brief's forward-unchanged row requires.
@@ -198,8 +198,15 @@ A second rival for glow that changes at runtime, beside §Glow delta tiles. A sc
 - **Against §Glow delta tiles.**
   - Delta tiles are exact off screen; this is exact only on screen, where neon over a wet floor usually is.
   - It bakes nothing: no id-54 bytes and no compile cost.
-  - It appears to avoid '451 element (c), the stored transfer × coefficient form (`ip-delta-tiles.md` §2), because the change comes from live screen data. That is pending `ip-glow-ssr.md`.
+  - It appears to avoid '451 element (c), the stored transfer × coefficient form, with medium-high confidence: the march finds the glow at runtime from live screen data (`ip-glow-ssr.md` §4).
   - The two can stack: SSR on screen, delta tiles off screen.
+- **IP fences** (`ip-glow-ssr.md` §7, §8). The nearest risk is Tencent WO2026113651A1 claims 10 and 19, which this approach appears to avoid on the same footing as the shipped share ratio, and it sits further from claim 15 than fluid SSR does. Keep:
+  - The change term inside W, so capture shadow withholds it; never weight it by (1 − s) or march only where s < 1.
+  - Colour from the glow target, never the frame buffer.
+  - One depth buffer: selected faces write colour only.
+  - The edge fades, and the ray never bends toward the screen interior (Nintendo US12694606B2, granted).
+  - One direction-blind ray per fragment, with no history, no probe lookup seeded from the hit, and nothing baked per source.
+  - State this layer's own capture-shadow rule in the brief, since §7.3a's "SSR never reads s" was written for water's layer beside the probe.
 - **Policy.** This lifts the owner's probe-only ruling for world faces (`index.md`, Decisions) and adds a screen-space march on world faces, which needs owner sign-off, a gate and a fixed step budget (`context/lib/index.md` §2, Pre-RTX). The gate here is glossy fragments only, and only on frames whose glow pass drew. The selection is the glow pass's draw list; projectile or billboard glow could join it later.
 - **Cost** [E].
   - Target: R11G11B10 or RGBA16F, about 33 MB at 4K full resolution, a quarter of that at half.

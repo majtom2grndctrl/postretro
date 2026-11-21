@@ -68,9 +68,9 @@ pub(crate) fn request_renderer_device(
     // the real binding count. The per-group inventory is [0, 4, 0, 3, 5, 4]
     // (or [0, 4, 0, 3, 5, 3] without CUBE_ARRAY), pinned by
     // `pipeline_budget_tests::forward_pipeline_sampled_texture_request_matches_bgl_definitions`:
-    //   Group 1 — material (4): diffuse, emissive, specular (the two-channel
-    //                           Surface Depth map when a material has an
-    //                           `_h.png` sibling), normal
+    //   Group 1 — material (4): diffuse, emissive, specular (R8, or an
+    //                           Rg8/Rgba8 surface map with `_h`, `_p` or `_t`),
+    //                           normal
     //   Group 3 — SH volume (3): octahedral atlas + depth-moments
     //                            + id-59 depth tiles (binding 18); the direct
     //                              static-light atlas (binding 15) is VERTEX-only in
@@ -524,6 +524,8 @@ pub(crate) fn build_initial_uniform_data(
         spec_shadowmask_force_one: false,
         // No mask pool before a level installs.
         static_spec_mask_present: false,
+        // Rewritten from boot state by every frame's upload.
+        specular_style: Default::default(),
     })
 }
 

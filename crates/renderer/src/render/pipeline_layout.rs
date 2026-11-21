@@ -6,7 +6,10 @@ use super::*;
 use crate::render::gpu_create::GpuCreate;
 
 // `material_shading.wgsl` owns world-material leaf helpers (`blinn_phong`,
-// `sample_normal`, `reconstruct_tbn_normal`). Its argument-only helpers are
+// `sample_normal`, `reconstruct_tbn_normal`) and the texel-grid functions:
+// `post_retro_texel_uv`, the reconstruction inside `sample_post_retro`, and
+// `specular_texel_point`, which maps that reconstructed UV to the pixel-style
+// specular point. Its argument-only helpers are
 // reusable by any world-material pass; `sample_normal` resolves the consumer's
 // group-1 `aniso_sampler` and per-consumer `sample_post_retro` by lexical name.
 // Skinned meshes stay diffuse-only and deliberately do not append this snippet.
@@ -30,8 +33,8 @@ use crate::render::gpu_create::GpuCreate;
 // `surface_depth.wgsl` owns the Surface Depth texel-space parallax DDA. It is
 // the LOAD-BEARING parity seam between static world geometry and kinematic
 // brush movers: the SAME source string is concatenated into
-// `kinematic_brush.rs`, so the two passes cannot drift the way their duplicated
-// `sample_post_retro` bodies can. It declares no bindings — it resolves
+// `kinematic_brush.rs`, so the two passes cannot drift the way duplicated
+// per-pass bodies could. It declares no bindings — it resolves
 // `spec_texture` and `material` (group 1, bindings 2 and 3) by lexical name,
 // both already declared by each consumer, and takes camera-dependent inputs as
 // arguments because forward and the mover pass name their camera uniform
@@ -217,7 +220,8 @@ pub(crate) const TIMING_PAIR_COUNT: usize = 22;
 // 16-byte row carries load-fixed `has_scatter` mode + `has_direct` bit 0 /
 // animated-tail count bits 1..31 +
 // `total_light_count`; that row's trailing word is `spec_shadowmask_flags`
-// (bit 0 force-one dev toggle, bit 1 load-fixed mask-present).
+// (bit 0 force-one dev toggle, bit 1 load-fixed mask-present, bit 2 smooth
+// specular style).
 // Only billboard.wgsl reads these (the mesh path uses its own group-4
 // `DynamicDirectParams`); only forward reads `spec_shadowmask_flags`, and
 // all three shaders keep the shared 4-way byte contract (Rust writer +
@@ -281,8 +285,9 @@ pub(crate) fn uniform_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry
     }]
 }
 
-// Group 1: 0=diffuse(sRGB), 1=emissive(sRGB), 2=specular(R8),
-// 3=material uniform, 4=normal(Rgba8Unorm, NOT sRGB; n = sample.rgb*2-1),
+// Group 1: 0=diffuse(sRGB), 1=emissive(sRGB),
+// 2=specular (R8, or an Rg8/Rgba8 surface map), 3=material uniform,
+// 4=normal(Rgba8Unorm, NOT sRGB; n = sample.rgb*2-1),
 // 5=material sampler (filtering selected per material).
 pub(crate) fn material_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
     [

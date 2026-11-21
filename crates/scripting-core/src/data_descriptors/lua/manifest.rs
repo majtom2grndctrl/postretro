@@ -168,9 +168,9 @@ pub fn drain_default_weapon_placement_lua(
 }
 
 /// Drain the optional static renderer profile from a Luau mod manifest.
-/// Mirrors [`drain_render_profile_js`] field-for-field: `bloom` and
-/// `reflections` parse apart, so a missing or malformed one never resets the
-/// other.
+/// Mirrors [`drain_render_profile_js`] field-for-field: `bloom`,
+/// `reflections`, `specular` and `ghosts` parse apart, so a missing or
+/// malformed one never resets another.
 pub fn drain_render_profile_lua(
     table: &Table,
     scope: &str,
@@ -189,6 +189,7 @@ pub fn drain_render_profile_lua(
     Ok(ModRenderProfile {
         bloom: drain_bloom_profile_lua(&render, scope)?,
         reflections: drain_reflection_profile_lua(&render, scope)?,
+        specular: drain_specular_profile_lua(&render, scope)?,
         ghosts: drain_ghost_transparency_lua(&render, scope)?,
     })
 }
@@ -306,6 +307,35 @@ fn drain_reflection_profile_lua(
         }
     };
     Ok(ModReflectionProfile { style })
+}
+
+/// `render.specular`; absent or malformed is the default (pixel) style.
+fn drain_specular_profile_lua(
+    render: &Table,
+    scope: &str,
+) -> Result<ModSpecularProfile, DescriptorError> {
+    let specular = match render.get::<LuaValue>("specular").map_err(lua_err)? {
+        LuaValue::Nil => return Ok(ModSpecularProfile::default()),
+        LuaValue::Table(specular) => specular,
+        _ => {
+            warn_specular_profile(scope, "a table");
+            return Ok(ModSpecularProfile::default());
+        }
+    };
+    let authored = match specular.get::<LuaValue>("style").map_err(lua_err)? {
+        LuaValue::Nil => return Ok(ModSpecularProfile::default()),
+        LuaValue::String(value) => value
+            .to_str()
+            .ok()
+            .as_deref()
+            .and_then(ModSpecularStyle::from_authored),
+        _ => None,
+    };
+    let style = authored.unwrap_or_else(|| {
+        warn_specular_style(scope);
+        ModSpecularStyle::default()
+    });
+    Ok(ModSpecularProfile { style })
 }
 
 /// Luau twin of the QuickJS mover-default drain.

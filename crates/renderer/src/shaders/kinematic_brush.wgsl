@@ -14,7 +14,8 @@ struct CameraUniforms {
 @group(1) @binding(2) var spec_texture: texture_2d<f32>;
 
 struct MaterialUniform {
-    // Blinn-Phong specular exponent; constant per-material variant.
+    // The prefix's Blinn-Phong exponent: what a texel shades at without
+    // smoothness in the specular slot's B (resource_management.md §4.7).
     shininess: f32,
     // The texture's baked glow strength (PRL id 60) on its emissive map.
     emissive_strength: f32,
@@ -89,9 +90,20 @@ struct KinematicLightParams {
     // row at 32 bytes; a vec3 here would make the uniform 48 bytes.
     scripted_light_count: u32,
     indirect_scale: f32,
-    _pad2: u32,
+    // The mod's specular style (`render.specular.style`):
+    // `KINEMATIC_SPECULAR_STYLE_SMOOTH` for smooth, so a zeroed word reads the
+    // default pixel style. The planar mirror shares this buffer, so it draws
+    // the main view's style on the same frame.
+    specular_style: u32,
 };
 @group(2) @binding(4) var<uniform> kinematic_light_params: KinematicLightParams;
+
+// Mirrors render-cpu's `KINEMATIC_SPECULAR_STYLE_SMOOTH`.
+const KINEMATIC_SPECULAR_STYLE_SMOOTH: u32 = 1u;
+
+fn mover_specular_style_smooth() -> bool {
+    return (kinematic_light_params.specular_style & KINEMATIC_SPECULAR_STYLE_SMOOTH) != 0u;
+}
 
 @group(2) @binding(5) var spot_shadow_depth: texture_depth_2d_array;
 @group(2) @binding(6) var spot_shadow_compare: sampler_comparison;
@@ -285,18 +297,146 @@ fn sample_sh_direct(
     );
 }
 
+// The mover's pixel-style specular point (rendering_pipeline.md §4,
+// Texel-centre highlight): one point per albedo texel, shared by the texel's
+// top and every visible side face, which differ only by normal. It is the
+// texel centre `sample_post_retro` reads at the marched UV, placed on the
+// plane from the fragment's own UV and position, then raised along the
+// geometric normal by the struck texel's quantized top height: on a top hit
+// the hit's own height, on a side hit the top of the wall it struck. The lift
+// rides the builder's anchor, so the view is taken from the raised point.
+// Smooth style, and a degenerate Jacobian, keep the per-pixel split: light from
+// the Surface Depth hit, view from the fragment.
+fn mover_specular_point(
+    smooth_style: bool,
+    depth: SurfaceDepthResult,
+    uv: vec2<f32>,
+    world_position: vec3<f32>,
+    geo_normal: vec3<f32>,
+    view_to_eye: vec3<f32>,
+    eye: vec3<f32>,
+    albedo_dims: vec2<f32>,
+    ddx: vec2<f32>,
+    ddy: vec2<f32>,
+    ddx_world: vec3<f32>,
+    ddy_world: vec3<f32>,
+) -> SpecularPoint {
+    var top_height_m = 0.0;
+    if depth.carved && !smooth_style {
+        // One height load at the texel the march struck, outside the march.
+        // `depth.uv` lies inside that texel on its own lattice: a side hit's
+        // UV is biased half a texel past the wall it crossed.
+        // The cell is re-derived from the hit UV rather than carried out of the
+        // march (registers; surface_depth.wgsl is unchanged), so a top hit
+        // grazing a texel's entry edge can floor into the neighbouring cell: a
+        // rare one-pixel lift error, accepted. The specular point (albedo
+        // level-0 lattice) and this lookup (`depth.base_mip` lattice) agree
+        // only while the resident base mip is 0
+        // (`SURFACE_DEPTH_RESIDENT_BASE_MIP`, render-cpu surface_depth/uniform.rs).
+        let dims = textureDimensions(spec_texture, depth.base_mip);
+        let struck = surface_depth_fold(
+            vec2<i32>(floor(depth.uv * vec2<f32>(dims))),
+            vec2<i32>(dims),
+        );
+        let top = surface_depth_texel(struck, depth.base_mip, depth.quantize_levels);
+        // `surface_depth_resolve`'s see-through eye column: with the eye inside
+        // the band, the texel under the eye reads as the band's floor, so its
+        // top hits sit at the trough, not at its top. The hit's own height
+        // tells the two apart with half a height step to spare. Testing
+        // the eye's height against the texel instead cost the mover ~100
+        // registers on AMD Metal; measure before reshaping this.
+        let trough = material.surface_depth_trough;
+        let eye_column = depth.hit_top
+            && depth.height_m < 0.5 * (top + trough) * depth.depth_scale_m;
+        top_height_m = select(top, trough, eye_column) * depth.depth_scale_m;
+    }
+    return specular_texel_point(
+        smooth_style,
+        SpecularPoint(depth.world_position, view_to_eye),
+        uv,
+        depth.uv,
+        world_position + geo_normal * top_height_m,
+        eye,
+        albedo_dims,
+        ddx,
+        ddy,
+        ddx_world,
+        ddy_world,
+    );
+}
+
+// One runtime light record at `position`: its direction (xyz) and unshadowed
+// attenuation (w), the distance falloff with its range cutoff, times a spot's
+// cone. A directional record has no position and attenuates nothing.
+fn mover_light_geometry(light: GpuLight, aim: vec3<f32>, position: vec3<f32>) -> vec4<f32> {
+    let light_type = bitcast<u32>(light.position_and_type.w);
+    if light_type > 1u {
+        return vec4<f32>(-aim, 1.0);
+    }
+    let to_light = light.position_and_type.xyz - position;
+    let dist = length(to_light);
+    let L = to_light / max(dist, 0.0001);
+    let falloff_model = bitcast<u32>(light.color_and_falloff_model.w);
+    var attenuation = light_eval_falloff(dist, light.direction_and_range.w, falloff_model);
+    if light_type == 1u {
+        attenuation = attenuation
+            * light_eval_cone_attenuation(L, aim, light.cone_angles_and_pad.x, light.cone_angles_and_pad.y);
+    }
+    return vec4<f32>(L, attenuation);
+}
+
+// Pixel-style specular from one selected-static record. Direction,
+// falloff, range, cone and the N·L test all come from the texel's point, so a
+// texel draws one value however the per-pixel influence radius, range, cone
+// edge or diffuse terminator cross it. `shadow` is this fragment's own, kept
+// as its own factor so specular shadows match diffuse ones.
+fn mover_texel_specular(
+    light: GpuLight,
+    color: vec3<f32>,
+    aim: vec3<f32>,
+    point: SpecularPoint,
+    n: vec3<f32>,
+    mesh_n: vec3<f32>,
+    hit_top: bool,
+    shadow: f32,
+    spec_exp: f32,
+    spec_int: f32,
+) -> vec3<f32> {
+    let geometry = mover_light_geometry(light, aim, point.position);
+    let L = geometry.xyz;
+    // The diffuse gate's shape: a side face also needs the light above the
+    // geometric plane.
+    if !(dot(n, L) > 0.0 && (hit_top || dot(mesh_n, L) > 0.0)) {
+        return vec3<f32>(0.0);
+    }
+    return blinn_phong(L, point.view, n, color, spec_exp, spec_int) * (geometry.w * shadow);
+}
+
+// The runtime light loop's two sums. `lit` is what the albedo multiplies:
+// diffuse, plus an untinted texel's specular. `tinted_specular` holds a tinted
+// texel's specular apart for `specular_tint` (resource_management.md §4.7).
+struct MoverDirect {
+    lit: vec3<f32>,
+    tinted_specular: vec3<f32>,
+};
+
 fn accumulate_dynamic_direct(
     world_pos: vec3<f32>,
     n: vec3<f32>,
     mesh_n: vec3<f32>,
-    V: vec3<f32>,
+    spec_point: SpecularPoint,
     spec_exp: f32,
     spec_int: f32,
+    tinted: bool,
     use_dynamic: bool,
     use_specular: bool,
+    smooth_style: bool,
     depth: SurfaceDepthResult,
-) -> vec3<f32> {
+) -> MoverDirect {
     var total = vec3<f32>(0.0);
+    // Only a tinted texel's specular lands here; an untinted texel adds its
+    // specular into `total` right after each light's diffuse, as before tint.
+    var tinted_total = vec3<f32>(0.0);
     let light_count = select(0u, kinematic_light_params.light_count, use_dynamic);
     // Surface Depth self-shadowing is budgeted per fragment by
     // `depth.shadow_light_budget` (the player's on/off switch, carried in the
@@ -317,18 +457,28 @@ fn accumulate_dynamic_direct(
                 cache_layer = i32(light_influence[meta_index + 1u].w);
             }
         }
+        // Pixel-style specular from a selected-static record has its own gates
+        // at the texel's point: the per-pixel influence test gates diffuse
+        // only, and the record is skipped only when neither reaches.
+        let texel_specular = use_specular
+            && !smooth_style
+            && i >= kinematic_light_params.scripted_light_count;
         let influence = light_influence[i];
         let inf_radius = influence.w;
+        var pixel_reached = true;
         if inf_radius <= 1.0e30 {
+            let inf_radius_sq = inf_radius * inf_radius;
             let d = world_pos - influence.xyz;
-            if dot(d, d) > inf_radius * inf_radius {
+            pixel_reached = !(dot(d, d) > inf_radius_sq);
+            let p = spec_point.position - influence.xyz;
+            let point_reached = texel_specular && !(dot(p, p) > inf_radius_sq);
+            if !pixel_reached && !point_reached {
                 continue;
             }
         }
 
         let light = lights[i];
         let light_type = bitcast<u32>(light.position_and_type.w);
-        let falloff_model = bitcast<u32>(light.color_and_falloff_model.w);
 
         var effective_color = light.color_and_falloff_model.xyz;
         var effective_aim = light.direction_and_range.xyz;
@@ -362,20 +512,19 @@ fn accumulate_dynamic_direct(
             }
         }
 
-        var L: vec3<f32>;
-        var attenuation: f32;
+        // The DISPLACED hit position feeds direction and attenuation; the
+        // shadow-map lookups below stay on the true plane, which is the
+        // geometry the depth maps hold and their bias is tuned for.
+        let geometry = mover_light_geometry(light, effective_aim, depth.world_position);
+        let L = geometry.xyz;
+        var attenuation = geometry.w;
+        // This fragment's own pool shadow, also kept apart for pixel-style
+        // specular, which takes its texel's value times this.
+        var shadow = 1.0;
         switch light_type {
             case 0u: {
-                // The DISPLACED hit position feeds direction and attenuation;
-                // the shadow-map lookups below stay on the true plane, which is
-                // the geometry the depth maps hold and their bias is tuned for.
-                let to_light = light.position_and_type.xyz - depth.world_position;
-                let dist = length(to_light);
-                L = to_light / max(dist, 0.0001);
-                attenuation = light_eval_falloff(dist, light.direction_and_range.w, falloff_model);
                 let cube_slot = bitcast<u32>(light.cone_angles_and_pad.w);
                 if cube_slot != 0xFFFFFFFFu {
-                    var shadow: f32;
                     if i >= kinematic_light_params.dynamic_light_count {
                         shadow = sample_point_shadow_with_static(
                             cube_slot,
@@ -396,17 +545,8 @@ fn accumulate_dynamic_direct(
                 }
             }
             case 1u: {
-                // Displaced for direction and attenuation, true plane for the
-                // shadow map — same split as the point case above.
-                let to_light = light.position_and_type.xyz - depth.world_position;
-                let dist = length(to_light);
-                L = to_light / max(dist, 0.0001);
-                let dist_falloff = light_eval_falloff(dist, light.direction_and_range.w, falloff_model);
-                let cone = light_eval_cone_attenuation(L, effective_aim, light.cone_angles_and_pad.x, light.cone_angles_and_pad.y);
-                attenuation = dist_falloff * cone;
                 let slot_index = bitcast<u32>(light.cone_angles_and_pad.z);
                 if slot_index != 0xFFFFFFFFu {
-                    var shadow: f32;
                     if i >= kinematic_light_params.dynamic_light_count {
                         shadow = sample_spot_shadow_with_static(
                             slot_index,
@@ -426,10 +566,7 @@ fn accumulate_dynamic_direct(
                     attenuation = attenuation * shadow;
                 }
             }
-            default: {
-                L = -effective_aim;
-                attenuation = 1.0;
-            }
+            default: {}
         }
         // Gate a SIDE hit on the geometric plane as well as on its shading
         // normal. A side-wall normal is an exact +/-U or +/-V axis lying IN the
@@ -448,58 +585,80 @@ fn accumulate_dynamic_direct(
         let above_plane = dot(mesh_n, L) > 0.0;
         let plane_lit = depth.hit_top || above_plane;
         let n_dot_l = select(0.0, dot(n, L), plane_lit);
-        var depth_visibility = 1.0;
-        // Spend the self-shadow budget only on lights that actually reach this
-        // fragment. A spot in range but aimed elsewhere, or a scripted light
-        // whose descriptor is present but inactive, has zero attenuation or
-        // zero color: marching for it burns one of the two slots on a result
-        // that is then multiplied by zero, and leaves the light that genuinely
-        // casts the shadow unshadowed.
-        let contributes = n_dot_l > 0.0
-            && above_plane
-            && attenuation > 0.0
-            && dot(effective_color, vec3<f32>(1.0)) > 0.0;
-        if depth.carved
-            && contributes
-            && i < kinematic_light_params.dynamic_light_count
-            && depth_shadow_marches < depth.shadow_light_budget {
-            depth_shadow_marches = depth_shadow_marches + 1u;
-            depth_visibility = surface_depth_light_visibility(depth, L);
+        if pixel_reached {
+            var depth_visibility = 1.0;
+            // Spend the self-shadow budget only on lights that actually reach
+            // this fragment. A spot in range but aimed elsewhere, or a scripted
+            // light whose descriptor is present but inactive, has zero
+            // attenuation or zero color: marching for it burns one of the two
+            // slots on a result that is then multiplied by zero, and leaves the
+            // light that genuinely casts the shadow unshadowed.
+            let contributes = n_dot_l > 0.0
+                && above_plane
+                && attenuation > 0.0
+                && dot(effective_color, vec3<f32>(1.0)) > 0.0;
+            if depth.carved
+                && contributes
+                && i < kinematic_light_params.dynamic_light_count
+                && depth_shadow_marches < depth.shadow_light_budget {
+                depth_shadow_marches = depth_shadow_marches + 1u;
+                depth_visibility = surface_depth_light_visibility(depth, L);
+            }
+            total = total + effective_color * attenuation * max(n_dot_l, 0.0) * depth_visibility;
         }
-        total = total + effective_color * attenuation * max(n_dot_l, 0.0) * depth_visibility;
 
         // Animated direct tails are diffuse-only. Selected-static records begin
-        // after the descriptor-bearing prefix and retain their existing mover
-        // specular path.
-        if use_specular && i >= kinematic_light_params.scripted_light_count && n_dot_l > 0.0 {
-            total = total + blinn_phong(L, V, n, effective_color, spec_exp, spec_int) * attenuation;
+        // after the descriptor-bearing prefix. Smooth style keeps the per-pixel
+        // evaluation and its gates exactly; pixel style evaluates the texel's
+        // point. Either way an untinted term adds right after this light's
+        // diffuse; a tinted one joins its own sum.
+        if use_specular && i >= kinematic_light_params.scripted_light_count {
+            if smooth_style {
+                if n_dot_l > 0.0 {
+                    let term = blinn_phong(L, spec_point.view, n, effective_color, spec_exp, spec_int) * attenuation;
+                    if tinted {
+                        tinted_total = tinted_total + term;
+                    } else {
+                        total = total + term;
+                    }
+                }
+            } else {
+                let term = mover_texel_specular(
+                    light,
+                    effective_color,
+                    effective_aim,
+                    spec_point,
+                    n,
+                    mesh_n,
+                    depth.hit_top,
+                    shadow,
+                    spec_exp,
+                    spec_int,
+                );
+                if tinted {
+                    tinted_total = tinted_total + term;
+                } else {
+                    total = total + term;
+                }
+            }
         }
     }
-    return total;
+    return MoverDirect(total, tinted_total);
 }
 
-// Post Retro sample. Reconstructs the texel grid in UV space, antialiases only
-// the seam between texels, then samples through the hardware-anisotropic
-// material sampler. Matches forward.wgsl so static world and kinematic brush
-// movers share the same texture-filtering look.
+// Post Retro sample. Reconstructs the texel grid in UV space through the
+// shared `post_retro_texel_uv` (`material_shading.wgsl`), antialiasing only the
+// seam between texels, then samples through the hardware-anisotropic material
+// sampler. Static world and kinematic brush movers share one reconstruction,
+// so their texture-filtering look and their pixel-style specular point agree.
+//
+// CRITICAL: the warped UV only shifts the sample point; the ORIGINAL
+// `ddx`/`ddy` are passed to textureSampleGrad so mip selection and the
+// hardware-aniso footprint track the true screen-space pixel footprint.
 fn sample_post_retro(tex: texture_2d<f32>, samp: sampler, uv: vec2<f32>,
                      ddx: vec2<f32>, ddy: vec2<f32>) -> vec4<f32> {
     let dims = vec2<f32>(textureDimensions(tex, 0));
-    let uv_tex = uv * dims;
-    let seam = floor(uv_tex + 0.5);
-    // Seam width comes from the ORIGINAL screen-space derivatives, not from
-    // fwidth() of `uv_tex`. Under Surface Depth `uv` is the MARCHED UV, which
-    // jumps between adjacent pixels that hit different texel faces, so its
-    // fwidth measures the parallax step rather than the pixel footprint and
-    // would widen the AA band into a multi-texel blur along every carved edge.
-    // fwidth(uv * dims) == (abs(dpdx(uv)) + abs(dpdy(uv))) * dims for a smooth
-    // uv, so this is the same quantity the un-marched path always computed.
-    // Floor the divisor: a constant-UV fragment (edge-on face, degenerate UV
-    // chart, vanishing derivatives) gives zero, and clamp() does not reliably
-    // sanitize the resulting NaN/Inf in WGSL.
-    let seam_width = max((abs(ddx) + abs(ddy)) * dims, vec2<f32>(1.0e-6));
-    let aa = clamp((uv_tex - seam) / seam_width, vec2(-0.5), vec2(0.5));
-    let uv_recon = (seam + aa) / dims;
+    let uv_recon = post_retro_texel_uv(uv, dims, ddx, ddy);
     return textureSampleGrad(tex, samp, uv_recon, ddx, ddy);
 }
 
@@ -527,7 +686,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Surface Depth, through the SAME shared march the static world forward
     // pass uses (see `surface_depth.wgsl`) — movers must not drift from world
-    // geometry the way the duplicated `sample_post_retro` bodies can. Inactive
+    // geometry. (The per-pass `sample_post_retro` wrappers likewise reconstruct
+    // through the shared `post_retro_texel_uv`.) Inactive
     // returns the interpolated UV, position and geometric normal unchanged.
     let depth = surface_depth_resolve(
         in.uv,
@@ -542,7 +702,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     );
     let shade_uv = depth.uv;
 
-    let base_color = sample_post_retro(base_texture, aniso_sampler, shade_uv, ddx, ddy);
     let n_ts = sample_normal(t_normal, shade_uv, ddx, ddy);
     let n_bump = reconstruct_tbn_normal(mesh_n, in.world_tangent, in.bitangent_sign, n_ts);
     // The normal map still applies on TOP faces; a side wall uses the exact
@@ -565,18 +724,38 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Depth-derived ambient occlusion, INDIRECT term only, behind its own
     // LightTermMask bit. The baked direct SH term is untouched.
     indirect = indirect * surface_depth_indirect_ao(depth, light_terms);
-    let spec_exp = max(material.shininess, 1.0);
-    // The surface map's R channel; the march read its G channel.
-    let spec_int = sample_post_retro(spec_texture, aniso_sampler, shade_uv, ddx, ddy).r;
+    // One read of the slot: R intensity, B smoothness, A tint; the march read
+    // its G channel.
+    let spec_texel = specular_texel(
+        sample_post_retro(spec_texture, aniso_sampler, shade_uv, ddx, ddy),
+        max(material.shininess, 1.0),
+    );
+    let smooth_style = mover_specular_style_smooth();
+    let spec_point = mover_specular_point(
+        smooth_style,
+        depth,
+        in.uv,
+        in.world_position,
+        mesh_n,
+        V,
+        camera.camera_position,
+        vec2<f32>(textureDimensions(base_texture, 0)),
+        ddx,
+        ddy,
+        ddx_world,
+        ddy_world,
+    );
     let dynamic = accumulate_dynamic_direct(
         in.world_position,
         n,
         mesh_n,
-        V,
-        spec_exp,
-        spec_int,
+        spec_point,
+        spec_texel.exponent,
+        spec_texel.intensity,
+        spec_texel.tinted,
         use_dynamic,
         use_specular,
+        smooth_style,
         depth,
     );
 
@@ -584,10 +763,20 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if use_ambient_floor {
         lighting = vec3<f32>(kinematic_light_params.ambient_floor) + lighting;
     }
-    lighting = lighting + dynamic;
+    lighting = lighting + dynamic.lit;
+    // Albedo is read after the light loop, not before it: held across the
+    // loop beside the tint accumulator it took the shader from 128 to 224
+    // VGPRs on AMD Metal (tools/metal_register_screen). Screen before moving it.
+    let base_color = sample_post_retro(base_texture, aniso_sampler, shade_uv, ddx, ddy);
     var emissive = vec3<f32>(0.0);
     if material.emissive_strength > 0.0 {
         emissive = sample_post_retro(emissive_texture, aniso_sampler, shade_uv, ddx, ddy).rgb;
     }
-    return vec4<f32>(base_color.rgb * lighting + emissive * material.emissive_strength, base_color.a);
+    // The tint mix runs once, after the loop. An untinted fragment adds an
+    // exact zero after the expression it had before tint.
+    let tinted_specular = dynamic.tinted_specular * specular_tint(base_color.rgb, spec_texel.tint);
+    return vec4<f32>(
+        base_color.rgb * lighting + emissive * material.emissive_strength + tinted_specular,
+        base_color.a,
+    );
 }

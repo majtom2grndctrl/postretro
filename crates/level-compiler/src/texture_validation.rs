@@ -9,6 +9,8 @@
 // | `_n.png`   | Linear               | Fail build          |
 // | `_s.png`   | Linear               | Fail build          |
 // | `_h.png`   | Linear               | Fail build          |
+// | `_p.png`   | Linear               | Fail build          |
+// | `_t.png`   | Linear               | Fail build          |
 // | `_e.png`   | sRGB color (no enforcement) | —            |
 // | (diffuse)  | sRGB (no enforcement)| —                   |
 //
@@ -22,6 +24,9 @@
 // `_h.png` is a height field, not color: a gamma curve on it warps the depth
 // ramp, so mortar carves to the wrong depth and the parallax march reads a
 // surface the author never drew. Same policy as `_s` and `_n`.
+//
+// `_p.png` (smoothness) and `_t.png` (tint) are per-texel scalars the shader
+// decodes linearly from the stored byte, so they take `_h`'s policy too.
 //
 // The `image` crate (used elsewhere) does not surface PNG `sRGB` / `gAMA` /
 // `iCCP` chunks through its public API. The lower-level `png` crate exposes
@@ -106,7 +111,8 @@ fn detect_color_space(path: &Path) -> anyhow::Result<DetectedColorSpace> {
 }
 
 /// Build a flat list of PNG file paths under `texture_root` whose stem
-/// matches one of the surface-map suffixes (`_s`, `_n`, `_e`, `_h`).
+/// matches one of the surface-map suffixes (`_s`, `_n`, `_e`, `_h`, `_p`,
+/// `_t`).
 ///
 /// Walks one collection level deep (`<root>/<collection>/<file>.png`),
 /// matching the authoring convention described in
@@ -151,6 +157,10 @@ fn collect_sibling_pngs(texture_root: &Path) -> std::io::Result<Vec<(PathBuf, &'
                 "_e.png"
             } else if stem_lower.ends_with("_h") {
                 "_h.png"
+            } else if stem_lower.ends_with("_p") {
+                "_p.png"
+            } else if stem_lower.ends_with("_t") {
+                "_t.png"
             } else {
                 continue;
             };
@@ -160,10 +170,10 @@ fn collect_sibling_pngs(texture_root: &Path) -> std::io::Result<Vec<(PathBuf, &'
     Ok(out)
 }
 
-/// Validate `_n.png`, `_s.png`, and `_h.png` under `texture_root` for linear
-/// color-space metadata. `_e.png` is discovered and logged but deliberately
-/// exempt: emissive is authored as color and validly arrives either untagged
-/// or sRGB-tagged.
+/// Validate `_n.png`, `_s.png`, `_h.png`, `_p.png` and `_t.png` under
+/// `texture_root` for linear color-space metadata. `_e.png` is discovered and
+/// logged but deliberately exempt: emissive is authored as color and validly
+/// arrives either untagged or sRGB-tagged.
 ///
 /// Returns an aggregate error naming every offender. The validator surfaces
 /// every violation at once rather than failing on the first, so a single
@@ -210,8 +220,9 @@ pub fn validate_sibling_color_spaces(texture_root: &Path) -> anyhow::Result<()> 
 
     Err(anyhow::anyhow!(
         "PNG color-space validation failed for {} surface-map sibling(s):\n{}\n\
-         `_s.png` (specular), `_n.png` (normal), and `_h.png` (height) textures \
-         must be authored in linear color space (no sRGB chunk, no iCCP chunk, gAMA ≈ 1.0). \
+         `_s.png` (specular), `_n.png` (normal), `_h.png` (height), `_p.png` (smoothness) \
+         and `_t.png` (tint) textures must be authored in linear color space \
+         (no sRGB chunk, no iCCP chunk, gAMA ≈ 1.0). \
          Re-export the offending files as linear PNG. \
          See context/lib/resource_management.md §4.",
         violations.len(),
@@ -281,8 +292,16 @@ mod tests {
         }
 
         // IDAT: zlib-wrapped deflate of one filter byte + one pixel byte.
-        // Use stored block to keep it dependency-free.
         let raw = [0u8, 0u8]; // filter=None, pixel=0
+        write_chunk(&mut buf, b"IDAT", &zlib_stored(&raw));
+
+        write_chunk(&mut buf, b"IEND", &[]);
+        buf
+    }
+
+    /// `raw` as a zlib stream of one stored (uncompressed) deflate block, so
+    /// the fixtures stay dependency-free.
+    fn zlib_stored(raw: &[u8]) -> Vec<u8> {
         let mut zlib = Vec::new();
         zlib.extend_from_slice(&[0x78, 0x01]); // zlib header (no compression)
         // stored block: BFINAL=1, BTYPE=00
@@ -290,20 +309,25 @@ mod tests {
         let len = raw.len() as u16;
         zlib.extend_from_slice(&len.to_le_bytes());
         zlib.extend_from_slice(&(!len).to_le_bytes());
-        zlib.extend_from_slice(&raw);
+        zlib.extend_from_slice(raw);
         // Adler-32 of `raw`.
         let mut a: u32 = 1;
         let mut b: u32 = 0;
-        for &x in &raw {
+        for &x in raw {
             a = (a + x as u32) % 65521;
             b = (b + a) % 65521;
         }
         let adler = (b << 16) | a;
         zlib.extend_from_slice(&adler.to_be_bytes());
-        write_chunk(&mut buf, b"IDAT", &zlib);
+        zlib
+    }
 
-        write_chunk(&mut buf, b"IEND", &[]);
-        buf
+    /// An `iCCP` chunk body the `png` crate accepts: profile name, NUL,
+    /// compression method 0, then the zlib-compressed profile.
+    fn iccp_chunk() -> Vec<u8> {
+        let mut data = b"linear\0\0".to_vec();
+        data.extend_from_slice(&zlib_stored(b"not a real ICC profile"));
+        data
     }
 
     fn write_temp(name: &str, bytes: &[u8]) -> PathBuf {
@@ -374,6 +398,8 @@ mod tests {
         std::fs::write(coll.join("wall_n.png"), &png).unwrap();
         std::fs::write(coll.join("wall_e.png"), &png).unwrap();
         std::fs::write(coll.join("wall_h.png"), &png).unwrap();
+        std::fs::write(coll.join("wall_p.png"), &png).unwrap();
+        std::fs::write(coll.join("wall_t.png"), &png).unwrap();
         validate_sibling_color_spaces(&dir).unwrap();
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -457,6 +483,66 @@ mod tests {
         std::fs::write(coll.join("cobble_h.png"), build_test_png(&[])).unwrap();
         validate_sibling_color_spaces(&dir).expect("an untagged _h.png is linear and must pass");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The iCCP fixture must reach the detector as a profile, or the
+    /// smoothness and tint rejections below would not test iCCP at all.
+    #[test]
+    fn detects_iccp_chunk() {
+        let png = build_test_png(&[(b"iCCP", iccp_chunk())]);
+        let p = write_temp("iccp.png", &png);
+        assert_eq!(
+            detect_color_space(&p).unwrap(),
+            DetectedColorSpace::IccProfile
+        );
+    }
+
+    /// `_p.png` and `_t.png` are per-texel scalars the shader decodes linearly
+    /// from the stored byte, so an sRGB chunk, an ICC profile or a non-unit
+    /// gAMA fails the build exactly as it does for `_h`, and an untagged map
+    /// passes.
+    #[test]
+    fn validate_rejects_non_linear_smoothness_and_tint_siblings() {
+        for suffix in ["_p", "_t"] {
+            let file = format!("cobble{suffix}.png");
+            for (label, bad) in [
+                ("srgb", build_test_png(&[(b"sRGB", vec![0u8])])),
+                ("iccp", build_test_png(&[(b"iCCP", iccp_chunk())])),
+                (
+                    "gama",
+                    build_test_png(&[(b"gAMA", 45455u32.to_be_bytes().to_vec())]),
+                ),
+            ] {
+                let dir = std::env::temp_dir().join(format!(
+                    "prl-build-tex-validate{suffix}-{label}-{}",
+                    std::process::id()
+                ));
+                let coll = dir.join("collection");
+                std::fs::create_dir_all(&coll).unwrap();
+                std::fs::write(coll.join(&file), &bad).unwrap();
+
+                let err = validate_sibling_color_spaces(&dir)
+                    .expect_err("a non-linear smoothness or tint sibling must fail the build");
+                let msg = format!("{err}");
+                assert!(msg.contains(&file), "{label}: missing path: {msg}");
+                assert!(
+                    msg.contains(&format!("suffix `{suffix}.png`")),
+                    "{label}: missing suffix: {msg}"
+                );
+                std::fs::remove_dir_all(&dir).ok();
+            }
+
+            let dir = std::env::temp_dir().join(format!(
+                "prl-build-tex-validate{suffix}-ok-{}",
+                std::process::id()
+            ));
+            let coll = dir.join("collection");
+            std::fs::create_dir_all(&coll).unwrap();
+            std::fs::write(coll.join(&file), build_test_png(&[])).unwrap();
+            validate_sibling_color_spaces(&dir)
+                .unwrap_or_else(|err| panic!("an untagged {file} is linear and must pass: {err}"));
+            std::fs::remove_dir_all(&dir).ok();
+        }
     }
 
     #[test]

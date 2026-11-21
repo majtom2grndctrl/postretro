@@ -637,6 +637,7 @@ impl Renderer {
                     frame_light_term_mask.bits(),
                     full.ambient_floor,
                     full.frame_indirect_scale,
+                    full.frame_specular_style,
                 );
             }
             let kinematic_ts = self

@@ -1,11 +1,12 @@
 // Kinematic ghost shader: unlit translucent mover geometry at a link's mapped model.
 // See: context/lib/rendering_pipeline.md §7.9
 //
-// Composed with `ghost_look.wgsl` only (shade, opacity, screen-door): ghosts
-// bind no lights, shadows or SH, so the layout is camera (0), the world
-// material (1) and the ghost instances (2). `sample_post_retro` is the
-// kinematic brush pass's body verbatim, so a ghost samples its mover's texels
-// as the mover does; a test pins the copies equal. Two colour fragment
+// Composed with `ghost_look.wgsl` (shade, opacity, screen-door) and
+// `material_shading.wgsl` (the shared texel reconstruction): ghosts bind no
+// lights, shadows or SH, so the layout is camera (0), the world material (1)
+// and the ghost instances (2). `sample_post_retro` is the kinematic brush
+// pass's body verbatim, so a ghost samples its mover's texels as the mover
+// does; a test pins the copies equal. Two colour fragment
 // entries, one per `render.ghosts` mode, each sampling before any `discard` so
 // the derivatives stay in uniform control flow; neither loops (§8 FXC).
 // `fs_blend_depth` and `fs_dither_depth` are the depth-only draws' entries;
@@ -57,21 +58,7 @@ fn vs_main(in: VertexInput, @builtin(instance_index) instance_index: u32) -> Ver
 fn sample_post_retro(tex: texture_2d<f32>, samp: sampler, uv: vec2<f32>,
                      ddx: vec2<f32>, ddy: vec2<f32>) -> vec4<f32> {
     let dims = vec2<f32>(textureDimensions(tex, 0));
-    let uv_tex = uv * dims;
-    let seam = floor(uv_tex + 0.5);
-    // Seam width comes from the ORIGINAL screen-space derivatives, not from
-    // fwidth() of `uv_tex`. Under Surface Depth `uv` is the MARCHED UV, which
-    // jumps between adjacent pixels that hit different texel faces, so its
-    // fwidth measures the parallax step rather than the pixel footprint and
-    // would widen the AA band into a multi-texel blur along every carved edge.
-    // fwidth(uv * dims) == (abs(dpdx(uv)) + abs(dpdy(uv))) * dims for a smooth
-    // uv, so this is the same quantity the un-marched path always computed.
-    // Floor the divisor: a constant-UV fragment (edge-on face, degenerate UV
-    // chart, vanishing derivatives) gives zero, and clamp() does not reliably
-    // sanitize the resulting NaN/Inf in WGSL.
-    let seam_width = max((abs(ddx) + abs(ddy)) * dims, vec2<f32>(1.0e-6));
-    let aa = clamp((uv_tex - seam) / seam_width, vec2(-0.5), vec2(0.5));
-    let uv_recon = (seam + aa) / dims;
+    let uv_recon = post_retro_texel_uv(uv, dims, ddx, ddy);
     return textureSampleGrad(tex, samp, uv_recon, ddx, ddy);
 }
 

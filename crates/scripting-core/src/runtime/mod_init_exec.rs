@@ -1068,6 +1068,10 @@ pub(super) fn run_mod_init_luau(
 mod reflection_profile_tests;
 
 #[cfg(test)]
+#[path = "specular_profile_tests.rs"]
+mod specular_profile_tests;
+
+#[cfg(test)]
 #[path = "ghost_manifest_tests.rs"]
 mod ghost_manifest_tests;
 

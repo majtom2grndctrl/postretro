@@ -336,3 +336,91 @@ pub(crate) fn wgsl_const_line<'a>(source: &'a str, name: &str) -> &'a str {
         .find(|line| line.starts_with(&format!("const {name}:")))
         .unwrap_or_else(|| panic!("the WGSL source must declare `{name}`"))
 }
+
+/// The first `size` bytes (a multiple of 16) of a renderer-owned `UNIFORM`
+/// buffer as the GPU holds them, read through a compute copy into a storage
+/// buffer: production uniforms carry no `COPY_SRC`. Submits and waits.
+pub(crate) fn read_uniform_bytes(
+    renderer: &super::Renderer,
+    buffer: &wgpu::Buffer,
+    size: u64,
+) -> Vec<u8> {
+    assert_eq!(size % 16, 0, "whole vec4 words");
+    let words = size / 16;
+    let source = format!(
+        "struct Words {{ values: array<vec4<u32>, {words}>, }}\n\
+         @group(0) @binding(0) var<uniform> input: Words;\n\
+         @group(0) @binding(1) var<storage, read_write> output: Words;\n\
+         @compute @workgroup_size(1)\n\
+         fn main() {{ output = input; }}\n"
+    );
+    let device = &renderer.device;
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("uniform readback"),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
+    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("uniform readback"),
+        layout: None,
+        module: &shader,
+        entry_point: Some("main"),
+        compilation_options: Default::default(),
+        cache: None,
+    });
+    let output = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("uniform readback output"),
+        size,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("uniform readback staging"),
+        size,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &pipeline.get_bind_group_layout(0),
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer,
+                    offset: 0,
+                    size: std::num::NonZeroU64::new(size),
+                }),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: output.as_entire_binding(),
+            },
+        ],
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: None,
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &bind, &[]);
+        pass.dispatch_workgroups(1, 1, 1);
+    }
+    encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, size);
+    renderer
+        .queue
+        .submit_unbatched([encoder.finish()], "uniform readback");
+    let slice = readback.slice(..);
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |result| {
+        tx.send(result).ok();
+    });
+    device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("poll");
+    rx.recv().expect("map callback").expect("map");
+    let bytes = slice.get_mapped_range().expect("mapped").to_vec();
+    readback.unmap();
+    bytes
+}

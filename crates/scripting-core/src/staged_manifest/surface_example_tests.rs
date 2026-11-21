@@ -507,3 +507,63 @@ fn the_ai_tick_scheduling_surface_example_lowers_identically_in_both_authorings(
         }
     );
 }
+
+// --- specular-texel-sharpness: the `render.specular.style` example ----------
+
+const SPECULAR_EXAMPLE_TS: &str = r#"
+export default defineMod({
+  id: "my-game",
+  name: "My Game",
+  version: "1.0.0",
+  render: {
+    // "pixel" (default): one highlight per texel. "smooth": per-pixel highlights.
+    specular: { style: "smooth" },
+  },
+});
+"#;
+
+const SPECULAR_EXAMPLE_LUAU: &str = r#"
+return defineMod({
+  id = "my-game",
+  name = "My Game",
+  version = "1.0.0",
+  render = {
+    -- "pixel" (default): one highlight per texel. "smooth": per-pixel highlights.
+    specular = { style = "smooth" },
+  },
+})
+"#;
+
+// AC 18: the scripting-surface example, built as a staged fixture manifest in
+// TypeScript and Luau, selects smooth in both, warns nowhere, and leaves every
+// other render field at its default.
+#[test]
+fn the_specular_style_surface_example_selects_smooth_in_both_runtimes() {
+    use crate::runtime::{ModRenderProfile, ModSpecularProfile, ModSpecularStyle};
+    let bundled = bundle_typescript(
+        "specular_example",
+        &[("start-script.ts", SPECULAR_EXAMPLE_TS)],
+    );
+    let capture = postretro_test_log_capture::LogCapture::start();
+    let ts = built("specular_example_ts", &[("start-script.js", &bundled)]);
+    let luau = built(
+        "specular_example_luau",
+        &[("start-script.luau", SPECULAR_EXAMPLE_LUAU)],
+    );
+    let expected = ModRenderProfile {
+        specular: ModSpecularProfile {
+            style: ModSpecularStyle::Smooth,
+        },
+        ..ModRenderProfile::default()
+    };
+    assert_eq!(ts.render, expected);
+    assert_eq!(luau.render, expected);
+    assert!(
+        capture
+            .records()
+            .iter()
+            .all(|record| record.level > log::Level::Warn),
+        "the example warns nowhere: {:?}",
+        capture.records()
+    );
+}

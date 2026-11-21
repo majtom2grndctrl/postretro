@@ -1339,6 +1339,7 @@ mod tests {
                     render: {
                         bloom: { resolution: "eighth", pixelated: true },
                         reflections: { style: "smooth" },
+                        specular: { style: "smooth" },
                         ghosts: "dither",
                     },
                 };
@@ -1355,6 +1356,7 @@ mod tests {
                     render = {
                         bloom = { resolution = "eighth", pixelated = true },
                         reflections = { style = "smooth" },
+                        specular = { style = "smooth" },
                         ghosts = "dither",
                     },
                 }
@@ -1367,6 +1369,9 @@ mod tests {
             },
             reflections: crate::runtime::ModReflectionProfile {
                 style: crate::runtime::ModReflectionStyle::Smooth,
+            },
+            specular: crate::runtime::ModSpecularProfile {
+                style: crate::runtime::ModSpecularStyle::Smooth,
             },
             ghosts: crate::runtime::ModGhostTransparency::Dither,
         };

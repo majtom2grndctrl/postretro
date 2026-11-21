@@ -2,6 +2,9 @@
 // See: context/lib/build_pipeline.md §Compiler pipeline, §Baked texture mips
 
 use super::probe::{TextureProbe, payload_bytes, stats_bytes};
+use super::specular_slot::{
+    SourcePng, SpecularSources, bake_specular_slot, require_matching_slot_dimensions,
+};
 use super::*;
 use crate::surface_materials::stats::{EmissiveGlow, MaterialStats};
 use postretro_level_format::prm::PrmReadError;
@@ -96,68 +99,48 @@ pub(crate) fn bake_materials_into(
         let norm_path = resolved.normal;
         let emissive_path = resolved.emissive;
         let height_path = resolved.height;
+        let smoothness_path = resolved.smoothness;
+        let tint_path = resolved.tint;
 
         // Read raw bytes (needed for both filename key and bundle hash).
-        let diff_bytes = match diff_path.as_ref() {
-            Some(p) => Some(std::fs::read(p).map_err(|e| {
-                anyhow::anyhow!("failed to read diffuse {} for '{name}': {e}", p.display())
-            })?),
-            None => None,
-        };
-        let spec_bytes = match spec_path.as_ref() {
-            Some(p) => Some(std::fs::read(p).map_err(|e| {
-                anyhow::anyhow!("failed to read specular {} for '{name}': {e}", p.display())
-            })?),
-            None => None,
-        };
-        let norm_bytes = match norm_path.as_ref() {
-            Some(p) => Some(std::fs::read(p).map_err(|e| {
-                anyhow::anyhow!("failed to read normal {} for '{name}': {e}", p.display())
-            })?),
-            None => None,
-        };
-        let emissive_bytes = match emissive_path.as_ref() {
-            Some(p) => Some(std::fs::read(p).map_err(|e| {
-                anyhow::anyhow!("failed to read emissive {} for '{name}': {e}", p.display())
-            })?),
-            None => None,
-        };
-        let height_bytes = match height_path.as_ref() {
-            Some(p) => Some(std::fs::read(p).map_err(|e| {
-                anyhow::anyhow!("failed to read height {} for '{name}': {e}", p.display())
-            })?),
-            None => None,
-        };
+        let diff_bytes = read_source(diff_path.as_deref(), "diffuse", name)?;
+        let spec_bytes = read_source(spec_path.as_deref(), "specular", name)?;
+        let norm_bytes = read_source(norm_path.as_deref(), "normal", name)?;
+        let emissive_bytes = read_source(emissive_path.as_deref(), "emissive", name)?;
+        let height_bytes = read_source(height_path.as_deref(), "height", name)?;
+        let smoothness_bytes = read_source(smoothness_path.as_deref(), "smoothness", name)?;
+        let tint_bytes = read_source(tint_path.as_deref(), "tint", name)?;
+        let all_sources = [
+            &diff_bytes,
+            &spec_bytes,
+            &norm_bytes,
+            &emissive_bytes,
+            &height_bytes,
+            &smoothness_bytes,
+            &tint_bytes,
+        ];
 
         probe.sources(|| {
-            [
-                &diff_bytes,
-                &spec_bytes,
-                &norm_bytes,
-                &emissive_bytes,
-                &height_bytes,
-            ]
-            .into_iter()
-            .filter_map(Option::as_ref)
-            .map(Vec::capacity)
-            .sum()
+            all_sources
+                .into_iter()
+                .filter_map(Option::as_ref)
+                .map(Vec::capacity)
+                .sum()
         });
 
-        let filename_key = filename_key_for(
-            diff_bytes.as_deref(),
-            spec_bytes.as_deref(),
-            norm_bytes.as_deref(),
-            emissive_bytes.as_deref(),
-            height_bytes.as_deref(),
-        );
+        let bundle_sources = BundleSources {
+            diffuse: diff_bytes.as_deref(),
+            specular: spec_bytes.as_deref(),
+            normal: norm_bytes.as_deref(),
+            emissive: emissive_bytes.as_deref(),
+            height: height_bytes.as_deref(),
+            smoothness: smoothness_bytes.as_deref(),
+            tint: tint_bytes.as_deref(),
+        };
+        let filename_key = filename_key_for(&bundle_sources);
 
         // All-absent: nothing to bake.
-        if diff_bytes.is_none()
-            && spec_bytes.is_none()
-            && norm_bytes.is_none()
-            && emissive_bytes.is_none()
-            && height_bytes.is_none()
-        {
+        if all_sources.iter().all(|source| source.is_none()) {
             if collect_stats {
                 stats.push(MaterialStats::default());
             }
@@ -183,44 +166,22 @@ pub(crate) fn bake_materials_into(
             }
         }
 
-        // `_h.png` is packed into the specular slot's G channel, so its
-        // dimensions are load-bearing twice over: they must match the diffuse
-        // the shader marches against, and they must match `_s.png` or the two
-        // channels cannot be interleaved at all. Both are hard bails, the way
-        // `_e` already is. (`_s`/`_n` versus diffuse remains documented-only
-        // and unenforced — out of scope here.)
-        if let (Some(height), Some(height_path)) = (height_bytes.as_deref(), height_path.as_ref()) {
-            let (height_width, height_height) = png_dimensions(height, height_path)?;
-            if let (Some(diffuse), Some(diffuse_path)) = (diff_bytes.as_deref(), diff_path.as_ref())
-            {
-                let (diffuse_width, diffuse_height) = png_dimensions(diffuse, diffuse_path)?;
-                if (height_width, height_height) != (diffuse_width, diffuse_height) {
-                    anyhow::bail!(
-                        "height texture {} is {height_width}x{height_height}, but diffuse texture {} for '{name}' is {diffuse_width}x{diffuse_height}; _h.png dimensions must match diffuse",
-                        height_path.display(),
-                        diffuse_path.display(),
-                    );
-                }
-            }
-            if let (Some(specular), Some(spec_path)) = (spec_bytes.as_deref(), spec_path.as_ref()) {
-                let (spec_width, spec_height) = png_dimensions(specular, spec_path)?;
-                if (height_width, height_height) != (spec_width, spec_height) {
-                    anyhow::bail!(
-                        "height texture {} is {height_width}x{height_height}, but specular texture {} for '{name}' is {spec_width}x{spec_height}; _h.png and _s.png share one Rg8Unorm slot and must have identical dimensions",
-                        height_path.display(),
-                        spec_path.display(),
-                    );
-                }
-            }
-        }
+        // `_h`, `_p` and `_t` share the specular slot with `_s`, and the
+        // shader reads them on the diffuse's lattice, so their dimensions are
+        // hard bails, the way `_e` already is.
+        let specular_sources = SpecularSources {
+            specular: SourcePng::of(&spec_bytes, &spec_path),
+            height: SourcePng::of(&height_bytes, &height_path),
+            smoothness: SourcePng::of(&smoothness_bytes, &smoothness_path),
+            tint: SourcePng::of(&tint_bytes, &tint_path),
+        };
+        require_matching_slot_dimensions(
+            name,
+            SourcePng::of(&diff_bytes, &diff_path),
+            &specular_sources,
+        )?;
 
-        let bundle_hash = bundle_hash_for(
-            diff_bytes.as_deref(),
-            spec_bytes.as_deref(),
-            norm_bytes.as_deref(),
-            emissive_bytes.as_deref(),
-            height_bytes.as_deref(),
-        );
+        let bundle_hash = bundle_hash_for(&bundle_sources);
 
         let prm_path = cache_root.join(format!("{}.prm", cache_filename_for_key(&filename_key)));
 
@@ -289,67 +250,11 @@ pub(crate) fn bake_materials_into(
             });
             slot_mask |= PrmSlots::DIFFUSE;
         }
-        // Slot 1 is the specular slot in both of its forms. Without a height
-        // sibling it stays single-channel `R8Unorm`, byte-identical to what it
-        // has always baked. With one it becomes the two-channel surface map:
-        // R specular (or 0 when `_s.png` is absent), G the inverted height
-        // byte (`255 - height`). The SPECULAR
-        // slot-mask bit is set if EITHER sibling is present.
-        match (height_bytes.as_deref(), height_path.as_ref()) {
-            (Some(hb), Some(hp)) => {
-                let (height_rgba, w, h) = decode_png_rgba(hb, hp)?;
-                // Stored as `255 - height`. The runtime re-centers on mid-gray
-                // (128 = the surface plane); the bake applies no zero point,
-                // because the bundle hash covers source PNG bytes only and a
-                // changed transform would silently reuse stale sidecars.
-                let inverted_height: Vec<u8> = height_rgba
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .map(|c| 255 - c[0])
-                    .collect();
-
-                let specular: Vec<u8> = match spec_bytes.as_deref().zip(spec_path.as_ref()) {
-                    Some((sb, sp)) => {
-                        let (spec_rgba, _, _) = decode_png_rgba(sb, sp)?;
-                        spec_rgba.as_chunks::<4>().0.iter().map(|c| c[0]).collect()
-                    }
-                    None => vec![0u8; inverted_height.len()],
-                };
-
-                let mut rg: Vec<u8> = Vec::with_capacity(inverted_height.len() * 2);
-                for (s, g) in specular.iter().zip(inverted_height.iter()) {
-                    rg.push(*s);
-                    rg.push(*g);
-                }
-
-                let payload = build_surface_chain(&rg, w, h);
-                slots_arr[1] = Some(PrmSlot {
-                    format: PrmFormat::Rg8Unorm,
-                    width: w as u16,
-                    height: h as u16,
-                    level_count: expected_level_count(w as u16, h as u16),
-                    payload,
-                });
-                slot_mask |= PrmSlots::SPECULAR;
-            }
-            _ => {
-                if let (Some(b), Some(p)) = (spec_bytes.as_deref(), spec_path.as_ref()) {
-                    // Decode as RGBA; flatten to R8 (PNG authoring is typically L8 or
-                    // RGBA8 with the spec data in R). We accept either.
-                    let (rgba, w, h) = decode_png_rgba(b, p)?;
-                    let r8: Vec<u8> = rgba.as_chunks::<4>().0.iter().map(|c| c[0]).collect();
-                    let payload = build_specular_chain(&r8, w, h);
-                    slots_arr[1] = Some(PrmSlot {
-                        format: PrmFormat::R8Unorm,
-                        width: w as u16,
-                        height: h as u16,
-                        level_count: expected_level_count(w as u16, h as u16),
-                        payload,
-                    });
-                    slot_mask |= PrmSlots::SPECULAR;
-                }
-            }
+        // Slot 1 is the specular slot in whichever of its three forms the
+        // siblings call for; any of `_s`, `_h`, `_p` or `_t` bakes it.
+        if let Some(slot) = bake_specular_slot(&specular_sources)? {
+            slots_arr[1] = Some(slot);
+            slot_mask |= PrmSlots::SPECULAR;
         }
         if let (Some(b), Some(p)) = (norm_bytes.as_deref(), norm_path.as_ref()) {
             let (rgba, w, h) = decode_png_rgba(b, p)?;
@@ -432,6 +337,16 @@ pub(crate) fn bake_materials_into(
         glow,
         bundles,
     })
+}
+
+/// Raw bytes of one resolved source PNG, `None` when its sibling did not
+/// resolve. `kind` names the input in the error.
+fn read_source(path: Option<&Path>, kind: &str, name: &str) -> anyhow::Result<Option<Vec<u8>>> {
+    path.map(|p| {
+        std::fs::read(p)
+            .map_err(|e| anyhow::anyhow!("failed to read {kind} {} for '{name}': {e}", p.display()))
+    })
+    .transpose()
 }
 
 /// Stats (when `collect_stats`) and `_e` facts from a reused sidecar, or why

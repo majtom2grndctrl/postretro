@@ -44,9 +44,8 @@ fn wgsl_struct_span(source: &str, name: &str) -> u32 {
         .unwrap_or_else(|| panic!("shader must declare struct {name}"))
 }
 
-/// The DDA lives in ONE place. `kinematic_brush.wgsl` already keeps a duplicate
-/// `sample_post_retro` body that can drift from `forward.wgsl`'s; the parallax
-/// march must never become a second such copy. Both pipelines concatenate the
+/// The DDA lives in ONE place. Per-pass duplicate bodies can drift apart; the
+/// parallax march must never become a second such copy. Both pipelines concatenate the
 /// same snippet string, and neither declares a march function of its own.
 #[test]
 fn both_world_pipelines_share_one_surface_depth_march() {
@@ -864,7 +863,8 @@ fn material_parameters_are_prefix_driven_and_gated_on_the_loaded_slot() {
 /// `g = 0` is MAXIMUM RAISE under the signed encoding, so the has-depth bit is
 /// the only thing keeping the R8 placeholder (and any other single-channel
 /// slot) on its true plane. Whatever G byte such a slot would read as, a
-/// non-`Rg8Unorm` slot must never set the bit and must upload no band.
+/// slot that is neither `Rg8Unorm` nor `Rgba8Unorm` must never set the bit and
+/// must upload no band.
 #[test]
 fn a_non_surface_map_slot_never_marches_even_when_its_g_would_read_as_max_raise() {
     // What the shader would decode from a stored G of 0.
@@ -879,7 +879,6 @@ fn a_non_surface_map_slot_never_marches_even_when_its_g_would_read_as_max_raise(
     for format in [
         wgpu::TextureFormat::R8Unorm,
         wgpu::TextureFormat::Bc4RUnorm,
-        wgpu::TextureFormat::Rgba8Unorm,
         wgpu::TextureFormat::Rgba8UnormSrgb,
         wgpu::TextureFormat::Bc5RgUnorm,
     ] {

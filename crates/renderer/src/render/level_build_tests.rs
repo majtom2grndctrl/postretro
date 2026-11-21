@@ -1278,3 +1278,67 @@ fn off_main_build_main_thread_half_never_blocks() {
     }
     assert!(production.contains("self.result.try_recv()"));
 }
+
+// A staged mod init that commits a specular style while a
+// level load is in flight reaches that level when it publishes, with no
+// further commit. The build was dispatched at pixel; its tiers never held a
+// style, so nothing in the set needs rebuilding.
+#[test]
+fn specular_style_committed_mid_build_reaches_the_published_level() {
+    use crate::render::specular_style_frame_tests::{add_mover, expected, frame, transported};
+    use postretro_render_cpu::frame_uniforms::SpecularStyle;
+    let test = "specular_style_committed_mid_build_reaches_the_published_level";
+    let Some(mut renderer) = offscreen_renderer_or_skip(test, FRAME, FRAME) else {
+        return;
+    };
+    renderer.set_reflection_quality(FluidReflectionQuality::Off);
+    let fixture = legacy_fixture(0x6B);
+    assert_eq!(renderer.specular_style(), SpecularStyle::Pixel);
+    let tiers = renderer.level_build_tiers();
+    let (builder, mut pending) = renderer.begin_level_set_build(tiers);
+    // The staged init commits on a frame between dispatch and publish.
+    renderer.set_specular_style(SpecularStyle::Smooth);
+    fixture.queue(&builder, false);
+    builder.finish();
+    let id = take(&mut renderer, &mut pending).expect("the off-main build succeeds");
+    publish_retire(&mut renderer, id);
+    assert_eq!(renderer.active_level_set(), Some(id));
+    add_mover(&mut renderer);
+    frame(&mut renderer);
+    assert_eq!(
+        transported(&renderer),
+        expected(SpecularStyle::Smooth),
+        "the published level's first frame reads the committed style"
+    );
+    assert_eq!(
+        renderer.level_build_tiers(),
+        tiers,
+        "a style commit moves no build tier"
+    );
+}
+
+// The two style-transport properties above hold by construction: the dispatch snapshot never carries
+// the specular style. The destructure names every field with no `..`, so a
+// field added to the snapshot fails to compile here until it is reviewed.
+#[test]
+fn the_level_build_snapshot_carries_no_specular_style() {
+    let LevelBuildSnapshotInputs {
+        spot_shadow_map_resolution: _,
+        surface_depth_quality: _,
+        reflection_quality: _,
+    } = LevelBuildSnapshotInputs {
+        spot_shadow_map_resolution: 512,
+        surface_depth_quality: SurfaceDepthQuality::On,
+        reflection_quality: FluidReflectionQuality::High,
+    };
+    let source = include_str!("level_build.rs");
+    let snapshot = source
+        .split("pub struct LevelBuildSnapshotInputs {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}").next())
+        .expect("the snapshot struct");
+    assert!(
+        !snapshot.to_lowercase().contains("specular"),
+        "the level build snapshot must not carry the specular style"
+    );
+}

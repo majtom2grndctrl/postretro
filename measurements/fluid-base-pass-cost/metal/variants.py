@@ -17,8 +17,9 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 SHADERS = ROOT / "crates/renderer/src/shaders"
 # Order and separators of `fluid_surface.rs` SHADER_SOURCE.
-PARTS = ("fluid_surface.wgsl", "fluid_motion.wgsl", "fluid_reflection.wgsl", "sh_indirection.wgsl", "sh_sample.wgsl", "curve_eval.wgsl",
-         "light_falloff.wgsl", "light_eval.wgsl")
+PARTS = ("fluid_surface.wgsl", "fluid_motion.wgsl", "fluid_reflection.wgsl", "fluid_reflection_ray.wgsl",
+         "sh_indirection.wgsl", "sh_sample.wgsl", "curve_eval.wgsl", "light_falloff.wgsl", "light_eval.wgsl",
+         "material_shading.wgsl")
 
 # The SH sample now lives in `fluid_baked_light` (per vertex, `world_pos`), so
 # `nosh`, `shindirect`, `shshared` and `noocc` change the per-vertex cost, not per-fragment.

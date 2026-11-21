@@ -22,6 +22,50 @@ pub const SPEC_SHADOWMASK_FLAG_FORCE_ONE: u32 = 1 << 0;
 /// 42, a mask pool the renderer refused, and placeholder mode; the forward
 /// pass then adds no static non-SDF world specular and no union subtraction.
 pub const SPEC_SHADOWMASK_FLAG_MASK_PRESENT: u32 = 1 << 1;
+/// Bit 2 of `Uniforms.spec_shadowmask_flags`: the mod's specular style is
+/// smooth, so world static specular evaluates every input per fragment. Clear
+/// is the default pixel style, one highlight point per albedo texel
+/// (`rendering_pipeline.md` §4, Texel-centre highlight).
+pub const SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH: u32 = 1 << 2;
+/// The mover pass's per-frame `KinematicLightParams.specular_style` word
+/// (bytes 28..32), shared by the main view and the planar mirror: set for the
+/// smooth specular style. Zero is the default pixel style.
+pub const KINEMATIC_SPECULAR_STYLE_SMOOTH: u32 = 1;
+
+/// The mod's specular style (`render.specular.style`), renderer vocabulary.
+/// The app maps the mod profile onto it at one chokepoint; the renderer keeps
+/// it in boot state and writes it into the forward and mover per-frame
+/// uniforms every frame (`rendering_pipeline.md` §4, Texel-centre highlight).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum SpecularStyle {
+    /// One highlight point per albedo texel. The default, and frame
+    /// capture's unless its scene says otherwise.
+    #[default]
+    Pixel,
+    /// Every highlight input per fragment.
+    Smooth,
+}
+
+impl SpecularStyle {
+    /// Every style.
+    pub const ALL: [Self; 2] = [Self::Pixel, Self::Smooth];
+
+    /// This style's bits in `Uniforms.spec_shadowmask_flags`.
+    pub const fn forward_flag_bits(self) -> u32 {
+        match self {
+            Self::Pixel => 0,
+            Self::Smooth => SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH,
+        }
+    }
+
+    /// This style's `KinematicLightParams.specular_style` word.
+    pub const fn kinematic_word(self) -> u32 {
+        match self {
+            Self::Pixel => 0,
+            Self::Smooth => KINEMATIC_SPECULAR_STYLE_SMOOTH,
+        }
+    }
+}
 
 /// Debug selector for the SDF shadow path: panel-only dropdown, encoded into
 /// the per-frame uniform.
@@ -255,6 +299,10 @@ pub struct FrameUniforms {
     /// Whether the level's id-42 mask pool is bound. Encoded as
     /// [`SPEC_SHADOWMASK_FLAG_MASK_PRESENT`] in the same word.
     pub static_spec_mask_present: bool,
+    /// The mod's specular style. Smooth is encoded as
+    /// [`SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH`] in the same word; pixel leaves
+    /// it clear.
+    pub specular_style: SpecularStyle,
 }
 
 pub fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
@@ -293,6 +341,7 @@ pub fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
     if u.static_spec_mask_present {
         spec_shadowmask_flags |= SPEC_SHADOWMASK_FLAG_MASK_PRESENT;
     }
+    spec_shadowmask_flags |= u.specular_style.forward_flag_bits();
     bytes[124..128].copy_from_slice(&spec_shadowmask_flags.to_ne_bytes());
     bytes
 }
@@ -322,6 +371,7 @@ mod tests {
             total_light_count: 0,
             spec_shadowmask_force_one: false,
             static_spec_mask_present: false,
+            specular_style: SpecularStyle::Pixel,
         });
         assert_eq!(data.len(), UNIFORM_SIZE);
     }
@@ -396,6 +446,7 @@ mod tests {
             total_light_count: 0,
             spec_shadowmask_force_one: false,
             static_spec_mask_present: false,
+            specular_style: SpecularStyle::Pixel,
         };
         assert_eq!(
             u32::from_ne_bytes(build_uniform_data(&uniforms)[112..116].try_into().unwrap()),
@@ -433,6 +484,7 @@ mod tests {
             total_light_count: 0,
             spec_shadowmask_force_one: false,
             static_spec_mask_present: false,
+            specular_style: SpecularStyle::Pixel,
         });
         let flags = u32::from_ne_bytes(data[96..100].try_into().unwrap());
         assert_eq!(flags, SDF_SHADOW_FLAG_ATLAS_PRESENT);
@@ -464,6 +516,7 @@ mod tests {
                 total_light_count: 0,
                 spec_shadowmask_force_one: false,
                 static_spec_mask_present: false,
+                specular_style: SpecularStyle::Pixel,
             });
             assert_eq!(
                 u32::from_ne_bytes(data[104..108].try_into().unwrap()),
@@ -493,6 +546,7 @@ mod tests {
             total_light_count: 0,
             spec_shadowmask_force_one: true,
             static_spec_mask_present: false,
+            specular_style: SpecularStyle::Pixel,
         });
 
         assert_eq!(
@@ -521,6 +575,7 @@ mod tests {
             total_light_count: 0,
             spec_shadowmask_force_one: force,
             static_spec_mask_present: present,
+            specular_style: SpecularStyle::Pixel,
         };
         let baseline = build_uniform_data(&uniforms(false, false));
         for (force, present, expected) in [
@@ -547,6 +602,74 @@ mod tests {
         }
     }
 
+    // The specular style rides bit 2 of the trailing mask word,
+    // beside force-one and mask-present and independent of both; the uniform
+    // stays 128 bytes and pixel leaves every byte as before the style existed.
+    #[test]
+    fn uniform_data_encodes_the_specular_style_as_bit_two_of_the_mask_word() {
+        let uniforms = |force: bool, present: bool, style: SpecularStyle| FrameUniforms {
+            view_proj: Mat4::IDENTITY,
+            camera_position: Vec3::ZERO,
+            ambient_floor: 0.0,
+            light_count: 0,
+            time: 0.0,
+            light_term_mask: LightTermMask::ALL,
+            indirect_scale: 1.0,
+            sdf_shadow_flags: 0,
+            sdf_shadow_mode: SdfShadowMode::On,
+            sdf_force_visibility_one: false,
+            dynamic_direct_scale: 0.0,
+            has_scatter: BillboardScatterMode::Unavailable,
+            has_direct: false,
+            animated_baked_light_count: 0,
+            total_light_count: 0,
+            spec_shadowmask_force_one: force,
+            static_spec_mask_present: present,
+            specular_style: style,
+        };
+        assert_eq!(UNIFORM_SIZE, 128);
+        assert_eq!(SpecularStyle::default(), SpecularStyle::Pixel);
+        for force in [false, true] {
+            for present in [false, true] {
+                let pixel = build_uniform_data(&uniforms(force, present, SpecularStyle::Pixel));
+                let smooth = build_uniform_data(&uniforms(force, present, SpecularStyle::Smooth));
+                let word = |data: &[u8; UNIFORM_SIZE]| {
+                    u32::from_ne_bytes(data[124..128].try_into().unwrap())
+                };
+                assert_eq!(word(&pixel) & SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH, 0);
+                assert_eq!(
+                    word(&smooth),
+                    word(&pixel) | SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH,
+                    "force {force}, present {present}: smooth adds bit 2 alone"
+                );
+                assert_eq!(smooth[..124], pixel[..124], "the style owns bit 2 only");
+            }
+        }
+        // The style bit is distinct from the load-fixed and dev bits.
+        assert_eq!(
+            SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH
+                & (SPEC_SHADOWMASK_FLAG_FORCE_ONE | SPEC_SHADOWMASK_FLAG_MASK_PRESENT),
+            0
+        );
+    }
+
+    // Each style's two transports agree: pixel is zero in both the forward
+    // word and the mover word, smooth sets each pass's smooth marker.
+    #[test]
+    fn every_specular_style_encodes_its_forward_bit_and_mover_word() {
+        for style in SpecularStyle::ALL {
+            let (forward, mover) = match style {
+                SpecularStyle::Pixel => (0, 0),
+                SpecularStyle::Smooth => (
+                    SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH,
+                    KINEMATIC_SPECULAR_STYLE_SMOOTH,
+                ),
+            };
+            assert_eq!(style.forward_flag_bits(), forward, "{style:?}");
+            assert_eq!(style.kinematic_word(), mover, "{style:?}");
+        }
+    }
+
     #[test]
     fn sdf_shadow_mode_round_trips_through_uniform() {
         for mode in SdfShadowMode::ALL_VARIANTS {
@@ -568,6 +691,7 @@ mod tests {
                 total_light_count: 0,
                 spec_shadowmask_force_one: false,
                 static_spec_mask_present: false,
+                specular_style: SpecularStyle::Pixel,
             });
             let decoded = u32::from_ne_bytes(data[100..104].try_into().unwrap());
             assert_eq!(decoded, mode as u32);
@@ -595,6 +719,7 @@ mod tests {
             total_light_count: 0,
             spec_shadowmask_force_one: false,
             static_spec_mask_present: false,
+            specular_style: SpecularStyle::Pixel,
         });
 
         assert_eq!(SdfShadowMode::ShadowmaskRawPoolVisibility as u32, 6);
@@ -623,6 +748,7 @@ mod tests {
             total_light_count: 11,
             spec_shadowmask_force_one: false,
             static_spec_mask_present: false,
+            specular_style: SpecularStyle::Pixel,
         });
         let scale = f32::from_ne_bytes(data[108..112].try_into().unwrap());
         assert!((scale - 0.25).abs() < 1e-6);
@@ -665,6 +791,7 @@ mod tests {
             total_light_count: light_count,
             spec_shadowmask_force_one: false,
             static_spec_mask_present: false,
+            specular_style: SpecularStyle::Pixel,
         });
 
         let mut floats = Vec::new();
@@ -718,6 +845,7 @@ mod tests {
             total_light_count: 0,
             spec_shadowmask_force_one: false,
             static_spec_mask_present: false,
+            specular_style: SpecularStyle::Pixel,
         });
         let t = f32::from_ne_bytes(data[84..88].try_into().unwrap());
         assert!((t - script_time).abs() < 1e-6);

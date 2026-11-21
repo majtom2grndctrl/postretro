@@ -46,8 +46,8 @@ fn clear_replaced_presentation_overlay_state(
     host_facts.clear_for_authoring();
 }
 
-/// Renderer profile (bloom and reflection style) a staged manifest result
-/// commits, if any.
+/// Renderer profile (bloom, reflection and specular style, ghost
+/// transparency) a staged manifest result commits, if any.
 ///
 /// `None` means "leave the active profile alone" — every non-`Committed`
 /// outcome (stale, failed build, rejected, release no-op) plus a committed
@@ -333,10 +333,11 @@ impl App {
             }
             // Ahead of the UI commit so the first frame that presents the
             // reloaded UI already renders through the reloaded bloom profile,
-            // reflection style and ghost transparency.
+            // reflection style, specular style and ghost transparency.
             if let Some(render_profile) = staged_render_profile(&result, &outcome) {
                 self.apply_mod_bloom_render_profile(render_profile);
                 self.apply_mod_reflection_profile(render_profile);
+                self.apply_mod_specular_style(render_profile);
                 self.apply_mod_ghost_transparency(render_profile);
             }
             if let Some(audio_profile) = staged_audio_profile(&result, &outcome) {
@@ -384,6 +385,9 @@ mod tests {
             },
             reflections: postretro_scripting_core::runtime::ModReflectionProfile {
                 style: postretro_scripting_core::runtime::ModReflectionStyle::Smooth,
+            },
+            specular: postretro_scripting_core::runtime::ModSpecularProfile {
+                style: postretro_scripting_core::runtime::ModSpecularStyle::Smooth,
             },
             ghosts: postretro_scripting_core::runtime::ModGhostTransparency::Dither,
         }
@@ -771,6 +775,54 @@ mod tests {
                 "{outcome:?} must not move the active bloom profile",
             );
         }
+    }
+
+    // With smooth active, a failed build, a rejected, a stale
+    // and a release no-op init each keep smooth; a committed init with no
+    // start script restores pixel. The active style is folded through the
+    // same commit decision and chokepoint the reload path applies.
+    #[test]
+    fn specular_style_survives_failed_rejected_and_stale_inits_and_a_committed_no_start_restores_pixel()
+     {
+        use crate::startup::render_profile::renderer_specular_style;
+        use postretro_render_cpu::frame_uniforms::SpecularStyle;
+        let mut active = SpecularStyle::Pixel;
+        let mut commit = |result: &StagedManifestBuildResult,
+                          outcome: &StagedManifestCommitOutcome| {
+            if let Some(profile) = staged_render_profile(result, outcome) {
+                active = renderer_specular_style(profile.specular.style);
+            }
+            active
+        };
+        assert_eq!(
+            commit(&built_result(quarter_pixelated()), &committed()),
+            SpecularStyle::Smooth,
+            "a committed smooth manifest commits smooth"
+        );
+        assert_eq!(
+            commit(
+                &status_result(StagedManifestBuildStatus::Failed),
+                &committed()
+            ),
+            SpecularStyle::Smooth,
+            "a committed failed build keeps smooth"
+        );
+        let pixel_manifest = built_result(ModRenderProfile::default());
+        for outcome in non_committed_outcomes() {
+            assert_eq!(
+                commit(&pixel_manifest, &outcome),
+                SpecularStyle::Smooth,
+                "{outcome:?} keeps smooth even with a built pixel manifest"
+            );
+        }
+        assert_eq!(
+            commit(
+                &status_result(StagedManifestBuildStatus::NoStartScript),
+                &committed()
+            ),
+            SpecularStyle::Pixel,
+            "a committed init with no start script restores pixel"
+        );
     }
 
     // A manifest reload that changes attenuation or the ghost bus

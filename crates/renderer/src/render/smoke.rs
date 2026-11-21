@@ -260,14 +260,18 @@ fn plan_baked_sprite_array(
         return None;
     }
     for (slot_index, slot_flag, allowed_formats) in [
-        // Slot 1 is the specular slot in both of the forms `format_allowed_for_slot`
-        // permits: single-channel `R8Unorm`, and the two-channel `Rg8Unorm`
+        // Slot 1 is the specular slot in the two forms a sprite sidecar can
+        // carry: single-channel `R8Unorm`, and the two-channel `Rg8Unorm`
         // surface map (R specular, G inverted height) that a bundle with an `_h.png`
         // height sibling bakes to. Pinning one of them here declined an
         // otherwise valid sidecar and silently dropped the collection to its
         // PNG fallback. The sprite path reads only `.r`, and both formats are
         // filterable floats behind the same D2-array binding, so accepting the
         // wider form changes nothing about how the slot is sampled.
+        // `format_allowed_for_slot` also admits the four-channel `Rgba8Unorm` a
+        // world `_p.png` or `_t.png` bakes; sprite sidecars never carry `_p` or `_t`
+        // (sprites bake their own slot and never go through `bake_specular_slot`),
+        // so this list does not mirror it.
         (
             1,
             PrmSlots::SPECULAR,
@@ -1721,7 +1725,7 @@ mod tests {
         );
     }
 
-    /// Slot 1 accepts both forms `format_allowed_for_slot` permits. Pinning the
+    /// Slot 1 accepts both specular forms a sprite sidecar can carry. Pinning the
     /// single-channel one here declined an otherwise valid surface-map sidecar
     /// and dropped the collection to its PNG fallback; a two-channel specular
     /// must plan exactly like the single-channel one, since the sprite path

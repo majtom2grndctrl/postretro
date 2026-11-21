@@ -19,8 +19,9 @@ pub use saves_manifest::{MAX_CHARACTER_SLOTS, MAX_RUN_SLOTS, SavesManifest};
 pub use types::{
     Frontend, MenuCamera, ModAttenuation, ModAttenuationCurve, ModAudioProfile, ModBloomProfile,
     ModBloomResolution, ModGhostAudio, ModGhostTransparency, ModManifestResult, ModMapEntry,
-    ModMoverDefaults, ModReflectionProfile, ModReflectionStyle, ModRenderProfile, ReloadSummary,
-    ScriptRuntime, ScriptRuntimeConfig, StagedManifestCommitOutcome,
+    ModMoverDefaults, ModReflectionProfile, ModReflectionStyle, ModRenderProfile,
+    ModSpecularProfile, ModSpecularStyle, ReloadSummary, ScriptRuntime, ScriptRuntimeConfig,
+    StagedManifestCommitOutcome,
 };
 pub(crate) use types::{
     check_entity_defense_references, check_fluid_status_references, validate_mod_manifest_id,

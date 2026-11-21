@@ -67,7 +67,8 @@ pub struct MaterialUniformPlan {
     /// Storing the unswitched value is what lets a rewrite turn the effect back
     /// on as well as off: `Off` is not a one-way door.
     pub surface_depth: postretro_render_data::material::SurfaceDepth,
-    /// The bound specular slot is a two-channel `Rg8Unorm` surface map.
+    /// The bound specular slot is a surface map: two-channel `Rg8Unorm` or
+    /// four-channel `Rgba8Unorm`, either carrying stored height in G.
     pub specular_is_surface_map: bool,
     /// Mip levels actually uploaded to that slot; clamps the DDA's base mip.
     pub specular_mip_count: u32,
@@ -75,7 +76,7 @@ pub struct MaterialUniformPlan {
     /// [`crate::surface_depth::SURFACE_DEPTH_RESIDENT_BASE_MIP`].
     pub requested_base_mip: u32,
     /// The slot's RAW relief band at every uploaded mip, measured at load by
-    /// [`crate::surface_depth::surface_relief_from_rg8_levels`]. The uniform
+    /// [`crate::surface_depth::surface_relief_from_surface_map`]. The uniform
     /// build picks the base mip's band and quantizes it, where the level count
     /// is.
     pub surface_relief: crate::surface_depth::SurfaceReliefLevels,

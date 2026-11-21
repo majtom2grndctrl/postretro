@@ -32,10 +32,10 @@ use super::receivers::{
 };
 use super::scene::CaptureScene;
 use super::setup::{
-    apply_scene_reflection, capture_camera, capture_level_geometry, capture_mover_probe_channel,
-    capture_static_lights_and_shadow_selection, derive_texture_materials,
-    install_capture_animated_promotion_bridge, install_forced_active_animation_descriptors,
-    resolve_forced_promotion_rows_from_metadata,
+    apply_scene_reflection, apply_scene_specular, capture_camera, capture_level_geometry,
+    capture_mover_probe_channel, capture_static_lights_and_shadow_selection,
+    derive_texture_materials, install_capture_animated_promotion_bridge,
+    install_forced_active_animation_descriptors, resolve_forced_promotion_rows_from_metadata,
 };
 
 /// Portal-walk capture controls diagnostics only; capture has no diagnostic
@@ -92,6 +92,16 @@ impl PreparedCapture {
     /// render the same authored instant without reloading the PRL, re-uploading
     /// textures, resolving visibility, or recollecting receivers.
     pub(super) fn prepare(scene: &CaptureScene) -> Result<Self> {
+        Self::prepare_with(scene, |_| {})
+    }
+
+    /// [`Self::prepare`], with `before_install` run on the renderer after the
+    /// scene's own settings apply and before any texture or geometry
+    /// installs: a test's seam for state the level's materials build at.
+    pub(super) fn prepare_with(
+        scene: &CaptureScene,
+        before_install: impl FnOnce(&mut Renderer),
+    ) -> Result<Self> {
         // Load synchronously: capture creates no worker thread or event loop.
         let mut world = postretro_level_loader::load_prl(&scene.map)
             .with_context(|| format!("failed to load `{}`", scene.map))?;
@@ -117,10 +127,12 @@ impl PreparedCapture {
         }
         // Before the fluid install sizes a reflection target from the tier.
         apply_scene_reflection(&mut renderer, scene);
+        apply_scene_specular(&mut renderer, scene);
         if let Some(mode) = scene.ghost_transparency {
             renderer.set_ghost_transparency(mode.renderer());
         }
         renderer.set_cpu_timing(crate::cpu_timing::gate_from_env());
+        before_install(&mut renderer);
 
         let texture_materials = derive_texture_materials(&world);
         let content_root = content_root_from_map(Some(&scene.map));
@@ -402,6 +414,12 @@ impl PreparedCapture {
     /// as its completed warmup/sample sequence. Ordinary capture remains at 0.
     pub(super) fn capture_measurement_output_frame(&mut self) -> Result<Vec<u8>> {
         self.capture_frame_at(self.measurement_animation.time_seconds())
+    }
+
+    /// The prepared renderer, for a test's live changes between frames.
+    #[cfg(test)]
+    pub(super) fn renderer_mut(&mut self) -> &mut Renderer {
+        &mut self.renderer
     }
 
     /// Hand the renderer the planar mirror's light reach for the next world

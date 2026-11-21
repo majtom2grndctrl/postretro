@@ -63,7 +63,7 @@ struct Uniforms {
     // Static world specular's mask word (`SPEC_SHADOWMASK_FLAG_*`). Bit 0: dev
     // toggle forcing every owner's mask visibility to 1.0. Bit 1: load-fixed,
     // set only when id 42's mask pool is really bound; owners and the union
-    // subtraction read no mask without it.
+    // subtraction read no mask without it. Bit 2: smooth specular style.
     spec_shadowmask_flags: u32,
 };
 
@@ -85,16 +85,18 @@ fn animated_baked_light_tail_count() -> u32 {
 // Per-material emissive color. `Rgba8UnormSrgb` decodes to linear through the
 // hardware texture path, like base_texture; the black placeholder is a no-op.
 @group(1) @binding(1) var emissive_texture: texture_2d<f32>;
-// Per-material specular slot, sampled as .r: R8Unorm specular, or the
-// Rg8Unorm surface map (R specular, G stored height) when the diffuse has an
-// `_h.png` sibling. 1×1 black R8Unorm when neither sibling exists, which zeros
-// `spec_int` without a branch; its G reads as maximum raise, so the has-depth
-// bit is the only guard keeping Surface Depth off it. See
-// context/lib/resource_management.md §4.1, §4.6.
+// Per-material specular slot: R8Unorm specular, the Rg8Unorm surface map (R
+// specular, G stored height) when the diffuse has an `_h.png` sibling, or
+// Rgba8Unorm (B smoothness, A tint) with `_p.png` or `_t.png`. 1×1 black
+// R8Unorm when no sibling exists, which zeros the intensity without a branch;
+// its G reads as maximum raise, so the has-depth bit is the only guard keeping
+// Surface Depth off it. A narrower slot reads B = 0 and A = 1, the no-`_p` and
+// no-`_t` markers. See context/lib/resource_management.md §4.1, §4.6, §4.7.
 @group(1) @binding(2) var spec_texture: texture_2d<f32>;
 
 struct MaterialUniform {
-    // Blinn-Phong specular exponent; constant per-material variant.
+    // The prefix's Blinn-Phong exponent: what a texel shades at without
+    // smoothness in the specular slot's B (resource_management.md §4.7).
     shininess: f32,
     // The texture's baked glow strength (PRL id 60) on its emissive map.
     emissive_strength: f32,
@@ -569,7 +571,10 @@ fn sample_sh_indirect(
 // Reconstruction is per-slot because slots (diffuse / normal / specular) can
 // differ in resolution, so `dims` must come from the texture being sampled.
 //
-// CRITICAL: the warped `uv_recon` only shifts the sample point; the ORIGINAL
+// The reconstruction itself is `post_retro_texel_uv` (`material_shading.wgsl`),
+// which the pixel-style specular point maps to world.
+//
+// CRITICAL: the warped UV only shifts the sample point; the ORIGINAL
 // `ddx`/`ddy` are passed to textureSampleGrad so mip selection and the
 // hardware-aniso footprint track the true screen-space pixel footprint. Taking
 // derivatives of the warped UV instead would collapse the footprint at seams
@@ -577,21 +582,7 @@ fn sample_sh_indirect(
 fn sample_post_retro(tex: texture_2d<f32>, samp: sampler, uv: vec2<f32>,
                      ddx: vec2<f32>, ddy: vec2<f32>) -> vec4<f32> {
     let dims = vec2<f32>(textureDimensions(tex, 0));
-    let uv_tex = uv * dims;
-    let seam = floor(uv_tex + 0.5);
-    // Seam width comes from the ORIGINAL screen-space derivatives, not from
-    // fwidth() of `uv_tex`. Under Surface Depth `uv` is the MARCHED UV, which
-    // jumps between adjacent pixels that hit different texel faces, so its
-    // fwidth measures the parallax step rather than the pixel footprint and
-    // would widen the AA band into a multi-texel blur along every carved edge.
-    // fwidth(uv * dims) == (abs(dpdx(uv)) + abs(dpdy(uv))) * dims for a smooth
-    // uv, so this is the same quantity the un-marched path always computed.
-    // Floor the divisor: a constant-UV fragment (edge-on face, degenerate UV
-    // chart, vanishing derivatives) gives zero, and clamp() does not reliably
-    // sanitize the resulting NaN/Inf in WGSL.
-    let seam_width = max((abs(ddx) + abs(ddy)) * dims, vec2<f32>(1.0e-6));
-    let aa = clamp((uv_tex - seam) / seam_width, vec2(-0.5), vec2(0.5));
-    let uv_recon = (seam + aa) / dims;
+    let uv_recon = post_retro_texel_uv(uv, dims, ddx, ddy);
     return textureSampleGrad(tex, samp, uv_recon, ddx, ddy);
 }
 
@@ -765,6 +756,13 @@ const SPEC_LIGHT_TYPE_DIRECTIONAL: u32 = 2u;
 // render-cpu's `frame_uniforms.rs`.
 const SPEC_SHADOWMASK_FLAG_FORCE_ONE: u32 = 1u;
 const SPEC_SHADOWMASK_FLAG_MASK_PRESENT: u32 = 2u;
+const SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH: u32 = 4u;
+
+// The mod's specular style (`render.specular.style`): set for smooth, so a
+// zeroed word reads the default pixel style.
+fn specular_style_smooth() -> bool {
+    return (uniforms.spec_shadowmask_flags & SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH) != 0u;
+}
 
 // Dev toggle: every owner reads its mask channel as fully visible.
 fn spec_shadowmask_forced_one() -> bool {
@@ -1349,10 +1347,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         + static_direct;
 
     var specular_sum = vec3<f32>(0.0);
+    // A tinted texel's highlight, held out of the albedo multiply
+    // (resource_management.md §4.7). Zero for an untinted texel, whose
+    // highlight stays in `total_light` exactly as before tint existed.
+    var tinted_specular = vec3<f32>(0.0);
     if use_specular {
-        // The surface map's R channel; the march read its G channel.
-        let spec_int = sample_color(spec_texture, shade_uv, ddx, ddy).r;
-        let spec_exp = max(material.shininess, 1.0);
+        // One read of the slot: R intensity, B smoothness, A tint; the march
+        // read its G channel.
+        let spec_texel = specular_texel(
+            sample_color(spec_texture, shade_uv, ddx, ddy),
+            max(material.shininess, 1.0),
+        );
         // World static specular is the face's owners plus the SDF selection,
         // never the chunk light list. Owners read their channels only from a
         // bound mask at a resident block: a refused, absent or placeholder
@@ -1371,12 +1376,29 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 in.mask_offset,
             );
         }
-        specular_sum = world_static_specular(
+        // Pixel style takes light direction, view direction, falloff, range
+        // and cone from one point per albedo texel, on the true plane even
+        // under a march; the mask, SDF visibility and SDF selection above stay
+        // per pixel (rendering_pipeline.md §4, Texel-centre highlight).
+        let spec_point = specular_texel_point(
+            specular_style_smooth(),
+            SpecularPoint(in.world_position, V),
+            in.uv,
+            shade_uv,
             in.world_position,
+            uniforms.camera_position,
+            vec2<f32>(textureDimensions(base_texture, 0)),
+            ddx,
+            ddy,
+            ddx_world,
+            ddy_world,
+        );
+        specular_sum = world_static_specular(
+            spec_point.position,
             N_shade,
-            V,
-            spec_exp,
-            spec_int,
+            spec_point.view,
+            spec_texel.exponent,
+            spec_texel.intensity,
             in.spec_owners,
             specular_shadowmask,
             owners_readable,
@@ -1384,6 +1406,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             sdf_factor,
             sdf_force_lit,
         );
+        if spec_texel.tinted {
+            tinted_specular = specular_sum * specular_tint(base_color.rgb, spec_texel.tint);
+            specular_sum = vec3<f32>(0.0);
+        }
     }
     total_light = total_light + specular_sum;
 
@@ -1582,7 +1608,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             * material.emissive_strength
             * volume_factor;
     }
-    let rgb = base_color.rgb * total_light + emissive;
+    // The tinted highlight joins after the albedo multiply and the glow, so an
+    // untinted fragment keeps the exact expression it had before tint.
+    let rgb = base_color.rgb * total_light + emissive + tinted_specular;
     // `SdfShadowMode::Visualize` (2) replaces the shaded color with a
     // grayscale view of the first per-light visibility slice (R = slot 0,
     // the most-influential sdf light) — sampled through the same bilateral

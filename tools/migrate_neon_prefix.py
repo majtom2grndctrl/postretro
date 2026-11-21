@@ -7,7 +7,7 @@ texture with an `_e` map and no entry glows at 1.0. This script keeps every
 `neon_` look:
 
   * renames `textures/<collection>/neon_x.png` and every slot sibling
-    (`neon_x_e.png`, `_s`, `_n`, `_h`, `_p`) to `x...`;
+    (`neon_x_e.png`, `_s`, `_n`, `_h`, `_p`, `_t`) to `x...`;
   * rewrites `.map` face references to the renamed textures;
   * writes `emissive = 4.0` for each renamed texture that has an `_e` map into
     `<mod root>/materials.toml`, keyed `"collection/x"`.
@@ -66,12 +66,8 @@ MATERIALS_TOML = "materials.toml"
 KNOWN_MATERIAL_PREFIXES = ("metal", "concrete", "grate", "glass", "wood")
 
 # Slot siblings a texture's maps are spelled with (the diffuse is the bare
-# stem): specular, normal, emissive, height, sharpness.
-SLOT_SUFFIXES = ("_s", "_n", "_e", "_h", "_p")
-
-# prl-build's `BUNDLE_SUFFIXES` (texture_mips/resolution.rs): the siblings whose
-# presence makes a stem a bundle base, including the bare diffuse.
-BUNDLE_SUFFIXES = ("", "_s", "_n", "_e", "_h")
+# stem): specular, normal, emissive, height, smoothness, tint.
+SLOT_SUFFIXES = ("_s", "_n", "_e", "_h", "_p", "_t")
 
 # A `.map` face line: three plane points, then the texture name.
 FACE_LINE = re.compile(
@@ -165,15 +161,12 @@ def scan_textures(textures_root):
             """The bundle base `lowered` belongs to, as prl-build groups bundles.
 
             prl-build treats a stem as a bundle base when it or any known
-            sibling (`BUNDLE_SUFFIXES`) exists, so a sibling-only bundle
-            (`neon_x_e` with no `neon_x`) is one bundle. `_p` is a slot only
-            where its base already has a bundle file.
+            sibling (`SLOT_SUFFIXES`) exists, so a sibling-only bundle
+            (`neon_x_e` with no `neon_x`) is one bundle.
             """
             for suffix in SLOT_SUFFIXES:
                 base = lowered[: -len(suffix)]
                 if not lowered.endswith(suffix) or not base.startswith(OLD_PREFIX):
-                    continue
-                if suffix == "_p" and not any(base + s in neon_stems for s in BUNDLE_SUFFIXES):
                     continue
                 return base
             return lowered

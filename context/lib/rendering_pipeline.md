@@ -1398,7 +1398,7 @@ CPU and GPU windows never align: the GPU window counts completed readbacks. Surf
 
 **Reducer.** `tools/playback_trace_reduce.py` (stdlib; preflight runs its unittest) joins the record with a Metal System Trace export and an `ioreg` clock poll. Row k's interval runs from frame k−1's start to frame k's, so it charges frame k−1's drains. A drain that may still be in flight at a frame's start blanks that reading and names the cause. A drain with no GPU row reads missing, never zero. Every GPU figure names the clock it ran at or says the clock went unrecorded.
 
-**Present mode and drain cap.** `--present-mode vsync|no-vsync` sets the present mode from the first frame in any `dev-tools` session, a route or not. A run's drain cap comes from the play drain-cap slider and its launch seed (§4); playback adds no flag for it.
+**Present mode and drain cap.** `--present-mode vsync|no-vsync` sets the present mode from the first frame in any `dev-tools` session, a route or not. A run's drain cap comes from the Streaming tab's play-cap override and its launch seed (§4); playback adds no flag for it.
 
 **Gating.** SDK bundles carry playback, recording, the seed and the generate verb. The bundle engine is a debug build, so bundle runs check routes, not timing; measure under `--profile profiling` or `--release` with `dev-tools`. Player builds carry none of it and warn on the flags.
 

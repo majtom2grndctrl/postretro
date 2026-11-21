@@ -191,7 +191,21 @@ pub(crate) fn resolve_layers(
     cache: Option<&LayerCache<'_>>,
     control: &BakeControl,
 ) -> Vec<SparseLayer> {
-    resolve_layers_capped(ctx, patches, lights, plan, cache, control, LAYERS_IN_FLIGHT)
+    let started = std::time::Instant::now();
+    let layers =
+        resolve_layers_capped(ctx, patches, lights, plan, cache, control, LAYERS_IN_FLIGHT);
+    log_resolved(plan, started);
+    layers
+}
+
+/// One line per resolution: how many layers and how long, the SH base
+/// stage's layer time reported apart.
+fn log_resolved(plan: &LayerPlan, started: std::time::Instant) {
+    log::info!(
+        "[Compiler] SH base layers: {} layer(s) resolved in {:.2} s, at most {LAYERS_IN_FLIGHT} in flight",
+        plan.layers.len(),
+        started.elapsed().as_secs_f64()
+    );
 }
 
 /// [`resolve_layers`] with at most `cap` layers in flight. The plan

@@ -508,9 +508,11 @@ fn every_priced_phase_covers_its_window_on_every_mover_fixture() {
             .to_vec()
         });
     let mut rows = Vec::new();
+    let maps = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dev/maps");
     for name in &names {
-        let root = tempfile::tempdir().expect("root");
-        let map = dev_map_in(root.path(), name, name, |text| text);
+        // In place: a fixture's data script resolves beside it. Every
+        // output goes to the temporary directory.
+        let map = maps.join(format!("{name}.map"));
         let out = tempfile::tempdir().expect("out");
         let mut projections = Vec::new();
         for fidelity in ["low", "high"] {
@@ -528,10 +530,10 @@ fn every_priced_phase_covers_its_window_on_every_mover_fixture() {
             ]
             .concat();
             for mode in ["warm empty", "full hit"] {
-                rows.extend(assert_windows_priced(
-                    &format!("{name} {fidelity} {mode}"),
-                    &compile_measured(&map, out.path(), &warm, 4),
-                ));
+                let measured = compile_measured(&map, out.path(), &warm, 4);
+                for row in assert_windows_priced(&format!("{name} {fidelity} {mode}"), &measured) {
+                    eprintln!("{row}");
+                }
             }
         }
         assert_eq!(

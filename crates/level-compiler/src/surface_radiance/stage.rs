@@ -22,7 +22,7 @@ use crate::mover_probe_channel::MoverBounceStates;
 use crate::mover_probe_channel::PosedBounce;
 use crate::mover_probe_channel::{
     AbsentBounceMemo, AbsentLaterBounces, BounceBlocks, MoverBounceBake, MoverBounceJob,
-    MoverBounceRequest, MoverPoseBounces, MoverTileRangeExceeded, PoseLookup, PoseMemo,
+    MoverBounceRefusal, MoverBounceRequest, MoverPoseBounces, PoseLookup, PoseMemo,
     PosedRadianceSource, SkipCounts, SlotRadiance, StaticBounce, bake_mover_bounce,
     poses_progress_units,
 };
@@ -65,9 +65,10 @@ pub(crate) struct MoverBounceOutcome {
     pub(crate) blocks: BounceBlocks,
     /// Each finished mover with mid poses and what its skips kept.
     pub(crate) skips: Vec<(u32, SkipCounts)>,
-    /// The movers' depth passed the tile range: the build fails by this
-    /// name. The bake stopped at the mover that passed it.
-    pub(crate) refused: Option<MoverTileRangeExceeded>,
+    /// The movers' depth passed the tile range, or their blocks the payload
+    /// cap: the build fails by this name. The bake stopped at the mover
+    /// that passed it.
+    pub(crate) refused: Option<MoverBounceRefusal>,
     /// One per production job, in request order: the posed bounces each
     /// pose holds, served or baked.
     pub(crate) pose_bounces: Vec<MoverPoseBounces>,

@@ -10,7 +10,7 @@ use postretro_level_format::mover_probe_channel::Knot;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
 use super::absent_bounces::AbsentLaterBounces;
-use super::blocks::BounceBlocks;
+use super::blocks::{BounceBlocks, MoverPayloadCapExceeded};
 use super::bounce::{light_terms, posed_later_progress_units};
 use super::depth::{DepthUnion, MoverAbsentDepth, MoverTileRangeExceeded};
 use super::direct::ProbeCells;
@@ -163,6 +163,10 @@ pub(crate) struct MoverBounceRequest {
     /// depth record past it ([`super::states::reduce_poses`]), and a mover
     /// past it has none of its poses memoized.
     pub(crate) depth_cap: u32,
+    /// `--mover-payload-max-size`: the most the bounce and depth blocks may
+    /// hold. Checked as each mover's blocks join, after its skips; past it
+    /// the bake stops and the build fails by name.
+    pub(crate) payload_cap: u64,
     /// Test only: hand back each finished mover's reduced states, before
     /// its mid poses skip, detached from the ledger.
     #[cfg(test)]
@@ -204,6 +208,15 @@ pub(crate) struct MoverSlot<'a> {
     pub(crate) poses: &'a [PoseSlot],
 }
 
+/// Why the bounce bake stopped short: the build fails by this name.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum MoverBounceRefusal {
+    #[error(transparent)]
+    TileRange(#[from] MoverTileRangeExceeded),
+    #[error(transparent)]
+    PayloadCap(#[from] MoverPayloadCapExceeded),
+}
+
 /// What [`bake_mover_bounce`] hands back.
 #[derive(Default)]
 pub(crate) struct MoverBounceBake {
@@ -212,9 +225,10 @@ pub(crate) struct MoverBounceBake {
     /// Each finished mover with mid poses, in slot order, and what its
     /// skips kept and dropped.
     pub(crate) skips: Vec<(u32, SkipCounts)>,
-    /// The tile-range refusal, when the movers' depth passed the range: the
-    /// bake stopped at the mover that passed it, before that mover skipped.
-    pub(crate) refused: Option<MoverTileRangeExceeded>,
+    /// The refusal the bake stopped at: the movers' depth past the tile
+    /// range, judged before that mover skipped, or its blocks past the
+    /// payload cap, judged before they joined.
+    pub(crate) refused: Option<MoverBounceRefusal>,
     /// Each pose's re-bake, when the request keeps them.
     pub(crate) poses: Vec<PosedBounce>,
     /// Each finished mover's reduced states before its skips, in slot
@@ -363,6 +377,8 @@ impl<'a> SlotRadiance<'a> {
 struct Finish<'a> {
     bars: Option<SkipBars<'a>>,
     cells: Option<ProbeCells>,
+    /// The movers whose blocks joined, in job order, for the cap's error.
+    joined: Vec<String>,
 }
 
 /// Re-bake id 34 per pose of each slot whose memo misses, each mover posed
@@ -394,6 +410,7 @@ pub(crate) fn bake_mover_bounce(
     let mut finish = Finish {
         bars: None,
         cells: None,
+        joined: Vec::new(),
     };
     let mut out = MoverBounceBake::default();
     let mut union = DepthUnion::default();
@@ -423,10 +440,17 @@ pub(crate) fn bake_mover_bounce(
             out.reduced.push(states.detached());
         }
         union.join(&states);
-        if let Err(refused) = union.verdict(at + 1 < count, request.depth_cap) {
-            // The build fails by name before this mover skips; the jobs
-            // left never run, so their progress lands at once, their held
-            // poses' included.
+        let finished = union
+            .verdict(at + 1 < count, request.depth_cap)
+            .map_err(MoverBounceRefusal::from)
+            .and_then(|()| {
+                finish_mover(states, slot.job, inputs, request, &mut finish, &mut out)
+                    .map_err(MoverBounceRefusal::from)
+            });
+        if let Err(refused) = finished {
+            // The build fails by name before this mover's blocks join; the
+            // jobs left never run, so their progress lands at once, their
+            // held poses' included.
             control.advance(
                 slots
                     .map(|(_, slot)| {
@@ -444,7 +468,6 @@ pub(crate) fn bake_mover_bounce(
             out.refused = Some(refused);
             break;
         }
-        finish_mover(states, slot.job, inputs, request, &mut finish, &mut out);
     }
     out
 }
@@ -552,7 +575,9 @@ fn bake_slot<'s>(
 /// Skip a mover's redundant mid-pose states, then encode them into the
 /// blocks and drop them. Its knots run through its author ramp first, which
 /// no memo keys, so a ramp edit re-decides skips over memoized states.
-/// Logs one line per mover with mid poses.
+/// Before they encode, the blocks' bytes with the mover's are checked
+/// against the payload cap: past it, nothing joins and the build fails by
+/// name. Logs one line per mover with mid poses.
 fn finish_mover<'a>(
     mut states: MoverBounceStates,
     job: &MoverBounceJob,
@@ -560,7 +585,7 @@ fn finish_mover<'a>(
     request: &MoverBounceRequest,
     finish: &mut Finish<'a>,
     out: &mut MoverBounceBake,
-) {
+) -> Result<(), MoverPayloadCapExceeded> {
     if states.pose_count > 2 {
         let bars = finish.bars.get_or_insert_with(|| {
             SkipBars::new(
@@ -592,7 +617,23 @@ fn finish_mover<'a>(
             base.probes[probe].validity != 0
         })
     });
+    let bytes = out.blocks.heap_bytes() + BounceBlocks::mover_bytes(&states, cells);
+    if bytes > request.payload_cap {
+        let joined: Vec<&str> = finish.joined.iter().map(String::as_str).collect();
+        return Err(MoverPayloadCapExceeded {
+            bytes,
+            cap: request.payload_cap,
+            mover: job.label.clone(),
+            joined: if joined.is_empty() {
+                "none".to_owned()
+            } else {
+                joined.join(", ")
+            },
+        });
+    }
     out.blocks.push_mover(&states, cells);
+    finish.joined.push(job.label.clone());
+    Ok(())
 }
 
 /// The posed bounces the baked poses re-baked: one count, or each distinct

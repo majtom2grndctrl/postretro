@@ -117,6 +117,7 @@ fn plan_half_at(
         direct_lights: &direct_lights,
         uncompressed: false,
         tile_cap: MAX_PROBE_DEPTH_TILES,
+        payload_cap: crate::mover_probe_channel::DEFAULT_PAYLOAD_MAX_BYTES,
         mode,
     })
     .map(|mut plan| {

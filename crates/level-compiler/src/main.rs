@@ -828,6 +828,10 @@ pub struct Args {
     cache_max_bytes: u64,
     /// Per-stage host-RAM ceiling, shared by the SH base, SH-delta and lightmap gates.
     working_set_max_bytes: u64,
+    /// Cap on the mover probe channel's bounce and depth blocks (id 57),
+    /// checked as each mover's blocks join; the SH base gate prices the
+    /// blocks at it.
+    mover_payload_max_bytes: u64,
     /// Compiler-only payload cap for the three baked delta sections.
     delta_section_config: delta_sections::DeltaSectionConfig,
     /// When true, bypass cache reads and writes entirely.
@@ -949,6 +953,7 @@ fn help_text() -> String {
          --baked-root <DIR>         Directory that CONTAINS materials/; .prm sidecars are written to <DIR>/materials/. Pass the engine the same directory. (default: <workspace>/baked)\n    \
          --cache-max-size <SIZE>    Stage-cache budget: the build-start prune keeps every map's last-build entries and evicts the rest, oldest first, down to this; accepts e.g. 2GiB, 512MiB, or a byte count (default: {cache_max})\n    \
          --sh-delta-max-size <SIZE> Aggregate raw payload cap for ids 27, 41, and 45 after the compiler delta policy; accepts e.g. 256MiB or a byte count (default: {delta_max})\n    \
+         --mover-payload-max-size <SIZE> Cap on the mover probe channel's bounce and depth blocks (id 57); past it the build fails by name, never dropping or coarsening; accepts e.g. 512MiB or a byte count (default: {mover_payload_max})\n    \
          --working-set-max-size <SIZE> Per-stage host-RAM ceiling for the SH base, SH-delta and lightmap bakes; accepts e.g. 16GiB or a byte count (default: {delta_working_set_max})\n    \
          --no-cache                 Disable the stage cache entirely; wins over --cache-dir (default: off)\n    \
          --release                  Produce a shippable map: the stage cache is neither read nor written (implies --no-cache) and movers bake high fidelity. The interactive default is a fast warm build that reuses cached stages; ship only --release artifacts (default: off)\n    \
@@ -977,6 +982,8 @@ fn help_text() -> String {
         cache_max = size_options::format_size_for_help(cache::DEFAULT_MAX_BYTES),
         delta_max = size_options::format_size_for_help(delta_sections::DEFAULT_MAX_PAYLOAD_BYTES),
         delta_working_set_max = size_options::format_size_for_help(working_set::DEFAULT_MAX_BYTES),
+        mover_payload_max =
+            size_options::format_size_for_help(mover_probe_channel::DEFAULT_PAYLOAD_MAX_BYTES),
         jobs = default_jobs(),
         direction_texel_scale = lightmap_bake::DIRECTION_TEXEL_SCALE,
         direction_texel_scale_max = lightmap_bake::MIN_ATLAS_DIMENSION,
@@ -1041,6 +1048,7 @@ where
     let mut cache_max_bytes = cache::DEFAULT_MAX_BYTES;
     let mut delta_section_config = delta_sections::DeltaSectionConfig::default();
     let mut working_set_max_bytes = working_set::DEFAULT_MAX_BYTES;
+    let mut mover_payload_max_bytes = mover_probe_channel::DEFAULT_PAYLOAD_MAX_BYTES;
     let mut no_cache = false;
     let mut release = false;
     let mut bake_fidelity = None;
@@ -1184,6 +1192,11 @@ where
                 let size_str = flag_value(&mut args, "--sh-delta-max-size")?;
                 delta_section_config.max_payload_bytes =
                     size_options::parse_size("--sh-delta-max-size", &size_str)?;
+            }
+            "--mover-payload-max-size" => {
+                let size_str = flag_value(&mut args, "--mover-payload-max-size")?;
+                mover_payload_max_bytes =
+                    size_options::parse_size("--mover-payload-max-size", &size_str)?;
             }
             "--working-set-max-size" => {
                 let size_str = flag_value(&mut args, "--working-set-max-size")?;
@@ -1329,7 +1342,7 @@ where
             "usage: prl-build <input.map> [-o <output.prl>] [-v|--verbose] \
              [--format <FORMAT>] [--sh-probe-spacing <METERS>] [--lightmap-density <METERS>] \
              [--sh-density-fidelity <MULTIPLIER>] \
-             [--soft-shadow-samples <N>] [--sdf-voxel-size <METERS>] [--cache-dir <PATH>] [--baked-root <DIR>] [--cache-max-size <SIZE>] [--sh-delta-max-size <SIZE>] [--working-set-max-size <SIZE>] [--no-cache] [--release] [--bake-fidelity <low|high>]\n\
+             [--soft-shadow-samples <N>] [--sdf-voxel-size <METERS>] [--cache-dir <PATH>] [--baked-root <DIR>] [--cache-max-size <SIZE>] [--sh-delta-max-size <SIZE>] [--mover-payload-max-size <SIZE>] [--working-set-max-size <SIZE>] [--no-cache] [--release] [--bake-fidelity <low|high>]\n\
              (run `prl-build --help` for the full flag list)"
         )
     })?;
@@ -1368,6 +1381,7 @@ where
         cache_max_bytes,
         delta_section_config,
         working_set_max_bytes,
+        mover_payload_max_bytes,
         no_cache,
         release,
         bake_fidelity,
@@ -2597,6 +2611,67 @@ mod tests {
         assert!(help.contains("--tui"));
         assert!(help.contains("--no-tui"));
         assert!(help.contains("--sh-delta-max-size <SIZE>"));
+        assert!(help.contains("--mover-payload-max-size <SIZE>"));
+        assert!(help.contains("byte count (default: 256 MiB)"));
+    }
+
+    // The modder docs list the flag, its default and its error.
+    #[test]
+    fn level_design_docs_list_the_mover_payload_cap() {
+        let docs = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/level_design.md"),
+        )
+        .expect("read docs/level_design.md");
+        assert!(docs.contains("| `--mover-payload-max-size <SIZE>` | `256MiB` |"));
+        assert!(docs.contains("past --mover-payload-max-size"));
+    }
+
+    #[test]
+    fn parse_args_mover_payload_max_size_defaults_to_256_mib() {
+        let parsed = parse_args_from(["input.map"].into_iter().map(str::to_owned)).unwrap();
+        assert_eq!(parsed.mover_payload_max_bytes, 256 * 1024 * 1024);
+    }
+
+    #[test]
+    fn parse_args_mover_payload_max_size_accepts_the_cache_size_syntax() {
+        for (raw, bytes) in [
+            ("1.5GiB", 1536 * 1024 * 1024),
+            ("512MiB", 512 * 1024 * 1024),
+            ("4096", 4096),
+            ("0", 0),
+        ] {
+            let parsed = parse_args_from(
+                ["input.map", "--mover-payload-max-size", raw]
+                    .into_iter()
+                    .map(str::to_owned),
+            )
+            .unwrap();
+            assert_eq!(parsed.mover_payload_max_bytes, bytes, "{raw}");
+        }
+    }
+
+    // A value past `u64`, a malformed size and a missing value refuse,
+    // naming the flag (C1).
+    #[test]
+    fn parse_args_mover_payload_max_size_rejects_past_u64_and_malformed_sizes() {
+        for raw in ["18446744073709551616", "20000000000TiB", "12XB", "MiB", ""] {
+            let error = parse_args_from(
+                ["input.map", "--mover-payload-max-size", raw]
+                    .into_iter()
+                    .map(str::to_owned),
+            )
+            .expect_err(raw)
+            .to_string();
+            assert!(error.contains("--mover-payload-max-size"), "{raw}: {error}");
+        }
+        assert!(
+            parse_args_from(
+                ["input.map", "--mover-payload-max-size"]
+                    .into_iter()
+                    .map(str::to_owned),
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -34,6 +34,9 @@ pub(super) struct BouncePlanInputs<'a> {
     pub(super) direct_lights: &'a [&'a MapLight],
     pub(super) uncompressed: bool,
     pub(super) tile_cap: u32,
+    /// `--mover-payload-max-size`: the most the bounce and depth blocks may
+    /// hold.
+    pub(super) payload_cap: u64,
     /// What the build bakes, from the flags: its fidelity caps each mover's
     /// posed bounces.
     pub(super) mode: BakeMode,
@@ -123,6 +126,7 @@ pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<B
         keep_every_tile: false,
         keep_poses: false,
         depth_cap,
+        payload_cap: inputs.payload_cap,
         #[cfg(test)]
         keep_states: false,
         #[cfg(test)]

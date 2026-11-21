@@ -818,6 +818,7 @@ fn run_after_parsing(
             direct_lights: &direct_lights,
             uncompressed: args.uncompressed_irradiance,
             tile_cap: probe_depth_tile_cap,
+            payload_cap: args.mover_payload_max_bytes,
             mode: args.bake_mode(),
         })?
     };
@@ -972,8 +973,8 @@ fn run_after_parsing(
         &bounce_plan.request,
     );
     // Every mover finished into its blocks inside the bake, judged against
-    // the tile range before it skipped: a bake past the range fails here by
-    // name.
+    // the tile range before it skipped and the payload cap before its
+    // blocks joined: a bake past either fails here by name.
     if let Some(refused) = mover_bounce.refused.take() {
         return Err(refused.into());
     }

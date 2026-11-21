@@ -17,8 +17,8 @@ use crate::cache::StageCache;
 use crate::fixture_pipeline::{FixturePipeline, fixture_path, load_map};
 use crate::live_bytes::{measured, watch_group};
 use crate::mover_probe_channel::{
-    MoverBounceRequest, MoverDirectBake, MoverPayloadBars, MoverRecords, ProbeCells,
-    channel_section,
+    BounceBlocks, MoverBounceRefusal, MoverBounceRequest, MoverDirectBake, MoverPayloadBars,
+    MoverRecords, ProbeCells, channel_section,
 };
 use crate::pipeline::mover_bounce_stage::finish_bounce_half;
 
@@ -404,4 +404,130 @@ fn a_high_read_failing_at_the_slot_bakes_at_the_high_count() {
         },
     );
     assert_eq!(failed, served, "the failed pose bakes at the `high` count");
+}
+
+/// One bake of `fixture` at `high` with `edit` applied to the request: its
+/// refusal, the blocks' bytes and the blocks.
+fn refusal_of(
+    fixture: &FixturePipeline,
+    edit: impl FnOnce(&mut MoverBounceRequest),
+) -> (Option<MoverBounceRefusal>, u64, BounceBlocks) {
+    with_ctx(fixture, |ctx, poses| {
+        let mut plan = plan_half_at(fixture, ctx, poses, DEFAULT_BOUNCE_FILL, HIGH);
+        edit(&mut plan.request);
+        let (_, _, outcome) = bake_base(ctx, &plan, &plan.request, DEFAULT_BOUNCE_FILL, None);
+        let bytes = outcome.blocks.heap_bytes();
+        (outcome.refused, bytes, outcome.blocks)
+    })
+}
+
+// The payload cap counts every byte the bounce and depth blocks hold: a cap
+// equal to the two doors' blocks admits them unchanged, and one byte under
+// fails as the second door's blocks would join, naming the flag, the
+// blocks' bytes and the door joined before it; nothing is dropped (C1).
+#[test]
+fn the_payload_cap_fails_by_name_and_admits_at_its_bytes() {
+    let maps = tempfile::tempdir().expect("maps dir");
+    let fixture = load_map(&closet_edited(maps.path(), Some(2), "two-doors", two_doors));
+    let (refused, bytes, blocks) = refusal_of(&fixture, |request| {
+        request.payload_cap = u64::MAX;
+    });
+    assert!(refused.is_none() && bytes > 0, "the doors emit blocks");
+    let (refused, at_cap, capped) = refusal_of(&fixture, |request| {
+        request.payload_cap = bytes;
+    });
+    assert!(
+        refused.is_none(),
+        "a cap equal to the blocks' bytes admits them"
+    );
+    assert_eq!(
+        (at_cap, &capped),
+        (bytes, &blocks),
+        "nothing dropped or coarsened"
+    );
+    let (refused, _, _) = refusal_of(&fixture, |request| {
+        request.payload_cap = bytes - 1;
+    });
+    let Some(MoverBounceRefusal::PayloadCap(error)) = refused else {
+        panic!("one byte under the blocks' bytes fails by the cap: {refused:?}");
+    };
+    assert_eq!((error.bytes, error.cap), (bytes, bytes - 1));
+    assert_eq!(error.mover, "kinematic_mover 'closet_door_b'");
+    assert_eq!(error.joined, "kinematic_mover 'closet_door'");
+    let message = error.to_string();
+    assert!(
+        message.contains("--mover-payload-max-size")
+            && message.contains(&bytes.to_string())
+            && message.contains("closet_door_b")
+            && message.contains("joined so far: kinematic_mover 'closet_door'"),
+        "{message}"
+    );
+}
+
+// One door whose depth passes the tile range and whose blocks would pass
+// the cap: the tile range refuses it, before it skips or encodes (I4).
+#[test]
+fn a_mover_past_both_fails_by_the_tile_range_before_skipping() {
+    let maps = tempfile::tempdir().expect("maps dir");
+    let fixture = load_map(&super::closet(maps.path(), Some(2)));
+    let (refused, bytes, blocks) = refusal_of(&fixture, |request| {
+        request.depth_cap = 0;
+        request.payload_cap = 0;
+    });
+    assert!(
+        matches!(refused, Some(MoverBounceRefusal::TileRange(_))),
+        "{refused:?}"
+    );
+    assert_eq!(
+        (bytes, blocks),
+        (0, BounceBlocks::default()),
+        "nothing encoded or joined"
+    );
+}
+
+// The narrow door's blocks alone pass the payload cap; the wide door's
+// depth alone passes the tile range. Each job order fails by name: the
+// narrow door first fails by the cap, the wide door first by the range
+// (I3).
+#[test]
+fn cap_and_range_on_different_movers_fail_by_name_in_both_orders() {
+    let maps = tempfile::tempdir().expect("maps dir");
+    let fixture = load_map(&closet_edited(
+        maps.path(),
+        Some(2),
+        "narrow-second-door",
+        narrow_second_door,
+    ));
+    let narrow = fixture
+        .kinematic_movers
+        .iter()
+        .find(|mover| mover.name == "closet_door_b")
+        .expect("the narrow door")
+        .mover_id;
+    let (reduced, narrow_bytes) = with_ctx(&fixture, |ctx, poses| {
+        let mut plan = plan_half_at(&fixture, ctx, poses, DEFAULT_BOUNCE_FILL, HIGH);
+        plan.request.jobs.retain(|job| job.mover_id == narrow);
+        let (_, _, outcome) = bake_base(ctx, &plan, &plan.request, DEFAULT_BOUNCE_FILL, None);
+        (outcome.reduced, outcome.blocks.heap_bytes())
+    });
+    let narrow_depth = reduced[0].depth.len() as u32;
+    let edit = |narrow_first: bool| {
+        move |request: &mut MoverBounceRequest| {
+            request.depth_cap = narrow_depth;
+            request.payload_cap = narrow_bytes - 1;
+            request
+                .jobs
+                .sort_by_key(|job| (job.mover_id == narrow) != narrow_first);
+        }
+    };
+    let (refused, ..) = refusal_of(&fixture, edit(true));
+    assert!(
+        matches!(refused, Some(MoverBounceRefusal::PayloadCap(_))),
+        "narrow door first: {refused:?}"
+    );
+    let (refused, ..) = refusal_of(&fixture, edit(false));
+    assert!(
+        matches!(refused, Some(MoverBounceRefusal::TileRange(_))),
+        "wide door first: {refused:?}"
+    );
 }

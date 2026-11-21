@@ -51,16 +51,14 @@ mod tests;
 pub(crate) use absent_bounces::AbsentLaterBounces;
 pub(crate) use absent_memo::AbsentBounceMemo;
 pub(crate) use bake::{
-    MoverBounceBake, MoverBounceJob, MoverBounceRequest, PosedRadianceSource, SlotRadiance,
-    StaticBounce, bake_mover_bounce, poses_progress_units, sh_base_bounce_count,
+    MoverBounceBake, MoverBounceJob, MoverBounceRefusal, MoverBounceRequest, PosedRadianceSource,
+    SlotRadiance, StaticBounce, bake_mover_bounce, poses_progress_units, sh_base_bounce_count,
 };
-pub(crate) use blocks::BounceBlocks;
+pub(crate) use blocks::{BounceBlocks, DEFAULT_PAYLOAD_MAX_BYTES};
 pub(crate) use cost::{MoverChannelCost, pose_held_bytes};
+pub(crate) use depth::{CarriedDepth, DepthReservation, reserve_mover_tiles};
 #[cfg(test)]
-pub(crate) use depth::DepthUnion;
-pub(crate) use depth::{
-    CarriedDepth, DepthReservation, MoverAbsentDepth, MoverTileRangeExceeded, reserve_mover_tiles,
-};
+pub(crate) use depth::{DepthUnion, MoverAbsentDepth};
 pub(crate) use direct::{DirectScene, MoverDirectBake, ProbeCells, bake_direct};
 #[cfg(test)]
 pub(crate) use domain::direct_display_levels;

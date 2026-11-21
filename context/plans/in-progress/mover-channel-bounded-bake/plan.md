@@ -137,3 +137,23 @@ on one warm `target/`.
   refusal. Clarification, not a change to the row.
 - `assemble` (level-format) now reserves every vector exactly, so the id-57
   section holds no more than its parts; output bytes unchanged.
+
+## Findings
+
+### stress-env-volumes, stop at the SH gates (release binaries, this container)
+
+| Build | SH-delta gate | SH base gate | Verdict |
+|---|---|---|---|
+| parent, `--no-cache --bake-fidelity low` | 7,005,325,824 | 21,806,445,163 (mover direct; mover bounce 19,850,839,371) | refused by the SH base gate, matching the owner's Windows refusal byte for byte |
+| branch, `low` | 9,535,633,664 (2,530,307,840 carried) | 10,957,856,875 | both admit at 16 GiB |
+| branch, `high` | 9,535,633,664 | 10,957,856,875 | both admit |
+| branch, `--release` | 9,535,633,664 | 10,957,856,875 | both admit |
+
+Branch SH base phases (bytes): gate 423,648,296; layers 3,147,257,343 (was
+5,923,093,759); sum 3,038,596,835; later bounces 638,902,859 (was
+10,467,698,803); probe gather 4,233,418,135 (was 14,062,214,079); id-34 entry
+3,741,564,551; mover bounce 8,792,042,699 (was 19,850,839,371); mover direct
+10,957,856,875 (was 21,806,445,163). The projection is the same at `low`,
+`high` and `--release`. The lightmap stage's own gate runs after every SH
+bake, hours into a cold build here; its verdict at the default needs the
+full bake (row 26's owner runs, or a longer session).

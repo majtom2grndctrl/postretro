@@ -336,6 +336,9 @@ pub(crate) fn bake_direct(
         if let Some(entries) = baked[*slot].as_mut() {
             entries.sort_by_key(|entry| (entry.cell, entry.mover_id));
             entries.dedup_by_key(|entry| (entry.cell, entry.mover_id));
+            // Held through the direct half at their length: the SH base
+            // gate prices the entries, not their growth slack.
+            entries.shrink_to_fit();
         }
     }
     if let Some(memo) = memo.as_ref() {
@@ -358,6 +361,7 @@ pub(crate) fn bake_direct(
             })
         })
         .collect();
+    lights.shrink_to_fit();
     // The memo keeps the traced q; each build copies enclosure-run edges
     // over it, before the section reads the q.
     copy_direct_edges(&mut lights, posed, scene.cells, scene.layout);

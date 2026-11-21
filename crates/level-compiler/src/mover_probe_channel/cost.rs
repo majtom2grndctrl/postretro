@@ -11,7 +11,7 @@ use postretro_level_format::sh_volume::OctahedralAtlasTexel;
 use postretro_level_format::texture_names::TextureNamesSection;
 
 use super::bake::MoverBounceJob;
-use super::direct::{DirectEntry, ProbeCells, light_movers};
+use super::direct::{DirectEntry, LightEntries, ProbeCells, light_movers};
 use super::gather::{DomainProbe, PosedProbe};
 use super::posed_scene::PosedScene;
 use super::posed_solid::{PosedMovers, PosedSolid};
@@ -320,7 +320,8 @@ pub(crate) fn pose_held_bytes(
 /// `q` per pose of the mover and the light's tile for every valid probe of
 /// the cell.
 /// So this sums, over exactly those (light, mover, cell) triples, the cell's
-/// valid probes at their payload plus one entry header. A point or spot light
+/// valid probes at their payload plus one entry header, and one record per
+/// light that meets any mover. A point or spot light
 /// reaches no probe past its falloff range (taken a metre wider); a sun
 /// reaches every probe. Never below what the bake holds; the movers a light
 /// cannot meet, and the cells no pose shadows, cost nothing.
@@ -361,6 +362,10 @@ pub(crate) fn direct_entry_bound(
                 }
             }
         });
+        if !met.is_empty() {
+            // The light's own record of its entries.
+            total += size_of::<LightEntries>() as u64;
+        }
         total += met
             .iter()
             .map(|&(cell, slot)| entry_bytes(cell, movers[slot].poses.len()))

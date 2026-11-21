@@ -507,7 +507,6 @@ fn every_priced_phase_covers_its_window_on_every_mover_fixture() {
             .map(str::to_owned)
             .to_vec()
         });
-    let mut rows = Vec::new();
     let maps = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dev/maps");
     for name in &names {
         // In place: a fixture's data script resolves beside it. Every
@@ -518,10 +517,9 @@ fn every_priced_phase_covers_its_window_on_every_mover_fixture() {
         for fidelity in ["low", "high"] {
             let fid = ["--bake-fidelity", fidelity];
             let cold = compile_measured(&map, out.path(), &[&fid[..], &["--no-cache"]].concat(), 4);
-            rows.extend(assert_windows_priced(
-                &format!("{name} {fidelity} cold"),
-                &cold,
-            ));
+            for row in assert_windows_priced(&format!("{name} {fidelity} cold"), &cold) {
+                eprintln!("{row}");
+            }
             projections.push(cold.base);
             let cache = tempfile::tempdir().expect("cache");
             let warm: Vec<&str> = [
@@ -540,8 +538,5 @@ fn every_priced_phase_covers_its_window_on_every_mover_fixture() {
             projections[0], projections[1],
             "{name}: low and high price alike"
         );
-    }
-    for row in &rows {
-        eprintln!("{row}");
     }
 }

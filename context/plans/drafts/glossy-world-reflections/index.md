@@ -32,10 +32,9 @@ Owner-requested capability, for a genre-staple look: polished floors and walls t
   - Probe blending across boxes: `reflection-probe-seams` owns it.
   - Mover-aware captures: draft `mover-aware-reflection-captures.md` owns them.
   - A PBR importer in `postretro-tool`: `specular-texel-sharpness` holds that non-goal and documents the conversion instead.
-  - Dynamic entities in world-face reflections: probe-only means movers, characters, projectiles and dynamic lights never appear there.
   - Fluid surfaces in captures: water stays absent from every capture, as today, so a glossy wall shows the pool's bed, not its surface.
   - Reflections of reflections, and highlights in reflections: captures shade every face with its diffuse and emissive only, so a glossy face appears in other probes' captures without its reflection or its highlights.
-  - Live `emissive_volume` glow in reflections: captures hold each volume at its no-script state, so a pulsing sign's reflection stays steady. A per-probe aggregate share would dim a whole lobe instead (`research.md` §Volume glow share). Glow delta tiles are the candidate fix (Path, Animated glow rival).
+  - Animated glow and moving content in reflections (owner, 2026-11-21): v1 is static. Captures hold each `emissive_volume` at its no-script state, area-light glass at its light's reference, and movers, characters, projectiles and dynamic lights absent, so a pulsing sign's reflection stays steady. Moving lights still show through their highlights, which the blur matches. `drafts/dynamic-reflection-layer/` owns glow that changes at runtime and moving surfaces.
   - A per-material reflectivity override or opt-out in `materials.toml` (owner, deferred). Strength already uses water's reflectance meaning, so a later override is purely additive.
   - The roughness→`_p` conversion formula: the sharpness brief owns its doc row.
 
@@ -117,15 +116,11 @@ Owner-requested capability, for a genre-staple look: polished floors and walls t
   - Colour arrays need `mip_level_count` past 1. BC6H stops the chain at 4².
 - **Live lighting** reads `reflection-probe-fluid-pass-performance`'s per-probe sums. Its dispatch condition extends to frames with overlay draws.
 - **Strongest rival:** forward integration. It needs a binding forward lacks and taxes the always-run shader (`research.md` §Rivals).
-- **Animated glow rival:** glow delta tiles. Per probe, a sparse baked tile per animated glow source is summed at sample time by its live value. It is exact at every mip and off screen, and it would replace the deferred limit on volume glow and the lobe-wide area-glass dimming (`research.md` §Glow delta tiles). It waits on counsel and a cost measurement.
-- **Second animated glow rival:** selective glow SSR. A glow pass writes the selected sources' glow change from reference into a small target. The overlay's depth march adds it on hits, and misses or off-screen rays fall back to the probe's reference glow. It bakes nothing and appears to avoid '451 (c), but it lifts the probe-only ruling for world faces (`research.md` §Glow SSR). It can stack with delta tiles.
 - **First slice.** One dev glossy floor: a derived floor probe with the self-transparent capture, and the overlay drawing the mip-0 term. It falsifies the self-occlusion and `Equal`-landing assumptions before the format and mip work.
 - **Split first.** `compute_cull.rs`, `renderer_render_frame.rs` and level-compiler `pipeline.rs` are past the size guideline. Split before extending, behaviour-preserving, each in its own commit.
 
 ## Open questions
 - Counsel on Tencent WO2026113651A1 claim 1 for world faces. — owner, with counsel — **blocks build**
-- Counsel on glow delta tiles summed at sample time: Tencent US12293451B2 claim 1(c), nearest risk and the id-27 question, and WO2026113651A1 claims 10 and 19 (`ip-delta-tiles.md` §8). It decides whether the rival can replace the deferred volume-glow limit. — owner, with counsel
-- Selective glow SSR: owner sign-off on a screen-space march on world faces, and counsel on `ip-glow-ssr.md`. Choosing it, delta tiles, both or neither is the owner's call. — owner, with counsel
 - Sharpness floor value (estimate n ≈ 6–16) and the fade band's width. — **delegated**
 - What counts as one facing for an authored box: the normal tolerance. — **delegated**: the build warns when one box makes more than a handful of probes, naming it.
 - How `_capture_offset` applies to each per-facing probe of one authored box. — **delegated**

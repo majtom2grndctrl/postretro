@@ -50,6 +50,13 @@ impl<'a> MoverAbsentDepth<'a> {
         }
     }
 
+    /// Heap bytes for the test ledger: the validity per probe and each id-59
+    /// tile reference's B-tree entry, at the share the price allows it.
+    #[cfg(test)]
+    pub(crate) fn heap_bytes(&self) -> u64 {
+        self.validity.capacity() as u64 + self.tiles.len() as u64 * 48
+    }
+
     fn averaged(&self, probe: u32) -> [f32; 2] {
         averaged_moments(self.section, probe)
     }

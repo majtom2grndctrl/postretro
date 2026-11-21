@@ -38,12 +38,17 @@ mod mover_bounce_stage;
 mod mover_fidelity_summary;
 mod mover_light_stage;
 mod mover_probe_stage;
+#[cfg(test)]
+#[path = "pipeline/mover_window_tests.rs"]
+mod mover_window_tests;
 pub(crate) mod runtime_cells;
 mod sdf_stage;
 mod sh_analysis_stage;
 mod sh_working_set_gates;
 mod stage_registry;
 mod texture_stage;
+#[cfg(test)]
+mod window_ledger;
 use crate::buried_lights::BuriedLights;
 use crate::{
     animated_direct_sh_bake, animated_light_chunks, animated_light_weight_maps,
@@ -122,6 +127,15 @@ pub(crate) fn prepare(args: &Args) -> anyhow::Result<PreparedMap> {
     Ok(PreparedMap {
         map_data,
         parsing_elapsed: started.elapsed(),
+    })
+}
+
+/// The entity-shadow selection's heap, by capacity.
+fn planned_entity_shadow_bytes(
+    selection: &Option<postretro_level_format::entity_shadow_lights::EntityShadowLightsSection>,
+) -> u64 {
+    selection.as_ref().map_or(0, |section| {
+        (section.light_indices.capacity() * size_of::<u32>()) as u64
     })
 }
 
@@ -501,7 +515,7 @@ fn run_after_parsing(
     let subblock_f16_len = PROBES_PER_CELL
         .checked_mul(delta_probe_f16_stride(DEFAULT_IRRADIANCE_TILE_DIMENSION))
         .ok_or_else(|| anyhow::anyhow!("delta sub-block f16 length overflow"))?;
-    let delta_working_set_projection = project_delta_working_set(
+    let mut delta_working_set_projection = project_delta_working_set(
         [
             DeltaCsrProjectionInput {
                 label: "DeltaShVolumes (id 27)",
@@ -620,7 +634,25 @@ fn run_after_parsing(
         map_data.bounce_fill,
         args.working_set_max_bytes,
     )?;
-    sh_base_projection.price_movers(&bounce_plan.cost);
+    // The mover channel's direct half runs after the delta and direct-SH
+    // stages, beside every SH section alive there: the dense deltas at the
+    // SH-delta gate's bound, id 35 and its analysis clone from the probe
+    // grid, and the entity-shadow selection.
+    let direct_window = surface_radiance::DirectWindow {
+        dense_delta_bytes: delta_working_set_projection.cumulative_dense_bytes,
+        direct_volume_bytes: if static_baked_lights.is_empty() {
+            0
+        } else {
+            2 * sh_bake::sh_volume_bytes(sh_bake::probe_grid_dims(
+                &geo_result,
+                sh_config.probe_spacing,
+            ))
+            .map_or(0, |bytes| bytes.section)
+        },
+        entity_shadow_bytes: planned_entity_shadow_bytes(&planned_deltas.entity_shadow_lights),
+    };
+    sh_base_projection.price_movers(&bounce_plan.cost, &direct_window);
+    delta_working_set_projection.carry(sh_base_projection.carried_bytes(&bounce_plan.cost));
     sh_working_set_gates::admit_sh_working_sets(
         delta_working_set_projection,
         &sh_base_projection,
@@ -765,6 +797,19 @@ fn run_after_parsing(
         &mut probe_depth_tiles,
         probe_depth_tile_cap,
     )?;
+    // What the mover channel's windows hold, for the test ledger: the SH
+    // delta and direct-SH stages, then the direct half.
+    #[cfg(test)]
+    let mut windows = window_ledger::Windows::default();
+    #[cfg(test)]
+    {
+        windows.hold(
+            "id-34 section",
+            sh_bake::section_heap_bytes(&sh_volume_section),
+        );
+        windows.hold("probe depth tiles", probe_depth_tiles.heap_bytes());
+        windows.hold("posed solids", posed_movers.heap_bytes());
+    }
     let mut mover_bounce_summary: Vec<String> = (mover_bounce_blocks
         != crate::mover_probe_channel::BounceBlocks::default())
     .then(|| mover_bounce_stage::summary_line(&mover_bounce_blocks, &mover_depth_reservation))
@@ -801,6 +846,11 @@ fn run_after_parsing(
     let mut sh_analyze_base_indirect: Option<
         postretro_level_format::sh_volume::OctahedralShVolumeSection,
     > = Some(sh_volume_section.clone());
+    #[cfg(test)]
+    windows.hold(
+        "id-34 analysis clone",
+        sh_bake::section_heap_bytes(&sh_volume_section),
+    );
     let total_probes = sh_volume_section.total_probes();
     let valid_probes = sh_volume_section
         .probes
@@ -844,6 +894,8 @@ fn run_after_parsing(
             &delta_sh_control,
         )
     };
+    #[cfg(test)]
+    windows.delta("id-27 section", delta_sh_volumes_section.as_ref());
     match delta_sh_volumes_section.as_ref() {
         Some(section) => ensure_bake_csr_matches_plan(
             "DeltaShVolumes (id 27)",
@@ -921,6 +973,7 @@ fn run_after_parsing(
         sh_analyze_base_direct = Some(raw.clone());
         Some(raw)
     };
+
     finish_stage(
         &mut timings,
         reporter.as_ref(),
@@ -962,6 +1015,11 @@ fn run_after_parsing(
             &animated_direct_sh_control,
         )
     };
+    #[cfg(test)]
+    windows.animated_delta(
+        "id-45 section",
+        animated_direct_sh_delta_volumes_section.as_ref(),
+    );
     match animated_direct_sh_delta_volumes_section.as_ref() {
         Some(section) => ensure_bake_csr_matches_plan(
             "AnimatedDirectShDeltaVolumes (id 45)",
@@ -1082,6 +1140,8 @@ fn run_after_parsing(
     } else {
         reporter.skip_stage(StageId::EntityShadowLights);
     }
+    #[cfg(test)]
+    windows.direct_delta("id-41 section", direct_sh_delta_volumes_section.as_ref());
     timings.push((StageId::DirectShDeltaBake.label(), direct_sh_delta_elapsed));
     if direct_sh_delta_volumes_section.is_some() {
         reporter.finish_stage(StageId::DirectShDeltaBake);
@@ -1089,6 +1149,18 @@ fn run_after_parsing(
         reporter.skip_stage(StageId::DirectShDeltaBake);
     }
     log_direct_sh_delta_stats(direct_sh_delta_stats.as_ref(), args.verbose);
+    // The SH delta and direct-SH stages end: what the SH-delta gate's
+    // projection prices, with what the mover channel carries through them.
+    #[cfg(test)]
+    crate::live_bytes::phase("sh delta stages");
+    // The direct window prices the other SH sections alive beside it, which
+    // the SH-delta gate's base-copy share covers before it.
+    #[cfg(test)]
+    {
+        windows.direct_volume("id-35 section", direct_sh_volume_section.as_ref());
+        windows.direct_volume("id-35 analysis clone", sh_analyze_base_direct.as_ref());
+        windows.entity_shadow(entity_shadow_lights_section.as_ref());
+    }
 
     // The mover probe channel's direct half bakes before any storage
     // classifier, so its cells cap id 41's levels and the shared base levels
@@ -1113,7 +1185,13 @@ fn run_after_parsing(
                 args.mover_payload_resident_bar,
             ),
         })?;
+    #[cfg(test)]
+    if let Some(half) = mover_direct_half.as_ref() {
+        windows.hold("mover direct entries", half.heap_bytes());
+    }
     drop(posed_movers);
+    #[cfg(test)]
+    windows.release("posed solids");
     // The gate's report counts these beside its per-terminus rows, once
     // every tier's rows are in.
     let mover_mid_pose_only = mover_direct_half
@@ -1137,6 +1215,8 @@ fn run_after_parsing(
         animated_direct_sh_delta_volumes_section,
     );
     delta_sections.mover_channel = provisional_mover_channel;
+    #[cfg(test)]
+    windows.mover_channel("id-57 section", delta_sections.mover_channel.as_ref());
     debug_assert_eq!(
         delta_sections.config, args.delta_section_config,
         "the post-bake delta handoff must retain the resolved compiler configuration"
@@ -1153,6 +1233,12 @@ fn run_after_parsing(
             delta_sections.animated_direct.clone(),
         )
     });
+    #[cfg(test)]
+    if let Some((indirect, direct, animated)) = sh_analyze_dense_deltas.as_ref() {
+        windows.delta("id-27 analysis clone", indirect.as_ref());
+        windows.direct_delta("id-41 analysis clone", direct.as_ref());
+        windows.animated_delta("id-45 analysis clone", animated.as_ref());
+    }
     // Production id-41 coarsening classifies each 4×4×4 brick while payloads
     // are still dense, before the single valid-probe compaction. The map-level
     // opt-out is checked here, before classification, so its untouched all-L0
@@ -1267,6 +1353,12 @@ fn run_after_parsing(
         classification
     };
     delta_sections.apply_valid_probe_compaction(&sh_volume_section)?;
+    #[cfg(test)]
+    {
+        windows.delta("id-27 section", delta_sections.indirect.as_ref());
+        windows.direct_delta("id-41 section", delta_sections.direct.as_ref());
+        windows.animated_delta("id-45 section", delta_sections.animated_direct.as_ref());
+    }
     delta_sections.enforce_payload_cap()?;
     if let (Some(selection), Some(deltas)) = (
         delta_sections.entity_shadow_lights.as_ref(),
@@ -1280,12 +1372,21 @@ fn run_after_parsing(
     let mut mover_placement_summary = None;
     if let Some(half) = mover_direct_half.as_ref() {
         half.finish_section(&mut delta_sections)?;
+        #[cfg(test)]
+        windows.mover_channel("id-57 section", delta_sections.mover_channel.as_ref());
         mover_placement_summary = delta_sections
             .mover_channel
             .as_ref()
             .map(|section| half.summary_line(section));
     }
     drop(mover_direct_half);
+    // The direct half ends: what the SH base gate's direct phase prices.
+    #[cfg(test)]
+    {
+        windows.release("mover direct entries");
+        crate::live_bytes::phase("mover direct");
+        drop(windows);
+    }
 
     // Output-preserving SH coarsenability analysis (`--sh-analyze`). Runs AFTER
     // the delta sections are finalized — post EntityShadowLights static-light

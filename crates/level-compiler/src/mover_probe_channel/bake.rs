@@ -379,6 +379,9 @@ struct Finish<'a> {
     cells: Option<ProbeCells>,
     /// The movers whose blocks joined, in job order, for the cap's error.
     joined: Vec<String>,
+    /// The loop's buffers in the test ledger.
+    #[cfg(test)]
+    held: Vec<crate::live_bytes::Held>,
 }
 
 /// Re-bake id 34 per pose of each slot whose memo misses, each mover posed
@@ -406,11 +409,15 @@ pub(crate) fn bake_mover_bounce(
 ) -> MoverBounceBake {
     let valid = valid_probes(inputs.layout);
     let absent_depth = MoverAbsentDepth::new(inputs.base, inputs.depth_tiles);
+    #[cfg(test)]
+    let _absent_depth = crate::live_bytes::hold("mover absent depth", absent_depth.heap_bytes());
     let mut shared: Option<PoseShared<'_>> = None;
     let mut finish = Finish {
         bars: None,
         cells: None,
         joined: Vec::new(),
+        #[cfg(test)]
+        held: Vec::new(),
     };
     let mut out = MoverBounceBake::default();
     let mut union = DepthUnion::default();
@@ -588,11 +595,17 @@ fn finish_mover<'a>(
 ) -> Result<(), MoverPayloadCapExceeded> {
     if states.pose_count > 2 {
         let bars = finish.bars.get_or_insert_with(|| {
-            SkipBars::new(
+            let bars = SkipBars::new(
                 inputs.base,
                 MoverAbsentDepth::new(inputs.base, inputs.depth_tiles),
                 request.uncompressed,
-            )
+            );
+            #[cfg(test)]
+            finish.held.push(crate::live_bytes::hold(
+                "mover skip bars",
+                bars.heap_bytes(),
+            ));
+            bars
         });
         let started = Instant::now();
         let counts = skip_redundant_mid_poses(&mut states, &job.read_knots, bars);
@@ -613,9 +626,15 @@ fn finish_mover<'a>(
     }
     let base = inputs.base;
     let cells = finish.cells.get_or_insert_with(|| {
-        ProbeCells::new(base.grid_dimensions, |probe| {
+        let cells = ProbeCells::new(base.grid_dimensions, |probe| {
             base.probes[probe].validity != 0
-        })
+        });
+        #[cfg(test)]
+        finish.held.push(crate::live_bytes::hold(
+            "mover probe cells",
+            (cells.valid_masks.capacity() * size_of::<u64>()) as u64,
+        ));
+        cells
     });
     let bytes = out.blocks.heap_bytes() + BounceBlocks::mover_bytes(&states, cells);
     if bytes > request.payload_cap {
@@ -633,6 +652,11 @@ fn finish_mover<'a>(
     }
     out.blocks.push_mover(&states, cells);
     finish.joined.push(job.label.clone());
+    #[cfg(test)]
+    finish.held.push(crate::live_bytes::hold(
+        "mover finish names",
+        job.label.capacity() as u64 + size_of::<String>() as u64,
+    ));
     Ok(())
 }
 

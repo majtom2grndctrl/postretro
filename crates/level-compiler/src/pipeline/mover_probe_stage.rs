@@ -149,6 +149,12 @@ pub(super) fn bake_direct_half(inputs: DirectHalfInputs<'_>) -> anyhow::Result<O
 }
 
 impl DirectHalf {
+    /// The direct bake's heap, for the test ledger.
+    #[cfg(test)]
+    pub(super) fn heap_bytes(&self) -> u64 {
+        self.bake.heap_bytes()
+    }
+
     /// Id 57 with every optional own-tile flag clear (bake-only entries
     /// always carry theirs): what the storage classifiers read, before ids
     /// 41 and 45 are final. `None` with no entry. The

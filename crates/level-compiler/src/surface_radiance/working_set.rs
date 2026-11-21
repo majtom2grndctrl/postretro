@@ -56,13 +56,14 @@ pub(crate) struct ShBaseWorkingSetProjection {
     /// on a hit.
     pub(crate) volume_entry_phase_bytes: u64,
     /// The mover probe channel's bounce bake ([`Self::price_movers`]): the
-    /// patch cache and id 34 beside one pose's shading, the movers'
-    /// accumulated states and the posed scenes; zero with no mover.
+    /// patch cache and id 34 beside the blocks at the cap, one mover's
+    /// states and one pose's shading, or the finish of one mover, or the
+    /// layers, bounce one and id 34's later bounces a slot builds when its
+    /// read-back fails; zero with no mover.
     pub(crate) mover_bounce_phase_bytes: u64,
-    /// The direct half after the patch cache drops: id 34, the movers'
-    /// states and blocks, the posed solids, and the direct entries with the
-    /// one id-57 section built from them (the provisional section drops
-    /// before the final one assembles).
+    /// The direct half, after the SH delta and direct-SH stages: every SH
+    /// section alive there, the posed solids, the blocks and the id-57
+    /// section at the cap with the direct entries at their bound.
     pub(crate) mover_direct_phase_bytes: u64,
     pub(crate) estimated_peak_bytes: u64,
     pub(crate) budget_bytes: u64,
@@ -74,48 +75,82 @@ pub(crate) struct ShBaseWorkingSetProjection {
     light_reach_total: u64,
 }
 
+/// The SH sections alive beside the mover channel's direct half, priced
+/// before any ray: the delta bakes' dense bound, id 35 from the probe grid
+/// and the entity-shadow selection.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct DirectWindow {
+    /// Ids 27, 41 and 45 at the SH-delta gate's dense bound, never their
+    /// post-drop payload cap: they are still dense there.
+    pub(crate) dense_delta_bytes: u64,
+    /// Id 35 at its bound from the probe grid, and its `--sh-analyze`
+    /// clone, held for every bake with a static light.
+    pub(crate) direct_volume_bytes: u64,
+    /// The entity-shadow light selection.
+    pub(crate) entity_shadow_bytes: u64,
+}
+
 impl ShBaseWorkingSetProjection {
     /// Price the mover probe channel into every phase it outlives: the posed
     /// scenes from the gate on; the summed bounce one kept for the posed
-    /// bakes and id 34's later bounces kept for them from the sum on; the movers' accumulated states (memo hits included) from
-    /// the later bounces on; and its own two phases. The peak is re-taken.
-    pub(crate) fn price_movers(&mut self, cost: &MoverChannelCost) {
+    /// bakes and id 34's later bounces kept for them from the sum on; the
+    /// blocks at the cap once movers finish; its bake; and its direct
+    /// window, beside `window`'s sections. Movers finish one at a time, so
+    /// one mover's states are priced, never every mover's. The peak is
+    /// re-taken.
+    pub(crate) fn price_movers(&mut self, cost: &MoverChannelCost, window: &DirectWindow) {
         if *cost == MoverChannelCost::default() {
             return;
         }
         let patch_count = self.patch_count;
         let scenes = cost.scene_bytes;
-        let states = cost.accumulated_states_bytes();
+        let blocks = cost.payload_cap;
         let kept = cost.kept_later_bytes(patch_count);
         let bounce_one = if cost.radiance_movers > 0 {
             self.sum_bytes
         } else {
             0
         };
-        let held = scenes + bounce_one + kept + states;
+        let held = scenes + bounce_one + kept;
         self.gate_phase_bytes += scenes;
         self.layer_phase_bytes += scenes;
         self.sum_phase_bytes += scenes + bounce_one;
         self.bounce_phase_bytes += held;
         self.gather_phase_bytes += held;
-        self.volume_entry_phase_bytes += scenes + states;
+        // Cold, the volume's entry is written after the movers finish.
+        self.volume_entry_phase_bytes += scenes + blocks;
         let patch_cache = self.patch_set_bytes + self.resident_bytes;
-        let resident = patch_cache + self.reach_index_bytes + self.section_bytes + scenes + states;
-        // Cold: the patch cache's radiance beside one pose. Warm on an id-34
-        // hit: the layers resolving, then id 34's later bounces gathered for
-        // the kept ones or read from their memo (the payload beside the
-        // decoded layers), then one pose.
+        let resident = patch_cache + self.reach_index_bytes + self.section_bytes + scenes + blocks;
+        // One pose baking: cold beside the patch cache's radiance.
         let pose =
             resident + bounce_one + kept + cost.pose_bytes(patch_count, self.light_reach_total);
-        let cold = pose + self.sum_bytes;
-        let resolve = self.layer_phase_bytes + self.section_bytes + states;
-        let warm_tail = resident + bounce_one + kept + self.bounce_buffer_bytes.max(kept);
-        self.mover_bounce_phase_bytes = cold.max(resolve).max(warm_tail).max(pose);
+        // One mover finishing: its states, their skipped copy, the skip
+        // bars and the cells, encoding into the blocks.
+        let finish = resident + bounce_one + kept + cost.states_bytes() + cost.finish_bytes();
+        let cold = pose.max(finish) + self.sum_bytes;
+        // Warm, a slot whose read-back fails builds what its pose reads,
+        // its other poses read back and the blocks joined so far beside
+        // it: the layers resolving, then id 34's later bounces gathered or
+        // read from their memo beside bounce one.
+        let raw = cost.raw_mover_bytes();
+        let resolve =
+            self.layer_phase_bytes + self.section_bytes + blocks + raw + cost.finish_bytes();
+        let warm_tail = resident + bounce_one + kept + self.bounce_buffer_bytes.max(kept) + raw;
+        self.mover_bounce_phase_bytes = cold.max(resolve).max(warm_tail).max(pose).max(finish);
+        // After the SH delta and direct-SH stages: id 34 and its analysis
+        // clone, id 35 and its clone, the dense deltas, the entity-shadow
+        // selection and the posed solids; the blocks, the id-57 section the
+        // blocks assemble into and the copy they assemble from, each at the
+        // cap, with the direct entries at their bound in the bake and in
+        // the section.
         self.mover_direct_phase_bytes = self.resident_bytes
-            + self.section_bytes
-            + 2 * states
-            + 2 * cost.direct_entry_bytes
-            + cost.solid_bytes;
+            + 2 * self.section_bytes
+            + window.direct_volume_bytes
+            + window.dense_delta_bytes
+            + window.entity_shadow_bytes
+            + cost.solid_bytes
+            + 3 * blocks
+            + 2 * cost.direct_entry_bytes;
         self.estimated_peak_bytes = [
             self.gate_phase_bytes,
             self.layer_phase_bytes,
@@ -129,6 +164,17 @@ impl ShBaseWorkingSetProjection {
         .into_iter()
         .max()
         .expect("eight phases");
+    }
+
+    /// What the mover channel carries through the SH delta and direct-SH
+    /// stages, for the SH-delta gate's projection: the blocks at the cap,
+    /// the posed solids, and id 34 with its analysis clone. Zero with no
+    /// mover.
+    pub(crate) fn carried_bytes(&self, cost: &MoverChannelCost) -> u64 {
+        if *cost == MoverChannelCost::default() {
+            return 0;
+        }
+        cost.payload_cap + cost.solid_bytes + 2 * self.section_bytes
     }
 
     /// Admit the projection, or refuse it by name when it exceeds the budget.

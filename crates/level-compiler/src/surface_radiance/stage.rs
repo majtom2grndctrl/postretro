@@ -345,6 +345,8 @@ pub(crate) fn bake_sh_base_with_movers(
         if !movers.is_empty() {
             stage_events::record(stage_events::MOVER_BOUNCE_DONE);
         }
+        #[cfg(test)]
+        crate::live_bytes::phase("mover bake");
         let recorded = BakeTimeRecord::new(volume.cache, &volume.key).get();
         let outcome = outcome(&lookup, movers, baked, recorded);
         return (
@@ -469,6 +471,8 @@ pub(crate) fn bake_sh_base_with_movers(
     if !movers.is_empty() {
         stage_events::record(stage_events::MOVER_BOUNCE_DONE);
     }
+    #[cfg(test)]
+    crate::live_bytes::phase("mover bake");
     #[cfg(test)]
     drop(_absent);
     drop(absent);

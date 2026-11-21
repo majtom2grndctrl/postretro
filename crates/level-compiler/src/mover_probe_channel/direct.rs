@@ -148,6 +148,22 @@ impl DirectEntry {
 }
 
 impl MoverDirectBake {
+    /// Heap bytes, by capacity, for the test ledger.
+    #[cfg(test)]
+    pub(crate) fn heap_bytes(&self) -> u64 {
+        (self.lights.capacity() * size_of::<LightEntries>()) as u64
+            + self
+                .lights
+                .iter()
+                .flat_map(|light| {
+                    std::iter::once((light.entries.capacity() * size_of::<DirectEntry>()) as u64)
+                        .chain(light.entries.iter().map(|entry| {
+                            (entry.visibility.capacity() + entry.tiles.capacity() * 2) as u64
+                        }))
+                })
+                .sum::<u64>()
+    }
+
     pub(crate) fn entry_count(&self) -> usize {
         self.lights.iter().map(|light| light.entries.len()).sum()
     }

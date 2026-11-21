@@ -100,6 +100,7 @@ pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<B
         layout,
         inputs.bounce_fill,
         depth_cap,
+        inputs.payload_cap,
         inputs.direct_lights,
         posed,
     );
@@ -207,4 +208,4 @@ pub(super) fn summary_line(blocks: &BounceBlocks, reservation: &DepthReservation
 
 #[cfg(test)]
 #[path = "mover_bounce_stage_tests.rs"]
-mod tests;
+pub(super) mod tests;

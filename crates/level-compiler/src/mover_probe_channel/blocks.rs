@@ -43,6 +43,9 @@ pub(crate) struct MoverPayloadCapExceeded {
 pub(crate) struct BounceBlocks {
     pub(crate) bounce: Vec<BounceEntryParts>,
     pub(crate) depth: Vec<DepthRecordParts>,
+    /// Its heap in the test ledger, kept at its current capacity.
+    #[cfg(test)]
+    held: crate::live_bytes::Held,
 }
 
 /// What the blocks hold, for the log and the summary.
@@ -154,6 +157,11 @@ impl BounceBlocks {
             before + predicted,
             "a mover's blocks grow the blocks by exactly their predicted bytes"
         );
+        #[cfg(test)]
+        {
+            drop(std::mem::take(&mut self.held));
+            self.held = crate::live_bytes::hold("mover bounce blocks", self.heap_bytes());
+        }
     }
 
     /// What the blocks hold, by capacity: every byte

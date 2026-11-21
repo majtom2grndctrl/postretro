@@ -37,11 +37,17 @@ cited symbol exists. No Decision premise is false. The Path is stale or incomple
   `surface_radiance::LightDigest::of` needs them by hand. Inert keys (`delay`,
   `_light_size`, spot keys) are normalised out of `MapLight` at translation, or the
   "re-keys nothing" rows fail.
-- Billboard scatter (ids 47/48) is not an SH projection: `visible_radiance_sum` stores a
-  normal-free, isotropic RGB per probe. The Decision's "project over the polygon" reads,
-  for scatter, as the polygon's solid-angle integral L·Ω × weighted visibility (the
-  isotropic analogue of a point light's I/d², equal to it in the far limit). Row 11 needs
-  restating (below).
+- Billboard scatter (ids 47/48) is not an SH projection: `visible_radiance_sum` stores,
+  per light, the radiance arriving at the probe with no surface cosine. For a point light
+  that is I/d², what a card facing the light receives, and runtime dynamic lights on
+  scatter maps follow the same rule (`billboard.wgsl` `color × attenuation`). The polygon
+  analogue keeps that invariant: the polygon term evaluated with the probe treated as a
+  receiver facing the light's net direction Φ̂ (normalised irradiance vector of the
+  polygons whose front half-space holds the probe), × the texel path's weighted
+  visibility with Φ̂ as the receiver normal. It equals I/d² in the far limit and never
+  exceeds what a card facing the light receives. L·Ω was considered and rejected: it
+  reads up to 2× a surface facing the panel (1.42× at 1 m under a 4 × 4 m panel), a
+  brightness no point light gives scatter today. Row 11 needs restating (below).
 - `delta_drop_policy` reads `falloff_range` only in a test; no change there.
 - `affinity_grid::light_portal_reach` floods portals from the leaf holding `light.origin`
   and bypasses the filter when that leaf is solid → an area light floods from the leaves
@@ -105,8 +111,9 @@ panel over the polygon: at a probe 1 m below, the side-facing value is within 5%
 
 > Billboard scatter and the mover probe channel each integrate a 4 × 4 m panel over the
 > polygon. At a probe 1 m below its centre, the mover probe channel's side-facing
-> reconstruction is within 5% of 0.781, and billboard scatter stores L·Ω within 5%
-> (Ω = 3.709 sr), not the centroid point value L·A/d² (16).
+> reconstruction is within 5% of 0.781, and billboard scatter stores the polygon term
+> facing the panel within 1% of 2.611, the floor's value there, not the centroid point
+> value L·A/d² (16).
 
 ## AC-to-proof
 
@@ -189,7 +196,7 @@ not edit `plan.md` or commit. Each task commits with its row update.
 | 1 | Polygon maths core: new compiler `area_light` module — clipped Lambert term and irradiance vector (f64 atan2), solid angle, derived reach and Karis window, emitter and reach spheres, Ureña/Arvo-fan solid-angle sampler with cosθ_r weights. Rows 1–4 | worker, reviewed by integrator | — | |
 | 2 | Authoring and translation, lightmap term: `LightType::Area` (compiler, loader, `LightKind`), `light_area` parse branch, pre-BSP exposure (O6–O8), polygons + centroid + resolved reach in `MapLight`, key rules and inert-key normalisation, buried/embedded skips, FGD entry, unshadowed lightmap arm on a test map. Other bake arms read zero until tasks 4–5. Rows 12, 13, 16, 23–25, 27, 30 | integrator | 1 | |
 | 3 | Lightmap shadows and culls: polygon lattice outside both memos, ratio-estimator visibility, centre probe (O19, O20), emitter/reach sphere readers (shaft cull, flood, chart cull, layer key, affinity flood), mover light gate, weight maps, shadowmask. Rows 5, 6, 9, 10, 14 (texel, weight map), 15 (lightmap), 17, 18, 20–22, 26, 29, 31, 33, 37 | integrator | 2 | |
-| 4 | Probe arms: direct SH 35/41/45 (analytic L0–L2 + control variate), surface-radiance patch + `LightDigest`, billboard scatter (L·Ω), mover probe channel. Rows 7, 8, 11, 14, 15, 19 | worker, reviewed by integrator | 3 | |
+| 4 | Probe arms: direct SH 35/41/45 (analytic L0–L2 + control variate), surface-radiance patch + `LightDigest`, billboard scatter (term facing Φ̂), mover probe channel. Rows 7, 8, 11, 14, 15, 19 | worker, reviewed by integrator | 3 | |
 | 5 | Animated bounce: one-sample polygon arm, delta `light_aabb`/affinity reach sphere. Rows 34–36 | integrator | 4 | |
 | 6 | Wire and refusals: AlphaLights v5 (pack, loader, engine), silent unassigned leaf, animated-promotion refusal, placeholder `SpecLight` out of id-42 owners and chunk lists. Rows 32, 38 | worker | 2 | |
 | 7 | Glow: `_glow` rules, area glow section + loader + cap, compiler stamping after namespaces, widened slot-2 table, forward area branch on compose descriptors with clamp, membership skip, `_start_inactive` reservation, reflection capture glow, key and share. Rows 28, 45–60 (glow parts) | worker, reviewed by integrator | 6 | |

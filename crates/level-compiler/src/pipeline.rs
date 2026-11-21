@@ -639,7 +639,11 @@ fn run_after_parsing(
     // SH-delta gate's bound, id 35 and its analysis clone from the probe
     // grid, and the entity-shadow selection.
     let direct_window = surface_radiance::DirectWindow {
-        dense_delta_bytes: delta_working_set_projection.cumulative_dense_bytes,
+        // Dense and compaction residency, and the analysis clone when kept:
+        // the copy chain less its base-copy share, priced apart below.
+        dense_delta_bytes: delta_working_set_projection
+            .cumulative_dense_bytes
+            .saturating_mul(delta_working_set_projection.copy_chain_factor - 1),
         direct_volume_bytes: if static_baked_lights.is_empty() {
             0
         } else {

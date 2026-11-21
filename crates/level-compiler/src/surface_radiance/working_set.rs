@@ -71,8 +71,12 @@ pub(crate) struct ShBaseWorkingSetProjection {
     resident_bytes: u64,
     reach_index_bytes: u64,
     /// Id 34's section, animation tables and depth tiles.
-    section_bytes: u64,
+    pub(crate) section_bytes: u64,
     light_reach_total: u64,
+    /// What [`Self::price_movers`] priced the channel and its direct
+    /// window from, for the windows' per-section checks.
+    pub(crate) mover_cost: MoverChannelCost,
+    pub(crate) direct_window: DirectWindow,
 }
 
 /// The SH sections alive beside the mover channel's direct half, priced
@@ -102,6 +106,8 @@ impl ShBaseWorkingSetProjection {
         if *cost == MoverChannelCost::default() {
             return;
         }
+        self.mover_cost = cost.clone();
+        self.direct_window = window.clone();
         let patch_count = self.patch_count;
         let scenes = cost.scene_bytes;
         let blocks = cost.payload_cap;
@@ -434,6 +440,8 @@ fn project(
         reach_index_bytes: reach_index,
         section_bytes: volume.section + tables + tiles,
         light_reach_total: inputs.light_reach.iter().sum(),
+        mover_cost: MoverChannelCost::default(),
+        direct_window: DirectWindow::default(),
     })
 }
 

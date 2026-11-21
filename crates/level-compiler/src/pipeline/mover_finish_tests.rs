@@ -531,3 +531,101 @@ fn cap_and_range_on_different_movers_fail_by_name_in_both_orders() {
         "wide door first: {refused:?}"
     );
 }
+
+/// The SH base stage of `fixture` at `mode`, measured on four workers over
+/// `cache` with `edit` applied to the request: the mover-bake phase's price
+/// and the ledger's peak in its window.
+fn mover_bake_window(
+    fixture: &FixturePipeline,
+    mode: BakeMode,
+    cache: Option<&StageCache>,
+    edit: impl FnOnce(&mut MoverBounceRequest) + Send,
+) -> (u64, u64) {
+    with_ctx(fixture, |ctx, poses| {
+        let (priced, report) = measured(4, || {
+            let mut plan = plan_half_at(fixture, ctx, poses, DEFAULT_BOUNCE_FILL, mode);
+            plan.request.keep_states = false;
+            edit(&mut plan.request);
+            let (handoff, mut projection) = crate::surface_radiance::plan_sh_base(
+                ctx.geometry,
+                &crate::sh_bake::static_light_refs(ctx),
+                crate::sh_bake::animation_table_bytes(ctx.animated_lights, ctx.total_light_count),
+                super::CONFIG.probe_spacing,
+                DEFAULT_BOUNCE_FILL,
+                u64::MAX,
+            )
+            .expect("priced");
+            projection.price_movers(
+                &plan.cost,
+                &crate::surface_radiance::DirectWindow::default(),
+            );
+            let (base, outcome) = crate::surface_radiance::bake_sh_base_with_movers(
+                ctx,
+                &super::CONFIG,
+                handoff,
+                &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
+                cache,
+                &crate::bake_control::BakeControl::unrestricted(),
+                MAX_PROBE_DEPTH_TILES,
+                &plan.request,
+            );
+            assert!(outcome.refused.is_none());
+            drop((base, outcome, plan));
+            projection.mover_bounce_phase_bytes
+        });
+        let window = report
+            .phases
+            .iter()
+            .find(|phase| phase.label == "mover bake")
+            .expect("a mover bake window")
+            .peak;
+        (priced, window)
+    })
+}
+
+// The held door read back and the other baking, in both job orders: the
+// mover-bake phase's price is at or above the ledger's peak in its window
+// (M2).
+#[test]
+fn the_mover_bake_price_covers_a_held_door_beside_a_baking_one() {
+    let maps = tempfile::tempdir().expect("maps dir");
+    let primer = second_door_bounces(maps.path(), 1);
+    let fixture = second_door_bounces(maps.path(), 2);
+    let primed = tempfile::tempdir().expect("cache");
+    emitted_with(&primer, HIGH, Some(&open(primed.path())), |_| {});
+    for reversed in [false, true] {
+        let copy = cache_copy(primed.path());
+        let (priced, held) =
+            mover_bake_window(&fixture, HIGH, Some(&open(copy.path())), |request| {
+                if reversed {
+                    request.jobs.reverse();
+                }
+            });
+        assert!(
+            priced >= held,
+            "reversed {reversed}: priced {priced} B under {held} B"
+        );
+    }
+}
+
+// On a full hit at `low`, the second door's read-back fails after the first
+// door's blocks join: the layers, bounce one and id 34's later bounces build
+// at its slot, beside its read-back poses, the reach index and the blocks,
+// all routed; the mover-bake phase's price is at or above the ledger's peak
+// in its window (M4).
+#[test]
+fn a_slot_failure_after_blocks_join_is_priced() {
+    let maps = tempfile::tempdir().expect("maps dir");
+    let fixture = second_door_bounces(maps.path(), 2);
+    let ids: Vec<u32> = fixture
+        .kinematic_movers
+        .iter()
+        .map(|mover| mover.mover_id)
+        .collect();
+    let primed = tempfile::tempdir().expect("cache");
+    emitted_with(&fixture, LOW, Some(&open(primed.path())), |_| {});
+    let (priced, held) = mover_bake_window(&fixture, LOW, Some(&open(primed.path())), |request| {
+        request.fail_read_back = vec![(ids[1], 1)];
+    });
+    assert!(priced >= held, "priced {priced} B under {held} B");
+}

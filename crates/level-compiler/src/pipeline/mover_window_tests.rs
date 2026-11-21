@@ -53,6 +53,24 @@ pub(super) struct Measured {
 
 /// Compile `map` in process on `threads` workers under one ledger.
 pub(super) fn compile_measured(map: &Path, out: &Path, flags: &[&str], threads: usize) -> Measured {
+    try_compile_measured(map, out, flags, threads).expect("the map compiles")
+}
+
+/// [`compile_measured`], handing back a failed build's error with the
+/// projections its gates checked.
+#[allow(clippy::result_large_err)] // A test helper: the error carries what the gates checked.
+pub(super) fn try_compile_measured(
+    map: &Path,
+    out: &Path,
+    flags: &[&str],
+    threads: usize,
+) -> Result<
+    Measured,
+    (
+        anyhow::Error,
+        Option<(DeltaWorkingSetProjection, ShBaseWorkingSetProjection)>,
+    ),
+> {
     let path = |path: &Path| path.to_string_lossy().into_owned();
     let args = crate::parse_args_from(
         [
@@ -74,21 +92,23 @@ pub(super) fn compile_measured(map: &Path, out: &Path, flags: &[&str], threads: 
             started,
             crate::logger::LogSink::default(),
         ));
-        crate::pipeline::run(
+        let result = crate::pipeline::run(
             &args,
             cache,
             started,
             reporter,
             Arc::new(crate::governor::Governor::new(threads, false)),
-        )
-        .expect("the map compiles");
-        recorded::take().expect("the gates checked")
+        );
+        (result, recorded::take())
     });
-    let (delta, base) = projections;
-    Measured {
-        report,
-        delta,
-        base,
+    match projections {
+        (Ok(()), Some((delta, base))) => Ok(Measured {
+            report,
+            delta,
+            base,
+        }),
+        (Ok(()), None) => panic!("the gates checked no projection"),
+        (Err(error), recorded) => Err((error, recorded)),
     }
 }
 
@@ -112,6 +132,7 @@ fn price_of(label: &str, measured: &Measured) -> u64 {
 /// Assert every window `measured` marked sits at or under its price, and
 /// return one row per window.
 pub(super) fn assert_windows_priced(what: &str, measured: &Measured) -> Vec<String> {
+    assert_sections_priced(what, measured);
     let labels: Vec<&str> = measured
         .report
         .phases
@@ -143,6 +164,116 @@ pub(super) fn assert_windows_priced(what: &str, measured: &Measured) -> Vec<Stri
         .collect()
 }
 
+/// The ledger kinds that together hold `prefix`'s section and its analysis
+/// clone, at their high-water marks.
+fn kinds(measured: &Measured, names: &[&str]) -> u64 {
+    names
+        .iter()
+        .map(|name| measured.report.high_water.get(name).copied().unwrap_or(0))
+        .sum()
+}
+
+/// Each section the windows route at or under its own term in the price
+/// (D1, D2), what the channel carries at or under the SH-delta gate's
+/// carried term (D3), and the finish loop's buffers routed in the mover
+/// bake (P1).
+pub(super) fn assert_sections_priced(what: &str, measured: &Measured) {
+    let base = &measured.base;
+    let cost = &base.mover_cost;
+    let window = &base.direct_window;
+    let checks = [
+        (
+            "id 34 and its clone",
+            kinds(measured, &["id-34 section"]) + kinds(measured, &["id-34 analysis clone"]),
+            2 * base.section_bytes,
+        ),
+        (
+            "id 35 and its clone",
+            kinds(measured, &["id-35 section", "id-35 analysis clone"]),
+            window.direct_volume_bytes,
+        ),
+        (
+            "ids 27, 41 and 45 and their clones",
+            kinds(
+                measured,
+                &[
+                    "id-27 section",
+                    "id-41 section",
+                    "id-45 section",
+                    "id-27 analysis clone",
+                    "id-41 analysis clone",
+                    "id-45 analysis clone",
+                ],
+            ),
+            window.dense_delta_bytes,
+        ),
+        (
+            "entity-shadow selection",
+            kinds(measured, &["entity-shadow section"]),
+            window.entity_shadow_bytes,
+        ),
+        (
+            "id 57",
+            kinds(measured, &["id-57 section"]),
+            cost.payload_cap + cost.direct_entry_bytes,
+        ),
+        (
+            "direct entries",
+            kinds(measured, &["mover direct entries"]),
+            cost.direct_entry_bytes,
+        ),
+        (
+            "posed solids",
+            kinds(measured, &["posed solids"]),
+            cost.solid_bytes,
+        ),
+        (
+            "bounce and depth blocks",
+            kinds(measured, &["mover bounce blocks"]),
+            cost.payload_cap,
+        ),
+        (
+            "what the channel carries",
+            kinds(
+                measured,
+                &[
+                    "id-34 section",
+                    "id-34 analysis clone",
+                    "mover bounce blocks",
+                    "posed solids",
+                ],
+            ),
+            measured.delta.carried_bytes,
+        ),
+    ];
+    for (name, held, priced) in checks {
+        assert!(
+            held <= priced,
+            "{what}: {name} held {held} B past its term {priced} B"
+        );
+    }
+    assert!(
+        measured.delta.carried_bytes > 0,
+        "{what}: the SH-delta gate carries the channel"
+    );
+    for kind in [
+        "mover bounce blocks",
+        "mover probe cells",
+        "mover absent depth",
+        "mover finish names",
+    ] {
+        assert!(
+            measured
+                .report
+                .high_water
+                .get(kind)
+                .is_some_and(|&bytes| bytes > 0),
+            "{what}: the mover bake routes `{kind}`: {:?}",
+            measured.report.high_water
+        );
+    }
+}
+
 /// The closet with a second door on the first's path.
 fn two_doors(text: String) -> String {
     super::mover_bounce_stage::tests::two_doors(text)
@@ -169,11 +300,13 @@ fn every_priced_phase_covers_its_window_on_the_closet() {
     let primer = dev_map_in(root.path(), "mover-closet", "two-doors-primer", doors(1));
     let mut rows = Vec::new();
     let out = tempfile::tempdir().expect("out");
+    let mut cold_projections = Vec::new();
     let cap_flag = |bytes: u64| vec!["--mover-payload-max-size".to_owned(), bytes.to_string()];
     for fidelity in ["low", "high"] {
         let fid = ["--bake-fidelity", fidelity];
         let cold = compile_measured(&map, out.path(), &[&fid[..], &["--no-cache"]].concat(), 4);
         rows.extend(assert_windows_priced(&format!("{fidelity} cold"), &cold));
+        cold_projections.push(cold.base.clone());
         let cache = tempfile::tempdir().expect("cache");
         let warm: Vec<&str> = [
             &fid[..],
@@ -228,6 +361,184 @@ fn every_priced_phase_covers_its_window_on_the_closet() {
         "low over high",
         &compile_measured(&map, out.path(), &low_over_high, 4),
     ));
+    // Fidelity never enters the price.
+    assert_eq!(
+        cold_projections[0], cold_projections[1],
+        "low and high price alike"
+    );
+    for row in &rows {
+        eprintln!("{row}");
+    }
+}
+
+/// The two-door closet with its middle light pulsing (`style 5`): ids 27,
+/// 41 and 45 bake beside the movers.
+fn animated_two_doors(root: &Path) -> PathBuf {
+    dev_map_in(root, "mover-closet", "two-doors-animated", |text| {
+        let light = "\"origin\" \"320 392 288\"";
+        assert!(text.contains(light), "the middle light");
+        two_doors(text.replace(light, &format!("{light}\n\"style\" \"5\"")))
+    })
+}
+
+// With an animated light, the dense deltas and, under `--sh-analyze`, their
+// analysis clones and id 35's live through the direct window: every window
+// still at or above its ledger, each section at or under its own term (D1,
+// D2).
+#[test]
+fn the_direct_window_covers_every_section_alive() {
+    let root = tempfile::tempdir().expect("root");
+    let map = animated_two_doors(root.path());
+    let out = tempfile::tempdir().expect("out");
+    let mut rows = Vec::new();
+    for (what, flags) in [
+        ("animated, cold", vec!["--no-cache"]),
+        ("animated, --sh-analyze", vec!["--no-cache", "--sh-analyze"]),
+    ] {
+        let measured = compile_measured(&map, out.path(), &flags, 4);
+        assert!(
+            measured.delta.cumulative_dense_bytes > 0
+                && kinds(&measured, &["id-27 section", "id-45 section"]) > 0,
+            "{what}: the animated light bakes dense deltas"
+        );
+        rows.extend(assert_windows_priced(what, &measured));
+    }
+    for row in &rows {
+        eprintln!("{row}");
+    }
+}
+
+// `--sh-delta-max-size` below ids 27, 41 and 45's dense bytes but at or
+// above their post-drop payload admits the build, and the direct window's
+// price still covers each delta section as the window holds it, dense (D1).
+#[test]
+fn a_delta_cap_below_dense_still_prices_the_dense_window() {
+    let root = tempfile::tempdir().expect("root");
+    let map = animated_two_doors(root.path());
+    let out = tempfile::tempdir().expect("out");
+    let probe = compile_measured(&map, out.path(), &["--no-cache"], 4);
+    let dense = probe.delta.cumulative_dense_bytes;
+    let cap = (dense - 1).to_string();
+    let measured = compile_measured(
+        &map,
+        out.path(),
+        &["--no-cache", "--sh-delta-max-size", &cap],
+        4,
+    );
+    for row in assert_windows_priced("delta cap one under dense", &measured) {
+        eprintln!("{row}");
+    }
+}
+
+// On the two-door closet the SH-delta gate's projection sits under the SH
+// base gate's peak, so the delta gate checks first. One byte under the SH
+// base peak refuses by the SH base gate's name, before any SH ray; at the
+// peak both SH gates admit, and only the lightmap stage's own gate, which
+// reads the same budget after them, may still refuse (G1).
+#[test]
+fn one_byte_under_the_sh_base_peak_refuses_by_its_name_through_gate_order() {
+    let root = tempfile::tempdir().expect("root");
+    let map = dev_map_in(root.path(), "mover-closet", "two-doors", two_doors);
+    let out = tempfile::tempdir().expect("out");
+    let probe = compile_measured(&map, out.path(), &["--no-cache"], 4);
+    let (delta, peak) = (
+        probe.delta.estimated_peak_bytes,
+        probe.base.estimated_peak_bytes,
+    );
+    assert!(
+        delta < peak,
+        "the cheaper SH-delta gate checks first: {delta} against {peak}"
+    );
+    let under = (peak - 1).to_string();
+    let (error, recorded) = try_compile_measured(
+        &map,
+        out.path(),
+        &["--no-cache", "--working-set-max-size", &under],
+        4,
+    )
+    .err()
+    .expect("one byte under the peak refuses");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("SH base working-set gate refused before patch shading")
+            && message.contains(&format!("estimated peak {peak} bytes")),
+        "{message}"
+    );
+    assert!(recorded.is_some(), "refused at the gates");
+    // At the peak both SH gates admit. The lightmap stage's own gate reads
+    // the same budget later, with its own estimator, and may refuse there.
+    let at = peak.to_string();
+    if let Err((error, recorded)) = try_compile_measured(
+        &map,
+        out.path(),
+        &["--no-cache", "--working-set-max-size", &at],
+        4,
+    ) {
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("Lightmap working-set gate refused") && recorded.is_some(),
+            "at the peak, only a later gate may refuse: {message}"
+        );
+    }
+}
+
+// Every mover fixture beyond the closet, at `low` and `high`: cold, warm
+// over an empty cache and on a full hit, each priced phase at or above the
+// ledger's peak in its window and each section at or under its term (P1,
+// P2, D1, D3). `POSTRETRO_MOVER_WINDOW_MAPS` narrows it to a comma-separated
+// list of dev map stems.
+#[test]
+#[ignore = "compiles every mover fixture six times in process (the setpiece alone takes minutes); run on demand"]
+fn every_priced_phase_covers_its_window_on_every_mover_fixture() {
+    let names: Vec<String> = std::env::var("POSTRETRO_MOVER_WINDOW_MAPS")
+        .map(|names| {
+            names
+                .split(',')
+                .map(|name| name.trim().to_owned())
+                .collect()
+        })
+        .unwrap_or_else(|_| {
+            [
+                "mover-setpiece",
+                "mover-pins",
+                "closet-reveal",
+                "enemy-movers",
+            ]
+            .map(str::to_owned)
+            .to_vec()
+        });
+    let mut rows = Vec::new();
+    for name in &names {
+        let root = tempfile::tempdir().expect("root");
+        let map = dev_map_in(root.path(), name, name, |text| text);
+        let out = tempfile::tempdir().expect("out");
+        let mut projections = Vec::new();
+        for fidelity in ["low", "high"] {
+            let fid = ["--bake-fidelity", fidelity];
+            let cold = compile_measured(&map, out.path(), &[&fid[..], &["--no-cache"]].concat(), 4);
+            rows.extend(assert_windows_priced(
+                &format!("{name} {fidelity} cold"),
+                &cold,
+            ));
+            projections.push(cold.base);
+            let cache = tempfile::tempdir().expect("cache");
+            let warm: Vec<&str> = [
+                &fid[..],
+                &["--cache-dir", cache.path().to_str().expect("utf-8")],
+            ]
+            .concat();
+            for mode in ["warm empty", "full hit"] {
+                rows.extend(assert_windows_priced(
+                    &format!("{name} {fidelity} {mode}"),
+                    &compile_measured(&map, out.path(), &warm, 4),
+                ));
+            }
+        }
+        assert_eq!(
+            projections[0], projections[1],
+            "{name}: low and high price alike"
+        );
+    }
     for row in &rows {
         eprintln!("{row}");
     }

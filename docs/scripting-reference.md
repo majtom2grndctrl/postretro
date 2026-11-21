@@ -1278,16 +1278,17 @@ weapon: {
 ### Projectile splash damage
 
 `splash` is a peer of `projectile`, not projectile travel tuning. The current
-engine applies it only when a projectile contacts static world geometry or a
-damageable entity. A hitscan descriptor containing `splash` is rejected at
+engine applies it only when a projectile contacts world geometry (level
+geometry, or a mover such as a door where it stands) or a damageable entity. A hitscan descriptor containing `splash` is rejected at
 load; omit the block to keep ordinary no-splash hitscan behavior.
 
 The projectile contact point is the blast center. Every live damageable volume
 intersecting `radius` is considered once. Damage uses the weapon's effective
 `damage` at the center and falls off linearly to
 `damage * minFraction` at the radius edge, measured to the nearest point on each
-target's damageable volume. Static world geometry blocks the blast; movers and
-other entities do not.
+target's damageable volume. World geometry blocks the blast, movers included
+where they stand; other entities do not. A rocket a door closes on detonates
+at once, and its blast reaches only the side it came from.
 
 | Splash field | Type | Default | Validation and behavior |
 |--------------|------|---------|-------------------------|
@@ -1403,7 +1404,7 @@ splash: {
 
 The same keys work in Luau tables. Push points outward from the impact center,
 with the same upward blend. It uses the blast's radius, target-volume distance,
-and static-world occlusion. Its own `minFraction` sets the linear speed falloff
+and the same occlusion as splash damage: level geometry and movers block it. Its own `minFraction` sets the linear speed falloff
 at the blast edge, independently of damage falloff; it defaults to `0` and must
 be finite in `0..=1`. `selfScale` multiplies only the owner's received impulse,
 defaults to `1`, and must be finite in `0..=10`. Set it to `0` to disable self push
@@ -2251,7 +2252,7 @@ exception is `brain.targetDistance`, which keeps its `1e9` sentinel.
 | `brain` property | `read` name | Type | Meaning |
 |------------------|-------------|------|---------|
 | `brain.hasTarget` | `@brain.hasTarget` | `boolean` | Whether the enemy has a selected target this tick. |
-| `brain.targetVisible` | `@brain.targetVisible` | `boolean` | Engine's shared, debounced static-world LOS verdict for the selected target. `false` with no target; independent of range, cooldown, and facing. |
+| `brain.targetVisible` | `@brain.targetVisible` | `boolean` | Engine's shared, debounced line-of-sight verdict for the selected target. Level geometry and movers block it where they stand, so a closed door hides the target. `false` with no target; independent of range, cooldown, and facing. |
 | `brain.targetDistance` | `@brain.targetDistance` | `number` | Distance to the selected target in metres — or the `1e9` no-target sentinel. **Read the trap below before using it.** |
 | `brain.timeInActivityMs` | `@brain.timeInActivityMs` | `number` | Milliseconds since the activity whose transition rows are being evaluated was entered. Scope-relative in nested graphs; resets on entry. A stance's pose counts as one activity, so it keeps running from rest to hold and back. |
 | `brain.attackCooldownMs` | `@brain.attackCooldownMs` | `number` | Milliseconds left on the active named attack cooldown; `0` when no action is active or the entry has elapsed. |

@@ -332,7 +332,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .register_enum("ResolutionMode")
         .variant(
             "hitscan",
-            "Resolve instantly against the static-world collision ray.",
+            "Resolve instantly against the world collision ray: static geometry and movers at their current pose.",
         )
         .variant(
             "projectile",

@@ -89,7 +89,7 @@ A material name with a space (e.g. a collection dir `Level Eleven Games Sci-Fi T
 
 ## Custom FGD
 
-Project deliverable alongside the engine. Defines Postretro-specific entities for TrenchBroom. TrenchBroom's FGD parser has no backslash escapes, so a description never contains `\"`; quote examples inside it with single quotes. `sdk/TrenchBroom/GameConfig.cfg` hides surface-map files from the texture browser through `materials.excludes`; it lists every surface-map suffix the compiler recognizes (`_n`, `_s`, `_e`, `_h`), so adding a suffix there means adding it to the exclude list too.
+Project deliverable alongside the engine. Defines Postretro-specific entities for TrenchBroom. TrenchBroom's FGD parser has no backslash escapes, so a description never contains `\"`; quote examples inside it with single quotes. `sdk/TrenchBroom/GameConfig.cfg` hides surface-map files from the texture browser through `materials.excludes`; it lists every surface-map suffix the compiler recognizes (`_n`, `_s`, `_e`, `_h`, `_p`, `_t`), so adding a suffix there means adding it to the exclude list too. A repository gate fails when a pinned sibling suffix is missing from the excludes.
 
 | Entity | Type | Purpose | Key Properties |
 |--------|------|---------|----------------|
@@ -790,9 +790,11 @@ Per-texture mip-chain sidecars are **runtime-required compiled output** living u
 **`.prm` files.** Each sidecar bundles up to four material slots — diffuse,
 specular, normal, and emissive — each optional. Multi-slot filenames use the
 canonical bundle hash over slot mask and every present slot's raw PNG bytes.
-A `{name}_h.png` height sibling folds into that hash as an additional tagged
-input **only when present** — when absent nothing at all is folded in, so every
-bundle authored before height existed keeps its address and does not rebake.
+The `{name}_h.png` height, `{name}_p.png` smoothness and `{name}_t.png` tint
+siblings each fold into that hash as an additional tagged input **only when
+present** — when absent nothing at all is folded in, so every bundle authored
+before a sibling existed keeps its address and does not rebake. Their mask bits
+and tags append after the four slots' (`resource_management.md` §4.6, §4.7).
 A diffuse-only bundle uses `blake3(diffuse PNG content)` so world and model
 diffuse-only materials share one sidecar. Other single-slot bundles use
 `blake3(tag_byte || PNG content)`; the tag distinguishes specular, normal, and
@@ -864,11 +866,10 @@ must still validate against its active adapter before allocation. The current re
 does this for decoded-PNG sprite collection frame counts before creating its `D2Array`;
 parsed array-backed `.prm` upload is downstream work and has no renderer path yet.
 
-**Surface map (specular slot).** The specular slot has two forms, plus a third
-below. With no `{name}_h.png`, `_p` or `_t` sibling it is single-channel
-`R8Unorm` (wire tag 2). With `_h` alone it is two-channel `Rg8Unorm` (wire tag
-4): R specular (0 when `_s.png` is absent), G baked as `255 - height` from the
-author's mid-gray-centered height map. The stored byte carries no zero point:
+**Surface map (specular slot).** The specular slot has three forms. With no
+`{name}_h.png`, `_p` or `_t` sibling it is single-channel `R8Unorm` (wire tag
+2). With `_h` alone it is two-channel `Rg8Unorm` (wire tag 4): R specular (0
+when `_s.png` is absent), G baked as `255 - height` from the author's mid-gray-centered height map. The stored byte carries no zero point:
 the runtime re-centers it on 128 (`resource_management.md` §4.6). Keep it that
 way. The bundle hash covers source PNG bytes, not the bake transform, so
 changing what a stored byte means at bake time would silently reuse stale
@@ -877,11 +878,23 @@ additive and every pre-existing `.prm` parses unchanged — and `PrmSlots` bits
 4-7 stay reserved: height is not a fifth slot. The SPECULAR slot-mask bit is set
 if any sibling is present. See `resource_management.md` §4.6.
 
-A third form (decided, not yet built): a `{name}_p.png` or `{name}_t.png`
-sibling makes the slot `Rgba8Unorm` (wire tag 1). It is additive like height,
-and `STAGE_VERSION` stays 3. B holds smoothness and A tint; B = 0 and
-A = 255 mark an absent map. As for height, changing either encoding or marker
-bumps `STAGE_VERSION`. Layout: `resource_management.md` §4.7.
+A `{name}_p.png` or `{name}_t.png` sibling makes the slot `Rgba8Unorm` (wire
+tag 1): R and G as for height (G the stored plane without `_h`), B smoothness
+and A tint, with B = 0 and A = 255 marking an absent map. The bake holds both
+markers at every mip after filtering. It is additive like height, and
+`STAGE_VERSION` stays 3. As for height, changing either encoding, marker or
+marker clamp bumps `STAGE_VERSION`. Layout: `resource_management.md` §4.7.
+
+**Slot siblings: validation.** `_h`, `_p` and `_t` share the specular slot's
+texture, so each must match the diffuse and every earlier slot sibling
+present (`_s`, then `_h`, then `_p`): a mismatch is a hard bail naming both
+files. `_s` and `_n` against the diffuse stay unenforced. Every `_s`, `_n`,
+`_h`, `_p` and `_t` file under the texture root must pass the linear
+colour-space check: an `sRGB` or `iCCP` chunk, or a `gAMA` not approximately
+1.0, fails the build, even for a file no diffuse uses. `_e` is exempt. A
+new slot sibling joins the bundle suffix list, the hash, the colour-space
+check, the TrenchBroom excludes (§Custom FGD) and the gate's pinned suffix
+lists together.
 
 **Byte accounting.** The `TextureMips` stage reports the texture memory a level
 costs, at `info` level: a grand total, a per-slot breakdown, a per-mip-level
@@ -933,9 +946,11 @@ Three rules keep that total meaningful:
 **Filtering.** Mitchell-Netravali separable filter (B = C = 1/3) in linear
 space throughout. sRGB diffuse and emissive color decode via a 256-entry LUT
 before filtering and re-encode via IEC 61966-2-1. Specular filters as linear
-R8. Normal filters linearly then renormalises per output texel; `(0, 0, 1)`
-substitutes when magnitude < 1e-4. Output is then BC5-encoded (RG channels
-only; the shader reconstructs Z).
+R8; the two- and four-channel surface maps filter per channel through that
+path, and the four-channel form then holds its markers at each mip. Normal
+filters linearly then renormalises per output texel; `(0, 0, 1)` substitutes
+when magnitude < 1e-4. Output is then BC5-encoded (RG channels only; the shader
+reconstructs Z).
 
 **Cache invalidation.** Multi-slot filenames cover the complete bundle; the header repeats that bundle hash for cache validation. A world-material cache hit requires a matching bundle hash and structurally valid payload for every declared slot. Truncated or corrupt declared slots trigger a full rebake and atomic overwrite (tempfile `<hex>.prm.tmp.<pid>` → `std::fs::rename`). Diffuse-only model and world bundles retain their shared diffuse-content filename without colliding with richer world bundles. A version mismatch in the header triggers rebake. To force a full retexture rebuild, delete `baked/materials/` (the next bake repopulates it; doing so leaves the runtime without world-material mips until then).
 

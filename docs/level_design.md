@@ -908,6 +908,92 @@ uv venv && source .venv/bin/activate && uv pip install Pillow
 python3 tools/gen_specular.py --input <content-root>/textures --recursive
 ```
 
+### Highlight Sharpness and Tint
+
+Two more optional siblings shape the highlight texel by texel, so one texture can mix matte stone with polished inlay, or white-glinting marble with bronze trim:
+
+- `{diffuse}_p.png` — **smoothness**: how tight each texel's highlight is.
+- `{diffuse}_t.png` — **tint**: how much each texel's highlight takes the colour of its diffuse.
+
+Example: `metal_panel.png` → diffuse; `metal_panel_s.png` → highlight brightness; `metal_panel_p.png` → sharpness; `metal_panel_t.png` → tint.
+
+Use either on its own or both together. Neither replaces `_s.png`: `_s` still sets how bright the highlight is, and without one the surface draws no highlight at all.
+
+#### Smoothness: `_p.png`
+
+Black is the broadest highlight, white the sharpest. The compiler stores your byte exactly, and the engine turns it into a highlight size:
+
+r = 1 − p/255, exponent = 2/r⁴ − 2, clamped to 1–8192
+
+| `_p` byte | Highlight exponent | Reads as |
+|-----------|--------------------|----------|
+| 0–24 | 1 | Broadest; a soft sheen across the whole face |
+| 64 | about 4 | Rough stone |
+| 128 | about 30 | Satin |
+| 160 | about 100 | Polished |
+| 192 | about 535 | Glossy |
+| 224–255 | 8192 | Mirror-tight pinpoint |
+
+Every byte from 224 up shades at the cap. A highlight that tight is already as small as one texel can show.
+
+Without a `_p.png`, the texture keeps its **prefix's** highlight size, exactly as before. These are the bytes that match each prefix, if you want a `_p` map that starts from the prefix's look:
+
+| Prefix | Exponent without `_p` | Matching `_p` byte |
+|--------|-----------------------|--------------------|
+| `concrete` | 4 | 61 |
+| `grate` | 8 | 84 |
+| `wood` | 16 | 108 |
+| anything else | 32 | 129 |
+| `metal` | 64 | 149 |
+| `glass` | 96 | 159 |
+
+#### Tint: `_t.png`
+
+A texture **without** `_t.png` glints the way it always has: the highlight is multiplied by the diffuse colour, so a dark green marble glints dark green.
+
+A texture **with** `_t.png` takes its highlight colour per texel instead:
+
+- **0 (black)**: a white highlight, as bright as `_s` says, on any diffuse.
+- **255 (white)**: the diffuse's **hue at full brightness**. A dark bronze and a bright bronze glint identically, so you can darken a metal's diffuse without dimming its glint.
+- **In between**: a blend from white to that hue.
+- A grey, white or black diffuse texel has no hue, so it glints white at any tint.
+
+Tint changes only the highlight. The diffuse never changes, however you paint `_t`. That is deliberate: a surface must still read correctly where no reflection is drawn.
+
+A texture with `_t.png` and no `_p.png` keeps its prefix's highlight size.
+
+#### Rules for `_p` and `_t`
+
+Each of these **fails the compile**:
+
+- **Linear grayscale.** No `sRGB` chunk, no `iCCP` chunk, `gAMA` ≈ 1.0, the same rule as `_s.png`, `_n.png` and `_h.png`. The compiler reads the red channel.
+- **Same dimensions as the diffuse**, and as `_s.png`, `_h.png` and each other when those exist. They are packed into one texture with the specular and height maps, so they have to line up texel for texel.
+
+A texture with `_p` or `_t` compiles a specular texture four bytes per texel instead of one or two. Only textures that use them pay for it. TrenchBroom's texture browser hides `_p` and `_t` files, like the other sibling maps.
+
+Both the compiler and TrenchBroom recognize sibling maps by the end of the file name, ignoring case. So don't give a diffuse texture a name ending in `_p` or `_t` (or `_s`, `_n`, `_e`, `_h`): TrenchBroom hides it from the browser, and the compiler treats it as a sibling map (a colour-tagged `_p` or `_t` file fails the compile).
+
+They apply to world brushes and `kinematic_mover` brushes. `prop_mesh` models load only their diffuse, and sprites and fluids ignore both.
+
+No tool generates either map: sharpness and tint are artistic choices that no prefix rule can guess.
+
+#### Converting from PBR roughness and metallic
+
+If your texture tool exports PBR maps (Material Maker, Substance and most others do), convert them per texel:
+
+- **`_p` is one minus roughness.** Invert the roughness map: `_p` byte = 255 − roughness byte. Unity's *Smoothness* is already this quantity; copy it as is.
+- **`_t` is metallic.** Copy the metallic map unchanged.
+
+The roughness here is the usual glTF "perceptual" roughness, which is what those tools write. Export both as linear grayscale at the diffuse's size. Many editors tag exports as sRGB by default, which fails the compile; turn that off or strip the tag.
+
+There is no metallic darkening of the diffuse. In PBR a fully metallic surface has no diffuse at all. Here it keeps its diffuse, so if a converted metal looks too flat, darken its diffuse by hand: with `_t` its glint keeps its colour.
+
+#### Pixel and smooth highlights
+
+By default, every highlight on world brushes and movers takes its shape from one point at the centre of each texel. Highlights sit still on the texture grid as the camera moves, with the same soft seams between texels that texture reads have. Shadows still cut a highlight on exactly the line they cut the lit surface, even through the middle of a texel. This applies to every texture, including ones without `_p` or `_t`: a glossy prefix such as `metal` shows texel-sized highlight blocks.
+
+A mod can choose `"smooth"` highlights instead, through its `render.specular.style` setting (see [scripting-reference.md](scripting-reference.md), *Render profile*). Smooth evaluates every pixel, so a highlight is a round spot that slides across the surface as the camera moves. With smooth, a very sharp `_p` texel's highlight is a small dot moving inside the texel: author for the style your mod ships with. Players cannot change this; it is the mod's look.
+
 ### Surface Depth (Height Maps)
 
 Add a height map next to any diffuse texture and its surface gets real relief: cobblestones stand proud of their mortar, panel seams sink in, rivets and studs rise, plank gaps read as gaps. The effect is strongest at shallow viewing angles, which is exactly where a flat texture normally gives itself away.
@@ -934,7 +1020,7 @@ Requirements — each of these **fails the compile**. None of them is a warning 
 
 - **Linear color space.** No `sRGB` chunk, no `iCCP` chunk, `gAMA` ≈ 1.0. Same rule as `_s.png` and `_n.png`. A gamma curve on a height map warps the depth. Re-export as linear PNG if your editor tags files by default.
 - **Same dimensions as the diffuse.** No scaling, no half-res height maps.
-- **Same dimensions as `_s.png`, if you have one.** Specular and height are packed into one two-channel texture in the compiled output, so they have to line up texel for texel.
+- **Same dimensions as `_s.png`, if you have one.** Specular and height are packed into one texture in the compiled output (with `_p` and `_t`, when present), so they have to line up texel for texel.
 
 #### How far it reaches
 

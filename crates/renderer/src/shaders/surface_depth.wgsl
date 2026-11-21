@@ -5,19 +5,21 @@
 // NO bindings. It resolves two names lexically from whichever consumer appends
 // it — `spec_texture` (group 1 binding 2) and `material` (group 1 binding 3) —
 // and takes everything else as arguments, so `forward.wgsl` and
-// `kinematic_brush.wgsl` share ONE copy of the march. They must: the two
-// shaders already keep duplicate `sample_post_retro` bodies and those can
-// drift; the DDA must never be a second thing to keep in sync.
+// `kinematic_brush.wgsl` share ONE copy of the march. They must: the DDA must
+// never be a second thing to keep in sync (their `sample_post_retro` wrappers
+// already reconstruct through the shared `post_retro_texel_uv` for the same
+// reason).
 //
 // WHAT THIS IS
-// The specular slot is a two-channel surface map: R = specular intensity,
-// G = the SIGNED HEIGHT field, stored as `255 - h` where `h` is the authored
+// The specular slot is a two- or four-channel surface map: R = specular
+// intensity, G = the SIGNED HEIGHT field (B and A, when present, carry `_p`
+// smoothness and `_t` tint and are never read here), stored as `255 - h` where `h` is the authored
 // `_h.png` byte. Authored mid-gray (h = 128) is the polygon plane; darker sinks
 // below it, lighter rises above it, each by up to the material's depth. A
 // material with no `_h.png` sibling binds a 1x1 black R8Unorm placeholder that
 // WGSL expands to (r, 0, 0, 1) — and `g = 0` now reads as MAXIMUM RAISE, not
 // flat. The has-depth bit in the packed march word, set only for an `Rg8Unorm`
-// slot, is therefore the ONLY guard: the march never runs without it.
+// or `Rgba8Unorm` slot, is therefore the ONLY guard: the march never runs without it.
 //
 // The field is piecewise-constant per texel: a grid of boxes whose lattice is
 // the SAME texel grid `sample_post_retro` snaps albedo to, so stone side faces

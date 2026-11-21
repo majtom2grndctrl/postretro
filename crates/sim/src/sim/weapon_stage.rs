@@ -2622,13 +2622,20 @@ mod tests {
     }
 
     // A splash FIRE freezes how far a declared contact may lie from its path
-    // and still count: radius, muzzle offset and prediction slack. Other shots
-    // freeze none.
+    // and still count: radius, the launched muzzle's offset off the eye ray,
+    // and prediction slack. Other shots freeze none.
     #[test]
     fn remote_splash_fire_freezes_its_on_path_tolerance() {
         const RADIUS: f32 = 0.25;
-        let muzzle = Vec3::new(0.3, -0.2, -0.4);
-        let fire = |splash: Option<SplashDescriptor>| {
+        let splash = SplashDescriptor {
+            knockback: None,
+            radius: 3.0,
+            min_fraction: 0.0,
+            self_damage: true,
+        };
+        let fire = |splash: Option<SplashDescriptor>,
+                    muzzle: Vec3,
+                    placement: Option<&WeaponPlacementDescriptor>| {
             let registry = Rc::new(RefCell::new(EntityRegistry::new()));
             let (pawn, weapon) = {
                 let mut registry = registry.borrow_mut();
@@ -2653,7 +2660,7 @@ mod tests {
                 &registry,
                 &[remote],
                 &[],
-                None,
+                placement,
                 &crate::collision::moving::CombinedCollisionWorld::static_only(
                     &CollisionWorld::new(),
                 ),
@@ -2666,22 +2673,56 @@ mod tests {
             };
             authorized.shot.clone()
         };
+        // The muzzle's offset off the eye ray, composed through the placement
+        // the rebuild resolves. A pawn at the origin with facing yaw 0 and
+        // level pitch aims down -Z.
+        let lateral = |muzzle: Vec3, placement: Option<&WeaponPlacementDescriptor>| {
+            let placement =
+                postretro_foundation::resolve_weapon_placement(placement, None, None, None);
+            let eye = Vec3::new(0.0, 0.5, 0.0);
+            let offset = weapon::muzzle_world_origin(eye, Vec3::NEG_Z, &placement, muzzle) - eye;
+            (offset - Vec3::NEG_Z * offset.dot(Vec3::NEG_Z)).length()
+        };
+        let slack = super::commands::SPLASH_ON_PATH_SLACK;
 
-        let rocket = fire(Some(SplashDescriptor {
-            knockback: None,
-            radius: 3.0,
-            min_fraction: 0.0,
-            self_damage: true,
-        }));
-        let expected = RADIUS + muzzle.length() + super::commands::SPLASH_ON_PATH_SLACK;
+        let muzzle = Vec3::new(0.3, -0.2, -0.4);
+        let rocket = fire(Some(splash.clone()), muzzle, None);
+        let expected = RADIUS + lateral(muzzle, None) + slack;
         assert!(
             rocket
                 .splash_on_path_tolerance
-                .is_some_and(|tolerance| (tolerance - expected).abs() <= 1.0e-6),
-            "{:?}",
+                .is_some_and(|tolerance| (tolerance - expected).abs() <= 1.0e-5),
+            "{:?} vs {expected}",
             rocket.splash_on_path_tolerance
         );
-        assert_eq!(fire(None).splash_on_path_tolerance, None);
+
+        // A placement far off the eye carries a short authored muzzle well off
+        // the eye ray: the tolerance follows the launched muzzle, not the
+        // authored length.
+        let offset_placement = WeaponPlacementDescriptor {
+            offset: PlacementOffset {
+                right: 0.6,
+                up: -0.3,
+                forward: 0.8,
+            },
+            rotation: PlacementRotation::default(),
+        };
+        let short_muzzle = Vec3::new(0.0, 0.0, -0.05);
+        let placed = fire(Some(splash), short_muzzle, Some(&offset_placement));
+        let expected = RADIUS + lateral(short_muzzle, Some(&offset_placement)) + slack;
+        let tolerance = placed
+            .splash_on_path_tolerance
+            .expect("a splash FIRE freezes a tolerance");
+        assert!(
+            (tolerance - expected).abs() <= 1.0e-5,
+            "{tolerance} vs {expected}"
+        );
+        assert!(
+            tolerance > RADIUS + short_muzzle.length() + slack + 0.5,
+            "{tolerance}"
+        );
+
+        assert_eq!(fire(None, muzzle, None).splash_on_path_tolerance, None);
     }
 
     #[test]

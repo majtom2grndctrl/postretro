@@ -1,5 +1,5 @@
-// Combined shot and sight queries against an oracle: the same posed geometry
-// baked into one static world.
+// Combined shot and sight queries against an oracle of the same posed geometry baked static.
+// See: context/lib/networking.md §Combat authority · context/lib/testing_guide.md §3 (Seam-crossing tests)
 use super::*;
 use crate::collision::moving::{CollisionSource, MoverCollider, cast_ray_combined};
 use crate::collision::test_movers::{DoorPoses, door_slab, door_slab_triangles};
@@ -277,25 +277,81 @@ fn zero_radius_combined_sphere_cast_returns_the_combined_ray_hit() {
 }
 
 #[test]
-fn mover_at_sphere_reports_enclosure_and_contact_but_not_clearance() {
+fn mover_enclosing_point_reports_an_enclosed_centre_only() {
     let static_world = wall_world();
     let movers = [slab_collider(7)];
     let poses = Poses::default().place(7, Vec3::new(5.0, 0.0, 0.0), Quat::IDENTITY);
     let world = CombinedCollisionWorld::new(&static_world, &movers, &poses);
     assert_eq!(
-        mover_at_sphere(&world, Vec3::new(5.0, 1.0, 0.0), 0.0),
+        mover_enclosing_point(&world, Vec3::new(5.0, 1.0, 0.0)),
         Some(7)
     );
     assert_eq!(
-        mover_at_sphere(&world, Vec3::new(5.0, 1.0, 0.0), 0.05),
+        mover_enclosing_point(&world, Vec3::new(4.95, 1.0, 0.0)),
         Some(7)
     );
     assert_eq!(
-        mover_at_sphere(&world, Vec3::new(4.85, 1.0, 0.0), 0.1),
-        Some(7)
+        mover_enclosing_point(&world, Vec3::new(4.5, 1.0, 0.0)),
+        None
     );
-    assert_eq!(mover_at_sphere(&world, Vec3::new(4.5, 1.0, 0.0), 0.1), None);
-    assert_eq!(mover_at_sphere(&world, Vec3::new(5.0, 3.0, 0.0), 0.0), None);
+    assert_eq!(
+        mover_enclosing_point(&world, Vec3::new(5.0, 3.0, 0.0)),
+        None
+    );
+}
+
+#[test]
+fn a_sphere_touching_a_mover_is_not_enclosed() {
+    let static_world = wall_world();
+    let movers = [slab_collider(7)];
+    let poses = Poses::default().place(7, Vec3::new(5.0, 0.0, 0.0), Quat::IDENTITY);
+    let world = CombinedCollisionWorld::new(&static_world, &movers, &poses);
+    // A radius-0.25 sphere centred 0.1 m off the face at x = 4.9 overlaps it.
+    let centre = Vec3::new(4.8, 1.0, 0.0);
+    assert_eq!(mover_enclosing_point(&world, centre), None);
+    // The sweep owns an overlapping start: into the face it hits at once, and
+    // along or away from it the sphere does what it does against a static wall.
+    let baked = oracle(&poses, &movers);
+    for dir in [Vec3::X, -Vec3::X, Vec3::Z] {
+        assert_hits_match(
+            "touching",
+            cast_sphere_exact_combined(&world, centre, 0.25, dir, 1.0),
+            cast_sphere_exact(&baked, centre, 0.25, dir, 1.0)
+                .map(|hit| (hit.time_of_impact, hit.normal)),
+            &format!("overlapping sphere toward {dir:?}"),
+        );
+    }
+    let into = cast_sphere_exact_combined(&world, centre, 0.25, Vec3::X, 1.0)
+        .expect("an overlapping sphere moving into the face hits it");
+    assert!(into.time_of_impact <= EPS, "{}", into.time_of_impact);
+    assert!(cast_sphere_exact_combined(&world, centre, 0.25, -Vec3::X, 1.0).is_none());
+}
+
+#[test]
+fn an_open_single_quad_mover_never_encloses() {
+    let static_world = wall_world();
+    let quad = MoverCollider::from_local_triangles(
+        9,
+        &[
+            Vec3::new(0.0, 0.0, -1.0),
+            Vec3::new(0.0, 2.0, -1.0),
+            Vec3::new(0.0, 2.0, 1.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        ],
+        &[[0, 1, 2], [0, 2, 3]],
+    )
+    .expect("a quad is a valid mesh");
+    let movers = [quad];
+    let poses = Poses::default().place(9, Vec3::new(5.0, 0.0, 0.0), Quat::IDENTITY);
+    let world = CombinedCollisionWorld::new(&static_world, &movers, &poses);
+    for point in [
+        Vec3::new(4.99, 1.0, 0.0),
+        Vec3::new(5.01, 1.0, 0.0),
+        Vec3::new(4.5, 1.0, 0.5),
+        Vec3::new(5.5, 0.1, -0.9),
+    ] {
+        assert_eq!(mover_enclosing_point(&world, point), None, "{point:?}");
+    }
 }
 
 #[test]
@@ -335,7 +391,8 @@ fn combined_queries_do_not_allocate() {
         blocked += usize::from(
             cast_sphere_exact_combined(&world, eye, 0.05, (aim - eye).normalize(), 20.0).is_some(),
         );
-        blocked += usize::from(mover_at_sphere(&world, aim, 0.05).is_some());
+        blocked += usize::from(mover_enclosing_point(&world, aim).is_some());
+        blocked += usize::from(mover_enclosing_point(&world, aim - Vec3::X * 3.0).is_some());
     }
     let allocs = snapshot.allocs_since();
     std::hint::black_box(blocked);

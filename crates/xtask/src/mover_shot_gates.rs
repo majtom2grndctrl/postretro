@@ -36,7 +36,14 @@ const COMBINED_CALLS: &[(&str, &str)] = &[
         "cast_sphere_exact_combined(",
     ),
     ("crates/sim/src/sim/splash.rs", "line_of_sight_combined("),
-    ("crates/sim/src/sim/mover_blast.rs", "mover_at_sphere("),
+    (
+        "crates/sim/src/sim/mover_blast.rs",
+        "mover_enclosing_point(",
+    ),
+    (
+        "crates/netcode/src/splash_march.rs",
+        "mover_enclosing_point(",
+    ),
     ("crates/ai/src/perception.rs", "line_of_sight_combined("),
     (
         "crates/sim/src/combat_positioning.rs",
@@ -50,6 +57,23 @@ const COMBINED_CALLS: &[(&str, &str)] = &[
 
 /// Static-only shot and sight queries. None may appear in a shot or sight site.
 const STATIC_QUERIES: &[&str] = &["line_of_sight(", "cast_sphere_exact(", "cast_ray("];
+
+/// The only shot and sight functions that may build a world with no movers,
+/// as (file, enclosing function). None fires against a level's movers.
+const STATIC_ONLY_WORLDS: &[(&str, &str)] = &[
+    // Test-support wrapper; the level path passes the tick's combined world.
+    (
+        "crates/sim/src/sim/weapon_stage/commands/local.rs",
+        "run_local_weapon_command",
+    ),
+    // Equip never fires.
+    (
+        "crates/sim/src/sim/weapon_stage/commands/local.rs",
+        "run_client_weapon_equip",
+    ),
+    // `#[cfg(test)]` fire helper, outside the cut test module.
+    ("crates/sim/src/weapon/mod.rs", "tick_resolved"),
+];
 
 /// The only production home of static line of sight outside physics: host
 /// hit validation (`networking.md` §World-LOS-only validation).
@@ -142,6 +166,28 @@ fn calls(text: &str, needle: &str) -> Vec<usize> {
         .collect()
 }
 
+/// The name of the last `fn` item that starts before `at`: the function a
+/// call at `at` sits in, for files without nested `fn` items.
+fn enclosing_fn(text: &str, at: usize) -> Option<&str> {
+    let before = &text[..at];
+    let mut end = before.len();
+    while let Some(found) = before[..end].rfind("fn ") {
+        let at_boundary = before[..found]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
+        if at_boundary {
+            let name = &before[found + "fn ".len()..];
+            let len = name
+                .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .unwrap_or(name.len());
+            return Some(&name[..len]);
+        }
+        end = found;
+    }
+    None
+}
+
 /// The argument text of the call starting at `open` (the byte after its `(`).
 fn call_arguments(text: &str, open: usize) -> &str {
     let mut depth = 1;
@@ -191,6 +237,35 @@ fn shot_splash_and_sight_sites_call_combined_queries_only() {
             "{file} no longer calls {call}"
         );
     }
+}
+
+#[test]
+fn static_only_worlds_stay_in_sites_that_never_fire() {
+    let root = workspace_root();
+    let mut stray = Vec::new();
+    for path in sources(&root, SHOT_AND_SIGHT_SOURCES) {
+        let Some(text) = production_text(&path) else {
+            continue;
+        };
+        let file = relative(&root, &path);
+        for at in calls(&text, "static_only(") {
+            let function = enclosing_fn(&text, at).unwrap_or("");
+            let allowed = STATIC_ONLY_WORLDS
+                .iter()
+                .any(|(site, name)| *site == file && *name == function);
+            if !allowed {
+                stray.push(format!(
+                    "{file}:{}: static_only( in {function}",
+                    line_of(&text, at)
+                ));
+            }
+        }
+    }
+    assert!(
+        stray.is_empty(),
+        "shot or sight sites build a world without movers:\n{}",
+        stray.join("\n")
+    );
 }
 
 #[test]
@@ -325,4 +400,10 @@ fn gate_helpers_match_whole_calls_and_their_arguments() {
         Vec::<usize>::new()
     );
     assert_eq!(call_arguments("f(a, g(b), c) d", 2), "a, g(b), c");
+    let text = "fn outer() {}\npub(crate) fn inner_fn(x: impl FnMut()) { g(); }";
+    assert_eq!(
+        enclosing_fn(text, text.find("g()").unwrap()),
+        Some("inner_fn")
+    );
+    assert_eq!(enclosing_fn("let defn = 1; g()", 14), None);
 }

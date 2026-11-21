@@ -424,7 +424,6 @@ fn advance_matching(
             collision_world,
             transform.position,
             direction,
-            component.radius,
             component.damage,
         );
         if let Some(mut impact) = enclosed.or_else(|| {

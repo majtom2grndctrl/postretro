@@ -50,8 +50,9 @@ pub struct AuthorizedShot {
     pub projectile_lifetime_seconds: Option<f32>,
     pub projectile_tick_seconds: Option<f32>,
     /// How far a splash declaration's first valid contact may lie from the
-    /// frozen path and still count as on it: the frozen radius, the muzzle's
-    /// offset from the eye, and prediction slack. `None` for any other shot.
+    /// frozen path and still count as on it: the frozen radius, the launched
+    /// muzzle's offset off the eye ray, and prediction slack. `None` for any
+    /// other shot.
     pub splash_on_path_tolerance: Option<f32>,
     /// Frozen at FIRE because the weapon may be switched or despawned before a
     /// later projectile declaration arrives. This authority data never crosses

@@ -50,10 +50,14 @@ pub struct CombinedCastHit {
 
 impl CombinedCastHit {
     /// Whether the hit came from static geometry or from a mover at its pose.
+    /// Not exact at a flush seam: on a time-of-impact tie a static wall beats a
+    /// mover, but a mover floor beats static, so a coplanar contact can report
+    /// either surface.
     pub fn source(&self) -> CollisionSource {
         self.source
     }
 
+    /// [`CombinedCastHit::source`] is a mover; the same tie caveat holds.
     pub fn is_mover(&self) -> bool {
         matches!(self.source, CollisionSource::Mover(_))
     }

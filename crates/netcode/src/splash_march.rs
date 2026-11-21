@@ -7,7 +7,7 @@ use postretro_combat_model::AuthorizedShot;
 use postretro_net::wire;
 
 use crate::collision::moving::CombinedCollisionWorld;
-use crate::collision::shot_queries::{cast_sphere_exact_combined, mover_at_sphere};
+use crate::collision::shot_queries::{cast_sphere_exact_combined, mover_enclosing_point};
 
 /// Travel this close to the reach counts as having reached it.
 const REACH_EPSILON: f32 = 1.0e-4;
@@ -105,9 +105,10 @@ impl SplashMarch {
             return;
         };
         let position = self.shot.fire_origin + flight.direction * self.travelled;
-        // A sweep from inside a hull meets its far face: an enclosed cursor is
-        // struck where it is, before any expiry.
-        if mover_at_sphere(world, position, flight.radius).is_some() {
+        // A sweep from inside a hull meets its far face: a cursor enclosed in
+        // one is struck where it is, before any expiry. One only overlapping a
+        // surface is the sweep's to judge.
+        if mover_enclosing_point(world, position).is_some() {
             self.contact = Some(MarchContact {
                 distance: self.travelled,
                 point: position,

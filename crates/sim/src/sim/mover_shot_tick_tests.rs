@@ -14,7 +14,7 @@ use super::tests::{remote_command, trigger_movement};
 use super::weapon_stage::run_remote_weapon_commands;
 use crate::collision::CollisionWorld;
 use crate::collision::moving::{CombinedCollisionWorld, MoverCollider};
-use crate::collision::test_movers::{DoorPoses, door_slab};
+use crate::collision::test_movers::{DoorPoses, door_slab, door_slab_triangles};
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::weapon::tests::{assert_vec3_approx, projectile_weapon_component, wall_world};
 
@@ -370,6 +370,108 @@ fn rocket_launched_inside_a_door_detonates_behind_its_flight_even_with_no_lifeti
         assert!(rig.health(behind) < 20.0, "lifetime {lifetime}");
         assert_eq!(rig.health(ahead), 20.0, "lifetime {lifetime}");
     }
+}
+
+/// [`door_across_z`]'s door baked into static geometry: the static wall a
+/// closed door must behave like.
+fn baked_door_across_z(z: f32) -> CollisionWorld {
+    let transform = door_across_z(z).0[&DOOR];
+    let (vertices, triangles) = door_slab_triangles(0.05, 3.0, 2.0);
+    CollisionWorld::from_triangles_for_test(
+        vertices
+            .iter()
+            .map(|vertex| transform.position + transform.rotation * *vertex)
+            .collect(),
+        triangles,
+    )
+}
+
+fn position_of(rig: &Rig, id: EntityId) -> Vec3 {
+    rig.registry
+        .borrow()
+        .get_component::<Transform>(id)
+        .unwrap()
+        .position
+}
+
+// A rocket launched from a pawn flush against a closed door overlaps it
+// without its centre inside: along or away from the door it flies on, exactly
+// as it does from a static wall in the door's place.
+#[test]
+fn rocket_launched_overlapping_a_door_flies_on_along_or_away_from_it() {
+    // Up the door's face, and straight away from it.
+    for direction in [Vec3::Y, Vec3::Z] {
+        let mut door = Rig::new(CollisionWorld::new());
+        // Near face at z = -0.15: a radius-0.25 rocket at the origin overlaps it.
+        door.close_door_at(-0.2);
+        let wall = Rig::new(baked_door_across_z(-0.2));
+        let door_rocket = door.rocket(Vec3::ZERO, direction, 0.25, None);
+        let wall_rocket = wall.rocket(Vec3::ZERO, direction, 0.25, None);
+        for step in 1..=3 {
+            assert!(door.step().is_empty(), "{direction:?} step {step}: door");
+            assert!(wall.step().is_empty(), "{direction:?} step {step}: wall");
+        }
+        assert!(
+            door.exists(door_rocket),
+            "{direction:?}: not struck at launch"
+        );
+        assert_vec3_approx(position_of(&door, door_rocket), direction * 3.0);
+        assert_vec3_approx(
+            position_of(&door, door_rocket),
+            position_of(&wall, wall_rocket),
+        );
+    }
+}
+
+#[test]
+fn rocket_launched_overlapping_a_door_and_flying_into_it_detonates_at_once() {
+    let mut rig = Rig::new(CollisionWorld::new());
+    rig.close_door_at(-0.2);
+    let rocket = rig.rocket(Vec3::ZERO, Vec3::NEG_Z, 0.25, None);
+    let contacts = rig.step();
+    assert!(!rig.exists(rocket));
+    let [contact] = contacts.as_slice() else {
+        panic!("one contact: {contacts:?}");
+    };
+    assert_vec3_approx(*contact, Vec3::ZERO);
+}
+
+// Two overlapping movers, as bi-parting doors: the blast's sightline leaves
+// the first hull straight into the second and must leave that one too.
+#[test]
+fn blast_enclosed_in_overlapping_doors_damages_the_approach_side_only() {
+    const SECOND_DOOR: u32 = DOOR + 1;
+    let mut rig = Rig::new(CollisionWorld::new());
+    rig.movers = vec![
+        door_slab(DOOR, 0.05, 3.0, 2.0),
+        door_slab(SECOND_DOOR, 0.1, 3.0, 2.0),
+    ];
+    let near = rig.target(Vec3::new(1.5, 0.0, -2.0));
+    let far = rig.target(Vec3::new(1.5, 0.0, -4.0));
+    let rocket = rig.rocket(Vec3::ZERO, Vec3::NEG_Z, 0.0, Some(3.0));
+    for _ in 0..3 {
+        rig.step();
+    }
+    // The rocket sits at z = -3 inside the first door (z -3.05..-2.95); the
+    // second (z -2.98..-2.78) covers the first's approach face.
+    let rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+    rig.poses = DoorPoses::default()
+        .place(DOOR, Vec3::new(0.0, -1.0, -3.0), rotation)
+        .place(SECOND_DOOR, Vec3::new(0.0, -1.0, -2.88), rotation);
+    let contacts = rig.step();
+    assert!(
+        !rig.exists(rocket),
+        "an enclosed rocket detonates that tick"
+    );
+    let [contact] = contacts.as_slice() else {
+        panic!("one contact: {contacts:?}");
+    };
+    assert_vec3_approx(*contact, Vec3::new(0.0, 0.0, -3.0));
+    assert!(
+        rig.health(near) < 20.0,
+        "the side it came from takes the blast"
+    );
+    assert_eq!(rig.health(far), 20.0, "both doors shield the far side");
 }
 
 #[test]

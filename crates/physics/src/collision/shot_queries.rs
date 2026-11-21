@@ -7,7 +7,7 @@
 
 use glam::Vec3;
 use parry3d::math::Pose;
-use parry3d::query::{RayCast, ShapeCastOptions, cast_shapes, intersection_test};
+use parry3d::query::{RayCast, ShapeCastOptions, cast_shapes};
 use parry3d::shape::Ball;
 
 use super::moving::{
@@ -45,8 +45,11 @@ pub fn line_of_sight_combined(eye: Vec3, aim: Vec3, world: &CombinedCollisionWor
 /// returns the combined ray's hit from any origin off a surface; from an origin
 /// on a surface it passes that surface, as the static sweep does.
 ///
-/// A sphere that starts inside a mover's hull reports that hull's far face.
-/// Ask [`mover_at_sphere`] first where an enclosed start must stop the sweep.
+/// A sphere that starts overlapping a mover's surface and moving into it hits
+/// at 0; one moving along or away from it flies on, as against a static wall.
+/// A sphere whose centre starts inside a mover's hull reports that hull's far
+/// face: ask [`mover_enclosing_point`] first where an enclosed start must stop
+/// the sweep.
 pub fn cast_sphere_exact_combined(
     world: &CombinedCollisionWorld<'_>,
     pos: Vec3,
@@ -90,29 +93,20 @@ pub fn cast_sphere_exact_combined(
     nearest
 }
 
-/// The first mover, in collider order, whose posed hull a sphere at `center`
-/// touches or lies inside. A projectile in this state at the start of its step
-/// is struck where it is: a sweep from inside a hull would report the far face.
-pub fn mover_at_sphere(
-    world: &CombinedCollisionWorld<'_>,
-    center: Vec3,
-    radius: f32,
-) -> Option<u32> {
-    if !center.is_finite() || !radius.is_finite() || radius < 0.0 {
+/// The first mover, in collider order, whose posed hull strictly encloses
+/// `point`. A projectile whose centre is enclosed at the start of its step is
+/// struck where it is: a sweep from inside a hull would report the far face.
+/// A sphere that only overlaps a surface is not enclosed; the sweep handles it.
+/// A point on a surface may read either way.
+pub fn mover_enclosing_point(world: &CombinedCollisionWorld<'_>, point: Vec3) -> Option<u32> {
+    if !point.is_finite() {
         return None;
     }
-    let ball = Ball::new(radius);
-    let sphere_pose = Pose::from_translation(center);
     world.movers.iter().find_map(|mover| {
         let pose = world.poses.pose(mover.mover_id)?;
-        let mover_pose = transform_pose(pose.transform);
-        if !mover_bound_may_reach_segment(mover, &mover_pose, center, Vec3::ZERO, radius) {
-            return None;
-        }
-        // Surface contact first: the enclosure test is undefined on the surface.
-        let touches = intersection_test(&sphere_pose, &ball, &mover_pose, &mover.local_mesh)
-            .is_ok_and(|hit| hit.intersecting);
-        (touches || point_inside_posed_mover(mover, &mover_pose, center)).then_some(mover.mover_id)
+        // Its broad phase skips movers whose bound cannot reach the point.
+        point_inside_posed_mover(mover, &transform_pose(pose.transform), point)
+            .then_some(mover.mover_id)
     })
 }
 

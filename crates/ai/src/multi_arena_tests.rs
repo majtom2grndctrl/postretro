@@ -120,11 +120,13 @@ fn run_arena(
     let nav = NavGraph::from_section(&map.section);
     let factions = crossfire_factions();
     let sentiment = RefCell::new(FactionSentimentState::default());
+    let doors = super::scale_support::ArenaDoors::from_env();
     let world = World {
         nav: &nav,
         collision: &collision,
         factions: &factions,
         sentiment: &sentiment,
+        doors: &doors,
     };
     let mut reg = EntityRegistry::new();
     let mut runtime = runtime_for(tiered);
@@ -314,11 +316,13 @@ fn idle_scan(candidates: usize, with_target: bool, ticks: usize) -> (f64, f64) {
         let nav = NavGraph::from_section(&map.section);
         let factions = crossfire_factions();
         let sentiment = RefCell::new(FactionSentimentState::default());
+        let doors = super::scale_support::ArenaDoors::from_env();
         let world = World {
             nav: &nav,
             collision: &collision,
             factions: &factions,
             sentiment: &sentiment,
+            doors: &doors,
         };
         let mut reg = EntityRegistry::new();
         let mut runtime = AiRuntime::new();

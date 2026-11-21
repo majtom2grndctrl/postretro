@@ -71,8 +71,8 @@ Test names are proposed and are fixed when the test lands.
 | U3 | Grep gate: client shot paths build poses from the prediction table, never presentation | `xtask` `mover_shot_gates::client_shot_paths_read_the_predicted_mover_table_never_a_presented_pose` | achievable as stated |
 | U4 | Grep gate: listed docs no longer say movers pass shots, splash or sight | `xtask` `mover_shot_gates::listed_docs_no_longer_say_movers_pass_shots_splash_or_sight` | achievable as stated |
 | U5 | No-mover suites pass unchanged (except rewritten), headless byte identity | full `cargo test` gate + existing determinism byte-identity tests | achievable as stated |
-| S1 | NPC LOS cost per check and per tick, E10 stress rows with doors vs without | measured run, recorded here (`testing_guide.md` §Resource bounds) | measured, not gated |
-| S2 | Host march cost per tick, 4 clients firing splash on `mover-setpiece` vs host player | measured run, recorded here | measured, not gated |
+| S1 | NPC LOS cost per check and per tick, E10 stress rows with doors vs without | `multi_arena_row` and `replan_stress_row`, run with and without `POSTRETRO_SCALE_DOORS=1`; Scale results | measured, not gated |
+| S2 | Host march cost per tick, 4 clients firing splash on `mover-setpiece` vs host player | `splash_march_scale_row` on a synthetic room shaped like `mover-setpiece` (no baked map here); Scale results | measured, not gated |
 | M1 | Listen host + client with lag on `mover-setpiece`: fire at sliding wall both sides; rocket moving wall, bursts land together | owner, in-engine | manual |
 | M2 | `enemy-movers`: enemy at closed door neither notices nor shoots; engages once open | owner, in-engine | manual |
 
@@ -92,5 +92,45 @@ Hot paths and their constraints: every combined query is allocation-free (Q3), a
 | 8 | Observer flight: march-aligned client splash flight that vanishes at the deciding point with no contact flash; the burst shows with the blast. C11. | integrating executor | 7 | done: `HostProjectilePresentations` marks a straight-line flight whose shot marches and pins it to the march cursor each tick (no lead on FIRE); it ends at the release's deciding point, the march's contact or path end, or where it stands once the march is gone, with despawn reason 0 (no flash on host or peers). `projectile_presentation::tests::client_splash_flight_follows_the_march_and_ends_without_a_flash` (C11) |
 | 9 | Grep gates U2–U4 as source-scan tests. | integrating executor | 2–8, 10 | done: `xtask` `mover_shot_gates` (six tests; run by `cargo test -p xtask`, as the other surface gates) |
 | 10 | Docs sweep per the Docs decision (scripting-reference, `sdk/lib/brain.{ts,luau}`, primitive typedef templates regenerated into `sdk/types/` and fixtures, `level_design.md` doors note, `mover-setpiece.README.md`). | integrating executor (small; no worker needed) | 5, 6 | done: `docs/scripting-reference.md` (splash trigger, splash note, knockback occlusion, `brain.targetVisible`), `docs/level_design.md` doors note, `sdk/lib/brain.{ts,luau}`, both typedef templates and the hitscan resolution doc comment regenerated into `sdk/types/` and copied to the typedef fixtures, `mover-setpiece.README.md` |
-| 11 | Scale rows S1, S2: measure and record. | integrating executor | 6, 7 | |
+| 11 | Scale rows S1, S2: measure and record. | integrating executor | 6, 7 | done: S1 through E10's `multi_arena_row` and `replan_stress_row` with `POSTRETRO_SCALE_DOORS=1` (one closed door per arena in the shared `scale_row_support` fixture); S2 through `tests::splash_march_scale_tests::splash_march_scale_row` (synthetic room, see Scale results) |
 | 12 | Preflight, review panel, fix loop, full gate; record results. U5. | integrating executor | all | |
+
+## Scale results
+
+Release, this container (4 cores, the machine class of E10's runs), single-threaded, nothing heavy beside each run; measured, not gated. "Doors" places one closed 8 m × 4 m door in each arena, across its x axis at its centre near the z = 8 edge (`ArenaDoors`, `POSTRETRO_SCALE_DOORS=1`); without it every row runs exactly as E10's. The no-door multi-arena row ran twice to show run-to-run noise.
+
+**S1, multi-arena row** (E10's tiers at production cadence; AI tick mean, ms):
+
+| Population | No doors (run 1 / run 2) | Doors | Change |
+|---|---|---|---|
+| 500 placed, wave alone | 0.97 / 0.77 | 0.80 | within noise |
+| 500 placed, + idle, patrol, far chasers | 3.62 / 3.55 | 3.73 | +3–5% |
+| 1,000 placed, wave alone | 1.80 / 2.01 | 2.08 | +4–15% |
+| 1,000 placed, + idle, patrol, far chasers | 7.50 / 7.33 | 7.95 | +6–8% |
+| Wake tick, 233 move up (perception + AI + steering) | 24.26 / 24.64 | 25.16 | +2–4% |
+
+**S1, line of sight per acquisition check** (idle scan, 64 NPCs in view, AI µs per NPC per check; every refreshed candidate is one LOS test):
+
+| Candidates | No doors (run 1 / run 2) | Doors |
+|---|---|---|
+| 1 | 9.36 / 7.45 | 8.27 (within noise) |
+| 8 | 10.49 / 10.75 | 11.15 (+4–6%) |
+
+**S1, packed stress row** (one arena, its door at the play area's edge; AI tick p50 µs and the perception sub-stage p50):
+
+| Scene | No doors: AI / perception | Doors: AI / perception |
+|---|---|---|
+| 8 chasers | 40.3 / 1.0 | 49.1 / 2.6 |
+| 16 wave + 8 chasers | 112.8 / 2.8 | 119.8 / 6.9 |
+
+The per-ray mover cull keeps the cost of a door off a ray's path near zero. A door near the rays, as in the packed arena, roughly doubles the perception sub-stage, but from a few microseconds; the AI tick moves by 5–20%.
+
+**S2, host march** (synthetic: a 32 m room, three sliding doors cycling across four firing lines; the reference rocket, 30 m/s, radius 0.25, one shot per 45 ticks per shooter; 1,800 sampled ticks). `mover-setpiece.prl` is not baked in this container, so the rig stands in for the map.
+
+| Shooters | Open per tick | Mean per tick | p99 / worst per tick | Per shot per tick |
+|---|---|---|---|---|
+| 4 clients' marches | 3.22 | 2.2 µs | 8.3 / 40 µs | 0.67 µs |
+| Host player's rockets (same weapon, same rate) | 0.90 | 0.8 µs | 3.7 / 21 µs | 0.85 µs |
+
+A march costs about what a host rocket does per tick, as `research.md` predicted (one combined sphere cast per open march).
+

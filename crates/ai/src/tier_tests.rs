@@ -26,6 +26,9 @@ struct Tiered {
     wall: CollisionWorld,
     open: CollisionWorld,
     screened: bool,
+    /// Movers at their pose; none unless a test adds a door.
+    movers: Vec<crate::collision::moving::MoverCollider>,
+    poses: crate::collision::test_movers::DoorPoses,
     ticks: u64,
 }
 
@@ -53,6 +56,8 @@ impl Tiered {
             wall: wall_world(30.0, -50.0, 50.0),
             open: CollisionWorld::new(),
             screened: false,
+            movers: Vec::new(),
+            poses: Default::default(),
             ticks: 0,
         }
     }
@@ -88,7 +93,11 @@ impl Tiered {
             &mut self.runtime,
             DT,
             AiTickInputs {
-                mover_nav: crate::nav::MoverNav::none(),
+                mover_nav: crate::nav::MoverNav {
+                    gate: crate::nav::NavGate::OPEN,
+                    movers: &self.movers,
+                    poses: &self.poses,
+                },
                 nav_graph: None,
                 collision_world: Some(if self.screened {
                     &self.wall
@@ -357,6 +366,39 @@ fn unperceived_npc_with_sight_notices_on_dormant_checks() {
         "the second dormant check that sees them"
     );
     assert_eq!(tiered.tier(npc), Some(NpcTier::Engaged), "then it moves up");
+}
+
+// A dormant NPC's checks see a closed door as they see a wall: no sighting
+// while it stands, then the second dormant check after it opens acquires.
+#[test]
+fn dormant_checks_do_not_see_through_a_closed_door() {
+    let graph = super::awareness::noticing_graph(1_000.0, 2_000.0);
+    let mut tiered = Tiered::with_player();
+    tiered.movers = vec![crate::collision::test_movers::door_slab(
+        5, 0.1, 100.0, 50.0,
+    )];
+    let door_at = |y: f32| {
+        crate::collision::test_movers::DoorPoses::default().place(
+            5,
+            Vec3::new(30.0, y, 0.0),
+            glam::Quat::IDENTITY,
+        )
+    };
+    tiered.poses = door_at(-50.0);
+    let npc = tiered.npc(25, 5, &graph);
+    for _ in 0..3 {
+        to_dormant_check(&mut tiered, npc);
+        assert_eq!(tiered.tier(npc), Some(NpcTier::Dormant));
+        assert!(
+            tiered.brain(npc).awareness.is_empty(),
+            "the door hides them"
+        );
+    }
+    tiered.poses = door_at(200.0);
+    to_dormant_check(&mut tiered, npc);
+    assert_eq!(meter(&tiered, npc), 0.0, "a first sighting gains nothing");
+    to_dormant_check(&mut tiered, npc);
+    assert_eq!(tiered.brain(npc).acquired_target, Some(tiered.pawn));
 }
 
 // P44 / AC 9: a dormant NPC with `fillMs` 3000 sights a player on a dormant

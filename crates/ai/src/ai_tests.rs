@@ -13766,6 +13766,8 @@ mod decide;
 
 #[path = "awareness_tests.rs"]
 mod awareness;
+#[path = "mover_sight_tests.rs"]
+mod mover_sight;
 
 #[path = "tier_tests.rs"]
 mod tier;

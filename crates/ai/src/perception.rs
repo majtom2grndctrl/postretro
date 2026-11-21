@@ -6,7 +6,8 @@ use std::collections::HashMap;
 use glam::Vec3;
 
 use super::targeting::TargetPawn;
-use crate::collision::{self, CollisionWorld};
+use crate::collision::moving::CombinedCollisionWorld;
+use crate::collision::shot_queries::line_of_sight_combined;
 use crate::nav::NavGraph;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::BrainComponent;
@@ -62,7 +63,7 @@ pub(super) struct TargetPerceptionQuery<'a> {
     pub(super) enemy_position: Vec3,
     pub(super) target: TargetPawn,
     pub(super) nav_graph: Option<&'a NavGraph>,
-    pub(super) collision_world: Option<&'a CollisionWorld>,
+    pub(super) collision_world: Option<&'a CombinedCollisionWorld<'a>>,
     pub(super) fresh: Option<RawTargetPerception>,
     /// Ticks since the enemy's last run: the grace window counts them all.
     pub(super) span: u32,
@@ -118,7 +119,8 @@ pub(super) fn target_aim(registry: &EntityRegistry, target: TargetPawn) -> Optio
         .then(|| target.position + Vec3::Y * (EYE_FACTOR * agent.height))
 }
 
-/// Raw (undebounced) static-world LOS for a fresh candidate. This uses the same
+/// Raw (undebounced) LOS for a fresh candidate, through static geometry and
+/// movers at this tick's pose. This uses the same
 /// canonical pawn-eye helper as selected-target perception; a missing aim point
 /// fails candidacy rather than admitting a target the fire gate cannot describe.
 /// A missing collision world remains clear, matching the selected-target path.
@@ -126,11 +128,11 @@ pub(super) fn raw_target_perception(
     registry: &EntityRegistry,
     enemy_eye: Vec3,
     target: TargetPawn,
-    collision_world: Option<&CollisionWorld>,
+    collision_world: Option<&CombinedCollisionWorld<'_>>,
 ) -> Option<RawTargetPerception> {
     let target_aim = target_aim(registry, target)?;
     let visible = collision_world
-        .map(|world| collision::line_of_sight(enemy_eye, target_aim, world))
+        .map(|world| line_of_sight_combined(enemy_eye, target_aim, world))
         .unwrap_or(true);
     Some(RawTargetPerception {
         target: target.entity,
@@ -169,7 +171,7 @@ pub(super) fn perceive_target(
             };
             let enemy_eye = enemy_eye(registry, enemy, enemy_position, nav_graph);
             let visible = collision_world
-                .map(|world| collision::line_of_sight(enemy_eye, target_aim, world))
+                .map(|world| line_of_sight_combined(enemy_eye, target_aim, world))
                 .unwrap_or(true);
             RawTargetPerception {
                 target: target.entity,
@@ -385,7 +387,9 @@ mod tests {
                     life: 0,
                 },
                 nav_graph: None,
-                collision_world: Some(&CollisionWorld::new()),
+                collision_world: Some(&CombinedCollisionWorld::static_only(
+                    &crate::collision::CollisionWorld::new(),
+                )),
                 fresh: Some(raw),
                 span: 1,
             },

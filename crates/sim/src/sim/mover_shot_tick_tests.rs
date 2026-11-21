@@ -455,3 +455,235 @@ fn client_predicted_projectile_meets_a_door_in_its_prediction() {
         assert_vec3_approx(impact.point, Vec3::new(0.0, 0.0, expected_z));
     }
 }
+
+// ---- One published pose per tick (H6, P15) ----
+
+mod same_tick {
+    use super::*;
+    use crate::kinematic_mover::{MoverTickStateTable, apply_mover_command};
+    use crate::sim::tests::{sim_command_at, weapon_component};
+    use crate::sim::{PostMovementCommand, simulate_tick};
+    use postretro_entities::components::inventory::Inventory;
+    use postretro_entities::{
+        BlockPolicy, KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode,
+        MoverCommand,
+    };
+    use postretro_scripting_core::reaction_dispatch::ProgressTracker;
+
+    const DT: f32 = 1.0 / 60.0;
+    const OPEN: Vec3 = Vec3::new(5.0, 10.0, 0.0);
+    const CLOSED: Vec3 = Vec3::new(5.0, -1.0, 0.0);
+
+    struct World {
+        registry: Rc<RefCell<EntityRegistry>>,
+        static_world: CollisionWorld,
+        colliders: Vec<MoverCollider>,
+        movers: MoverTickStateTable,
+        door: EntityId,
+        weapon: EntityId,
+        ticks: u32,
+        /// Reverse the door's course from inside the AI stage.
+        reverse_in_ai: bool,
+    }
+
+    impl World {
+        /// A door above the line it closes onto in one tick; the local pawn
+        /// at the origin holds a hitscan weapon aimed along +X.
+        fn new(policy: BlockPolicy) -> Self {
+            Self::with_door(OPEN, CLOSED, policy, CollisionWorld::new())
+        }
+
+        fn with_door(
+            open: Vec3,
+            closed: Vec3,
+            policy: BlockPolicy,
+            static_world: CollisionWorld,
+        ) -> Self {
+            let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+            let (door, weapon) = {
+                let mut registry = registry.borrow_mut();
+                let door = registry.spawn(Transform {
+                    position: open,
+                    ..Transform::default()
+                });
+                let mut mover = KinematicMoverComponent::new(
+                    DOOR,
+                    KinematicMoverConfig {
+                        waypoints: vec![open, closed],
+                        waypoint_names: vec!["open".into(), "closed".into()],
+                        speed_mps: open.distance(closed) / DT,
+                        wait_ms: 0.0,
+                        mode: KinematicMoverMode::Once,
+                        started: false,
+                        spin_axis: Vec3::ZERO,
+                        initial_spin_rate_rad_s: 0.0,
+                        spin_accel_rad_s2: 0.0,
+                        carry_yaw: false,
+                    },
+                );
+                mover.block_policy = policy;
+                registry.set_component(door, mover).unwrap();
+                let pawn = registry.spawn(Transform::default());
+                let weapon = registry.spawn(Transform::default());
+                let mut component = weapon_component("weapon.test.mover");
+                component.spread_degrees = 0.0;
+                registry.set_component(weapon, component).unwrap();
+                let mut inventory = Inventory::default();
+                inventory.wieldables[0] = Some(weapon);
+                registry.set_component(pawn, inventory).unwrap();
+                registry.set_component(pawn, trigger_movement()).unwrap();
+                registry.mark_local_player_pawn(pawn).unwrap();
+                (door, weapon)
+            };
+            Self {
+                registry,
+                static_world,
+                colliders: vec![door_slab(DOOR, 0.1, 6.0, 3.0)],
+                movers: MoverTickStateTable::default(),
+                door,
+                weapon,
+                ticks: 0,
+                reverse_in_ai: false,
+            }
+        }
+
+        /// One tick; the door's pose the AI was handed, and the hitscan impact.
+        fn tick(&mut self, fire: bool) -> (Option<Vec3>, Vec<Vec3>) {
+            let mut ai_door = None;
+            let (reverse_in_ai, door) = (self.reverse_in_ai, self.door);
+            self.ticks += 1;
+            let events = simulate_tick(
+                self.registry.clone(),
+                &self.static_world,
+                &HitZoneStore::new(),
+                None,
+                postretro_collision::EnvironmentView::level_only(0.0),
+                Some(self.weapon),
+                0.0,
+                &mut ProgressTracker::new(),
+                |registry, _, inputs, _| {
+                    if reverse_in_ai {
+                        let mut mover = registry
+                            .get_component::<KinematicMoverComponent>(door)
+                            .unwrap()
+                            .clone();
+                        apply_mover_command(&mut mover, &MoverCommand::Reverse);
+                        registry.set_component(door, mover).unwrap();
+                    }
+                    ai_door = inputs
+                        .mover_nav
+                        .poses
+                        .pose(DOOR)
+                        .map(|pose| pose.transform.position);
+                    crate::ai_host::AiTickResult {
+                        events: Vec::new(),
+                        projectile_spawns: Vec::new(),
+                    }
+                },
+                &self.colliders,
+                &mut self.movers,
+                &[],
+                &sim_command_at(self.ticks, fire, false),
+                |_| PostMovementCommand {
+                    aim_origin: Vec3::new(0.0, 0.5, 0.0),
+                    aim_direction: Vec3::X,
+                },
+                DT,
+                None,
+                |_| {},
+            );
+            (ai_door, events.weapon_impact_points)
+        }
+
+        fn set_speed(&self, speed_mps: f32) {
+            let mut registry = self.registry.borrow_mut();
+            let mut mover = registry
+                .get_component::<KinematicMoverComponent>(self.door)
+                .unwrap()
+                .clone();
+            mover.speed_mps = speed_mps;
+            registry.set_component(self.door, mover).unwrap();
+        }
+
+        fn command(&self, command: MoverCommand) {
+            let mut registry = self.registry.borrow_mut();
+            let mut mover = registry
+                .get_component::<KinematicMoverComponent>(self.door)
+                .unwrap()
+                .clone();
+            apply_mover_command(&mut mover, &command);
+            registry.set_component(self.door, mover).unwrap();
+        }
+
+        /// A rocket at x = 4.5 flying +X one metre a tick: this tick's segment
+        /// crosses the door's plane.
+        fn rocket(&self) -> EntityId {
+            let rig = Rig {
+                registry: self.registry.clone(),
+                static_world: CollisionWorld::new(),
+                movers: Vec::new(),
+                poses: DoorPoses::default(),
+            };
+            let rocket = rig.rocket(Vec3::new(4.5, 0.5, 0.0), Vec3::X, 0.05, None);
+            rig.edit_rocket(rocket, |component| component.speed = 1.0 / DT);
+            rocket
+        }
+    }
+
+    #[test]
+    fn on_the_tick_a_door_closes_rocket_sight_and_hitscan_all_meet_it() {
+        let mut world = World::new(BlockPolicy::default());
+        let (ai_door, _) = world.tick(false);
+        assert_eq!(ai_door, Some(OPEN), "the door stands open before it closes");
+        world.command(MoverCommand::Start);
+        let rocket = world.rocket();
+        let (ai_door, hitscan) = world.tick(true);
+        assert_eq!(ai_door, Some(CLOSED), "AI reads the pose Movers published");
+        assert!(
+            !world.registry.borrow().exists(rocket),
+            "the rocket meets the door this tick"
+        );
+        let [impact] = hitscan.as_slice() else {
+            panic!("one pellet: {hitscan:?}");
+        };
+        assert_vec3_approx(*impact, Vec3::new(4.9, 0.5, 0.0));
+    }
+
+    // P15: the door's course reverses mid-tick, after Movers published its
+    // pose, as the blocking pass's reversal does (it writes the mover
+    // component; `run_mover_blocking_pass` reads the pose table only by
+    // shared reference). The AI stage stands in for that write so the test
+    // controls it; the rocket before it and the hitscan after it both meet
+    // the pose Movers published on T, and the reversal shows from T + 1.
+    #[test]
+    fn a_reversal_mid_tick_shows_from_the_next_tick() {
+        // Four metres a tick: on T the door sits at z = 0, mid-travel.
+        let open = Vec3::new(5.0, -1.0, 4.0);
+        let closed = Vec3::new(5.0, -1.0, -4.0);
+        let mut world = World::with_door(open, closed, BlockPolicy::Reverse, CollisionWorld::new());
+        world.set_speed(4.0 / DT);
+        world.tick(false);
+        world.command(MoverCommand::Start);
+        let rocket = world.rocket();
+        world.reverse_in_ai = true;
+        let (ai_door, hitscan) = world.tick(true);
+        world.reverse_in_ai = false;
+        let published = world.movers.get(DOOR).map(|state| state.transform.position);
+        assert_eq!(ai_door, published, "AI read the tick's published pose");
+        let door_z = published.expect("door published").z;
+        assert!(
+            door_z.abs() < 3.0,
+            "the door covers the shot line: {door_z}"
+        );
+        assert!(!world.registry.borrow().exists(rocket), "the rocket met it");
+        let [impact] = hitscan.as_slice() else {
+            panic!("one pellet: {hitscan:?}");
+        };
+        assert_vec3_approx(*impact, Vec3::new(4.9, 0.5, 0.0));
+        let (next_door, _) = world.tick(false);
+        assert!(
+            next_door.is_some_and(|position| position.z > door_z),
+            "the reversal shows from T + 1: {next_door:?}"
+        );
+    }
+}

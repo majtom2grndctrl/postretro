@@ -769,6 +769,14 @@ where
     // The live view exists only for compute. `apply_outcomes` can invoke an
     // impact policy which mutates the overlay, so retaining this Ref across the
     // apply pass would turn an ordinary same-tick write into a RefCell panic.
+    // NPC sight sees movers at this tick's pose; a closed door hides a target.
+    let sight_world = collision_world.map(|world| {
+        crate::collision::moving::CombinedCollisionWorld::new(
+            world,
+            mover_nav.movers,
+            mover_nav.poses,
+        )
+    });
     let mut outcomes = {
         let faction_sentiment = faction_sentiment.borrow();
         let live_factions = LiveFactionSentiment::new(factions, &faction_sentiment);
@@ -782,7 +790,7 @@ where
             dt_ms,
             nav_graph,
             mover_nav.gate,
-            collision_world,
+            sight_world.as_ref(),
             &live_factions,
             turns,
             clips,

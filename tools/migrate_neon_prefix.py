@@ -473,8 +473,9 @@ def build_plan(mod_root):
 def describe(plan, mod_root):
     out = []
 
+    # The plan reads the same on every host: components joined by `/`.
     def rel(path):
-        return os.path.relpath(path, mod_root)
+        return Path(os.path.relpath(path, mod_root)).as_posix()
 
     if not plan.textures:
         out.append("No `neon_` textures found.")

@@ -70,7 +70,7 @@ impl fmt::Display for DeltaWorkingSetGateError {
             Self::BudgetExceeded(projection) => {
                 write!(
                     formatter,
-                    "SH delta working-set gate refused before dense baking: estimated peak {} bytes exceeds budget {} bytes ({} cumulative dense bytes × copy-chain factor {}, plus {} bytes the mover probe channel carries)",
+                    "SH delta working-set gate refused before dense baking: estimated peak {} bytes exceeds budget {} bytes ({} cumulative dense bytes × copy-chain factor {}) plus {} bytes the mover probe channel carries",
                     projection.estimated_peak_bytes,
                     projection.budget_bytes,
                     projection.cumulative_dense_bytes,

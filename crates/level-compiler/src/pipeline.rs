@@ -585,8 +585,9 @@ fn run_after_parsing(
         &geo_result.texture_names,
     )?;
     // The probe channel's bounce half poses every analysed mover at each of
-    // its poses, so the SH base gate prices its scenes, its states and
-    // the direct half's entries before any SH ray.
+    // its poses, so the SH base gate prices its scenes, one mover's states
+    // at a time, the blocks at the payload cap and the direct half's
+    // entries before any SH ray.
     let probe_depth_tile_cap = args.probe_depth_tile_cap;
     let bounce_plan = {
         let direct_lights: Vec<&crate::map_data::MapLight> = static_baked_lights
@@ -654,9 +655,18 @@ fn run_after_parsing(
             .map_or(0, |bytes| bytes.section)
         },
         entity_shadow_bytes: planned_entity_shadow_bytes(&planned_deltas.entity_shadow_lights),
+        delta_metadata_bytes: [
+            &planned_deltas.indirect,
+            &planned_deltas.direct,
+            &planned_deltas.animated_direct,
+        ]
+        .into_iter()
+        .map(|plan| plan.metadata_bytes())
+        .sum::<u64>()
+        .saturating_mul(delta_working_set_projection.copy_chain_factor - 1),
     };
-    sh_base_projection.price_movers(&bounce_plan.cost, &direct_window);
-    delta_working_set_projection.carry(sh_base_projection.carried_bytes(&bounce_plan.cost));
+    sh_base_projection.price_movers(&bounce_plan.cost, &direct_window)?;
+    delta_working_set_projection.carry(sh_base_projection.carried_bytes(&bounce_plan.cost)?);
     sh_working_set_gates::admit_sh_working_sets(
         delta_working_set_projection,
         &sh_base_projection,
@@ -816,7 +826,13 @@ fn run_after_parsing(
     }
     let mut mover_bounce_summary: Vec<String> = (mover_bounce_blocks
         != crate::mover_probe_channel::BounceBlocks::default())
-    .then(|| mover_bounce_stage::summary_line(&mover_bounce_blocks, &mover_depth_reservation))
+    .then(|| {
+        mover_bounce_stage::summary_line(
+            &mover_bounce_blocks,
+            &mover_depth_reservation,
+            args.mover_payload_max_bytes,
+        )
+    })
     .into_iter()
     .collect();
     let mover_knots: Vec<_> = mover_poses

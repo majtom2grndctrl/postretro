@@ -43,6 +43,8 @@ fn ten_lights() -> Vec<MapLight> {
 struct Resolved {
     layers: Vec<SparseLayer>,
     in_flight: u64,
+    /// The largest cache hit's payload held at once: zero when no layer hit.
+    hit_payload: u64,
     peak: u64,
     priced: u64,
 }
@@ -97,6 +99,11 @@ fn resolve(
                 .get(LAYERS_IN_FLIGHT_KIND)
                 .copied()
                 .unwrap_or(0),
+            hit_payload: report
+                .high_water
+                .get("patch layer cache payload")
+                .copied()
+                .unwrap_or(0),
             peak: report.peak,
             priced,
         }
@@ -137,6 +144,10 @@ fn layer_resolution_never_exceeds_its_cap() {
                 cap,
                 threads,
                 &control,
+            );
+            assert!(
+                hit.hit_payload > 0 && cold.hit_payload == 0,
+                "x{threads} cap {cap}: the primed layers hit, the cold ones cannot"
             );
             for (mode, resolved) in [("cold", cold), ("warm empty", warm), ("some hit", hit)] {
                 let what = format!("x{threads} cap {cap} {mode}");

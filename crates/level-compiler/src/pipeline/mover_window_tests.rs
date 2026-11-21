@@ -164,8 +164,8 @@ pub(super) fn assert_windows_priced(what: &str, measured: &Measured) -> Vec<Stri
         .collect()
 }
 
-/// The ledger kinds that together hold `prefix`'s section and its analysis
-/// clone, at their high-water marks.
+/// The sum of the named ledger kinds' high-water marks; a kind never held
+/// counts zero.
 fn kinds(measured: &Measured, names: &[&str]) -> u64 {
     names
         .iter()
@@ -332,15 +332,62 @@ fn every_priced_phase_covers_its_window_on_the_closet() {
             &format!("{fidelity} id-34 hit, memos miss"),
             &compile_measured(&map, out.path(), &primed_flags, 4),
         ));
-        // The cap at the doors' blocks' bytes: read from the cold build's
-        // log-free ledger, the blocks' own kind at its high-water.
+        // The cap at the doors' blocks' bytes, so its term carries no
+        // slack: the blocks' kind in the cold build's ledger holds exactly
+        // what the cap counts (the payload cap test proves the two agree).
         let blocks = cold.report.high_water["mover bounce blocks"];
         let capped = cap_flag(blocks);
-        let capped: Vec<&str> = [&fid[..], &["--no-cache"], &[&capped[0], &capped[1]]].concat();
+        let capped_cold: Vec<&str> =
+            [&fid[..], &["--no-cache"], &[&capped[0], &capped[1]]].concat();
         rows.extend(assert_windows_priced(
             &format!("{fidelity} cold, cap at the blocks"),
-            &compile_measured(&map, out.path(), &capped, 4),
+            &compile_measured(&map, out.path(), &capped_cold, 4),
         ));
+        let capped_cache = tempfile::tempdir().expect("cache");
+        let capped_warm: Vec<&str> = [
+            &fid[..],
+            &["--cache-dir", capped_cache.path().to_str().expect("utf-8")],
+            &[&capped[0], &capped[1]],
+        ]
+        .concat();
+        for mode in ["warm empty", "full hit"] {
+            rows.extend(assert_windows_priced(
+                &format!("{fidelity} {mode}, cap at the blocks"),
+                &compile_measured(&map, out.path(), &capped_warm, 4),
+            ));
+        }
+        let capped_primed = tempfile::tempdir().expect("cache");
+        let capped_primed_flags: Vec<&str> = [
+            &fid[..],
+            &["--cache-dir", capped_primed.path().to_str().expect("utf-8")],
+            &[&capped[0], &capped[1]],
+        ]
+        .concat();
+        compile_measured(&primer, out.path(), &capped_primed_flags, 4);
+        rows.extend(assert_windows_priced(
+            &format!("{fidelity} id-34 hit, memos miss, cap at the blocks"),
+            &compile_measured(&map, out.path(), &capped_primed_flags, 4),
+        ));
+        // Every section the closet's doors keep alive is routed: none of the
+        // checks above passes on an empty kind. The doors gate no direct
+        // light, so their direct bake holds nothing; closet-reveal's does
+        // (the on-demand fixture run).
+        for kind in [
+            "id-34 section",
+            "id-35 section",
+            "id-57 section",
+            "posed solids",
+            "mover skip bars",
+        ] {
+            assert!(
+                cold.report
+                    .high_water
+                    .get(kind)
+                    .is_some_and(|&bytes| bytes > 0),
+                "{fidelity}: `{kind}` routed: {:?}",
+                cold.report.high_water
+            );
+        }
     }
     // A `low` build over a `high`-primed cache.
     let high = tempfile::tempdir().expect("cache");
@@ -418,6 +465,13 @@ fn a_delta_cap_below_dense_still_prices_the_dense_window() {
     let out = tempfile::tempdir().expect("out");
     let probe = compile_measured(&map, out.path(), &["--no-cache"], 4);
     let dense = probe.delta.cumulative_dense_bytes;
+    // The deltas are held dense past the cap: the window prices them dense.
+    let held = kinds(&probe, &["id-27 section", "id-41 section", "id-45 section"]);
+    assert!(
+        held > dense - 1,
+        "the deltas held {held} B, past a cap of {}",
+        dense - 1
+    );
     let cap = (dense - 1).to_string();
     let measured = compile_measured(
         &map,

@@ -1,6 +1,6 @@
-// Id 57's bounce and depth blocks from every mover's states: bounce entries
-// per (listed cell, mover) with their affected-probe masks, depth records
-// per (mover, probe), and what they weigh.
+// Id 57's bounce and depth blocks, joined one finished mover at a time:
+// bounce entries per (listed cell, mover) with their affected-probe masks,
+// depth records per (mover, probe), and what they weigh against the cap.
 // See: context/lib/build_pipeline.md §PRL section IDs, §Compiler pipeline step 12
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -43,6 +43,9 @@ pub(crate) struct MoverPayloadCapExceeded {
 pub(crate) struct BounceBlocks {
     pub(crate) bounce: Vec<BounceEntryParts>,
     pub(crate) depth: Vec<DepthRecordParts>,
+    /// What [`Self::heap_bytes`] counts, kept as movers join so the cap's
+    /// check reads it without walking every block.
+    bytes: u64,
     /// Its heap in the test ledger, kept at its current capacity.
     #[cfg(test)]
     held: crate::live_bytes::Held,
@@ -90,14 +93,10 @@ impl BounceBlocks {
     /// Every vector is sized exactly, so the blocks grow by exactly
     /// [`Self::mover_bytes`].
     pub(crate) fn push_mover(&mut self, states: &MoverBounceStates, cells: &ProbeCells) {
-        #[cfg(debug_assertions)]
-        let before = self.heap_bytes();
-        #[cfg(debug_assertions)]
         let predicted = Self::mover_bytes(states, cells);
-        let blocks = &mut *self;
         let by_cell = bounce_by_cell(states, cells);
-        blocks.bounce.reserve_exact(by_cell.len());
-        blocks.depth.reserve_exact(states.depth.len());
+        self.bounce.reserve_exact(by_cell.len());
+        self.depth.reserve_exact(states.depth.len());
         for (cell, mut probes) in by_cell {
             probes.sort_unstable_by_key(|&(local, _)| local);
             let mut poses = vec![BouncePoseMasks::default(); states.pose_count];
@@ -132,7 +131,7 @@ impl BounceBlocks {
                     }
                 }
             }
-            blocks.bounce.push(BounceEntryParts {
+            self.bounce.push(BounceEntryParts {
                 cell,
                 entry: MoverBounceEntry {
                     mover_id: states.mover_id,
@@ -142,7 +141,7 @@ impl BounceBlocks {
             });
         }
         for probe in &states.depth {
-            blocks.depth.push(DepthRecordParts {
+            self.depth.push(DepthRecordParts {
                 record: MoverDepthRecord {
                     mover_id: states.mover_id,
                     probe_index: probe.probe,
@@ -151,21 +150,26 @@ impl BounceBlocks {
                 tiles: probe.tiles.clone(),
             });
         }
-        #[cfg(debug_assertions)]
+        self.bytes += predicted;
         debug_assert_eq!(
             self.heap_bytes(),
-            before + predicted,
+            self.bytes,
             "a mover's blocks grow the blocks by exactly their predicted bytes"
         );
         #[cfg(test)]
         {
             drop(std::mem::take(&mut self.held));
-            self.held = crate::live_bytes::hold("mover bounce blocks", self.heap_bytes());
+            self.held = crate::live_bytes::hold("mover bounce blocks", self.bytes);
         }
     }
 
     /// What the blocks hold, by capacity: every byte
-    /// `--mover-payload-max-size` counts.
+    /// `--mover-payload-max-size` counts, kept as movers join.
+    pub(crate) fn bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    /// [`Self::bytes`], counted afresh over every block.
     pub(crate) fn heap_bytes(&self) -> u64 {
         let bounce: usize = self
             .bounce

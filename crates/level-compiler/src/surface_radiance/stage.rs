@@ -159,8 +159,9 @@ fn hold_absent(absent: Option<&AbsentLaterBounces>) -> Option<crate::live_bytes:
 /// ([`MoverBounceJob::progress_units`]). A volume hit advances id 34's units
 /// at once, less the layers and later bounces the movers re-run, and
 /// re-publishes the total with each pose at the count its memo lookup
-/// resolves; a mover whose every pose hits advances at once, and a held pose
-/// of a mover with a miss as it reads back.
+/// resolves; a memo-hit pose advances as its slot reads it back. A slot
+/// whose read-back fails and builds the layers or later bounces adds their
+/// units to the total as it builds them.
 ///
 /// The gather's hits also bin into each valid probe's depth tile, kept when
 /// it changes the probe's visibility, at most `tile_cap` per level

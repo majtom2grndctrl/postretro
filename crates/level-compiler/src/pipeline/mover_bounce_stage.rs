@@ -146,10 +146,10 @@ pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<B
 /// of live tiles past the range is a backstop that earlier refusal makes
 /// unreachable. Where the range cannot hold the carrying probes' own id-59
 /// tiles beside the live tiles, the build warns and drops the lowest-ranked
-/// of them. `movers`: some mover finished, so the blocks log their line.
+/// of them. The blocks log their line when the bake had any mover.
 pub(super) fn finish_bounce_half(
     blocks: &BounceBlocks,
-    movers: bool,
+    any_mover: bool,
     base: &OctahedralShVolumeSection,
     depth_tiles: &mut ProbeDepthTiles,
     tile_cap: u32,
@@ -181,19 +181,24 @@ pub(super) fn finish_bounce_half(
         );
     }
     depth_tiles.log(reservation.shrunk_cap);
-    if movers {
+    if any_mover {
         blocks.log();
     }
     Ok(reservation)
 }
 
 /// The Build Summary line for the bounce and depth blocks.
-pub(super) fn summary_line(blocks: &BounceBlocks, reservation: &DepthReservation) -> String {
+pub(super) fn summary_line(
+    blocks: &BounceBlocks,
+    reservation: &DepthReservation,
+    payload_cap: u64,
+) -> String {
     let counts = blocks.counts();
     format!(
         "Mover probe channel bounce: {} entr(y/ies) from {} mover(s), {} affected probe(s), \
          payload {} B; depth: {} record(s) from {} mover(s), {} live tile(s) of the \
-         {}-tile range, {} CPU-held closed-pose tile(s)",
+         {}-tile range, {} CPU-held closed-pose tile(s); blocks hold {} B of the {} B \
+         --mover-payload-max-size",
         counts.bounce_entries,
         counts.bounce_movers,
         counts.affected_probes,
@@ -203,6 +208,8 @@ pub(super) fn summary_line(blocks: &BounceBlocks, reservation: &DepthReservation
         reservation.live,
         reservation.shrunk_cap as usize + reservation.live,
         counts.closed_pose_tiles,
+        blocks.bytes(),
+        payload_cap,
     )
 }
 

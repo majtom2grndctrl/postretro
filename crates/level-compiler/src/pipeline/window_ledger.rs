@@ -1,6 +1,5 @@
 //! Test only: the SH sections the mover channel's priced windows hold,
-//! routed through the live-bytes ledger by capacity, with the windows'
-//! phase marks.
+//! routed through the live-bytes ledger by capacity.
 //! See: context/lib/testing_guide.md §3 (Resource bounds)
 
 use std::collections::BTreeMap;

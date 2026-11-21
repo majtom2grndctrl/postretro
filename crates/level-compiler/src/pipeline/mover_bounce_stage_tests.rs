@@ -146,10 +146,12 @@ fn bake_base(
         u64::MAX,
     )
     .expect("priced");
-    projection.price_movers(
-        &plan.cost,
-        &crate::surface_radiance::DirectWindow::default(),
-    );
+    projection
+        .price_movers(
+            &plan.cost,
+            &crate::surface_radiance::DirectWindow::default(),
+        )
+        .expect("priced");
     let (base, outcome) = bake_sh_base_with_movers(
         ctx,
         &CONFIG,
@@ -402,10 +404,12 @@ fn a_budget_the_mover_channel_exceeds_refuses_with_the_sh_base_gates_error() {
         };
         let mut priced = gate(u64::MAX);
         let static_peak = priced.estimated_peak_bytes;
-        priced.price_movers(
-            &plan.cost,
-            &crate::surface_radiance::DirectWindow::default(),
-        );
+        priced
+            .price_movers(
+                &plan.cost,
+                &crate::surface_radiance::DirectWindow::default(),
+            )
+            .expect("priced");
         let mover_peak = priced.estimated_peak_bytes;
         assert!(mover_peak > static_peak, "{static_peak} → {mover_peak}");
 
@@ -414,10 +418,12 @@ fn a_budget_the_mover_channel_exceeds_refuses_with_the_sh_base_gates_error() {
         projection
             .admit()
             .expect("without the mover, the budget admits");
-        projection.price_movers(
-            &plan.cost,
-            &crate::surface_radiance::DirectWindow::default(),
-        );
+        projection
+            .price_movers(
+                &plan.cost,
+                &crate::surface_radiance::DirectWindow::default(),
+            )
+            .expect("priced");
         let error = projection
             .admit()
             .expect_err("the mover channel exceeds the budget");
@@ -482,10 +488,12 @@ fn the_sh_base_gate_prices_every_geometry_knot_and_refuses_by_name_below_it() {
             )
             .expect("priced")
             .1;
-            projection.price_movers(
-                &plan.cost,
-                &crate::surface_radiance::DirectWindow::default(),
-            );
+            projection
+                .price_movers(
+                    &plan.cost,
+                    &crate::surface_radiance::DirectWindow::default(),
+                )
+                .expect("priced");
             projection
         };
         let knotted_peak = gate(&with_knots, u64::MAX).estimated_peak_bytes;

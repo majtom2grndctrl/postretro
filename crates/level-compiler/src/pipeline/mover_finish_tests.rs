@@ -12,6 +12,7 @@ use super::{
     DEFAULT_BOUNCE_FILL, bake_base, closet_edited, open, plan_half, plan_half_at, two_doors,
     with_ctx,
 };
+use crate::bake_counters::counted;
 use crate::bake_fidelity::{BakeFidelity, BakeMode};
 use crate::cache::StageCache;
 use crate::fixture_pipeline::{FixturePipeline, fixture_path, load_map};
@@ -340,8 +341,8 @@ fn a_held_door_is_not_live_while_the_other_bakes() {
 // Warm over a cache whose lookup found every pose, a door's read-back
 // fails at its slot: that pose bakes there, bounce one and id 34's later
 // bounces built then, and every emitted section equals a cold build's, at
-// `low` and `high` with no higher entries cached; with both doors held that
-// way, and with one held and the other pending (M3).
+// `low` and `high` with no higher entries cached; with both doors held and
+// one pose of each failing, and with one held and the other pending (M3).
 #[test]
 fn a_failed_slot_read_bakes_the_pose_and_matches_cold() {
     let maps = tempfile::tempdir().expect("maps dir");
@@ -359,9 +360,12 @@ fn a_failed_slot_read_bakes_the_pose_and_matches_cold() {
         let full = tempfile::tempdir().expect("cache");
         emitted_with(&fixture, mode, Some(&open(full.path())), |_| {});
         let copy = cache_copy(full.path());
-        let failed = emitted_with(&fixture, mode, Some(&open(copy.path())), |request| {
-            request.fail_read_back = vec![(ids[0], 0), (ids[1], 1)];
+        let (failed, counts) = counted(4, || {
+            emitted_with(&fixture, mode, Some(&open(copy.path())), |request| {
+                request.fail_read_back = vec![(ids[0], 0), (ids[1], 1)];
+            })
         });
+        assert_eq!(counts.read_backs_failed, 2, "{mode:?}: both seams fire");
         assert_eq!(
             failed, cold,
             "{mode:?}: every door held, a read-back failing"
@@ -369,9 +373,12 @@ fn a_failed_slot_read_bakes_the_pose_and_matches_cold() {
         // The second door pending: the first's read-back fails.
         let primed = tempfile::tempdir().expect("cache");
         emitted_with(&primer, mode, Some(&open(primed.path())), |_| {});
-        let failed = emitted_with(&fixture, mode, Some(&open(primed.path())), |request| {
-            request.fail_read_back = vec![(ids[0], 1)];
+        let (failed, counts) = counted(4, || {
+            emitted_with(&fixture, mode, Some(&open(primed.path())), |request| {
+                request.fail_read_back = vec![(ids[0], 1)];
+            })
         });
+        assert_eq!(counts.read_backs_failed, 1, "{mode:?}: the seam fires");
         assert_eq!(failed, cold, "{mode:?}: one door held, the other pending");
     }
 }
@@ -395,14 +402,13 @@ fn a_high_read_failing_at_the_slot_bakes_at_the_high_count() {
     );
     let low_cold = emitted_with(&fixture, LOW, None, |_| {});
     assert_ne!(served, low_cold, "the `high` entries serve the `low` build");
-    let failed = emitted_with(
-        &fixture,
-        LOW,
-        Some(&open(cache_copy(primed.path()).path())),
-        |request| {
+    let copy = cache_copy(primed.path());
+    let (failed, counts) = counted(4, || {
+        emitted_with(&fixture, LOW, Some(&open(copy.path())), |request| {
             request.fail_read_back = vec![(id, 0)];
-        },
-    );
+        })
+    });
+    assert_eq!(counts.read_backs_failed, 1, "the seam fires");
     assert_eq!(failed, served, "the failed pose bakes at the `high` count");
 }
 
@@ -540,7 +546,7 @@ fn mover_bake_window(
     mode: BakeMode,
     cache: Option<&StageCache>,
     edit: impl FnOnce(&mut MoverBounceRequest) + Send,
-) -> (u64, u64) {
+) -> (u64, u64, crate::live_bytes::Report) {
     with_ctx(fixture, |ctx, poses| {
         let (priced, report) = measured(4, || {
             let mut plan = plan_half_at(fixture, ctx, poses, DEFAULT_BOUNCE_FILL, mode);
@@ -555,10 +561,12 @@ fn mover_bake_window(
                 u64::MAX,
             )
             .expect("priced");
-            projection.price_movers(
-                &plan.cost,
-                &crate::surface_radiance::DirectWindow::default(),
-            );
+            projection
+                .price_movers(
+                    &plan.cost,
+                    &crate::surface_radiance::DirectWindow::default(),
+                )
+                .expect("priced");
             let (base, outcome) = crate::surface_radiance::bake_sh_base_with_movers(
                 ctx,
                 &super::CONFIG,
@@ -579,7 +587,7 @@ fn mover_bake_window(
             .find(|phase| phase.label == "mover bake")
             .expect("a mover bake window")
             .peak;
-        (priced, window)
+        (priced, window, report)
     })
 }
 
@@ -595,7 +603,7 @@ fn the_mover_bake_price_covers_a_held_door_beside_a_baking_one() {
     emitted_with(&primer, HIGH, Some(&open(primed.path())), |_| {});
     for reversed in [false, true] {
         let copy = cache_copy(primed.path());
-        let (priced, held) =
+        let (priced, held, _) =
             mover_bake_window(&fixture, HIGH, Some(&open(copy.path())), |request| {
                 if reversed {
                     request.jobs.reverse();
@@ -617,15 +625,104 @@ fn the_mover_bake_price_covers_a_held_door_beside_a_baking_one() {
 fn a_slot_failure_after_blocks_join_is_priced() {
     let maps = tempfile::tempdir().expect("maps dir");
     let fixture = second_door_bounces(maps.path(), 2);
-    let ids: Vec<u32> = fixture
-        .kinematic_movers
-        .iter()
-        .map(|mover| mover.mover_id)
-        .collect();
     let primed = tempfile::tempdir().expect("cache");
     emitted_with(&fixture, LOW, Some(&open(primed.path())), |_| {});
-    let (priced, held) = mover_bake_window(&fixture, LOW, Some(&open(primed.path())), |request| {
-        request.fail_read_back = vec![(ids[1], 1)];
-    });
+    let (priced, held, report) =
+        mover_bake_window(&fixture, LOW, Some(&open(primed.path())), |request| {
+            // The second door in job order: the first's blocks have joined.
+            request.fail_read_back = vec![(request.jobs[1].mover_id, 1)];
+        });
+    assert!(
+        report
+            .high_water
+            .get("summed patch radiance")
+            .is_some_and(|&bytes| bytes > 0),
+        "the failed read-back built bounce one at its slot: {:?}",
+        report.high_water
+    );
     assert!(priced >= held, "priced {priced} B under {held} B");
+}
+
+/// The SH base stage's progress, completed and published total, over a bake
+/// of `fixture` at `mode` over `cache` with `edit` applied to the request.
+fn progress_of(
+    fixture: &FixturePipeline,
+    mode: BakeMode,
+    cache: Option<&StageCache>,
+    edit: impl FnOnce(&mut MoverBounceRequest),
+) -> (usize, Option<usize>) {
+    with_ctx(fixture, |ctx, poses| {
+        let mut plan = plan_half_at(fixture, ctx, poses, DEFAULT_BOUNCE_FILL, mode);
+        edit(&mut plan.request);
+        let (handoff, _) = crate::surface_radiance::plan_sh_base(
+            ctx.geometry,
+            &crate::sh_bake::static_light_refs(ctx),
+            crate::sh_bake::animation_table_bytes(ctx.animated_lights, ctx.total_light_count),
+            super::CONFIG.probe_spacing,
+            DEFAULT_BOUNCE_FILL,
+            u64::MAX,
+        )
+        .expect("priced");
+        let progress = crate::reporter::StageProgress::indeterminate();
+        let control = crate::bake_control::BakeControl::new(
+            std::sync::Arc::new(crate::governor::Governor::new(usize::MAX, false)),
+            &progress,
+        );
+        crate::surface_radiance::bake_sh_base_with_movers(
+            ctx,
+            &super::CONFIG,
+            handoff,
+            &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
+            cache,
+            &control,
+            MAX_PROBE_DEPTH_TILES,
+            &plan.request,
+        );
+        (progress.completed(), progress.total())
+    })
+}
+
+// A slot whose read-back fails and builds bounce one and id 34's later
+// bounces adds their units to the published total as it builds them, so
+// progress still ends exactly at its total: on a full hit, beside a pending
+// door at `light_bounces` 0 (no bounce one planned), and at `low` over a
+// cache whose `high` entries served the doors.
+#[test]
+fn progress_ends_at_its_total_when_a_failed_read_back_builds_its_inputs() {
+    let maps = tempfile::tempdir().expect("maps dir");
+    let fixture = second_door_bounces(maps.path(), 2);
+    let check = |what: &str, (completed, total): (usize, Option<usize>)| {
+        assert_eq!(Some(completed), total, "{what}: progress ends at its total");
+    };
+    let full = tempfile::tempdir().expect("cache");
+    emitted_with(&fixture, LOW, Some(&open(full.path())), |_| {});
+    let copy = cache_copy(full.path());
+    check(
+        "full hit",
+        progress_of(&fixture, LOW, Some(&open(copy.path())), |request| {
+            request.fail_read_back = vec![(request.jobs[1].mover_id, 1)];
+        }),
+    );
+    let depth_only = second_door_bounces(maps.path(), 0);
+    let copy = cache_copy(full.path());
+    check(
+        "a depth-only door pending",
+        progress_of(&depth_only, LOW, Some(&open(copy.path())), |request| {
+            let held = request
+                .jobs
+                .iter()
+                .find(|job| job.bounces > 0)
+                .expect("a door re-baking radiance")
+                .mover_id;
+            request.fail_read_back = vec![(held, 0)];
+        }),
+    );
+    let high = tempfile::tempdir().expect("cache");
+    emitted_with(&fixture, HIGH, Some(&open(high.path())), |_| {});
+    check(
+        "low over high",
+        progress_of(&fixture, LOW, Some(&open(high.path())), |request| {
+            request.fail_read_back = vec![(request.jobs[0].mover_id, 0)];
+        }),
+    );
 }

@@ -2612,7 +2612,11 @@ mod tests {
         assert!(help.contains("--no-tui"));
         assert!(help.contains("--sh-delta-max-size <SIZE>"));
         assert!(help.contains("--mover-payload-max-size <SIZE>"));
-        assert!(help.contains("byte count (default: 256 MiB)"));
+        let line = help
+            .lines()
+            .find(|line| line.contains("--mover-payload-max-size <SIZE>"))
+            .expect("the payload cap's help line");
+        assert!(line.contains("(default: 256 MiB)"), "{line}");
     }
 
     // The modder docs list the flag, its default and its error.

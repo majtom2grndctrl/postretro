@@ -16,18 +16,27 @@ struct State {
     high_water: BTreeMap<&'static str, u64>,
     groups: Vec<Group>,
     phases: Vec<Phase>,
+    /// Guards made so far: a guard's sequence decides which groups count
+    /// it.
+    made: u64,
 }
 
 /// Kinds counted together, with the most they held at once.
 struct Group {
     name: &'static str,
     kinds: &'static [&'static str],
+    /// The first guard sequence the group counts: a guard made before it was
+    /// watched never joins it, so its drop never leaves it.
+    since: u64,
     live: u64,
     high_water: u64,
 }
 
 impl State {
-    fn add(&mut self, kind: &'static str, bytes: u64) {
+    /// Count a new guard of `kind`; its sequence.
+    fn add(&mut self, kind: &'static str, bytes: u64) -> u64 {
+        let seq = self.made;
+        self.made += 1;
         self.live += bytes;
         let live = self.by_kind.entry(kind).or_default();
         *live += bytes;
@@ -47,15 +56,16 @@ impl State {
             self.at_peak = self.by_kind.clone();
         }
         self.window_peak = self.window_peak.max(self.live);
+        seq
     }
 
-    fn remove(&mut self, kind: &'static str, bytes: u64) {
+    fn remove(&mut self, kind: &'static str, bytes: u64, seq: u64) {
         self.live -= bytes;
         *self.by_kind.entry(kind).or_default() -= bytes;
         for group in self
             .groups
             .iter_mut()
-            .filter(|group| group.kinds.contains(&kind))
+            .filter(|group| group.since <= seq && group.kinds.contains(&kind))
         {
             group.live -= bytes;
         }
@@ -109,17 +119,20 @@ pub(crate) struct Report {
 pub(crate) struct Held {
     kind: &'static str,
     bytes: u64,
+    /// Its sequence on its ledger.
+    seq: u64,
     ledger: Option<Ledger>,
 }
 
 impl Held {
     fn on(ledger: Option<Ledger>, kind: &'static str, bytes: u64) -> Self {
-        if let Some(ledger) = &ledger {
-            lock(ledger).add(kind, bytes);
-        }
+        let seq = ledger
+            .as_ref()
+            .map_or(0, |ledger| lock(ledger).add(kind, bytes));
         Self {
             kind,
             bytes,
+            seq,
             ledger,
         }
     }
@@ -128,7 +141,7 @@ impl Held {
 impl Drop for Held {
     fn drop(&mut self) {
         if let Some(ledger) = &self.ledger {
-            lock(ledger).remove(self.kind, self.bytes);
+            lock(ledger).remove(self.kind, self.bytes, self.seq);
         }
     }
 }
@@ -168,9 +181,12 @@ pub(crate) fn hold_vec<T>(kind: &'static str, vec: &Vec<T>) -> Held {
 /// counted.
 pub(crate) fn watch_group(name: &'static str, kinds: &'static [&'static str]) {
     if let Some(ledger) = active() {
-        lock(&ledger).groups.push(Group {
+        let mut state = lock(&ledger);
+        let since = state.made;
+        state.groups.push(Group {
             name,
             kinds,
+            since,
             live: 0,
             high_water: 0,
         });
@@ -234,6 +250,16 @@ mod tests {
             drop(b);
         });
         assert_eq!(grouped.groups, BTreeMap::from([("ab", 30)]));
+        // A guard made before its group is watched never joins it: its drop
+        // leaves the group's count alone.
+        let ((), early) = measured(1, || {
+            let before = hold("a", 7);
+            watch_group("ab", &["a"]);
+            let after = hold("a", 3);
+            drop(before);
+            drop(after);
+        });
+        assert_eq!(early.groups, BTreeMap::from([("ab", 3)]));
         let ((), report) = measured(2, || {
             let a = hold("a", 100);
             phase("start");

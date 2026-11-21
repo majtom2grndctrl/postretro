@@ -11,6 +11,18 @@ pub(super) struct DeltaCsrPlan {
     pub(super) affinity_lights: Vec<u32>,
 }
 
+impl DeltaCsrPlan {
+    /// One baked section's per-cell vectors and light list, by length: its
+    /// CSR offsets and light indices, and a level byte and a valid-probe
+    /// mask per cell.
+    pub(super) fn metadata_bytes(&self) -> u64 {
+        let cells = self.affinity_offsets.len().saturating_sub(1);
+        (self.affinity_offsets.len() * size_of::<u32>()
+            + self.affinity_lights.len() * size_of::<u32>()
+            + cells * (size_of::<u8>() + size_of::<u64>())) as u64
+    }
+}
+
 pub(super) struct PlannedDeltaBakes {
     pub(super) entity_shadow_lights:
         Option<postretro_level_format::entity_shadow_lights::EntityShadowLightsSection>,

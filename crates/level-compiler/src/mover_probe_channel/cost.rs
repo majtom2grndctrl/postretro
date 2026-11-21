@@ -16,6 +16,7 @@ use super::gather::{DomainProbe, PosedProbe};
 use super::posed_scene::PosedScene;
 use super::posed_solid::{PosedMovers, PosedSolid};
 use super::states::{BounceProbe, ChangedProbe, DepthProbe, MidState};
+use crate::affinity_grid::AFFINITY_FACTOR;
 use crate::map_data::{LightType, MapKinematicMover, MapLight};
 use crate::mover_light_gate::Pose;
 use crate::sh_bake::{ProbeGridLayout, vec3_from};
@@ -31,8 +32,11 @@ const MARK_BYTES: u64 = size_of::<PoseMark>() as u64;
 /// One id-59 tile reference in the mover-absent depth's B-tree: its key,
 /// its slice and the node's share around them.
 const ABSENT_TILE_ENTRY_BYTES: u64 = 48;
-/// A finished mover's name, kept for the payload cap's error.
-const MOVER_NAME_BYTES: u64 = 96;
+/// A finished mover's name, kept for the payload cap's error: its label,
+/// `kinematic_mover '<name>'`, at a generous authored name, and its slot.
+const MOVER_NAME_BYTES: u64 = 256;
+/// One probe in the tile-range union's B-tree, with the node's share.
+const UNION_ENTRY_BYTES: u64 = 16;
 
 /// What the mover probe channel adds to the SH working set, from the map's
 /// movers, its posed scenes and its probe grid alone. Every term is priced
@@ -78,6 +82,9 @@ pub(crate) struct MoverChannelCost {
     /// `--mover-payload-max-size`: the most the bounce and depth blocks
     /// hold.
     pub(crate) payload_cap: u64,
+    /// Id 34's affinity cells: one valid-probe mask each in the finish
+    /// loop's cells.
+    pub(crate) affinity_cells: u64,
 }
 
 impl MoverChannelCost {
@@ -142,6 +149,11 @@ impl MoverChannelCost {
             near_field_later: fill != 0.0 && radiance().any(|job| mids(job) > 0),
             posed_later: fill != 0.0 && radiance().next().is_some(),
             payload_cap,
+            affinity_cells: layout
+                .dims
+                .iter()
+                .map(|&dim| u64::from(dim.div_ceil(AFFINITY_FACTOR)))
+                .product(),
         }
     }
 
@@ -172,23 +184,32 @@ impl MoverChannelCost {
                 + size_of::<(u32, Vec<[u16; 2]>)>() as u64)
     }
 
-    /// What finishing one mover holds beside its states and the blocks:
-    /// its skips' rebuilt copy of the states, the skip bars (id 34's
-    /// compact slots and the mover-absent depth), the bake's own
-    /// mover-absent depth, id 34's affinity cells and the joined movers'
-    /// names.
-    pub(crate) fn finish_bytes(&self) -> u64 {
+    /// What the mover bake holds from its first slot to its last, beside
+    /// every pose's bake and every mover's finish: the bake's mover-absent
+    /// depth and the skip bars' own (each a validity byte per probe and an
+    /// id-59 tile reference per tiled probe), the bars' compact slots, id
+    /// 34's affinity cells, the valid probes, the tile-range union (at most
+    /// one past the range, plus one mover's records), and the finished
+    /// movers' names.
+    pub(crate) fn loop_bytes(&self) -> u64 {
         if self.movers == 0 {
             return 0;
         }
         let tiles = self.valid_probes.min(self.depth_cap);
-        // Validity per probe and an id-59 tile reference per tiled probe,
-        // a B-tree entry each.
         let absent_depth = self.total_probes + tiles * ABSENT_TILE_ENTRY_BYTES;
         let slots = self.total_probes * size_of::<u32>() as u64;
-        let cells = self.total_probes.div_ceil(64) * size_of::<u64>() as u64 + 64;
+        let cells = self.affinity_cells * size_of::<u64>() as u64;
+        let valid = self.valid_probes * size_of::<u32>() as u64;
+        let union = 2 * (self.valid_probes.min(self.depth_cap) + 1) * UNION_ENTRY_BYTES;
         let names = self.movers * MOVER_NAME_BYTES;
-        self.states_bytes() + 2 * absent_depth + slots + cells + names
+        2 * absent_depth + slots + cells + valid + union + names
+    }
+
+    /// What finishing one mover holds beyond its states, the blocks and the
+    /// loop ([`Self::loop_bytes`]): its skips' rebuilt copy of the states,
+    /// one more mover's states at their bound.
+    pub(crate) fn finish_bytes(&self) -> u64 {
+        self.states_bytes()
     }
 
     /// What one pose holds while it runs, beside the SH base's patch cache:

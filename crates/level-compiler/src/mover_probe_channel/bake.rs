@@ -156,12 +156,12 @@ pub(crate) struct MoverBounceRequest {
     /// no mover.
     pub(crate) keep_every_tile: bool,
     pub(crate) keep_poses: bool,
-    /// The tile range mover depth may fill: once the movers met so far,
-    /// baked or held from the memo, carry depth at more probes, the bake
-    /// stops, and the build fails by name before any mid pose skips
-    /// ([`super::depth::refuse_cut_short`]). No mover keeps more than one
-    /// depth record past it ([`super::states::reduce_poses`]), and a mover
-    /// past it has none of its poses memoized.
+    /// The tile range mover depth may fill: once the movers finished so far
+    /// carry depth at more probes, judged on each mover's unskipped depth
+    /// as it joins ([`super::depth::DepthUnion::verdict`]), the bake stops
+    /// and the build fails by name before that mover skips. No mover keeps
+    /// more than one depth record past it ([`super::states::reduce_poses`]),
+    /// and a mover past it has none of its poses memoized.
     pub(crate) depth_cap: u32,
     /// `--mover-payload-max-size`: the most the bounce and depth blocks may
     /// hold. Checked as each mover's blocks join, after its skips; past it
@@ -194,9 +194,9 @@ pub(crate) struct PoseSlot {
     /// `high` entry served it, else the job's `bounces`, at which it bakes.
     pub(crate) bounces: u32,
     /// Its memo held it at lookup: the bake reads it there again, and bakes
-    /// it only when that read fails. A held pose of a mover with a miss
-    /// advances its progress when it reads back, so one that fails to read
-    /// back advances only as it bakes.
+    /// it only when that read fails. A held pose advances its progress when
+    /// it reads back, so one that fails to read back advances only as it
+    /// bakes.
     pub(crate) held: bool,
 }
 
@@ -407,6 +407,9 @@ pub(crate) fn bake_mover_bounce(
     memo: Option<&PoseMemo<'_>>,
     control: &BakeControl,
 ) -> MoverBounceBake {
+    if slots.is_empty() {
+        return MoverBounceBake::default();
+    }
     let valid = valid_probes(inputs.layout);
     let absent_depth = MoverAbsentDepth::new(inputs.base, inputs.depth_tiles);
     #[cfg(test)]
@@ -475,6 +478,15 @@ pub(crate) fn bake_mover_bounce(
             out.refused = Some(refused);
             break;
         }
+    }
+    if out.refused.is_none() {
+        log::info!(
+            "[MoverLight] probe channel blocks: {} B of the {} B --mover-payload-max-size, from \
+             {} mover(s)",
+            out.blocks.bytes(),
+            request.payload_cap,
+            finish.joined.len(),
+        );
     }
     out
 }
@@ -636,7 +648,10 @@ fn finish_mover<'a>(
         ));
         cells
     });
-    let bytes = out.blocks.heap_bytes() + BounceBlocks::mover_bytes(&states, cells);
+    let bytes = out
+        .blocks
+        .bytes()
+        .saturating_add(BounceBlocks::mover_bytes(&states, cells));
     if bytes > request.payload_cap {
         let joined: Vec<&str> = finish.joined.iter().map(String::as_str).collect();
         return Err(MoverPayloadCapExceeded {
@@ -736,7 +751,8 @@ fn read_held_poses(
                 &job.domain_probes,
             );
             #[cfg(test)]
-            if request.fail_read_back.contains(&(job.mover_id, pose)) {
+            if state.is_some() && request.fail_read_back.contains(&(job.mover_id, pose)) {
+                crate::bake_counters::bump(|counts| counts.read_backs_failed += 1);
                 return None;
             }
             state

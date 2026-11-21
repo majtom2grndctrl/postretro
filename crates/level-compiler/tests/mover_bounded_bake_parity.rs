@@ -181,7 +181,13 @@ fn mover_bounded_bake_parent_parity() {
                 ("full hit", Some(cache.path())),
             ] {
                 let branch_prl = dir.path().join("branch.prl");
-                bake(prl_build(), &map, &branch_prl, &flags, cache);
+                let logs = bake(prl_build(), &map, &branch_prl, &flags, cache);
+                if mode == "full hit" && logs.contains("probe channel bounce half") {
+                    assert!(
+                        logs.contains("mover_probe_bounce hit ("),
+                        "{stem} {fidelity}: a full hit\n{logs}"
+                    );
+                }
                 assert_same(
                     &parent_prl,
                     &branch_prl,

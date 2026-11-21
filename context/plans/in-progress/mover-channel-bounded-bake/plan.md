@@ -84,7 +84,7 @@ test against the parent's `prl-build`, named by
 | 6 Corrupt `high`, whole `low`; and slot failure at `high` (M5) | `a_corrupt_high_entry_serves_low_as_the_parent_did` (golden captured at the parent on the same crafted cache) and `a_high_read_failing_at_the_slot_bakes_at_the_high_count` | achievable as stated |
 | 7 Lazy layers at a failed slot routed and priced (M4) | `a_slot_failure_after_blocks_join_is_priced` (two-door edit, `low`, full hit, second door's read fails) | achievable as stated |
 | 8 Layers in flight ≤ cap; no stall at one permit (L1, L2) | `layer_resolution_never_exceeds_its_cap` (cap below workers, fixture with more layers than workers, 1 and 4 workers, cold/warm) and `layer_resolution_completes_at_one_permit` | achievable as stated |
-| 9 Payload cap error and flag parsing (C1) | `the_payload_cap_fails_by_name_and_admits_at_its_bytes` (exact cap admits, one under fails, message names flag, bytes, movers; nothing dropped) and CLI tests in `tests/compiler_cli_contract.rs` (past `u64`, malformed) | achievable as stated |
+| 9 Payload cap error and flag parsing (C1) | `the_payload_cap_fails_by_name_and_admits_at_its_bytes` (exact cap admits, one under fails, message names flag, bytes, movers; nothing dropped) and CLI parse tests in `main.rs` (past `u64`, malformed, missing) | achievable as stated |
 | 10 Tile range before cap, single mover (I4) | `a_mover_past_both_fails_by_the_tile_range_before_skipping` | achievable as stated |
 | 11 Cap on one mover, range on another (I3) | `cap_and_range_on_different_movers_fail_by_name_in_both_orders` | achievable as stated |
 | 12 Each priced phase ≥ ledger peak in its window (P1, P2, W1, D1, D3) | routine: `every_priced_phase_covers_its_window_on_the_closet` (whole-pipeline harness; cold, warm empty, full hit, id-34 hit with memo misses, `low` over `high`-primed; cap set to the fixture's block bytes); on demand: same on the setpiece and every mover fixture | achievable as stated |
@@ -200,3 +200,56 @@ Estimate 1,018,908,526 B at `low` and `high` alike; largest cold window the move
 | mover direct | 1,018,908,526 | 108,984,202 (9.35×) | 110,021,106 (9.26×) |
 
 Every window of mover-setpiece, mover-pins, closet-reveal and enemy-movers is priced at or above its ledger, at `low` and `high`, cold, warm empty and full hit, each section at or under its term (`every_priced_phase_covers_its_window_on_every_mover_fixture`, 2,037 s). Stress-env-volumes' measured windows need its full cold bake.
+
+## Review round 1
+
+Panel: 3 correctness tracers, 1 contract verifier, 2 adversarial testers
+(Opus), 3 hygiene/drift (Sonnet), over 4 slices. Every bake flow traced held
+its contract (output identity, order-independent verdict, one mover's
+states at a time, progress at its total).
+
+Fixed:
+- A huge `--mover-payload-max-size` overflowed the gate's unchecked
+  arithmetic (3 reviewers): `price_movers` and `carried_bytes` are checked
+  and refuse by `ArithmeticOverflow`; test
+  `a_payload_cap_too_large_to_price_refuses_by_name`.
+- The direct window priced the direct entries twice; `finish_section`
+  holds them three times (bake, record parts, section): now 3×.
+- The loop's buffers (two mover-absent depths, skip slots, cells, `valid`,
+  the tile-range union, names) were priced only in the finish term: now
+  `loop_bytes`, in every mover-bake term. Cells priced exactly; names at
+  256 B.
+- No mover: the bake returns before building anything.
+- Posed solids priced whole (pose copy, `Arc`, read knots); the direct
+  window adds the delta sections' per-cell vectors.
+- The blocks' bytes against the cap are logged and in the Build Summary;
+  the SH base refusal names the cap; the modder docs say the cap is charged
+  three times in the direct phase and how `low` and `--release` differ.
+- `BounceBlocks` keeps a running byte total: the cap check no longer walks
+  every block per mover.
+- Ledger groups no longer underflow on a guard made before the watch.
+- Tests: the read-back seam counts its firings (`read_backs_failed`, M3,
+  M5), M4 fails the second job's read and proves bounce one built there,
+  the closet window test applies the cap to warm, full-hit and id-34-hit
+  runs and asserts each routed section non-zero, L1 proves layers hit,
+  the delta-cap test proves its premise, a new test checks progress ends
+  at its total after lazy builds, a price edge test checks no bounce-one
+  copy at `light_bounces` 0, the parity harness checks its full-hit log.
+- Comment drift: the dead `refuse_cut_short` link, `PoseSlot::held`, the
+  stage's progress doc, `window_ledger` header, `finish_bounce_half`'s
+  flag, `pipeline.rs`'s gate comment, `blocks.rs` header, `kinds()` doc.
+
+Left, with reasons:
+- `compiler_cli_contract::warren_zero_budget_projects_current_membership_before_base_sh_bake`
+  (`#[ignore]`) fails on the parent too: the mover poses' own gate refuses
+  the warren before the SH gates. Its parse now reads the new SH-delta
+  message; the earlier failure is pre-existing.
+- On mover maps with no dense deltas a zero budget now refuses by the
+  SH-delta gate's name (it carries the channel): consistent with G1's
+  cheaper-gate-first rule.
+- Id 59 is priced about three times over inside `section_bytes` (≈25 MB at
+  the full range): conservative, left.
+- G1's "before any bounce ray" holds by construction (the gates return
+  before the SH stage begins); not asserted by a counter.
+- Test-file headers longer than two lines follow the existing mover test
+  files' precedent.

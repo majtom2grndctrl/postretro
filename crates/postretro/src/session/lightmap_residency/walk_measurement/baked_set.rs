@@ -1,5 +1,5 @@
-//! The camera cell's baked set as the walks read it: blocks per cell, the
-//! mandatory set at lead L, and which bake a run read.
+//! The camera cell's baked set as the walks read it: blocks per cell and the
+//! mandatory set at lead L.
 //! See: context/lib/rendering_pipeline.md §4
 
 use std::ops::Range;
@@ -93,36 +93,6 @@ pub(super) fn mandatory_set_sizes(
     sizes.sort_unstable();
     let at = |q: f64| sizes[((sizes.len() as f64 * q).ceil() as usize).clamp(1, sizes.len()) - 1];
     [at(0.5), at(0.95), at(1.0)]
-}
-
-/// The PRL and id 51 a run read (O14), as `key=value` tokens. The walk
-/// epoch is this build's; the runtime never reads a bake's.
-pub(super) fn bake_identity(path: &str, world: &LevelWorld) -> String {
-    let (size, mtime) = std::fs::metadata(path).map_or((0, 0), |meta| {
-        let mtime = meta
-            .modified()
-            .ok()
-            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-            .map_or(0, |since| since.as_secs());
-        (meta.len(), mtime)
-    });
-    let id51 = world.cell_residency_set.as_ref().map_or_else(
-        || "none".to_string(),
-        |set| {
-            blake3::hash(&set.to_bytes(postretro_level_format::coded_plane::BlockCodec::Raw))
-                .to_hex()[..16]
-                .to_string()
-        },
-    );
-    format!(
-        "id51={id51} walk_epoch={} size={size} mtime={mtime} prl={path}",
-        postretro_visibility::PORTAL_WALK_EPOCH,
-    )
-}
-
-pub(super) fn bake_token<'a>(bake: &'a str, key: &str) -> Option<&'a str> {
-    bake.split_ascii_whitespace()
-        .find_map(|token| token.strip_prefix(key)?.strip_prefix('='))
 }
 
 #[cfg(test)]

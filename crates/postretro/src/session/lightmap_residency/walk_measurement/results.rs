@@ -39,10 +39,9 @@ use serde_json::{Value, json};
 
 use super::levers::Levers;
 use super::modes::{ReadsMode, WalkModes};
-use super::paths::WalkKind;
 use super::report::{RunReport, max_and_p95};
-use super::walk::Walk;
 use crate::streaming::latency_histogram::LatencyHistogram;
+use postretro_camera_route::{Walk, WalkKind};
 
 const RESULTS_OUT_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_RESULTS_OUT";
 const TAG_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_TAG";
@@ -217,6 +216,7 @@ mod tests {
             teleport: Vec::new(),
             dwell: Vec::new(),
             travel_yaw: Vec::new(),
+            seed: postretro_camera_route::WALK_SEED,
         };
         let modes = WalkModes {
             projection: Projection::default(),

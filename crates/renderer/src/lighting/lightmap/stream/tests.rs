@@ -36,6 +36,8 @@ use crate::render::gpu_test_harness::{GpuCtx, bc_gpu_or_skip};
 
 mod mask_states;
 mod pairs_and_generations;
+#[cfg(feature = "dev-tools")]
+mod playback_flags;
 mod reload;
 mod repack_and_growth;
 mod two_pools;

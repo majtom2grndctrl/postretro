@@ -77,12 +77,24 @@ impl App {
         event_loop: &ActiveEventLoop,
         frame_dt: f32,
     ) -> bool {
+        // A camera route that already ended stops every later frame before
+        // its drain: a stray redraw after the record was written must not
+        // unload the level or write saves under the run's exit.
+        #[cfg(feature = "dev-tools")]
+        if self.playback_take_exit(event_loop) {
+            return false;
+        }
         // Settling counts as installed: a request drained here unloads the
         // held level before its settle check can reveal it. A Loading drain
         // runs before the Loading step, so a request already queued cancels
         // a load whose bundle this frame would find ready (pin P1).
         if boot_state_drains_level_requests(&self.boot_state) {
             self.drain_level_requests();
+            // A request that ended a camera route stops the frame here.
+            #[cfg(feature = "dev-tools")]
+            if self.playback_take_exit(event_loop) {
+                return false;
+            }
             // A waiting host or join press runs once the unload it waited for
             // has drained and any ended host's close is done. Splash and the
             // first-launch hold drain nothing, so nothing resumes there.
@@ -251,7 +263,7 @@ impl App {
     /// supersedes a load beside the running level: it is cancelled first,
     /// then the request takes its ordinary path. A host-named request that
     /// no longer resolves leaves the host level the client was following.
-    pub(in crate::startup) fn drain_level_requests(&mut self) {
+    pub(crate) fn drain_level_requests(&mut self) {
         // A script level verb beats only the seams of the frame it ran in;
         // one from a frame that never reached the pick must not drop the
         // next level's activations.
@@ -261,6 +273,12 @@ impl App {
         }
 
         while let Some(request) = self.level_requests.pop_front() {
+            // A request that resolves ends a playing camera route instead,
+            // in Settling, the hold or the route: the record keeps every row
+            // so far, marked aborted, the level stays, and the session exits
+            // non-zero.
+            #[cfg(feature = "dev-tools")]
+            let playback_abort = self.playback_request_abort_reason(&request);
             let (source, host_named, seam) = match request {
                 LevelRequest::Load(source) => (Some(source), false, None),
                 LevelRequest::HostLevel(id) => (Some(LevelSource::Catalog(id)), true, None),
@@ -282,6 +300,14 @@ impl App {
                         continue;
                     };
                     load.host_named = host_named;
+                    #[cfg(feature = "dev-tools")]
+                    if self.playback_abort(playback_abort) {
+                        return;
+                    }
+                    // A recording of the first gameplay level is written
+                    // before that level unloads, and nothing after it records.
+                    #[cfg(feature = "dev-tools")]
+                    self.recording_level_ends();
                     self.cancel_beside_level_load();
                     if self.level_is_installed_state() {
                         self.unload_level_crossing(seam.as_deref());
@@ -291,6 +317,12 @@ impl App {
                     return;
                 }
                 None => {
+                    #[cfg(feature = "dev-tools")]
+                    if self.playback_abort(playback_abort) {
+                        return;
+                    }
+                    #[cfg(feature = "dev-tools")]
+                    self.recording_level_ends();
                     let played = self.played_level_present();
                     self.cancel_beside_level_load();
                     self.abandon_level_load_for_frontend();

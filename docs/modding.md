@@ -225,6 +225,8 @@ If you want to type-check your scripts, run `tsc --noEmit` yourself;
   as mesh and skeleton and take their clips from one file.
 - `docs/diagnostics.md` — runtime diagnostic keyboard chords and simulated
   network lag for co-op testing.
+- `docs/camera-routes.md` — generating, recording and playing camera routes
+  to measure how a level streams.
 - `docs/distribution.md` — producing a lean, shippable player build.
 - `docs/external-projects.md` — keeping your game in its own repository.
 - `tools/` — asset helpers. The Python ones (specular, normal and emissive map

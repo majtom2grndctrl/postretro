@@ -224,9 +224,11 @@ impl ShResidencyController {
         drawn: &BTreeSet<u32>,
     ) -> Result<(), ShResidencyControllerError> {
         self.prior_visible_misses.retain(|id| drawn.contains(id));
+        let mut not_sampleable = 0u32;
         for &cluster_id in drawn {
             let missing =
                 self.states[cluster_id as usize].state != ClusterResidencyState::Sampleable;
+            not_sampleable += u32::from(missing);
             #[cfg(test)]
             if missing {
                 *self
@@ -242,6 +244,7 @@ impl ShResidencyController {
                 )?;
             }
         }
+        self.counters.last_frame_drawn_not_resident = not_sampleable;
         Ok(())
     }
 

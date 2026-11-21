@@ -29,6 +29,9 @@ pub struct StreamingDrainCapLever {
 }
 
 impl StreamingDrainCapLever {
+    /// The slider's step in MiB, taken from the low end of its range.
+    pub const SLIDER_STEP_MIB: f64 = SLIDER_STEP_MIB;
+
     /// The cap the next play drain admits against. `Some(0)` counts as
     /// production, matching the runtime, which maps a zero override to unset,
     /// so the UI never shows a value the runtime does not apply.
@@ -51,7 +54,7 @@ impl StreamingDrainCapLever {
     }
 
     /// The slider's range in MiB.
-    fn slider_range_mib(&self) -> std::ops::RangeInclusive<f64> {
+    pub fn slider_range_mib(&self) -> std::ops::RangeInclusive<f64> {
         let production = self.production_bytes as f64 / MIB;
         production * SLIDER_MIN_FRACTION..=production * SLIDER_MAX_MULTIPLE
     }

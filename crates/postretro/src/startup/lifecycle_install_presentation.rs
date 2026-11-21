@@ -84,6 +84,10 @@ impl App {
         // or the previous level's pose.
         self.camera.position = self.followed_pawn_eye().unwrap_or(self.camera.position);
         self.place_camera_at_presented_pose();
+        // A camera route checks its bake against the session's first
+        // gameplay level and arms; the pawn and its camera stay as placed.
+        #[cfg(feature = "dev-tools")]
+        self.playback_level_installed();
         self.level_timings.record("camera_pose");
     }
 

@@ -66,6 +66,10 @@ When testing code that bridges two subsystems, derive mock inputs from the sourc
 
 A test guarding two representations against divergence — a Rust enum vs. its generated SDK union, a registry vs. its committed snapshot — derives its expectation from the source of truth, never a second hand-written copy. Map each variant through an exhaustive `match` (no `_` arm) so a new variant is a compile error, not a silently-passing test. Comparing two hand-maintained lists proves only that someone updated both — not that either is correct.
 
+### Source-scanning tests
+
+A test that walks the source tree — a grep gate, a single-caller check — compares each relative path as its components joined by `/`, never as the host's path string. That string uses `\` on Windows and `/` elsewhere, so a test that compares it passes on one host and fails on the other.
+
 ### Log assertions
 
 Some degradation paths emit nothing but a log record — a refusal that still returns

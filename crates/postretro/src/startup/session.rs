@@ -237,6 +237,16 @@ pub(crate) fn build_session() -> Result<BootSession> {
         }
     }
 
+    // Camera-route playback reads and checks its pose file before the event
+    // loop exists, so a bad file or launch stops before any window. A build
+    // without it warns and runs as if the flags were unset.
+    super::camera_route_flags::warn_camera_route_flags_without_feature(
+        &args,
+        cfg!(feature = "dev-tools"),
+    );
+    #[cfg(feature = "dev-tools")]
+    let playback = crate::playback::Playback::from_args_or_exit(&args);
+
     let map_arg = resolve_map_path(&args);
     let content_root = resolve_content_root(&args, map_arg.as_deref())?;
     let map_path = boot_map_path(&args, map_arg.as_deref(), &content_root)?;
@@ -432,6 +442,8 @@ pub(crate) fn build_session() -> Result<BootSession> {
         }),
         #[cfg(feature = "dev-tools")]
         debug_chase_agent: None,
+        #[cfg(feature = "dev-tools")]
+        playback,
     };
 
     Ok(BootSession { event_loop, app })
@@ -466,6 +478,9 @@ pub(crate) fn resolve_map_path(args: &[String]) -> Option<String> {
             || arg == "--pool-seed"
             || arg == "--observe-live"
             || arg == super::start_pose::START_POSE_FLAG
+            // Outside playback's feature gate, so every build steps over
+            // their values when it finds the map.
+            || super::camera_route_flags::CAMERA_ROUTE_VALUE_FLAGS.contains(&arg.as_str())
         {
             if iter.peek().is_some_and(|value| !value.starts_with("--")) {
                 let _ = iter.next();
@@ -907,6 +922,35 @@ mod tests {
             .map(str::to_string)
             .collect();
         assert_eq!(resolve_map_path(&args).as_deref(), Some("maps/probe.prl"));
+    }
+
+    #[test]
+    fn resolve_map_path_skips_camera_route_flag_values() {
+        let args: Vec<String> = [
+            "postretro",
+            "--camera-route",
+            "r.txt",
+            "--camera-route-hold",
+            "60",
+            "--camera-route-report",
+            "out.json",
+            "--camera-route-pacing",
+            "frame-locked",
+            "--camera-route-stall-timeout",
+            "30",
+            "--record-camera-route",
+            "rec.txt",
+            "map.prl",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        assert_eq!(resolve_map_path(&args).as_deref(), Some("map.prl"));
+        let args: Vec<String> = ["postretro", "--camera-route", "r.txt", "map.prl"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(resolve_map_path(&args).as_deref(), Some("map.prl"));
     }
 
     #[test]

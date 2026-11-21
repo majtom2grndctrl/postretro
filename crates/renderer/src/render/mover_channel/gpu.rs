@@ -32,7 +32,7 @@ use crate::render::gpu_create::GpuCreate;
 use crate::render::residency::{ResidencyAllocationState, source_ids};
 use crate::render::sh_allocation::{ShAllocationKind, buffer_allocation};
 use crate::render::sh_residency::ShAllocationLedger;
-use crate::render::uploads::{StagedUploads, UploadError, UploadQueue};
+use crate::render::uploads::{MarkSite, StagedUploads, UploadError, UploadQueue};
 
 /// One streamed sparse row of id 41 or id 45: its affinity cell, each
 /// entry's first f16 half in `tiles`, and the tiles.
@@ -161,7 +161,11 @@ impl ChannelTable {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Mover Probe Channel Pool Growth Copy"),
         });
+        // A pool grows as the SH drain stages a cluster, so a playback frame
+        // mark charges the copy to the frame's SH drain.
+        let marked = queue.open_frame_mark(&mut encoder, MarkSite::ShUploads);
         encoder.copy_buffer_to_buffer(&self.buffer, 0, &replacement, 0, self.buffer.size());
+        queue.close_frame_mark(&mut encoder, MarkSite::ShUploads, marked);
         queue.submit(std::iter::once(encoder.finish()));
         self.buffer = replacement;
         true

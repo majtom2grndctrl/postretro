@@ -695,3 +695,33 @@ fn read_finishing_after_eviction_is_dropped() {
     let batch = c.take_async_drain_batch().unwrap();
     assert!(batch.ready.is_empty());
 }
+
+// Camera-route playback's late SH cluster-frames: `misses` counts a drawn
+// cluster once per visible episode; the per-frame gauge counts every drawn
+// cluster that is not Sampleable, on every frame that draws it.
+#[test]
+fn the_per_frame_gauge_counts_every_drawn_unsampleable_cluster_each_frame() {
+    let (mut c, set) = level();
+    frame(&mut c, &set, 0, PORTAL, &[0, 1, 3], 0.0);
+    assert_eq!(c.counters().misses, 3);
+    assert_eq!(c.last_frame_drawn_not_resident(), 3);
+
+    frame(&mut c, &set, 0, PORTAL, &[0, 1, 3], 0.1);
+    assert_eq!(c.counters().misses, 3, "the same episode counts once");
+    assert_eq!(c.last_frame_drawn_not_resident(), 3, "every frame counts");
+
+    mark_sampleable(&mut c, 0);
+    frame(&mut c, &set, 0, PORTAL, &[0, 1, 3], 0.2);
+    assert_eq!(
+        c.last_frame_drawn_not_resident(),
+        2,
+        "cluster 0 is sampleable"
+    );
+
+    frame(&mut c, &set, 0, PORTAL, &[], 0.3);
+    assert_eq!(
+        c.last_frame_drawn_not_resident(),
+        0,
+        "a frame that draws nothing"
+    );
+}

@@ -72,7 +72,10 @@ impl Renderer {
     ///
     /// Geometry and textures install later via `install_level_geometry` /
     /// `install_textures`.
-    pub fn new(window: &Arc<Window>) -> Result<Self> {
+    ///
+    /// `present` is the swapchain's present mode from the first frame: the
+    /// launch choice, which only the vsync chord changes later.
+    pub fn new(window: &Arc<Window>, present: PresentChoice) -> Result<Self> {
         let size = window.inner_size();
         // macOS sends no scale-factor event at launch, so read it here.
         let scale_factor = window.scale_factor();
@@ -121,14 +124,17 @@ impl Renderer {
             format: surface_format,
             width: size.width.max(1),
             height: size.height.max(1),
-            present_mode: wgpu::PresentMode::AutoVsync,
+            present_mode: present.wgpu_present_mode(),
             alpha_mode: surface_caps.alpha_modes[0],
             desired_maximum_frame_latency: 2,
             view_formats: vec![],
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&device, &surface_config);
-        log::info!("[Renderer] vsync on");
+        log::info!(
+            "[Renderer] vsync {}",
+            if present.vsync() { "on" } else { "off" }
+        );
 
         // Renderer-owned boot splash pass (clear + logo quad). Built here so the
         // splash path can present before the full renderer is exercised.
@@ -341,6 +347,9 @@ impl Renderer {
             None,
         )?;
         self.full = Some(Box::new(full));
+        // Full init keeps the launch present mode the surface was built with.
+        self.full_mut().vsync_enabled =
+            self.surface_config.present_mode == PresentChoice::Vsync.wgpu_present_mode();
         // The rebuilt fluid pass starts at the default style; hand it the
         // committed one, which uploads before its first pass.
         self.set_fluid_reflection_style(self.fluid_reflection_style);

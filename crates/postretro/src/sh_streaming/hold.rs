@@ -97,6 +97,7 @@ impl ShResidencyController {
     ) -> Result<BTreeSet<u32>, ShResidencyControllerError> {
         let drawn_cells = frame.map_or(visible, |frame| frame.visible_cells);
         let held = self.hold.held;
+        self.counters.last_frame_drawn_not_resident = 0;
         let target_cells = if held { drawn_cells } else { visible };
         let mut clusters = if held && frame.is_some_and(|frame| !frame.draws_cells()) {
             BTreeSet::new()

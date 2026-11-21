@@ -13,9 +13,17 @@ impl App {
         let Some(renderer) = self.renderer.as_mut() else {
             return;
         };
-        renderer.commit_extents();
+        let changed = renderer.commit_extents().is_some();
         let scene = renderer.scene_extent();
         self.camera.update_aspect(scene.width, scene.height);
+        // A camera route's rows from here on run at the new extents.
+        #[cfg(feature = "dev-tools")]
+        if changed {
+            self.playback
+                .note_change(crate::playback::ChangeKind::Extents);
+        }
+        #[cfg(not(feature = "dev-tools"))]
+        let _ = changed;
     }
 }
 

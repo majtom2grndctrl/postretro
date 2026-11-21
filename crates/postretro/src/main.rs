@@ -91,6 +91,10 @@ mod observability;
 mod capture;
 mod options;
 mod os_preferences;
+// Camera-route playback: flies the windowed camera along a pose file and
+// writes a per-frame record.
+#[cfg(feature = "dev-tools")]
+mod playback;
 use postretro_sim::weapon;
 pub(crate) use postretro_sim::{
     presentation_pool, resolve_mesh_entity_bindings, resolve_mesh_entity_bindings_for_entities,
@@ -1396,6 +1400,10 @@ pub(crate) struct App {
     /// (or the camera when no pawn exists) so it pathfinds toward the player.
     #[cfg(feature = "dev-tools")]
     debug_chase_agent: Option<postretro_entities::EntityId>,
+
+    /// `--camera-route` playback: inactive unless the launch named a pose file.
+    #[cfg(feature = "dev-tools")]
+    playback: playback::Playback,
 }
 
 struct WindowState {
@@ -1525,6 +1533,7 @@ impl PresentedAimPose {
     fn frame_eye_inputs(
         self,
         aspect: f32,
+        base_hfov: f32,
         driver: Option<frame_eye::ViewFeelDriver>,
         movement_edges: &[view_feel::TimedMovementEdge],
         frame_dt: f32,
@@ -1533,6 +1542,7 @@ impl PresentedAimPose {
         frame_eye::FrameEyeInputs {
             presented_eye: self.position,
             aspect,
+            base_hfov,
             render_yaw: self.yaw,
             pitch: self.pitch,
             driver,
@@ -1560,6 +1570,16 @@ impl App {
     }
 
     fn render_aim_pose(&self, gameplay_aim: PresentedAimPose) -> PresentedAimPose {
+        // A playing camera route replaces the presented aim; the pawn's own
+        // aim and position stay where the sim leaves them.
+        #[cfg(feature = "dev-tools")]
+        if let Some(view) = self.playback.route_view() {
+            return PresentedAimPose {
+                position: view.eye,
+                yaw: view.yaw,
+                pitch: view.pitch,
+            };
+        }
         if self.frontend_menu_is_present() {
             // The authored menu camera is held independently of a prior rider's
             // mover carry state, including while a submenu is on top.
@@ -2155,7 +2175,7 @@ impl ApplicationHandler for App {
             self.window_modes.apply_boot(&window, event_loop, options);
         }
 
-        let mut renderer = match Renderer::new(&window) {
+        let mut renderer = match Renderer::new(&window, self.launch_present_choice()) {
             Ok(r) => r,
             Err(err) => {
                 self.exit_result = Err(err);
@@ -2458,6 +2478,9 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => frame_loop::redraw(self, event_loop),
+            // A hidden window's gap marks the playback rows that span it.
+            #[cfg(feature = "dev-tools")]
+            WindowEvent::Occluded(occluded) => self.playback.note_occluded(occluded),
             _ => {}
         }
     }
@@ -2505,13 +2528,26 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // A camera route exits here once it ends, and fails a stalled run:
+        // a hidden window gets no redraw to check it from.
+        #[cfg(feature = "dev-tools")]
+        if self.playback_about_to_wait(event_loop) {
+            return;
+        }
+        #[cfg(not(feature = "dev-tools"))]
+        let _ = event_loop;
         if let Some(ws) = self.window_state.as_ref() {
             ws.window.request_redraw();
         }
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // Every exit route reaches here: a camera-route recording not yet
+        // written is written once, and an unfinished playback run writes its
+        // record, while the level and renderer still exist.
+        #[cfg(feature = "dev-tools")]
+        self.playback_session_exits();
         self.exit_saves_and_teardown();
     }
 }
@@ -3398,6 +3434,8 @@ impl App {
             Some(renderer) if renderer.is_boot_ready() => match renderer.render_splash_frame() {
                 Ok(Some(handle)) => {
                     renderer.present(handle);
+                    #[cfg(feature = "dev-tools")]
+                    self.playback.note_any_present();
                     true
                 }
                 Ok(None) => false,
@@ -6444,6 +6482,9 @@ impl App {
                     // when the user is staring at it to see what changed.
                     self.frame_rate_meter.clear();
                     self.cpu_timer.discard_partial();
+                    #[cfg(feature = "dev-tools")]
+                    self.playback
+                        .note_change(crate::playback::ChangeKind::Vsync);
                     log::info!("[Renderer] vsync {}", if enabled { "on" } else { "off" },);
                 }
             }
@@ -8761,7 +8802,14 @@ mod tests {
         app.apply_frontend_menu_camera_pose_if_present();
         let held_aim = app.render_aim_pose(gameplay_aim);
         let eye = frame_eye::assemble_frame_eye(
-            held_aim.frame_eye_inputs(app.camera.aspect(), None, &[], 0.0, 1.0),
+            held_aim.frame_eye_inputs(
+                app.camera.aspect(),
+                crate::camera::HFOV,
+                None,
+                &[],
+                0.0,
+                1.0,
+            ),
             frame_eye::ViewFeelTracking {
                 state: &mut app.view_feel_state,
                 followed_pawn: &mut app.view_feel_followed_pawn,

@@ -154,7 +154,14 @@ fn assert_catchup_uses_presented_aim(app: &mut crate::App, alpha: f32, projectil
     // Use the same pose adapter and eye assembly as the actual render stage.
     // No copied interpolation/yaw formula supplies the expected ray.
     let rendered = crate::frame_eye::assemble_frame_eye(
-        aim.frame_eye_inputs(app.camera.aspect(), None, &[], 0.0, 1.0),
+        aim.frame_eye_inputs(
+            app.camera.aspect(),
+            crate::camera::HFOV,
+            None,
+            &[],
+            0.0,
+            1.0,
+        ),
         crate::frame_eye::ViewFeelTracking {
             state: &mut app.view_feel_state,
             followed_pawn: &mut app.view_feel_followed_pawn,

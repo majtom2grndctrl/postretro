@@ -12,7 +12,6 @@
 use std::fmt::Write as _;
 use std::io::Write as _;
 
-use glam::Vec3;
 use postretro_visibility::VisibilityPath;
 
 use super::frame_driver::FrameOutcome;
@@ -54,26 +53,6 @@ impl FrameRecord {
             outside: outcome.outside,
         }
     }
-}
-
-/// Fingerprint of frame `i`'s pose. Bit-exact: both builds draw eyes from one
-/// seeded stream over one cell layout.
-pub(super) fn pose_fingerprint(
-    step: usize,
-    cell: u32,
-    eye: Vec3,
-    yaw: f32,
-    pitch: f32,
-    projection: (f32, f32),
-) -> u64 {
-    let mut bytes = Vec::with_capacity(40);
-    bytes.extend((step as u64).to_le_bytes());
-    bytes.extend(cell.to_le_bytes());
-    for value in [eye.x, eye.y, eye.z, yaw, pitch, projection.0, projection.1] {
-        bytes.extend(value.to_bits().to_le_bytes());
-    }
-    let hash = blake3::hash(&bytes);
-    u64::from_le_bytes(hash.as_bytes()[..8].try_into().expect("8 bytes"))
 }
 
 /// One run: a walk at one set of levers and modes.

@@ -69,6 +69,20 @@ impl WindowModes {
         self.boot(window, options);
     }
 
+    /// The window's effective mode, as last applied or read back, and its
+    /// exclusive display mode: what a performance record names, since a saved
+    /// exclusive mode can fall back to another.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub(crate) fn effective_mode(
+        &self,
+    ) -> (
+        crate::options::WindowMode,
+        Option<&crate::options::DisplayMode>,
+    ) {
+        let effective = &self.controller.effective;
+        (effective.mode, effective.display.as_ref())
+    }
+
     /// Apply an exclusive mode `apply_boot` deferred, once the renderer has
     /// created its surface. A no-op for every other boot.
     pub(crate) fn finish_boot(&mut self, window: &Window, options: &PlayerOptions) {
@@ -163,6 +177,12 @@ impl crate::App {
     fn finish_window_change(&mut self, change: policy::Change) {
         use policy::Change;
         use postretro_ui::demo::DISPLAY_MODE_CONFIRM_NAME;
+        // A camera route's rows from here on run in the new window mode.
+        #[cfg(feature = "dev-tools")]
+        if !matches!(change, Change::None | Change::SelectionChanged) {
+            self.playback
+                .note_change(crate::playback::ChangeKind::WindowMode);
+        }
         let Some(session) = self.session.as_mut() else {
             return;
         };
@@ -310,7 +330,7 @@ mod boot_tests {
         let body = &main[start..main[start..].find("fn suspended(").unwrap() + start];
         let create = body.find("create_window(window_attributes())").unwrap();
         let apply = body.find("self.window_modes.apply_boot(").unwrap();
-        let renderer = body.find("Renderer::new(&window)").unwrap();
+        let renderer = body.find("Renderer::new(&window,").unwrap();
         let finish = body.find("self.window_modes.finish_boot(").unwrap();
         let redraw = body.find("ws.window.request_redraw();").unwrap();
         // A deferred exclusive mode lands only once the renderer owns a surface.

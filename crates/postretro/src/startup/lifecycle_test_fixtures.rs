@@ -288,6 +288,8 @@ pub(crate) fn test_app() -> App {
         pending_session: None,
         #[cfg(feature = "dev-tools")]
         debug_chase_agent: None,
+        #[cfg(feature = "dev-tools")]
+        playback: Default::default(),
     }
 }
 

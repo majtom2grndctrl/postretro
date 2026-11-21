@@ -136,11 +136,57 @@ Summarizes one telemetry file written with `POSTRETRO_TELEMETRY=<path>` by the
 engine, `prl-build`, or both appending to the same path. It joins the file per
 run and per load: producer states and exit reason, bake stage durations, each
 load's phase table, geometry install and matching bake, cancelled generations,
-SH and lightmap miss buckets per level, and CPU stage and GPU pass p50 and max
-across timing windows. Standard library only. Run with `python3
-tools/telemetry_reduce.py <file.jsonl>`, or add `--json` for the same summary
-as JSON. Its tests run with
+SH and lightmap miss buckets per level, CPU stage and GPU pass p50 and max
+across timing windows, and camera-route playback window figures with their
+pacing and cap, noting when the cap changed between windows. A playback
+window counts frames over 33 ms, not `playback_trace_reduce.py`'s budget.
+Standard library only. Run with `python3 tools/telemetry_reduce.py
+<file.jsonl>`, or add `--json` for the same summary as JSON. Its tests run with
 `python3 -m unittest discover -s tools/tests -p test_telemetry_reduce.py`.
+
+### `playback_trace_reduce.py`
+
+Joins a camera-route playback record (`--camera-route-report`) with a Metal
+System Trace export of the same run. Each frame's drain and frame encoders
+carry a `pr-frame <k> <site>` debug group (`<site>` is `lightmap`, `sh` or
+`frame`), so the reducer attributes drain GPU time to the record row that
+recorded it, and to its drain, never by time overlap. Marks from older builds carry no
+site: those are classified by their command buffer's label, and work on a
+buffer wgpu relabelled "(wgpu internal) Signal" makes that frame's drains read
+`missing` and is reported apart as unattributed. Per frame it reports
+the interval, lightmap and SH drain GPU time, and the cold and pool-growth
+flags. Per run it reports interval p50, p95, max and frames over budget over
+route frames, hold, no-draw and change-marked rows apart, drain GPU statistics
+with warm, cold and pool-growth drains apart, and over-budget frames charged two
+ways. A row's interval is the time the previous frame took, so an over-budget
+row is charged that frame's drain, alone and with earlier drains still on the
+GPU when it began. That start is bounded from the trace, so a drain ending
+inside the bounds is listed as possibly in flight. A drain the trace holds only
+in part, or that may have been in flight, reads `missing`, never a number, and
+the run summary names which frames blanked how many readings.
+Every GPU figure names the GPU clock from an `ioreg` poll joined by time, or
+says it went unrecorded. Standard library only. Run with
+
+```sh
+python3 tools/playback_trace_reduce.py --record <run.playback.json> \
+    --trace-dir <dir of exported tables, .xml or .xml.xz> \
+    [--toc <toc.xml>] [--ioreg <poll log>]
+```
+
+The trace directory must hold two table exports, `metal-application-intervals`
+and `metal-gpu-intervals`. The clock join also needs the export's table of
+contents (`xctrace export --toc`): put it in the trace directory, or name it
+with `--toc`. Without one, or with a start date that does not parse, the
+clock is reported over the whole poll log, labelled with the reason.
+`--budget-ms` sets the frame-interval budget (default 16.667 ms). By default
+the over-budget and per-frame tables list only frames with a drain, or over
+budget with one charged or missing; `--all-frames` lists every frame. Add
+`--json` for the full summary. A malformed record, an unreadable table, or
+a record no frame mark matches exits 2. The script's docstring defines the
+join, matched frames and the over-budget charge. Recording a run, its trace and the poll on a
+Mac: `docs/camera-routes.md` §"GPU time on a Mac".
+Its tests run with
+`python3 -m unittest discover -s tools/tests -p test_playback_trace_reduce.py`.
 
 ### `texture-tool/`
 
@@ -182,6 +228,7 @@ Per-script deps:
 | `gen_stress_map.py` | none (stdlib only) |
 | `inspect_fbx_ascii.py` | none (stdlib only) |
 | `telemetry_reduce.py` | none (stdlib only) |
+| `playback_trace_reduce.py` | none (stdlib only) |
 
 `gen_stress_map.py` imports three sibling helper modules, `stress_environment.py`
 (environment-volume shapes and particle emitters), `stress_zones.py` (zoned

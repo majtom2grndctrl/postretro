@@ -253,11 +253,8 @@ impl Renderer {
             .as_mut()
             .expect("toggle_vsync is a full-ready diagnostic path");
         full.vsync_enabled = !full.vsync_enabled;
-        surface_config.present_mode = if full.vsync_enabled {
-            wgpu::PresentMode::AutoVsync
-        } else {
-            wgpu::PresentMode::AutoNoVsync
-        };
+        surface_config.present_mode =
+            PresentChoice::from_vsync(full.vsync_enabled).wgpu_present_mode();
         surface
             .as_ref()
             .expect("toggle_vsync requires a windowed renderer")
@@ -268,6 +265,17 @@ impl Renderer {
 
     pub fn vsync_enabled(&self) -> bool {
         self.full().vsync_enabled
+    }
+
+    /// Camera-route playback's frame index for the frame about to record:
+    /// while `Some(k)`, the lightmap drain, SH upload-copies and frame
+    /// encoders each carry a `pr-frame <k> <site>` debug group (`<site>` is
+    /// `lightmap`, `sh` or `frame`), so a GPU trace attributes their work to
+    /// that frame and site. `None` marks nothing and leaves every encoder
+    /// label as it is. Set before the frame's streaming step.
+    #[cfg(feature = "dev-tools")]
+    pub fn set_frame_mark(&mut self, frame: Option<u64>) {
+        self.queue.set_frame_mark(frame);
     }
 
     /// Enables CPU stage timing for this renderer. Read once at startup by the

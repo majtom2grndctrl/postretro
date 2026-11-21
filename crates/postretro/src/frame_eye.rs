@@ -32,6 +32,9 @@ pub(crate) struct FrameEyeInputs<'a> {
     /// Interpolated (presented) eye before view-feel offsets.
     pub(crate) presented_eye: Vec3,
     pub(crate) aspect: f32,
+    /// Base horizontal FOV in radians, before any view-feel offset: the
+    /// engine's `HFOV`, or a camera route's projection during playback.
+    pub(crate) base_hfov: f32,
     /// Carry-yaw-adjusted render yaw.
     pub(crate) render_yaw: f32,
     pub(crate) pitch: f32,
@@ -234,7 +237,7 @@ pub(crate) fn assemble_frame_eye(
     // impulses stay in both. Pose eye drop is in `eye_offset`, which the
     // viewmodel and listener follow.
     FrameEye {
-        camera: RenderCamera::new(
+        camera: RenderCamera::with_base_hfov(
             inputs.presented_eye,
             inputs.aspect,
             inputs.render_yaw + yaw_offset,
@@ -242,6 +245,7 @@ pub(crate) fn assemble_frame_eye(
             roll + held.roll.to_radians(),
             eye_offset,
             fov_offset,
+            inputs.base_hfov,
         ),
         camera_right,
         eye_offset,
@@ -312,6 +316,7 @@ mod tests {
         FrameEyeInputs {
             presented_eye: Vec3::new(1.0, 2.0, 3.0),
             aspect: 16.0 / 9.0,
+            base_hfov: crate::camera::HFOV,
             render_yaw: YAW,
             pitch: PITCH,
             driver: Some(ViewFeelDriver {

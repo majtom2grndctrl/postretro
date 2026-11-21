@@ -801,7 +801,7 @@ impl Session {
             mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables::new(),
             hit_zone_store: scripting_systems::hit_zones::HitZoneStore::new(),
             sh_streaming: None,
-            level_streaming: LevelStreaming::default(),
+            level_streaming: LevelStreaming::at_launch(),
             player_options,
             options_bridge,
             os_preferences,

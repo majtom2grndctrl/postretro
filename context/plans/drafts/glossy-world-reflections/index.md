@@ -123,7 +123,7 @@ Owner-requested capability, for a genre-staple look: polished floors and walls t
 
 ## Open questions
 - Counsel on Tencent WO2026113651A1 claim 1 for world faces. — owner, with counsel — **blocks build**
-- Counsel on glow delta tiles summed at sample time against Tencent WO2026113651A1 claims 10–14 and 19 and the post-sample-ratio fence (`ip-delta-tiles.md`). It decides whether the rival can replace the deferred volume-glow limit. — owner, with counsel
+- Counsel on glow delta tiles summed at sample time: Tencent US12293451B2 claim 1(c), nearest risk and the id-27 question, and WO2026113651A1 claims 10 and 19 (`ip-delta-tiles.md` §8). It decides whether the rival can replace the deferred volume-glow limit. — owner, with counsel
 - Sharpness floor value (estimate n ≈ 6–16) and the fade band's width. — **delegated**
 - What counts as one facing for an authored box: the normal tolerance. — **delegated**: the build warns when one box makes more than a handful of probes, naming it.
 - How `_capture_offset` applies to each per-facing probe of one authored box. — **delegated**

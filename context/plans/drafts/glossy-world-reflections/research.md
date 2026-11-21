@@ -102,7 +102,7 @@ Not measured. One probe per coplanar glossy face group means a box room with a g
 
 ## Glow delta tiles
 
-A rival to the deferred limit (§Volume glow share) for glow that changes at runtime: area-light glass, `emissive_volume` signs, neon tubes. It follows the delta-SH form: a base plus each animated source's baked contribution × its live value. IP reading: `ip-delta-tiles.md` (in progress).
+A rival to the deferred limit (§Volume glow share) for glow that changes at runtime: area-light glass, `emissive_volume` signs, neon tubes. It follows the delta-SH form: a base plus each animated source's baked contribution × its live value. IP reading: `ip-delta-tiles.md`.
 
 - **Shape.**
   - The compiler bakes, per probe, one sparse delta tile per animated glow source: what that source's glow adds to the probe's view at unit strength. A source is an area light's glass or an `emissive_volume`'s faces. Tiles are stored as 8×8 blocks of the 128² colour tile, with prefiltered mips.
@@ -113,7 +113,7 @@ A rival to the deferred limit (§Volume glow share) for glow that changes at run
   - It is exact off screen, where a screen-space layer has nothing.
   - It is per texel, where the aggregate share dims a whole lobe.
   - A switched-off tube goes fully dark in its reflection, and a recolour into a channel the reference lacks shows.
-- **Base variant.** The base either holds glow at reference, with deltas adding current − reference, or holds no animated glow, with deltas adding current. The second keeps a source at 0 exactly dark with no subtraction. Which reads closer to any claim is part of the IP question.
+- **Base variant.** Prefer a base that holds glow at reference, with deltas adding (current − reference) × delta. It keeps today's tiles, water parity and the reference-state contract, and differs from the alternative (no animated glow in the base) only in how claim wording maps onto it (`ip-delta-tiles.md` §2, §7).
 - **Cost** [E].
   - Bytes: a 2 m tube touches a handful of mip-0 blocks per probe, a few KB per source per probe with mips, plus a per-probe block index.
   - Per glossy fragment: one block-index read and one sample per glow source present, times the mips the exponent selects. Cap it at about 4 glow sources per probe; glow past the cap holds its reference, as today.
@@ -121,7 +121,9 @@ A rival to the deferred limit (§Volume glow share) for glow that changes at run
   - Id 54: rides this brief's version 3.
 - **IP.**
   - A compose pass that writes base + Σ deltas into a live tile on a source change is out. It updates stored probe lighting on a light change, which is what Tencent WO2026113651A1 claims 10–14 and 19 describe (`plans/done/reflection-probes/ip-check.md` §4).
-  - Summing at sample time rewrites nothing, but it goes past the recorded fence, which allows only a post-sample scalar ratio. Counsel reads it before the design is chosen.
+  - Summing at sample time rewrites nothing and appears to stay outside WO claims 10–14 and 19, with claim 10 the closest element.
+  - The nearest risk is Tencent US12293451B2 claim 1(c): a fixed per-probe, per-source delta × a runtime coefficient reads like its "radiance transfer parameter". This is the same open question as the shipped animated SH deltas (id 27). The shipped water share ratio has the same shape at lobe resolution and has no claim-level chart yet.
+  - Fences: write tiles once at compile, keep deltas glow-only, and store them at base resolution (`ip-delta-tiles.md` §7).
 - **Open.**
   - Per-fragment cost on the 5300M near a large glossy floor with several glow sources.
   - The sparse-block index format.

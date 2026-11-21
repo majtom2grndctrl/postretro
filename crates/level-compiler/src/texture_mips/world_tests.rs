@@ -745,7 +745,7 @@ impl Fixture {
     }
 
     /// One 8-bit grayscale sibling (PNG colour type 0), the form the
-    /// committed dev fixtures take.
+    /// specular-texel fixtures take.
     fn luma_png(&self, name: &str, width: u32, height: u32, value: impl Fn(u32, u32) -> u8) {
         let path = self.textures.join(format!("{name}.png"));
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -1048,7 +1048,7 @@ fn tint_bundles_bake_four_channel() {
     assert_eq!(fixture.sidecars().len(), 1);
 }
 
-// The committed dev fixtures author `_s`, `_h`, `_p` and `_t` as 8-bit
+// The specular-texel fixtures author `_s`, `_h`, `_p` and `_t` as 8-bit
 // grayscale PNGs; the bake reads the gray byte as the channel value, so they
 // store the texels RGBA-authored siblings do.
 #[test]

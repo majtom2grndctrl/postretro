@@ -17,27 +17,37 @@ read at: 1a66523ae (no source change to c56f894e7; Decision reads reused)
 
 ## AC-to-proof
 
-| AC | Proof | Status |
-|---|---|---|
-| A1 smooth shade vs frozen loop composed the old way, within the tint bound, every whole-loop case, entry's own composition, non-vacuous | `kinematic_specular_test` smooth whole-loop row (GPU readback, harness splices the smooth composition function) | achievable as stated |
-| A2 pixel cases bit-exact, oracles unchanged | existing `kinematic_specular_test` pixel cases, splicing the pixel loop | achievable as stated |
-| A3 forward smooth and untinted identity unchanged | existing `world_specular_test` identity tests, untouched | achievable as stated |
-| A4 per style: diffuse tint-invariant, tinted specular matches the tint function | `diffuse_is_identical_with_and_without_tint`, `tint_mix_matches_the_cpu_reference` (smooth row reads the one sum) | achievable as stated |
-| A5 mover pass builds exactly three render pipelines | GPU test counting `gpu_creation_counts` across `KinematicBrushPass::new` | achievable as stated |
-| A6 both pipelines build with cube arrays off; both entries validate in the no-cube source | same GPU test with cube arrays off; `kinematic_shader_source_validates_without_cube_arrays` names both entries | achievable as stated |
-| A7 each record reports its bound style per view; live, mirror, first-frame rows read it | test-only bound-style report on `KinematicBrushPass`; frame tests read it | achievable as stated |
-| A8 entry↔style source pin; report is the selecting value; mirror report present | source pin on the style→entry map and `record_draws`; mirror row asserts a mirror report | achievable as stated |
-| A9 smooth loop and its helpers use no implicit-derivative sample | source test over the smooth loop's call graph | achievable as stated |
-| A10 live change binds the other pipeline next frame, both directions, no extra creation | `a_live_specular_style_change_...` reading the report | achievable as stated |
-| A11 mirror binds the main view's pipeline, change frame included | planar mirror frame test with a mover in the mirror | achievable as stated |
-| A12 every selection reads the frame snapshot | source pin over both `record_draws` call sites | achievable as stated |
-| A13 committed before full init / rebuild / install / load in flight → first frame | `specular_style_reaches_the_first_frame_of_each_install`, `specular_style_committed_mid_build_reaches_the_published_level` (see Corrections) | achievable as stated |
-| A14 smooth keeps highlights through Surface Depth Off→On; style change at Off leaves the march off | harness Off/On test asserts smooth highlights; frame test reads the material uniform's march word across a change | achievable as stated |
-| M1 register screen of both pipelines holds 8 waves/SIMD wave32 | `tools/metal_register_screen` per entry, counts in its README | manual (run here: this machine is the target) |
-| M2 clock-pinned re-time, both poses, smooth ≤ pre-feature, pixel ≤ 1a66523ae + 0.15 ms | `measurements/specular-mover-cost/` kit | manual |
-| M3 dev map movers unchanged per style; toggle with mirror in view, no stall | owner, in-engine | manual |
-| M4 §7.3, §4, §8 text | land-the-plane context update, reviewed | manual |
-| M5 kit and README on the branch, no hook commit | `git log` / `git diff` on the branch | manual |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| A1 smooth shade vs frozen loop composed the old way, within the tint bound, every whole-loop case, entry's own composition, non-vacuous | `smooth_shade_matches_the_frozen_pre_change_loop_within_reassociation` (harness splices `accumulate_smooth_direct` + `mover_smooth_shade`); `fs_smooth`'s call into its loop pinned in `forward_and_mover_share_the_specular_texel_functions` | achievable as stated | pass |
+| A2 pixel cases bit-exact, oracles unchanged | pixel cases in `kinematic_specular_test` (`assert_matches_oracle` bitwise for pixel; `untinted_pixel_specular_matches_the_frozen_pre_change_function`) | achievable as stated | pass |
+| A3 forward smooth and untinted identity unchanged | `world_specular_test` identity tests, untouched | achievable as stated | pass |
+| A4 per style: diffuse tint-invariant, tinted specular matches the tint function | `diffuse_is_identical_with_and_without_tint`, `tint_mix_matches_the_cpu_reference` | achievable as stated | pass |
+| A5 mover pass builds exactly three render pipelines | `building_the_mover_pass_creates_both_beauty_pipelines_and_its_depth_pipeline` | achievable as stated | pass |
+| A6 both pipelines build with cube arrays off; both entries validate in the no-cube source | same test (cube on and off, under a validation scope); `kinematic_shader_source_validates_without_cube_arrays` | achievable as stated | pass |
+| A7 each record reports its bound style per view; live, mirror, first-frame rows read it | `bound_styles` report; `transported` in `specular_style_frame_tests` | achievable as stated | pass |
+| A8 entry↔style source pin; report is the selecting value; mirror report present | `each_beauty_pipeline_builds_its_styles_entry_and_reports_the_style_it_selected_by`; mirror row requires one Main and one Mirror record | achievable as stated | pass |
+| A9 smooth loop and its helpers use no implicit-derivative sample | `smooth_light_loop_and_its_helpers_take_no_implicit_derivative_sample` | achievable as stated | pass |
+| A10 live change binds the other pipeline next frame, both directions, no extra creation | `a_live_specular_style_change_reaches_the_next_frame_without_a_rebuild` (S, P, S, P) | achievable as stated | pass |
+| A11 mirror binds the main view's pipeline, change frame included | `planar_mirror_reads_the_committed_specular_style_on_the_same_frame` | achievable as stated | pass |
+| A12 every selection reads the frame snapshot | `every_mover_pipeline_selection_reads_the_per_frame_specular_style_snapshot` (crate scan: exactly two record sites) | achievable as stated | pass |
+| A13 committed before full init / rebuild / install / load in flight → first frame | `specular_style_reaches_the_first_frame_of_each_install`, `specular_style_committed_mid_build_reaches_the_published_level` | achievable as stated | pass |
+| A14 smooth keeps highlights through Surface Depth Off→On; style change at Off leaves the march off | `sharpness_and_tint_hold_through_surface_depth_off_and_on` (specular reaches at every step); `surface_depth_toggles_and_specular_style_changes_leave_each_other_alone` over a Concrete surface map whose Off and On bytes differ | achievable as stated | pass |
+| M1 register screen of both pipelines holds 8 waves/SIMD wave32 | `tools/metal_register_screen`, counts in its README | manual (run here) | pass: `fs_pixel` 127, `fs_smooth` 119 VGPRs |
+| M2 clock-pinned re-time, both poses, smooth ≤ pre-feature, pixel ≤ 1a66523ae + 0.15 ms | `measurements/specular-mover-cost/` kit; arms: pre-feature smooth, 1a66523ae pixel, branch smooth and pixel, branch smooth with albedo before the loop | manual | outstanding |
+| M3 dev map movers unchanged per style; toggle with mirror in view, no stall | owner, in-engine | manual | outstanding |
+| M4 §7.3, §4, §8 text | land-the-plane context update | manual | outstanding (at landing) |
+| M5 kit and README on the branch, no hook commit | 4f7efaa3d; no branch commit touches `capture/setup.rs`, no `POSTRETRO_CAPTURE_SURFACE_DEPTH_OFF` in `crates/` | manual | pass |
+
+## Review loop
+- Panel: 2 correctness tracers, contract verifier, adversarial tester (opus), hygiene/drift (sonnet). No must-fix code finding; pixel bit-exact and style selection held under trace.
+- Acted on: the A14 frame test was vacuous over the placeholder material (now a Concrete surface map with an Off≠On precondition); `fs_smooth`'s and `fs_pixel`'s calls into their loops were unpinned (now pinned in full); the A12 pin now scans the crate for record sites; stale comments naming the mover style word or the mover's `fs_main` (`full_renderer.rs`, `renderer_frame.rs`, `direct_sh_resources.rs`, harness, `tools/README.md`, screen README heading); dead `Output::Frozen` harness path; `#[repr(C)]` dropped from the hand-serialized params struct; `record_draws` doc states the caller's `has_view_draws` gate; `_pad` says why it stays.
+- Left: two beauty pipelines now compile at every full init and full-renderer rebuild; no row prices that (reported to the owner).
+
+## Verification
+- fmt, `clippy --workspace --all-targets --features postretro/dev-tools,postretro/capture -D warnings`, `cargo check --release`, crate-graph, both reducers: pass.
+- `POSTRETRO_REQUIRE_GPU=1 cargo test --workspace --no-fail-fast`: 17516 passed, 2 failed. Both are `postretro --test telemetry_run`, a windowed engine run that stalls 30 s because the screen was locked (`CGSSessionScreenIsLocked=Yes`); environmental.
+- Same with `--features postretro/dev-tools,postretro/capture` on renderer and app: also `playback_ring_times_marked_drain_and_frame_encoders_on_the_gpu`, which requires timestamp queries the 5300M lacks; it skips without `POSTRETRO_REQUIRE_GPU`.
 
 ## Tasks
 
@@ -49,4 +59,4 @@ read at: 1a66523ae (no source change to c56f894e7; Decision reads reused)
 | 4 | Harness and readback tests: smooth composition row, pixel splices, tint rows, A9 source test | integrating executor | 1 | done: `kinematic_specular_test` 13/13 under `POSTRETRO_REQUIRE_GPU=1` |
 | 5 | Frame tests: A5–A8, A10–A14 | integrating executor | 3 | done: renderer lib 1438 passed |
 | 6 | Bring the kit from `spike/specular-mover-cost` without the hook commit | integrating executor | — | done (4f7efaa3d) |
-| 7 | Preflight, review panel, fixes | integrating executor | 1–6 | |
+| 7 | Preflight, review panel, fixes | integrating executor | 1–6 | done |

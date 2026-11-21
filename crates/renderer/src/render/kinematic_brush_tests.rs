@@ -387,7 +387,18 @@ fn forward_and_mover_share_the_specular_texel_functions() {
             .count(),
         1
     );
-    assert!(pixel_fs.contains("s.spec_texel.exponent,s.spec_texel.intensity,s.spec_texel.tinted,"));
+    // Each entry hands its loop the prelude's values in the loop's order;
+    // the readback harness splices the loops, not the entries, so these
+    // pins are what tie an entry to the loop the harness proves.
+    assert!(pixel_fs.contains(
+        "letdynamic=accumulate_pixel_direct(in.world_position,s.n,s.mesh_n,spec_point,\
+         s.spec_texel.exponent,s.spec_texel.intensity,s.spec_texel.tinted,s.use_dynamic,\
+         s.use_specular,s.depth,);"
+    ));
+    assert!(smooth_fs.contains(
+        "letdynamic=accumulate_smooth_direct(in.world_position,s.n,s.mesh_n,s.view,\
+         s.spec_texel.exponent,s.spec_texel.intensity,s.use_dynamic,s.use_specular,s.depth,);"
+    ));
     assert!(pixel_fs.contains(
         "returnvec4<f32>(mover_pixel_shade(base_color.rgb,s.lighting,dynamic,emissive,\
          s.spec_texel),base_color.a,);"

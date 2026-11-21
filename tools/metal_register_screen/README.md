@@ -55,7 +55,7 @@ holds the count still needs a clock-pinned Metal System Trace (§12).
 
 ## Recorded counts (Radeon Pro 5300M)
 
-Mover `fs_main`, one pipeline serving both styles:
+Before mover-smooth-specular-pipeline: one `fs_main` pipeline drew both styles.
 
 | Build | VGPRs | SGPRs |
 |---|---|---|

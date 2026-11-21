@@ -21,7 +21,7 @@ pub struct KinematicMoverInstance {
     pub transform: glam::Mat4,
 }
 
-#[repr(C)]
+/// The group-2 light params `build_light_params_bytes` serializes.
 #[derive(Clone, Copy)]
 struct KinematicLightParams {
     light_count: u32,
@@ -1028,7 +1028,9 @@ impl KinematicBrushPass {
     /// beauty pipeline. `style` is the frame's snapshot, taken with group 0,
     /// so the main view and the mirror draw one style. The mirror reads its
     /// own light records (group 2) on a frame a mirror-only light holds a
-    /// shadow slot. The caller binds groups 0 and 4.
+    /// shadow slot. The caller binds groups 0 and 4, and opens a mirror pass
+    /// only when [`Self::has_view_draws`] holds, so a bound-style report is a
+    /// view that drew movers.
     pub(crate) fn record_draws(
         &self,
         pass: &mut wgpu::RenderPass<'_>,

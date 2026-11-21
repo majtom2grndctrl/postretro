@@ -283,14 +283,59 @@ fn a_live_specular_style_change_reaches_the_next_frame_without_a_rebuild() {
 // state and picks the pipeline alone. Under smooth, Surface Depth Off then On
 // keeps the smooth pipeline drawing, and a style change while Surface Depth is
 // Off leaves every material's uniform, march word included, as Off wrote it.
+// The level's material is a Concrete surface map, so Off and On write
+// different bytes and a style change that re-marched would show.
 #[test]
 fn surface_depth_toggles_and_specular_style_changes_leave_each_other_alone() {
+    use crate::render::renderer_textures::tests::{chain, install_one_triangle, write_prm};
+    use postretro_level_format::prm::PrmFormat;
+    use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
     use postretro_render_cpu::surface_depth::SurfaceDepthQuality;
+    use postretro_render_data::material::{Material, TextureMaterial};
     let test = "surface_depth_toggles_and_specular_style_changes_leave_each_other_alone";
     let Some(mut renderer) = offscreen_renderer_or_skip(test, EXTENT, EXTENT) else {
         return;
     };
-    install_level(&mut renderer);
+    let dir = tempfile::tempdir().expect("a scratch texture cache");
+    let key = [0x5Du8; 32];
+    write_prm(
+        dir.path(),
+        key,
+        [
+            Some(chain(PrmFormat::Rgba8UnormSrgb, 4, 4, 0x21)),
+            // A four-channel surface map: G carries the height Surface Depth
+            // marches.
+            Some(chain(PrmFormat::Rgba8Unorm, 4, 4, 0x6C)),
+            None,
+            None,
+        ],
+    );
+    let materials = [TextureMaterial {
+        material: Material::Concrete,
+        emissive_strength: 0.0,
+    }];
+    renderer.install_textures(
+        &["concrete_relief".to_owned()],
+        &TextureCacheKeysSection { keys: vec![key] },
+        dir.path(),
+        &materials,
+    );
+    install_one_triangle(&mut renderer, &materials);
+    add_mover(&mut renderer);
+    {
+        let full = renderer.full();
+        let level = full.level.as_ref().expect("an installed level");
+        assert!(
+            level.gpu_textures.iter().any(|material| {
+                material
+                    .uniform_plan
+                    .uniform_bytes(SurfaceDepthQuality::Off)
+                    != material.uniform_plan.uniform_bytes(SurfaceDepthQuality::On)
+            }),
+            "some material marches at On, so Off's bytes are not every quality's"
+        );
+    }
+
     renderer.set_specular_style(SpecularStyle::Smooth);
     for quality in [SurfaceDepthQuality::Off, SurfaceDepthQuality::On] {
         renderer.set_surface_depth_quality(quality);
@@ -358,6 +403,39 @@ fn every_mover_pipeline_selection_reads_the_per_frame_specular_style_snapshot() 
     assert!(
         snapshot < upload,
         "snapshot the style before packing group 0"
+    );
+    // The two files below hold every mover beauty record in the crate.
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut callers = Vec::new();
+    let mut pending = vec![src.clone()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).expect("read the renderer source") {
+            let path = entry.expect("a source entry").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "rs")
+                && std::fs::read_to_string(&path)
+                    .expect("read a source file")
+                    .contains("kinematic_brush.record_draws(")
+            {
+                let relative = path.strip_prefix(&src).expect("under src");
+                let joined: Vec<String> = relative
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                    .collect();
+                callers.push(joined.join("/"));
+            }
+        }
+    }
+    callers.sort();
+    callers.retain(|file| !file.ends_with("specular_style_frame_tests.rs"));
+    assert_eq!(
+        callers,
+        [
+            "render/planar_reflection/record.rs",
+            "render/renderer_render_frame.rs"
+        ],
+        "every mover beauty record is pinned below"
     );
     let squashed = |text: &str| -> String { text.split_whitespace().collect() };
     for (file, source, receiver, snapshot) in [

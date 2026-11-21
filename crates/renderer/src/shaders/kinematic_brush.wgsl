@@ -91,7 +91,8 @@ struct KinematicLightParams {
     scripted_light_count: u32,
     indirect_scale: f32,
     // Unread. The specular style picks the beauty pipeline instead
-    // (`fs_pixel` or `fs_smooth`), so no per-frame word carries it.
+    // (`fs_pixel` or `fs_smooth`), so no per-frame word carries it. Kept so
+    // the row stays 32 bytes, the binding's minimum size.
     _pad: u32,
 };
 @group(2) @binding(4) var<uniform> kinematic_light_params: KinematicLightParams;

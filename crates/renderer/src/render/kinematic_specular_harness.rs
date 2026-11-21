@@ -89,8 +89,8 @@ struct Harness {
 @group(0) @binding(9) var base_texture: texture_2d<f32>;
 @group(0) @binding(10) var aniso_sampler: sampler;
 
-// Stand-ins for the light the mover's `fs_main` sums ahead of its loop and
-// for its glow.
+// Stand-ins for the light `mover_surface` gathers ahead of the loop and for
+// the material's glow.
 const HARNESS_LIGHT_BEFORE_LOOP: vec3<f32> = vec3<f32>(0.21, 0.17, 0.13);
 const HARNESS_EMISSIVE: vec3<f32> = vec3<f32>(0.02, 0.0, 0.04);
 const HARNESS_EMISSIVE_STRENGTH: f32 = 1.5;
@@ -133,8 +133,8 @@ fn vs_main(@builtin(vertex_index) vertex: u32) -> @builtin(position) vec4<f32> {
 
 @fragment
 fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
-    // The mover's `fs_main` up to its light loop, on a magnified floor facing
-    // +Y with no normal map.
+    // The mover's prelude (`mover_surface`) up to its light loop, on a
+    // magnified floor facing +Y with no normal map.
     let uv = (position.xy + vec2<f32>(SUBPIXEL_OFFSET)) * harness.uv_per_pixel.xy;
     let world = vec3<f32>(uv.x, 0.0, uv.y) * METRES_PER_UV;
     let ddx = dpdx(uv);
@@ -246,10 +246,6 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
                 default: {}
             }
         }
-    } else if harness.modes.x == OUTPUT_FROZEN {
-        shade = frozen_accumulate_dynamic_direct(
-            world, n, mesh_n, V, exponent, 1.0, use_dynamic, use_specular, depth,
-        );
     } else if harness.modes.x == OUTPUT_TEXEL_TERM {
         // Light 0 as the loop hands a selected-static record to the term: its
         // own color and aim, and this fragment's shadow.
@@ -308,12 +304,10 @@ fn shader_source() -> String {
          const UV_PER_PIXEL: f32 = {UV_PER_PIXEL:?};\n\
          const METRES_PER_UV: f32 = {METRES_PER_UV:?};\n\
          const SUBPIXEL_OFFSET: f32 = {SUBPIXEL_OFFSET:?};\n\
-         const OUTPUT_FROZEN: u32 = {};\n\
          const OUTPUT_TEXEL_TERM: u32 = {};\n\
          const MATERIAL_NONE: u32 = {};\n\
          const MATERIAL_ORACLE: u32 = {};\n",
         f64::from(LATTICE),
-        Output::Frozen as u32,
         Output::TexelTerm as u32,
         MaterialPath::None as u32,
         MaterialPath::Oracle as u32,
@@ -468,8 +462,6 @@ pub(super) enum Output {
     /// The style's loop: pixel's lit sum, or smooth's diffuse plus specular
     /// through its composition at unit albedo.
     Loop = 0,
-    /// The frozen 1c7fc9e3a loop.
-    Frozen = 1,
     /// `mover_texel_specular` for light 0 alone, as the loop calls it.
     TexelTerm = 2,
 }

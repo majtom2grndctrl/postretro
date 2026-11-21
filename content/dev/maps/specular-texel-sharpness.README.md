@@ -1,7 +1,7 @@
 # specular-texel-sharpness: per-texel sharpness, tint and texel-centre highlights
 
 One sealed room for the manual rows M1–M8 of the
-`specular-texel-sharpness` brief (`context/plans/in-progress/specular-texel-sharpness/`).
+`specular-texel-sharpness` feature.
 Its five fixture materials have known texel values, and each one appears on
 a static face and on a parked mover under the static lights. Three more
 things sit in the room: a carved door set into a wall of the same material, a
@@ -180,7 +180,7 @@ POSTRETRO_SH_STREAMING=sync-proof cargo run -p postretro --features capture -- \
   --capture target/captures/specular-texel-sharpness-pixel.json
 ```
 
-A 1c7fc9e3a binary has no `specular_style` key and rejects it as unknown.
+A binary from before this feature has no `specular_style` key and rejects it as unknown.
 For the before capture, drop the key and use another output path. That build
 draws the old per-pixel highlight, which the smooth scene must match.
 
@@ -201,7 +201,7 @@ SPECULAR_TEXEL_PRL=<absolute path to .prl> POSTRETRO_SH_STREAMING=sync-proof \
 skip. `SPECULAR_FRAME_DUMP=<dir>` writes the frames of the Surface Depth test
 there as PNGs. A bright marching face in another fixture's view can bloom
 into that fixture's rectangles and change them between Surface Depth Off and
-On: the tinted pair did, when it first sat at the edge of the ramp view. After
+On. After
 moving a face or a test camera, rerun all four tests.
 
 ## Manual walk
@@ -211,20 +211,12 @@ that compare styles use the capture scenes above.
 
 | Row | Where | What to check |
 |---|---|---|
-| M1 | Comparison strip, the two scenes plus a 1c7fc9e3a capture | Pixel against the previous build: the dirt and wood highlights turn into texel blocks with antialiased seams, and concrete looks the same. Smooth matches the previous build. |
+| M1 | Comparison strip, the two scenes plus a capture from the build before this feature | Pixel against the previous build: the dirt and wood highlights turn into texel blocks with antialiased seams, and concrete looks the same. Smooth matches the previous build. |
 | M2 | North wall ramp and east wall inlay inside the spot | Strafe and dolly slowly a few metres from each wall. No highlight moves inside any texel; a highlight only steps from texel to texel. |
 | M3 | Ramp wall and `ramp_mover`, inside the spot | Facing north, each tile's columns sharpen from left to right: column 0 (west) shades at exponent 1, and the two right columns at the 8192 cap. The mover's columns match the wall's at the same x. Hold position a moment so the light promotes onto the mover. |
 | M4 | East wall and `inlay_mover`, inside the spot | The green field glints white. The ring glints in the bronze hue, and the block lies between white and that hue. The mover matches the wall. Then the tinted pair on the south wall, from about (744, 96), looking south-west: on the cell columns whose `_t` is 255 the tiles glint cyan and the mortar copper. On the columns whose `_t` is 0 everything glints white. The mover matches the panel. |
 | M5 | Carved floor near the point light; the door and its frame | Each tile's top and each exposed side face holds one highlight value per texel face. Then compare the tiles cut by the door's seams, half wall and half door. This is an observation, not a gate: a visible glint difference goes to a follow-up brief. |
 | M6 | Ramp, under the shelf, between about x 300 and 470 | The spot's shadow edge from the shelf crosses the ramp horizontally at about z 166, partway up the texel row at z 160–168. Find the spot's highlight on the ramp and line it up on the edge: the edge cuts the highlight on the same line as the diffuse, inside the texel. |
 | M7 | From the south-west corner, looking north-east | Look at the ramp's right columns and the carved floor tiles, up to about 20 m away. Report whether high-sharpness texels sparkle as the camera moves. Not a gate. |
-| M8 | Task 9 of the brief, on the Mac | Smooth's and pixel's costs at Surface Depth Off against a 1c7fc9e3a binary, and the mover shader's register count in both styles. This map is small enough to be a pilot for that run. |
+| M8 | On the Mac target | Smooth's and pixel's costs at Surface Depth Off against a binary from the build before this feature, and the mover shader's register count in both styles. This map is small enough to be a pilot for that run. |
 | P3, P11 | Glass pair on the north wall, from about (96, 260), looking north; tinted pair as in M4 | Not a manual row: the frame tests prove both. To see it, switch Surface Depth Off and On in the options. The glass tiles never carve, though their height map has relief, and their per-texel sharpness stays. The tinted tiles carve at On only. Their tint and sharpness hold at Off and On. |
-
-## Still to verify after task 6
-
-- Load the compiled map once in the engine: the five movers draw, and the
-  fixtures shade with their per-texel sharpness and tint.
-- The four-channel bake already holds: a build with the task-4 compiler wrote
-  each fixture's slot 1 as `Rgba8Unorm` with the expected bytes.
-- Run both capture scenes.

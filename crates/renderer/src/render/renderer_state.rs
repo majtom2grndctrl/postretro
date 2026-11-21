@@ -126,9 +126,10 @@ impl Renderer {
     /// Commit the mod's specular style (`render.specular.style`). CPU-only
     /// boot state, so it is safe before full init and with no level loaded,
     /// survives a full-renderer rebuild, and never enters a level build's
-    /// snapshot. Each frame's forward and mover uniform uploads read it, so
-    /// a change reaches the next frame with no pipeline or bind-group
-    /// rebuild. A renderer never told draws pixel, as frame capture does.
+    /// snapshot. The next group-0 upload snapshots it for the forward and
+    /// mover uniforms alike, so a change reaches the next frame with no
+    /// pipeline or bind-group rebuild. A renderer never told draws pixel, as
+    /// frame capture does.
     pub fn set_specular_style(
         &mut self,
         style: postretro_render_cpu::frame_uniforms::SpecularStyle,

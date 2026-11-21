@@ -332,7 +332,7 @@ mod tests {
         );
     }
 
-    // AC 8 (renderer half): each authored specular style reaches the
+    // Renderer half: each authored specular style reaches the
     // renderer's. Drift guard both ways: the chokepoint's match is exhaustive
     // over the authored styles, and walking the renderer's own `ALL` back
     // through an exhaustive match makes a new renderer style a compile error
@@ -371,7 +371,7 @@ mod tests {
         );
     }
 
-    // AC 18 (dev half): content/dev's own start script, initialized as at
+    // Dev half: content/dev's own start script, initialized as at
     // boot, authors no specular style, so the dev mod draws pixel.
     #[test]
     fn content_dev_leaves_the_default_pixel_specular_style() {
@@ -411,9 +411,9 @@ mod tests {
 
     // The style commits beside bloom at both points a mod's render profile
     // lands: boot mod init and a committed staged reload. So do the specular
-    // style (AC 10) and the ghost transparency.
+    // style (capture half) and the ghost transparency.
     #[test]
-    fn the_reflection_style_commits_beside_bloom_at_boot_and_on_staged_reload() {
+    fn the_mod_render_styles_commit_beside_bloom_at_boot_and_on_staged_reload() {
         let code_only = |source: &str| -> String {
             source
                 .lines()

@@ -869,9 +869,10 @@ parsed array-backed `.prm` upload is downstream work and has no renderer path ye
 **Surface map (specular slot).** The specular slot has three forms. With no
 `{name}_h.png`, `_p` or `_t` sibling it is single-channel `R8Unorm` (wire tag
 2). With `_h` alone it is two-channel `Rg8Unorm` (wire tag 4): R specular (0
-when `_s.png` is absent), G baked as `255 - height` from the author's mid-gray-centered height map. The stored byte carries no zero point:
-the runtime re-centers it on 128 (`resource_management.md` §4.6). Keep it that
-way. The bundle hash covers source PNG bytes, not the bake transform, so
+when `_s.png` is absent), G baked as `255 - height` from the author's
+mid-gray-centered height map. The stored byte carries no zero point: the runtime
+re-centers it on 128 (`resource_management.md` §4.6). Keep it that way. The
+bundle hash covers source PNG bytes, not the bake transform, so
 changing what a stored byte means at bake time would silently reuse stale
 sidecars unless `STAGE_VERSION` bumps. `STAGE_VERSION` stays 3 — the widening is
 additive and every pre-existing `.prm` parses unchanged — and `PrmSlots` bits

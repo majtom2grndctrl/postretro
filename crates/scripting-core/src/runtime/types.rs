@@ -124,6 +124,8 @@ impl ModSpecularStyle {
     }
 }
 
+/// `render.specular`: the authored specular highlight style. Local
+/// presentation: never on the wire, in no digest.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ModSpecularProfile {
     pub style: ModSpecularStyle,

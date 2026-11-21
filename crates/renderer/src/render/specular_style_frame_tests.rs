@@ -174,7 +174,7 @@ pub(super) fn expected(style: SpecularStyle) -> (bool, u32) {
     }
 }
 
-// AC 11 (pin P4), transport half: a style committed with no level loaded,
+// Style transport half: a style committed with no level loaded,
 // before a full-renderer rebuild, or before an unload reaches both passes'
 // uniforms on the first frame of the next installed level. Each install is
 // checked under both styles, so neither a stale nor a default word passes.
@@ -227,7 +227,7 @@ fn specular_style_reaches_the_first_frame_of_each_install() {
     }
 }
 
-// AC 13, transport half: a live change reaches the very next frame's forward
+// Live-change transport half: a live change reaches the very next frame's forward
 // and mover uniforms, creating no pipeline or bind group and publishing no
 // level set beyond what an unchanged frame does.
 #[test]
@@ -268,4 +268,40 @@ fn a_live_specular_style_change_reaches_the_next_frame_without_a_rebuild() {
             "{style:?}: same level set"
         );
     }
+}
+
+// One read per frame: group 0 snapshots the boot-state style before its
+// upload, and the mover params upload reads that copy, never the live boot
+// state, so a commit landing between the two writes cannot split a frame's
+// forward and mover styles. Source pin: no hook sits between the two writes
+// for a recorded frame to exercise.
+#[test]
+fn forward_and_mover_uploads_read_one_per_frame_specular_style_snapshot() {
+    let frame = include_str!("renderer_frame.rs");
+    let snapshot = frame
+        .find("full.frame_specular_style = *specular_style;")
+        .expect("each group-0 upload must snapshot the boot-state style");
+    let upload = frame
+        .find("specular_style: full.frame_specular_style,")
+        .expect("group 0 must pack the frame snapshot");
+    assert!(
+        snapshot < upload,
+        "snapshot the style before packing group 0"
+    );
+    let render = include_str!("renderer_render_frame.rs");
+    let args = render
+        .split("kinematic_brush.write_light_params(")
+        .nth(1)
+        .expect("the mover pass uploads its params while recording")
+        .split_once(");")
+        .expect("the params upload call terminates")
+        .0;
+    assert!(
+        args.contains("full.frame_specular_style,"),
+        "the mover params must carry the style snapshotted with group 0"
+    );
+    assert!(
+        !render.contains("self.specular_style()"),
+        "scene recording must not read the live boot-state style"
+    );
 }

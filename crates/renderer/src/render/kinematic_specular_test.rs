@@ -252,7 +252,7 @@ fn mover_pixel_specular_ignores_per_pixel_gates() {
     };
     // Outside a fragment's influence sphere, and past its diffuse terminator,
     // the loop adds no diffuse: what it draws there is the texel's specular
-    // alone, which the per-pixel gates no longer cut (P10).
+    // alone, which the per-pixel gates no longer cut.
     for march in [false, true] {
         for (name, light, fixed_normal) in [
             ("influence", influence_light(), None),
@@ -1053,7 +1053,7 @@ fn sharpness_and_tint_hold_through_surface_depth_off_and_on() {
     ];
     for (name, prefix, slot, marches) in cases {
         let material = material_textures(&ctx, LATTICE, &varied_albedo, SlotFormat::Rgba8, &slot);
-        // Built at Off, then On, then Off again (pins P3, P11).
+        // Built at Off, then On, then Off again: per-texel sharpness and tint must hold through the Surface Depth toggle.
         for (step, quality) in [Off, On, Off].into_iter().enumerate() {
             for style in [Style::Pixel, Style::Smooth] {
                 let what = format!("{name}, step {step} ({quality:?}), {style:?}");

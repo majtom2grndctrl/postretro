@@ -394,7 +394,7 @@ fn planar_gpu_mirror_only_light_shows_only_in_the_reflection() {
     renderer.release_level_resources();
 }
 
-// AC 13 (mirror): the mirror's group 0 is a copy of the main frame's, and
+// The mirror's group 0 is a copy of the main frame's, and
 // its movers read the main view's one mover params buffer, so on the frame
 // a style is committed the planar mirror reads it for static faces and
 // movers alike, with no frame of lag in either direction.

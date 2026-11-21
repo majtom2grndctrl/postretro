@@ -26,7 +26,7 @@ fn read_receiver_scales(renderer: &Renderer) -> [f32; 3] {
         full.frame_light_term_mask.bits(),
         full.ambient_floor,
         full.frame_indirect_scale,
-        renderer.specular_style(),
+        full.frame_specular_style,
     );
     let mut encoder = renderer.device.create_command_encoder(&Default::default());
     let frame = Probe::record(

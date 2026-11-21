@@ -1279,7 +1279,7 @@ fn off_main_build_main_thread_half_never_blocks() {
     assert!(production.contains("self.result.try_recv()"));
 }
 
-// AC 12 (pin P5): a staged mod init that commits a specular style while a
+// A staged mod init that commits a specular style while a
 // level load is in flight reaches that level when it publishes, with no
 // further commit. The build was dispatched at pixel; its tiers never held a
 // style, so nothing in the set needs rebuilding.
@@ -1317,7 +1317,7 @@ fn specular_style_committed_mid_build_reaches_the_published_level() {
     );
 }
 
-// Pins P4 and P5 hold by construction: the dispatch snapshot never carries
+// The two style-transport properties above hold by construction: the dispatch snapshot never carries
 // the specular style. The destructure names every field with no `..`, so a
 // field added to the snapshot fails to compile here until it is reviewed.
 #[test]

@@ -921,7 +921,7 @@ Use either on its own or both together. Neither replaces `_s.png`: `_s` still se
 
 #### Smoothness: `_p.png`
 
-Black is the broadest highlight, white the sharpest. The compiler stores your byte exactly, and the engine turns it into a highlight size:
+Black is the broadest highlight, white the sharpest. The compiler stores your byte as is, except that 0 is stored as 1 (it shades the same, since bytes 0–24 all give exponent 1). The engine turns the byte into a highlight size:
 
 r = 1 − p/255, exponent = 2/r⁴ − 2, clamped to 1–8192
 
@@ -966,7 +966,7 @@ A texture with `_t.png` and no `_p.png` keeps its prefix's highlight size.
 
 Each of these **fails the compile**:
 
-- **Linear grayscale.** No `sRGB` chunk, no `iCCP` chunk, `gAMA` ≈ 1.0, the same rule as `_s.png`, `_n.png` and `_h.png`. The compiler reads the red channel.
+- **Linear color space.** No `sRGB` chunk, no `iCCP` chunk, `gAMA` ≈ 1.0, the same rule as `_s.png`, `_n.png` and `_h.png`. A color PNG compiles: the compiler reads the red channel of any color type. A packed ORM (occlusion, roughness, metallic) export has ambient occlusion in its red channel, not roughness, so split the channels first.
 - **Same dimensions as the diffuse**, and as `_s.png`, `_h.png` and each other when those exist. They are packed into one texture with the specular and height maps, so they have to line up texel for texel.
 
 A texture with `_p` or `_t` compiles a specular texture four bytes per texel instead of one or two. Only textures that use them pay for it. TrenchBroom's texture browser hides `_p` and `_t` files, like the other sibling maps.
@@ -986,7 +986,7 @@ If your texture tool exports PBR maps (Material Maker, Substance and most others
 
 The roughness here is the usual glTF "perceptual" roughness, which is what those tools write. Export both as linear grayscale at the diffuse's size. Many editors tag exports as sRGB by default, which fails the compile; turn that off or strip the tag.
 
-There is no metallic darkening of the diffuse. In PBR a fully metallic surface has no diffuse at all. Here it keeps its diffuse, so if a converted metal looks too flat, darken its diffuse by hand: with `_t` its glint keeps its colour.
+There is no metallic darkening of the diffuse. In PBR a fully metallic surface has no diffuse at all. Here it keeps its diffuse, so if a converted metal looks too flat, darken its diffuse by hand: with `_t` its glint keeps its colour. The tint's hue comes from the diffuse's channel ratios (albedo divided by its brightest channel), so a diffuse darkened to a byte or two per channel quantizes the hue, and gold can read yellow. Keep a darkened diffuse comfortably above black.
 
 #### Pixel and smooth highlights
 
@@ -1161,6 +1161,8 @@ A **leak** is a gap in your brush hull. If you have a leak, interior rooms can v
 | mover poses' working set refused before the SH base gate … | The poses of every mover with `light_poses` set together, or every mover's placed poses with geometry poses included, need more memory than `--working-set-max-size` allows (16 GiB by default), before the rest of the lighting bake is counted. The error names those movers, the largest first, with each one's pose count and bytes | Lower `light_poses` on the named movers (a set count also places no geometry poses), or raise `--working-set-max-size` if the machine has the memory |
 | SH base working-set gate refused before patch shading: estimated peak … exceeds budget … | The indirect lighting bake, including every pose of every mover, needs more memory than `--working-set-max-size` allows (16 GiB by default) | Raise `--working-set-max-size` if the machine has the memory. Movers with many poses add to it, so a smaller `light_poses` on a long mover also helps |
 | Probes carry closed-pose depth, past the probe depth tile range | Movers reach into the lighting of more probes than the level can track | Use fewer movers, or move them where they block less of the level's light |
-| PNG color-space validation failed | An `_s.png`, `_n.png`, or `_h.png` carries an `sRGB` or `iCCP` chunk, or a `gAMA` that isn't ≈ 1.0 | Re-export the named files as linear PNG with no color-management metadata. The error lists every offending path |
+| PNG color-space validation failed | An `_s.png`, `_n.png`, `_h.png`, `_p.png` or `_t.png` carries an `sRGB` or `iCCP` chunk, or a `gAMA` that isn't ≈ 1.0 | Re-export the named files as linear PNG with no color-management metadata. The error lists every offending path |
 | `_h.png` dimensions must match diffuse | A height map is a different resolution from its diffuse texture | Re-export the height map at the diffuse's exact dimensions |
-| `_h.png` and `_s.png` … must have identical dimensions | A height map and its specular sibling disagree | Match them. The two are packed into one two-channel texture and cannot be resized independently |
+| `_h.png` and `_s.png` share one specular slot and must have identical dimensions | A height map and its specular sibling disagree | Match them. The two are packed into one texture and cannot be resized independently |
+| `_p.png` dimensions must match diffuse / `_t.png` dimensions must match diffuse | A smoothness or tint map is a different resolution from its diffuse texture | Re-export it at the diffuse's exact dimensions |
+| `_p.png` and `_s.png` (or `_h.png`, `_t.png`) share one specular slot and must have identical dimensions | A smoothness or tint map disagrees with another sibling that is packed into the same slot (`_s`, `_h`, or each other) | Match all of them. They are packed into one texture and cannot be resized independently |

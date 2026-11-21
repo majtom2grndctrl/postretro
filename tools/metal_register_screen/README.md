@@ -50,7 +50,7 @@ holds the count still needs a clock-pinned Metal System Trace (§12).
 
 | Build | VGPRs | SGPRs |
 |---|---|---|
-| 1c7fc9e3a (before specular-texel-sharpness) | 126 | — |
+| before specular-texel-sharpness | 126 | — |
 | 74fcfd4b9 (texel-centre point, both styles) | 128 | 104 |
-| specular-texel-sharpness task 6 (sharpness and tint), first draft: albedo read before the loop beside the tint accumulator | 224 | 101 |
+| specular-texel-sharpness: sharpness and tint with albedo read before the light loop, beside the tint accumulator | 224 | 101 |
 | specular-texel-sharpness task 6, shipped: albedo read after the loop | 128 | 104 |

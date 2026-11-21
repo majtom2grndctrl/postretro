@@ -652,7 +652,7 @@ mod tests {
         );
     }
 
-    // AC 10 (capture half): `specular_style` is capture's only source of the
+    // Capture half: `specular_style` is capture's only source of the
     // specular style. Absent keeps pixel; each manifest name parses to its
     // renderer style; an unknown name or wrong type rejects the scene.
     #[test]

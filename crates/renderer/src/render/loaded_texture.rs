@@ -391,7 +391,7 @@ mod tests {
         )
     }
 
-    /// Row 33. With `_h`, a four-channel slot loaded through the runtime
+    /// With `_h`, a four-channel slot loaded through the runtime
     /// reader sets has-depth, and at every uploaded mip its relief band equals
     /// the two-channel band from the same height. Its sharpness and tint bytes
     /// differ from the height bytes, so reading B or A as height would move it.
@@ -443,7 +443,7 @@ mod tests {
         }
     }
 
-    /// Row 32, pin P7. Without `_h`, a four-channel slot on a prefix with
+    /// Without `_h`, a four-channel slot on a prefix with
     /// Surface Depth tuning sets has-depth, yet at Surface Depth On (and Off)
     /// uploads the relief row byte-equal to the same prefix with no height
     /// map: a single-channel `_s` slot, or no slot at all (the placeholder).
@@ -816,8 +816,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         let error = pollster::block_on(scope.pop());
         assert!(error.is_none(), "upload or bind raised {error:?}");
 
-        // Row 33 through the real bind group: a four-channel slot with `_h`
-        // packs the two-channel slot's bytes. Row 32: without `_h`, the
+        // With `_h`, through the real bind group: a four-channel slot
+        // packs the two-channel slot's bytes. Without `_h`, the
         // single-channel slot's and the placeholder's.
         assert_eq!(uniforms[2], uniforms[1]);
         assert_eq!(uniforms[3], uniforms[0]);

@@ -605,9 +605,6 @@ fn volume_fgd_keys_name_no_swim_field() {
     );
 }
 
-// The player owns reflection cost, never style: the only reflection name
-// among the settings keys, option slots and `PlayerOptions` fields is the
-// cost tier, so no option can name the author's `render.reflections.style`.
 /// Every player-option name the gates scan, with where it was found: each
 /// `str` constant under the options directory (settings keys and slot names),
 /// each `PlayerOptions` and `AccessibilityOptions` field, and each
@@ -659,6 +656,9 @@ fn player_option_names(root: &Path) -> Vec<(String, String)> {
     names
 }
 
+// The player owns reflection cost, never style: the only reflection name
+// among the settings keys, option slots and `PlayerOptions` fields is the
+// cost tier, so no option can name the author's `render.reflections.style`.
 #[test]
 fn player_options_name_no_reflection_style() {
     let root = workspace_root();
@@ -697,7 +697,7 @@ fn player_options_name_no_reflection_style() {
     );
 }
 
-// AC 17: specular style, sharpness (smoothness) and tint are the author's
+// Specular style, sharpness (smoothness) and tint are the author's
 // (`render.specular.style`, `_p`, `_t`), never the player's: no settings key,
 // option slot or `PlayerOptions` field names a specular setting at all.
 #[test]

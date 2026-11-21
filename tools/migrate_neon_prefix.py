@@ -69,10 +69,6 @@ KNOWN_MATERIAL_PREFIXES = ("metal", "concrete", "grate", "glass", "wood")
 # stem): specular, normal, emissive, height, smoothness, tint.
 SLOT_SUFFIXES = ("_s", "_n", "_e", "_h", "_p", "_t")
 
-# prl-build's `BUNDLE_SUFFIXES` (texture_mips/resolution.rs): the siblings whose
-# presence makes a stem a bundle base, including the bare diffuse.
-BUNDLE_SUFFIXES = ("", "_s", "_n", "_e", "_h", "_p", "_t")
-
 # A `.map` face line: three plane points, then the texture name.
 FACE_LINE = re.compile(
     r"^(?P<head>\s*\([^()]*\)\s*\([^()]*\)\s*\([^()]*\)\s*)"
@@ -165,7 +161,7 @@ def scan_textures(textures_root):
             """The bundle base `lowered` belongs to, as prl-build groups bundles.
 
             prl-build treats a stem as a bundle base when it or any known
-            sibling (`BUNDLE_SUFFIXES`) exists, so a sibling-only bundle
+            sibling (`SLOT_SUFFIXES`) exists, so a sibling-only bundle
             (`neon_x_e` with no `neon_x`) is one bundle.
             """
             for suffix in SLOT_SUFFIXES:

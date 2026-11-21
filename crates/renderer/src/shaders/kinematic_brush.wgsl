@@ -305,8 +305,8 @@ fn sample_sh_direct(
 // geometric normal by the struck texel's quantized top height: on a top hit
 // the hit's own height, on a side hit the top of the wall it struck. The lift
 // rides the builder's anchor, so the view is taken from the raised point.
-// Smooth style, and a degenerate Jacobian, keep today's split: light from the
-// Surface Depth hit, view from the fragment.
+// Smooth style, and a degenerate Jacobian, keep the per-pixel split: light from
+// the Surface Depth hit, view from the fragment.
 fn mover_specular_point(
     smooth_style: bool,
     depth: SurfaceDepthResult,
@@ -326,6 +326,13 @@ fn mover_specular_point(
         // One height load at the texel the march struck, outside the march.
         // `depth.uv` lies inside that texel on its own lattice: a side hit's
         // UV is biased half a texel past the wall it crossed.
+        // The cell is re-derived from the hit UV rather than carried out of the
+        // march (registers; surface_depth.wgsl is unchanged), so a top hit
+        // grazing a texel's entry edge can floor into the neighbouring cell: a
+        // rare one-pixel lift error, accepted. The specular point (albedo
+        // level-0 lattice) and this lookup (`depth.base_mip` lattice) agree
+        // only while the resident base mip is 0
+        // (`SURFACE_DEPTH_RESIDENT_BASE_MIP`, render-cpu surface_depth/uniform.rs).
         let dims = textureDimensions(spec_texture, depth.base_mip);
         let struck = surface_depth_fold(
             vec2<i32>(floor(depth.uv * vec2<f32>(dims))),
@@ -378,7 +385,7 @@ fn mover_light_geometry(light: GpuLight, aim: vec3<f32>, position: vec3<f32>) ->
     return vec4<f32>(L, attenuation);
 }
 
-// Pixel-style specular from one selected-static record (pin P10). Direction,
+// Pixel-style specular from one selected-static record. Direction,
 // falloff, range, cone and the N·L test all come from the texel's point, so a
 // texel draws one value however the per-pixel influence radius, range, cone
 // edge or diffuse terminator cross it. `shadow` is this fragment's own, kept
@@ -679,7 +686,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Surface Depth, through the SAME shared march the static world forward
     // pass uses (see `surface_depth.wgsl`) — movers must not drift from world
-    // geometry the way the duplicated `sample_post_retro` bodies can. Inactive
+    // geometry. (The per-pass `sample_post_retro` wrappers likewise reconstruct
+    // through the shared `post_retro_texel_uv`.) Inactive
     // returns the interpolated UV, position and geometric normal unchanged.
     let depth = surface_depth_resolve(
         in.uv,

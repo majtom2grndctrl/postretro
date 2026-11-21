@@ -613,7 +613,6 @@ impl Renderer {
         {
             let _kinematic_scope = cpu.scope(RenderStage::KinematicBrush);
             let frame_light_term_mask = self.frame_light_term_mask();
-            let specular_style = self.specular_style();
             {
                 let Self { queue, full, .. } = self;
                 let full = full
@@ -633,7 +632,7 @@ impl Renderer {
                     frame_light_term_mask.bits(),
                     full.ambient_floor,
                     full.frame_indirect_scale,
-                    specular_style,
+                    full.frame_specular_style,
                 );
             }
             let kinematic_ts = self

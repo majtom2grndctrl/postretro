@@ -1,7 +1,4 @@
-// Per-texel specular sharpness and tint read from the specular slot's B and A
-// channels. GPU-free CPU reference for `material_shading.wgsl`'s
-// `specular_texel_exponent` and `specular_tint`, which mirror it and a test
-// pins.
+// Per-texel specular sharpness and tint read from the specular slot's B and A channels.
 // See: context/lib/resource_management.md §4.7 · rendering_pipeline.md §4
 
 /// The smallest Blinn-Phong exponent a smoothness byte decodes to.
@@ -27,6 +24,10 @@ pub const SPECULAR_TINT_SCALE: f32 = 255.0 / 254.0;
 /// (about 3.0e-4), so of 8-bit albedos only black falls under it.
 pub const SPECULAR_HUE_EPSILON: f32 = 1.0e-4;
 
+/// GPU-free CPU reference for `material_shading.wgsl`'s
+/// `specular_texel_exponent` and `specular_tint`, which mirror this module and
+/// a test pins.
+///
 /// The Blinn-Phong exponent of a sampled smoothness `b` (the slot's B, a
 /// byte over 255): r = 1 − b, n = 2/r⁴ − 2, clamped to 1..=8192. The same
 /// operations in the same order as the shader.

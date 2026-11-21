@@ -1131,9 +1131,9 @@ impl Footprint {
     }
 }
 
-/// A `_p` slot: smoothness byte 1 on every texel, no tint (P15).
+/// A `_p` slot: smoothness byte 1 on every texel, no tint.
 const SHARP_MARKER_TEXEL: [u8; 4] = [255, 127, 1, 255];
-/// A `_t` slot: no smoothness, tint byte 254 (t = 1) on every texel (P15).
+/// A `_t` slot: no smoothness, tint byte 254 (t = 1) on every texel.
 const TINT_MARKER_TEXEL: [u8; 4] = [255, 127, 0, 254];
 
 /// Smoothness bytes across the decode's bands: 0 (no `_p`), the flat band
@@ -1744,7 +1744,7 @@ fn specular_texel_shader_constants_match_the_cpu_reference() {
     }
 }
 
-/// Pin P12 and the one-read rule: forward reads the slot once, decodes it
+/// The 255-byte smoothness floor and the one-read rule: forward reads the slot once, decodes it
 /// through the shared functions, floors r⁴ before the divide, and moves only a
 /// tinted texel's highlight out of the albedo multiply.
 #[test]

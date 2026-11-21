@@ -774,7 +774,7 @@ mod tests {
         }
     }
 
-    // AC 9 (pin P6): with smooth active, a failed build, a rejected, a stale
+    // With smooth active, a failed build, a rejected, a stale
     // and a release no-op init each keep smooth; a committed init with no
     // start script restores pixel. The active style is folded through the
     // same commit decision and chokepoint the reload path applies.

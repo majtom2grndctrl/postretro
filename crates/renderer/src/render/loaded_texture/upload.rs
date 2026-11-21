@@ -22,9 +22,9 @@ pub(super) fn upload_bytes_per_pixel(format: wgpu::TextureFormat) -> Option<Opti
         // four-channel surface map a `_p.png` or `_t.png` sibling bakes: R
         // specular, G inverted height, B smoothness, A tint.
         wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => Some(Some(4)),
-        // The two-channel surface map: R specular, G inverted height. A material with an
-        // `_h.png` height sibling bakes its specular slot to this instead of
-        // `R8Unorm`, so every world-material upload path must size it.
+        // The two-channel surface map: R specular, G inverted height. A material
+        // with an `_h.png` height sibling bakes its specular slot to this instead
+        // of `R8Unorm`, so every world-material upload path must size it.
         wgpu::TextureFormat::Rg8Unorm => Some(Some(2)),
         wgpu::TextureFormat::R8Unorm => Some(Some(1)),
         wgpu::TextureFormat::Bc5RgUnorm => Some(None),

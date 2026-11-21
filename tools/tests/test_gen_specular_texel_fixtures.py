@@ -1,6 +1,6 @@
 """Tests for gen_specular_texel_fixtures.py: every texel byte of every fixture.
 
-Expected values are spelled out here from the plan of record, not read from
+Expected values are spelled out here from the fixture rules, not read from
 the generator, and the PNGs are decoded by a reader independent of its writer.
 Both the committed files under content/dev/textures/test/ and a fresh run are
 checked.
@@ -33,7 +33,7 @@ GEN = load_module()
 
 SIZE = 16
 
-# --- Expected texels, written out from plan.md's Delegated answers. ---------
+# --- Expected texels, written out by hand from the fixture rules in the generator's docstring. ---------
 
 RAMP_P_ROW = [0, 17, 34, 51, 68, 85, 102, 119, 136, 153, 170, 187, 204, 221, 238, 255]
 
@@ -268,7 +268,7 @@ class GenSpecularTexelFixturesTest(unittest.TestCase):
         self.assertLessEqual(exponent(24), 1.0)
         self.assertGreaterEqual(exponent(224), 8192.0)
 
-    def test_new_fixtures_carry_every_case_their_pins_name(self):
+    def test_new_fixtures_carry_every_case_they_cover(self):
         exponent = lambda p: min(max(2 / (1 - p / 255) ** 4 - 2, 1.0), 8192.0)
         # Glass: `_p` on the one prefix with no Surface Depth tuning, beside a
         # height map with real relief, so a march that ran would show.

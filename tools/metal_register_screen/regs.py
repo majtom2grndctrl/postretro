@@ -3,11 +3,12 @@
 usage: python3 -I regs.py <pipeline.metallib>
 
 The archive is a fat binary. Its AMD GPU slice (CPU type 0x01000014, RDNA
-gfx10 on the Mac target) is a Mach-O whose `__TEXT,__vertex` and
-`__TEXT,__fragment` sections each hold a packed function: after the name
-`air.new.packedVertexFunction` / `air.packedFragmentFunction` come a u32 at
-+4 holding SGPRs and a u32 at +8 holding VGPRs. Reverse-engineered, not a
-documented format: if Apple changes it, re-derive the offsets before trusting a
+gfx10 on the Mac target) is a Mach-O. Its `__TEXT,__fragment` section holds a
+packed function: after the name `air.packedFragmentFunction` come a u32 at +4
+holding SGPRs and a u32 at +8 holding VGPRs. That fragment lookup is verified.
+The vertex entry (`__TEXT,__vertex`, `air.new.packedVertexFunction`, same
+offsets) is unverified and reports `not found` on the screened pipeline.
+Reverse-engineered, not a documented format: if Apple changes it, re-derive the offsets before trusting a
 number. Standard library only.
 """
 

@@ -145,7 +145,7 @@ def main():
 
     for f in files:
         # Skip files that are already sibling maps
-        if f.stem.endswith("_s") or f.stem.endswith("_n"):
+        if f.stem.endswith(("_s", "_n", "_e", "_h", "_p", "_t")):
             continue
 
         output_path = f.parent / (f.stem + "_n.png")

@@ -33,8 +33,8 @@ use crate::render::gpu_create::GpuCreate;
 // `surface_depth.wgsl` owns the Surface Depth texel-space parallax DDA. It is
 // the LOAD-BEARING parity seam between static world geometry and kinematic
 // brush movers: the SAME source string is concatenated into
-// `kinematic_brush.rs`, so the two passes cannot drift the way their duplicated
-// `sample_post_retro` bodies can. It declares no bindings — it resolves
+// `kinematic_brush.rs`, so the two passes cannot drift the way duplicated
+// per-pass bodies could. It declares no bindings — it resolves
 // `spec_texture` and `material` (group 1, bindings 2 and 3) by lexical name,
 // both already declared by each consumer, and takes camera-dependent inputs as
 // arguments because forward and the mover pass name their camera uniform

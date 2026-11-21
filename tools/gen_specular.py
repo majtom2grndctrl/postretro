@@ -98,8 +98,9 @@ def main():
         return
 
     for f in files:
-        # Skip files that are already specular maps or normal maps
-        if f.name.endswith("_s.png") or f.name.endswith("_n.png"):
+        # Skip files that are already sibling maps (specular, normal, emissive,
+        # height, smoothness, tint)
+        if f.stem.endswith(("_s", "_n", "_e", "_h", "_p", "_t")):
             continue
             
         output_name = f.stem + "_s.png"

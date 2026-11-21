@@ -195,14 +195,16 @@ its own side `--whole-load-sh` and upgrades the baseline's PRL with
 `sh_body::pre_flag::upgrade_pre_flag_prl`, or, against checked-in digests from that
 baseline, downgrades its own with `downgrade_to_pre_flag_prl`. Both sit behind
 `postretro-level-format`'s `test-support` feature.
+The fitting-map comparison needs `POSTRETRO_OVERSIZE_BASELINE_DIR` containing PRLs
+from its named baseline commit. Old-compiler oracle and reseeding helpers can return
+without comparing anything when their opt-in variables are absent; a green result
+alone does not prove those comparisons ran.
+
 Dev-map frame proofs in the capture tests read a compiled map named by an
 environment variable, and fail rather than skip without it; they need a GPU
 adapter. The specular frame tests (`capture/specular_frame_tests.rs`) take the
 `specular-texel-sharpness` dev map, compiled per its README beside its source:
-`SPECULAR_TEXEL_PRL=<absolute .prl path> POSTRETRO_SH_STREAMING=sync-proof cargo test -p postretro --bins --features capture -- --ignored specular_frame_tests --test-threads=1`. The fitting-map comparison needs `POSTRETRO_OVERSIZE_BASELINE_DIR` containing PRLs
-from its named baseline commit. Old-compiler oracle and reseeding helpers can return
-without comparing anything when their opt-in variables are absent; a green result
-alone does not prove those comparisons ran.
+`SPECULAR_TEXEL_PRL=<absolute .prl path> POSTRETRO_SH_STREAMING=sync-proof cargo test -p postretro --bins --features capture -- --ignored specular_frame_tests --test-threads=1`.
 
 **Keep `GATE_FIXTURES` cheap, and profile before adding to it.** Bake cost tracks probe and texel counts, not `.map` file size. One large fixture can dwarf the rest of the list combined — dropping `occlusion-test` cut the gates 7× (1812s → 260s) while the animated-weight-map fixtures are sub-second each. A full-compile timing is a poor proxy for a gate's share, because the gates bake every fixture twice and weight large texel counts far more heavily.
 

@@ -189,7 +189,8 @@ reaction. It selects only the bloom *style*: whether bloom runs at all remains
 controlled by the `POSTRETRO_BLOOM` diagnostic override and the dev-tools
 toggle. None of it is a player option: the reflection and highlight styles are
 the mod's look, and players cannot change them. A capture run loads no
-manifest, so it draws the defaults: pixel-style reflections and highlights.
+manifest, so it draws the defaults, pixel-style reflections and highlights,
+unless its scene sets `reflection_style` or `specular_style`.
 
 ---
 

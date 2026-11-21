@@ -58,7 +58,7 @@ fn body(message: &str) -> Option<String> {
     message.split_once(": ").map(|(_, body)| body.to_owned())
 }
 
-// AC 8: each authored style reaches the profile; omitted resolves to pixel,
+// Each authored style reaches the profile; omitted resolves to pixel,
 // in both runtimes, with no warning.
 #[test]
 fn specular_style_omitted_is_pixel_and_each_authored_style_is_kept_in_both_runtimes() {
@@ -125,7 +125,7 @@ fn specular_style_omitted_is_pixel_and_each_authored_style_is_kept_in_both_runti
     assert!(warnings(&capture, "render").is_empty());
 }
 
-// AC 8: an unknown string or a wrong type warns once per runtime and
+// An unknown string or a wrong type warns once per runtime and
 // resolves to pixel without rejecting the manifest; both runtimes word the
 // warning identically. A non-object block warns about the block.
 #[test]
@@ -183,7 +183,7 @@ fn a_malformed_specular_style_warns_and_resolves_to_pixel() {
     }
 }
 
-// AC 8: `render.specular` and `render.reflections` degrade independently. A
+// `render.specular` and `render.reflections` degrade independently. A
 // malformed specular block or style keeps the authored reflection style, and
 // a malformed reflections block or style keeps the authored specular style,
 // each warning only about its own field.

@@ -2,11 +2,8 @@
 """Generate the exact-value dev fixtures for per-texel specular sharpness and tint.
 
 Writes five 16 x 16 materials into `content/dev/textures/test/` (or `--out`),
-each a diffuse plus its slot siblings. The first three are the plan of
-record's (`context/plans/in-progress/specular-texel-sharpness/plan.md`,
-Delegated answers); the last two close pins P3 and P11's remaining cases
-(`research.md`): `_p` on a prefix with no Surface Depth tuning, and `_p`, `_t`
-and `_h` together. The map that shows them is
+each a diffuse plus its slot siblings. The last two cover `_p` on a prefix
+with no Surface Depth tuning, and `_p`, `_t` and `_h` together. The map that shows them is
 `content/dev/maps/specular-texel-sharpness.map`.
 
 * `metal_smoothness_ramp`: a neutral grey checker per texel (sRGB 118 and

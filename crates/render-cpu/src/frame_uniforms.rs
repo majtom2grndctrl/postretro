@@ -602,7 +602,7 @@ mod tests {
         }
     }
 
-    // AC 13/14: the specular style rides bit 2 of the trailing mask word,
+    // The specular style rides bit 2 of the trailing mask word,
     // beside force-one and mask-present and independent of both; the uniform
     // stays 128 bytes and pixel leaves every byte as before the style existed.
     #[test]

@@ -556,11 +556,11 @@ fn planar_mirror_uniform_takes_the_mirror_camera_and_drops_screen_terms() {
     }
 }
 
-// AC 16: billboards never read the specular style. The mirror's billboards
+// Billboards never read the specular style. The mirror's billboards
 // draw through the billboard pipeline under a group 0 that carries the style
 // bit, and the frame is byte-identical under pixel and smooth. (This scene's
 // sprites are emissive, with no chunk grid for static billboard specular; the
-// billboard shader names the style word inert, and AC 14 pins it unchanged.)
+// billboard shader names the style word inert, and a source gate pins it unchanged.)
 #[test]
 fn billboard_frames_are_byte_identical_under_each_specular_style() {
     use postretro_render_cpu::frame_uniforms::SpecularStyle;

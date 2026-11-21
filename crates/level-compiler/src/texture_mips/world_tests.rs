@@ -744,6 +744,32 @@ impl Fixture {
         });
     }
 
+    /// One 8-bit grayscale sibling (PNG colour type 0), the form the
+    /// committed dev fixtures take.
+    fn luma_png(&self, name: &str, width: u32, height: u32, value: impl Fn(u32, u32) -> u8) {
+        let path = self.textures.join(format!("{name}.png"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let image = image::GrayImage::from_fn(width, height, |x, y| image::Luma([value(x, y)]));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        let bytes = bytes.into_inner();
+        // IHDR bit depth and colour type: the case must reach the bake as L8.
+        assert_eq!(
+            (bytes[24], bytes[25]),
+            (8, 0),
+            "{name}: an 8-bit grayscale PNG"
+        );
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    /// A 4x4 slot sibling holding `value(x, y)` in `encoding`.
+    fn sibling_png(&self, encoding: SiblingEncoding, name: &str, value: fn(u32, u32) -> u8) {
+        match encoding {
+            SiblingEncoding::Rgba8 => self.gray_png(name, 4, 4, value),
+            SiblingEncoding::L8 => self.luma_png(name, 4, 4, value),
+        }
+    }
+
     /// A diffuse whose texels all differ.
     fn diffuse_png(&self, name: &str, width: u32, height: u32) {
         self.png(name, width, height, |x, y| {
@@ -800,6 +826,15 @@ fn authored_tint(x: u32, y: u32) -> u8 {
 /// The material every specular-slot case bakes.
 const COBBLE: &str = "stone/cobble";
 
+/// How a specular-slot case encodes its grayscale siblings.
+#[derive(Clone, Copy, Debug)]
+enum SiblingEncoding {
+    /// RGBA8, the value in every colour channel.
+    Rgba8,
+    /// 8-bit grayscale.
+    L8,
+}
+
 /// Which siblings a specular-slot case authors as [`COBBLE`].
 #[derive(Clone, Copy, Debug)]
 struct SlotCase {
@@ -818,22 +853,28 @@ const NO_SIBLINGS: SlotCase = SlotCase {
     tint: false,
 };
 
+/// An authored sibling's byte at texel (x, y).
+type AuthoredTexel = fn(u32, u32) -> u8;
+
 impl SlotCase {
     fn write(self, fixture: &Fixture) {
+        self.write_encoded(fixture, SiblingEncoding::Rgba8);
+    }
+
+    fn write_encoded(self, fixture: &Fixture, encoding: SiblingEncoding) {
         if self.diffuse {
             fixture.diffuse_png(COBBLE, 4, 4);
         }
-        if self.specular {
-            fixture.gray_png("stone/cobble_s", 4, 4, authored_specular);
-        }
-        if self.height {
-            fixture.gray_png("stone/cobble_h", 4, 4, authored_height);
-        }
-        if self.smoothness {
-            fixture.gray_png("stone/cobble_p", 4, 4, authored_smoothness);
-        }
-        if self.tint {
-            fixture.gray_png("stone/cobble_t", 4, 4, authored_tint);
+        let siblings: [(bool, &str, AuthoredTexel); 4] = [
+            (self.specular, "stone/cobble_s", authored_specular),
+            (self.height, "stone/cobble_h", authored_height),
+            (self.smoothness, "stone/cobble_p", authored_smoothness),
+            (self.tint, "stone/cobble_t", authored_tint),
+        ];
+        for (present, name, value) in siblings {
+            if present {
+                fixture.sibling_png(encoding, name, value);
+            }
         }
     }
 
@@ -869,8 +910,12 @@ impl SlotCase {
     /// the runtime reader: the SPECULAR bit, `Rgba8Unorm`, mip 0 as decided,
     /// and both markers held at every mip.
     fn bake_and_check(self) {
+        self.bake_and_check_encoded(SiblingEncoding::Rgba8);
+    }
+
+    fn bake_and_check_encoded(self, encoding: SiblingEncoding) {
         let fixture = Fixture::new();
-        self.write(&fixture);
+        self.write_encoded(&fixture, encoding);
         let names = vec![COBBLE.to_owned()];
         let bake = bake_materials_into(
             &names,
@@ -1003,7 +1048,32 @@ fn tint_bundles_bake_four_channel() {
     assert_eq!(fixture.sidecars().len(), 1);
 }
 
-// Row 39: the stage's byte accounting charges a four-channel specular slot
+// The committed dev fixtures author `_s`, `_h`, `_p` and `_t` as 8-bit
+// grayscale PNGs; the bake reads the gray byte as the channel value, so they
+// store the texels RGBA-authored siblings do.
+#[test]
+fn grayscale_smoothness_and_tint_bundles_bake_four_channel() {
+    for case in [
+        SlotCase {
+            diffuse: true,
+            specular: true,
+            smoothness: true,
+            tint: true,
+            ..NO_SIBLINGS
+        },
+        SlotCase {
+            diffuse: true,
+            specular: true,
+            height: true,
+            smoothness: true,
+            tint: true,
+        },
+    ] {
+        case.bake_and_check_encoded(SiblingEncoding::L8);
+    }
+}
+
+// The stage's byte accounting charges a four-channel specular slot
 // four bytes per texel at every mip, for a fresh bake and for a reused
 // sidecar alike. A non-square bundle keeps width and height apart.
 #[test]
@@ -1091,7 +1161,7 @@ fn smoothness_and_tint_dimensions_must_match_the_diffuse_and_slot_siblings() {
     assert_ne!(keys[COBBLE], [0u8; 32]);
 }
 
-// Pin P14: `_n` and `_s` against the diffuse alone stay unenforced. A
+// `_n` and `_s` against the diffuse alone stay unenforced. A
 // mismatched `_n` builds with or without `_p` and `_t`; a mismatched `_s`
 // builds when neither is present.
 #[test]

@@ -44,9 +44,8 @@ fn wgsl_struct_span(source: &str, name: &str) -> u32 {
         .unwrap_or_else(|| panic!("shader must declare struct {name}"))
 }
 
-/// The DDA lives in ONE place. `kinematic_brush.wgsl` already keeps a duplicate
-/// `sample_post_retro` body that can drift from `forward.wgsl`'s; the parallax
-/// march must never become a second such copy. Both pipelines concatenate the
+/// The DDA lives in ONE place. Per-pass duplicate bodies can drift apart; the
+/// parallax march must never become a second such copy. Both pipelines concatenate the
 /// same snippet string, and neither declares a march function of its own.
 #[test]
 fn both_world_pipelines_share_one_surface_depth_march() {

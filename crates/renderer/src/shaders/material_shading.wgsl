@@ -1,6 +1,9 @@
 // Shared world-material WGSL helpers for specular, texel reconstruction and
-// normal-map shading. Declares no bindings.
+// normal-map shading. Declares no bindings; see the note below.
 // See: context/lib/rendering_pipeline.md §8
+
+// The composing shader must supply `aniso_sampler` and `sample_post_retro`:
+// `sample_normal` calls `sample_post_retro(tex, aniso_sampler, ...)`.
 
 // No `(1-ks)` attenuation, no Fresnel — retro aesthetic wants punchy additive
 // highlights, not energy conservation.

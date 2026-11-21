@@ -2690,7 +2690,7 @@ mod tests {
     }
 
     /// The same bail when the mismatch is against `_s.png`: the two siblings
-    /// are interleaved into one `Rg8Unorm` texture, so unequal dimensions
+    /// are interleaved into one specular-slot texture (`Rg8Unorm` or `Rgba8Unorm`), so unequal dimensions
     /// have no meaning at all.
     #[test]
     fn height_dimensions_must_match_specular_at_compile_time() {
@@ -2715,7 +2715,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Both channels of the surface map go through the same
+    /// Every channel of the surface map goes through the same
     /// Mitchell-Netravali path the single-channel specular chain uses, so the
     /// R channel of a surface map must equal the `R8Unorm` chain built from
     /// the same R data, level for level.
@@ -2794,7 +2794,8 @@ mod tests {
     /// its neighbours, and the [0, 1] clamp can land it on a marker byte: B = 0
     /// (no `_p`) beside the low side of a smoothness edge, A = 255 (no `_t`)
     /// beside the high side of a tint edge. The bake holds every mip off the
-    /// markers where the map exists, and on them where it does not (pin P13).
+    /// markers where the map exists, and on them where it does not, so no
+    /// mip filter can turn a texel into a marker or a marker into a value.
     #[test]
     fn marker_clamp_holds_at_every_mip_beside_a_hard_edge() {
         let (w, h) = (16u32, 16u32);

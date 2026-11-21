@@ -1185,7 +1185,7 @@ mod tests {
     /// slot or reaching the colour slots, and `R8Unorm` stays legal there so
     /// every pre-surface-depth sidecar keeps parsing.
     #[test]
-    fn rg8_is_legal_only_on_the_specular_slot() {
+    fn surface_map_formats_are_legal_only_on_the_specular_slot() {
         assert!(format_allowed_for_slot(1, PrmFormat::Rg8Unorm));
         assert!(format_allowed_for_slot(1, PrmFormat::R8Unorm));
         assert!(format_allowed_for_slot(1, PrmFormat::Rgba8Unorm));

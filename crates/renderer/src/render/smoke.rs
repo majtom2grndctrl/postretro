@@ -269,9 +269,9 @@ fn plan_baked_sprite_array(
         // filterable floats behind the same D2-array binding, so accepting the
         // wider form changes nothing about how the slot is sampled.
         // `format_allowed_for_slot` also admits the four-channel `Rgba8Unorm` a
-        // world `_p.png` or `_t.png` bakes; sprite collections never bake either
-        // sibling, and layered sprite sidecars never share an address with
-        // single-layer world bundles, so this list does not mirror it.
+        // world `_p.png` or `_t.png` bakes; sprite sidecars never carry `_p` or `_t`
+        // (sprites bake their own slot and never go through `bake_specular_slot`),
+        // so this list does not mirror it.
         (
             1,
             PrmSlots::SPECULAR,

@@ -265,9 +265,10 @@ pub struct Renderer {
     /// the ghost transparency: a full-renderer rebuild keeps it, and it never
     /// enters a level build's snapshot, so a style committed with no level,
     /// before a rebuild or during an in-flight load reaches the next frame
-    /// of whatever level is installed. Written into the forward and mover
-    /// per-frame uniforms every frame. Offscreen capture sets it only from
-    /// its scene: pixel, the default.
+    /// of whatever level is installed. Each group-0 upload snapshots it for
+    /// the frame, and the forward and mover per-frame uniforms read that
+    /// copy. Offscreen capture sets it only from its scene: pixel, the
+    /// default.
     pub(super) specular_style: postretro_render_cpu::frame_uniforms::SpecularStyle,
 
     /// The player's fluid reflection tier. Boot state, like Surface Depth, so

@@ -7,7 +7,7 @@
 // `SHADOWMASK_META_VEC4S_PER_RECORD`), material_shading.wgsl (`blinn_phong`),
 // light_falloff.wgsl (`light_eval_falloff`) and light_eval.wgsl
 // (`light_eval_cone_attenuation`). The loop's bindings, its shadow samplers
-// and the helpers this brief leaves alone (animation curves, the Surface Depth
+// and the helpers specular-texel-sharpness leaves alone (animation curves, the Surface Depth
 // self-shadow march) resolve from the harness by name.
 
 const FROZEN_SHADOWMASK_META_VEC4S_PER_RECORD: u32 = 2u;

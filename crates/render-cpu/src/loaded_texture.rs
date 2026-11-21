@@ -115,7 +115,7 @@ pub enum TextureSlotPolicy {
 }
 
 /// Whether a skinned model's materials consume the specular slot, the slot
-/// Surface Depth's two-channel surface map rides. While they don't, a model
+/// Surface Depth's surface map rides. While they don't, a model
 /// material binds the single-channel specular placeholder and its uniform
 /// packs flat at every Surface Depth tier, so the tier shapes nothing a model
 /// upload builds. Read from the model slot policy itself, so a policy that

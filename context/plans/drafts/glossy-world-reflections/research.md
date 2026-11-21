@@ -99,6 +99,7 @@ Not measured. One probe per coplanar glossy face group means a box room with a g
 - **Room-centre probes.** Fewer probes, but one elevated point per room leaves capture-shadow holes on faces it cannot see (behind pillars, alcoves), and the IP rules forbid filling them. Face-lifted probes also shadow behind pillars, but each face group gets the vantage closest to its own plane. Rejected by the owner.
 - **SSR or planar on world faces.** No-go by owner decision; SSR on world faces would be a second screen-space exception needing its own sign-off (`index.md` §1.1).
 - **Glow delta tiles** (rival for animated glow; §Glow delta tiles).
+- **Selective glow SSR** (rival for animated glow; §Glow SSR).
 
 ## Glow delta tiles
 
@@ -183,3 +184,30 @@ Estimate, 2026-11-21, against the code at `e9495f27`. [M] read from code; [E] es
 - **Cheapest design** [E]: one aggregated glow term per probe and lobe, Σ_v share_v × (current_v / ref_v − 1). This is exact because the ratio is linear. current_v is the post-clamp table entry; ref_v is max × colour. It joins the per-probe sums of `reflection-probe-fluid-pass-performance` (unlanded, blocked on counsel) at zero per-fragment cost. Before that lands it fits the table's spare words, but the table then stops being install-only.
 - **Cost** [E]: CPU is about 15 MADs per (probe, volume) pair, so a few µs typically and about 1 ms at 256 × 256, and nothing on a static frame. Id 54 gains about 64 B per volume per probe and needs a version bump shared with this brief's v3. Compile cost is negligible: `ShareSums::add` gains one lobe accumulation.
 - **Why it is deferred** [E]: a share spreads over a whole lobe. A sign is small and sharp, so pulsing one dims or tints a quadrant of the reflection while the sign's own image stays fixed. Ref-0 channels cannot show a recolour, and tiny refs amplify unorm10 share error.
+
+## Glow SSR
+
+A second rival for glow that changes at runtime, beside §Glow delta tiles. A screen-space march fixes only the glow; the probe keeps everything else. IP reading: `ip-glow-ssr.md` (in progress).
+
+- **Shape.**
+  - *Glow pass.* After forward, an `IndirectDrawPlan` redraws only the selected faces, with depth `Equal`, into a small screen target. Selected faces are animated `light_area` glass and `emissive_volume` faces whose presented value is off reference. Each pixel writes current − reference glow, never full glow. The forward shader is untouched, as the brief's forward-unchanged row requires.
+  - *Probe.* Unchanged: the base tile holds glow at reference, and cast light stays on the share ratio.
+  - *March.* In the overlay, a glossy fragment marches the frame's depth along its reflected ray under the `reflection_quality` step budget, reusing `fluid_reflection_ray.wgsl`'s search. On a hit it samples the glow-change target at a mip chosen from the texel's exponent and the hit distance, and adds the sample to the probe term.
+  - *Fallback.* A miss, a hit off screen or behind an occluder, or a fragment in capture shadow adds nothing, so the reflection shows reference glow. The change fades to 0 at screen edges.
+  - *Gate.* The CPU skips both passes on any frame where no selected source is in view and off reference.
+- **Against §Glow delta tiles.**
+  - Delta tiles are exact off screen; this is exact only on screen, where neon over a wet floor usually is.
+  - It bakes nothing: no id-54 bytes and no compile cost.
+  - It appears to avoid '451 element (c), the stored transfer × coefficient form (`ip-delta-tiles.md` §2), because the change comes from live screen data. That is pending `ip-glow-ssr.md`.
+  - The two can stack: SSR on screen, delta tiles off screen.
+- **Policy.** This lifts the owner's probe-only ruling for world faces (`index.md`, Decisions) and adds a screen-space march on world faces, which needs owner sign-off, a gate and a fixed step budget (`context/lib/index.md` §2, Pre-RTX). The gate here is glossy fragments only, and only on frames whose glow pass drew. The selection is the glow pass's draw list; projectile or billboard glow could join it later.
+- **Cost** [E].
+  - Target: R11G11B10 or RGBA16F, about 33 MB at 4K full resolution, a quarter of that at half.
+  - GPU: the march on every visible glossy fragment on frames the gate opens. A permanently animated sign in view keeps it open. Measure on the 5300M against the overlay's ceiling, with half-resolution and step-budget variants.
+  - CPU: the gate test, and building the glow pass's draw list from the emissive table and the animated light set.
+- **Open.**
+  - Owner sign-off on the screen-space exception.
+  - The glow target's resolution and format.
+  - Whether the change term can be negative (a source dimmed below reference) in a blended HDR target, or needs a signed format.
+  - The march's cost when the gate is permanently open.
+  - The IP reading.

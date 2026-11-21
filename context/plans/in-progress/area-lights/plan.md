@@ -1,11 +1,10 @@
 # area-lights — plan of record
 
 mode: resumable
-status: blocked
+status: approved
 read at: 1bfec9f49
 
-Blocked on one Acceptance restatement (row 11, below). On the owner's ruling, apply the
-wording, set `status: approved` (the ruling doubles as the plan skim) and start task 1.
+Approved by the owner on 2026-11-21, with row 11 restated as below.
 
 ## Corrections
 No source under `crates/` changed between the brief's `c56f894e` and `1bfec9f49`. Every
@@ -104,10 +103,8 @@ cited symbol exists. No Decision premise is false. The Path is stale or incomple
 - **IP follow-ups and counsel** — run beside the build with the owner and counsel; a
   filing whose elements all appear present stops it.
 
-## Restatement needed (blocks)
-Row 11, as written: "Billboard scatter and the mover probe channel each project a 4 × 4 m
-panel over the polygon: at a probe 1 m below, the side-facing value is within 5% of
-0.781." Scatter has no normal, so it has no side-facing value. Proposed:
+## Restatement (owner-approved 2026-11-21)
+Row 11 now reads, in the brief and here:
 
 > Billboard scatter and the mover probe channel each integrate a 4 × 4 m panel over the
 > polygon. At a probe 1 m below its centre, the mover probe channel's side-facing
@@ -129,7 +126,7 @@ panel over the polygon: at a probe 1 m below, the side-facing value is within 5%
 | 8 side 0.781 ±5%, down 0 ±0.05 | same | achievable |
 | 9 pillar/flush facing 1; post > 0 (O19) | `texel_footprint` area tests | achievable |
 | 10 north of pillar 1, 1% (O20) | same | achievable |
-| 11 scatter + mover channel over polygon | scatter and mover-channel tests | **needs restatement** |
+| 11 scatter + mover channel over polygon | scatter and mover-channel tests | achievable (restated) |
 | 12 frame + glass: glass emits; brushes solid | parse test + compiled fixture collision/shadow check | achievable |
 | 13 `_falloff_range` override; √2 reach (O22) | translation + window tests | achievable |
 | 14 half reach 0.879 across six consumers | one cross-consumer test per consumer | achievable |

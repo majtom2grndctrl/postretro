@@ -83,3 +83,17 @@ A second rival for glow that changes at runtime, beside §Glow delta tiles. A sc
   - Whether the change term can be negative (a source dimmed below reference) in a blended HDR target, or needs a signed format.
   - The march's cost when the gate is permanently open.
   - The IP reading.
+
+## Analytic and SDF reflections
+
+Where SDFs and analytic shapes fit reflections, 2026-11-21. They earn a place where they stand in for what probes cannot hold; full SDF ray-traced reflections are not the goal.
+
+| Use | Verdict | Why |
+|---|---|---|
+| Analytic stand-ins for movers and characters | Candidate | Cone versus box or capsule is analytic and cheap; the cone width from the exponent gives the softness. A flat colour per primitive suits a blurred reflection. Static geometry stays in the probe. |
+| Analytic emitter specular, occluded through the SDF atlas | Candidate | A known emitter shape gives an exact soft reflection that follows its light's animation. Only occlusion needs a march, a short cone toward the emitter. |
+| Specular occlusion in crevices | Baked instead | Static-on-static: the baked bent-normal-and-aperture cones planned in `context/research/gi-rtx-lite/index.md` cost about 2 B per texel and no runtime march. |
+| SDF march to find the reflected hit, replacing the distance-tile search | Rejected | The distance tile already works, and a new tracer sits close to the WO claim-1 question counsel is reading. |
+
+- **Stand-in colour.** A character has no baked albedo mean; take one from its model texture at import.
+- **Capture shadow.** A stand-in in front of capture shadow changes nothing there: W is 0, so the overlay draws no term.

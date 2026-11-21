@@ -51,8 +51,8 @@ mod tests;
 pub(crate) use absent_bounces::AbsentLaterBounces;
 pub(crate) use absent_memo::AbsentBounceMemo;
 pub(crate) use bake::{
-    MoverBounceBake, MoverBounceJob, MoverBounceRequest, StaticBounce, bake_mover_bounce,
-    poses_progress_units, sh_base_bounce_count,
+    MoverBounceBake, MoverBounceJob, MoverBounceRequest, PosedRadianceSource, SlotRadiance,
+    StaticBounce, bake_mover_bounce, poses_progress_units, sh_base_bounce_count,
 };
 pub(crate) use blocks::BounceBlocks;
 pub(crate) use cost::{MoverChannelCost, pose_held_bytes};
@@ -78,7 +78,7 @@ pub(crate) use mid_pose_only::mid_pose_only_lights;
 pub(crate) use near_field::NearFieldDomain;
 #[cfg(test)]
 pub(crate) use pose_bake::PosedBounce;
-pub(crate) use pose_lookup::{HitReduction, MoverPoseBounces, PoseLookup};
+pub(crate) use pose_lookup::{MoverPoseBounces, PoseLookup};
 pub(crate) use pose_memo::PoseMemo;
 pub(crate) use posed_scene::PosedScene;
 pub(crate) use posed_solid::{PosedMovers, enclosure_inset};

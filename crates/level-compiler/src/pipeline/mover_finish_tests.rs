@@ -3,15 +3,22 @@
 // sections or the verdict, and no two movers' states are live at once.
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel, Memory)
 
+use std::path::Path;
+
 use postretro_level_format::mover_probe_channel::MoverProbeChannelSection;
 use postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES;
 
-use super::{DEFAULT_BOUNCE_FILL, bake_base, closet_edited, open, plan_half, two_doors, with_ctx};
+use super::{
+    DEFAULT_BOUNCE_FILL, bake_base, closet_edited, open, plan_half, plan_half_at, two_doors,
+    with_ctx,
+};
+use crate::bake_fidelity::{BakeFidelity, BakeMode};
 use crate::cache::StageCache;
 use crate::fixture_pipeline::{FixturePipeline, fixture_path, load_map};
 use crate::live_bytes::{measured, watch_group};
 use crate::mover_probe_channel::{
-    MoverDirectBake, MoverPayloadBars, MoverRecords, ProbeCells, channel_section,
+    MoverBounceRequest, MoverDirectBake, MoverPayloadBars, MoverRecords, ProbeCells,
+    channel_section,
 };
 use crate::pipeline::mover_bounce_stage::finish_bounce_half;
 
@@ -47,16 +54,31 @@ struct Emitted {
 }
 
 fn emitted(fixture: &FixturePipeline, reversed: bool, depth_cap: Option<u32>) -> Emitted {
-    with_ctx(fixture, |ctx, poses| {
-        let mut plan = plan_half(fixture, ctx, poses, DEFAULT_BOUNCE_FILL);
+    emitted_with(fixture, HIGH, None, |request| {
         if reversed {
-            plan.request.jobs.reverse();
+            request.jobs.reverse();
         }
         if let Some(cap) = depth_cap {
-            plan.request.depth_cap = cap;
+            request.depth_cap = cap;
         }
+    })
+}
+
+const HIGH: BakeMode = BakeMode::Interactive(BakeFidelity::High);
+const LOW: BakeMode = BakeMode::Interactive(BakeFidelity::Low);
+
+/// [`emitted`] at `mode`, over `cache`, with `edit` applied to the request.
+fn emitted_with(
+    fixture: &FixturePipeline,
+    mode: BakeMode,
+    cache: Option<&StageCache>,
+    edit: impl FnOnce(&mut MoverBounceRequest),
+) -> Emitted {
+    with_ctx(fixture, |ctx, poses| {
+        let mut plan = plan_half_at(fixture, ctx, poses, DEFAULT_BOUNCE_FILL, mode);
+        edit(&mut plan.request);
         let (_, mut base, outcome) =
-            bake_base(ctx, &plan, &plan.request, DEFAULT_BOUNCE_FILL, None);
+            bake_base(ctx, &plan, &plan.request, DEFAULT_BOUNCE_FILL, cache);
         if outcome.refused.is_some() {
             return Emitted {
                 channel: None,
@@ -160,12 +182,25 @@ fn states_high_water(
     keep: &(dyn Fn(u32) -> bool + Sync),
     cache: Option<&StageCache>,
 ) -> u64 {
+    states_high_water_ordered(fixture, keep, cache, false)
+}
+
+/// [`states_high_water`], the jobs `reversed` when asked.
+fn states_high_water_ordered(
+    fixture: &FixturePipeline,
+    keep: &(dyn Fn(u32) -> bool + Sync),
+    cache: Option<&StageCache>,
+    reversed: bool,
+) -> u64 {
     with_ctx(fixture, |ctx, poses| {
         let ((), report) = measured(4, || {
             watch_group("mover states", STATES);
             let mut plan = plan_half(fixture, ctx, poses, DEFAULT_BOUNCE_FILL);
             plan.request.keep_states = false;
             plan.request.jobs.retain(|job| keep(job.mover_id));
+            if reversed {
+                plan.request.jobs.reverse();
+            }
             let (_, base, outcome) =
                 bake_base(ctx, &plan, &plan.request, DEFAULT_BOUNCE_FILL, cache);
             assert!(outcome.refused.is_none());
@@ -233,4 +268,140 @@ fn one_movers_states_are_live_at_a_time_on_the_two_door_closet() {
 #[ignore = "bakes mover-setpiece cold, warm and on a hit, with and without each mover; run on demand"]
 fn one_movers_states_are_live_at_a_time_on_the_setpiece() {
     one_movers_states_at_a_time(&load_map(&fixture_path("mover-setpiece")));
+}
+
+/// The two-door closet with the second door's `light_bounces` set to
+/// `bounces` (both start at 2).
+fn second_door_bounces(maps: &Path, bounces: u32) -> FixturePipeline {
+    load_map(&closet_edited(
+        maps,
+        Some(2),
+        &format!("two-doors-b{bounces}"),
+        |text| {
+            let text = two_doors(text);
+            let b = "\"name\" \"closet_door_b\"\n\"light_bounces\" \"2\"";
+            assert!(text.contains(b), "the second door's key");
+            text.replace(
+                b,
+                &format!("\"name\" \"closet_door_b\"\n\"light_bounces\" \"{bounces}\""),
+            )
+        },
+    ))
+}
+
+/// Copy `from`'s cache entries into a fresh directory.
+fn cache_copy(from: &Path) -> tempfile::TempDir {
+    let copy = tempfile::tempdir().expect("cache");
+    for entry in std::fs::read_dir(from).expect("cache dir") {
+        let entry = entry.expect("entry");
+        if entry.file_type().expect("type").is_file() {
+            std::fs::copy(entry.path(), copy.path().join(entry.file_name())).expect("copy");
+        }
+    }
+    copy
+}
+
+// The two-door closet, warm over a cache primed with the second door's
+// `light_bounces` changed: the first door hits every pose, the second
+// bakes. In either job order the states kinds never hold more than the
+// larger of the held door read back alone and the baking door baked alone,
+// so the held door's states are never live during the other's bake (M2).
+#[test]
+fn a_held_door_is_not_live_while_the_other_bakes() {
+    let maps = tempfile::tempdir().expect("maps dir");
+    let primer = second_door_bounces(maps.path(), 1);
+    let fixture = second_door_bounces(maps.path(), 2);
+    let primed = tempfile::tempdir().expect("cache");
+    states_high_water(&primer, &|_| true, Some(&open(primed.path())));
+    let ids: Vec<u32> = fixture
+        .kinematic_movers
+        .iter()
+        .map(|mover| mover.mover_id)
+        .collect();
+    let run = |keep: &(dyn Fn(u32) -> bool + Sync), reversed: bool| {
+        let copy = cache_copy(primed.path());
+        states_high_water_ordered(&fixture, keep, Some(&open(copy.path())), reversed)
+    };
+    let alone = ids
+        .iter()
+        .map(|&id| run(&move |job| job == id, false))
+        .max()
+        .expect("two doors");
+    for reversed in [false, true] {
+        let all = run(&|_| true, reversed);
+        assert!(
+            all <= alone,
+            "reversed {reversed}: both doors held {all} B of states, past one door's {alone} B"
+        );
+        eprintln!("reversed {reversed}: states high-water {all} B, one door alone {alone} B");
+    }
+}
+
+// Warm over a cache whose lookup found every pose, a door's read-back
+// fails at its slot: that pose bakes there, bounce one and id 34's later
+// bounces built then, and every emitted section equals a cold build's, at
+// `low` and `high` with no higher entries cached; with both doors held that
+// way, and with one held and the other pending (M3).
+#[test]
+fn a_failed_slot_read_bakes_the_pose_and_matches_cold() {
+    let maps = tempfile::tempdir().expect("maps dir");
+    let primer = second_door_bounces(maps.path(), 1);
+    let fixture = second_door_bounces(maps.path(), 2);
+    let ids: Vec<u32> = fixture
+        .kinematic_movers
+        .iter()
+        .map(|mover| mover.mover_id)
+        .collect();
+    for mode in [LOW, HIGH] {
+        let cold = emitted_with(&fixture, mode, None, |_| {});
+        assert!(cold.channel.is_some(), "{mode:?}: the doors emit id 57");
+        // Every pose held: one pose of each door fails at its slot.
+        let full = tempfile::tempdir().expect("cache");
+        emitted_with(&fixture, mode, Some(&open(full.path())), |_| {});
+        let copy = cache_copy(full.path());
+        let failed = emitted_with(&fixture, mode, Some(&open(copy.path())), |request| {
+            request.fail_read_back = vec![(ids[0], 0), (ids[1], 1)];
+        });
+        assert_eq!(
+            failed, cold,
+            "{mode:?}: every door held, a read-back failing"
+        );
+        // The second door pending: the first's read-back fails.
+        let primed = tempfile::tempdir().expect("cache");
+        emitted_with(&primer, mode, Some(&open(primed.path())), |_| {});
+        let failed = emitted_with(&fixture, mode, Some(&open(primed.path())), |request| {
+            request.fail_read_back = vec![(ids[0], 1)];
+        });
+        assert_eq!(failed, cold, "{mode:?}: one door held, the other pending");
+    }
+}
+
+// At `low`, warm over a cache primed at `high`: the lookup serves the
+// doors' poses from their `high` entries. Where one of those reads fails at
+// its slot, the pose bakes at the `high` count, and every emitted section
+// equals the same build with the read succeeding (M5).
+#[test]
+fn a_high_read_failing_at_the_slot_bakes_at_the_high_count() {
+    let maps = tempfile::tempdir().expect("maps dir");
+    let fixture = second_door_bounces(maps.path(), 2);
+    let id = fixture.kinematic_movers[0].mover_id;
+    let primed = tempfile::tempdir().expect("cache");
+    emitted_with(&fixture, HIGH, Some(&open(primed.path())), |_| {});
+    let served = emitted_with(
+        &fixture,
+        LOW,
+        Some(&open(cache_copy(primed.path()).path())),
+        |_| {},
+    );
+    let low_cold = emitted_with(&fixture, LOW, None, |_| {});
+    assert_ne!(served, low_cold, "the `high` entries serve the `low` build");
+    let failed = emitted_with(
+        &fixture,
+        LOW,
+        Some(&open(cache_copy(primed.path()).path())),
+        |request| {
+            request.fail_read_back = vec![(id, 0)];
+        },
+    );
+    assert_eq!(failed, served, "the failed pose bakes at the `high` count");
 }

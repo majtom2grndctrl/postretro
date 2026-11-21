@@ -15,14 +15,16 @@ use super::working_set::ShBaseHandoff;
 use crate::bake_control::BakeControl;
 use crate::cache::StageCache;
 use crate::light_namespaces::StaticBakedLights;
+use crate::map_data::MapLight;
 #[cfg(test)]
 use crate::mover_probe_channel::MoverBounceStates;
 #[cfg(test)]
 use crate::mover_probe_channel::PosedBounce;
 use crate::mover_probe_channel::{
-    AbsentBounceMemo, AbsentLaterBounces, BounceBlocks, HitReduction, MoverAbsentDepth,
-    MoverBounceBake, MoverBounceJob, MoverBounceRequest, MoverPoseBounces, MoverTileRangeExceeded,
-    PoseLookup, PoseMemo, SkipCounts, StaticBounce, bake_mover_bounce, poses_progress_units,
+    AbsentBounceMemo, AbsentLaterBounces, BounceBlocks, MoverBounceBake, MoverBounceJob,
+    MoverBounceRequest, MoverPoseBounces, MoverTileRangeExceeded, PoseLookup, PoseMemo,
+    PosedRadianceSource, SkipCounts, SlotRadiance, StaticBounce, bake_mover_bounce,
+    poses_progress_units,
 };
 use crate::sh_bake::{
     GatheredVolume, ProbeDepthTiles, RadianceSource, ShBakeCtx, ShConfig, animation_tables,
@@ -261,7 +263,7 @@ pub(crate) fn bake_sh_base_with_movers(
         ];
         #[cfg(test)]
         crate::live_bytes::phase("volume load");
-        let mut lookup = PoseLookup::new(
+        let lookup = PoseLookup::new(
             movers,
             Some(PoseMemo::new(
                 volume.cache,
@@ -271,15 +273,12 @@ pub(crate) fn bake_sh_base_with_movers(
             ctx.bounce_materials,
             &layout,
             &patches,
-            Some(&HitReduction {
-                absent: MoverAbsentDepth::new(&section, &depth_tiles),
-                depth_cap: movers.depth_cap,
-            }),
+            true,
         );
         // The mover-absent later bounces are read only when a pending job
-        // re-bakes radiance and needs them. Where some job reads them but
-        // none is pending, their memo is still marked used, so eviction
-        // spares it for the next mover edit.
+        // re-bakes radiance and needs them, or a slot whose read-back fails
+        // does. Where some job reads them but none is pending, their memo is
+        // still marked used, so eviction spares it for the next mover edit.
         let absent_memo = AbsentLaterBounces::needed_by(&movers.jobs, bounce_fill)
             .then(|| AbsentBounceMemo::new(volume.cache, &volume.key));
         let reads_absent = lookup.needs_radiance()
@@ -287,88 +286,60 @@ pub(crate) fn bake_sh_base_with_movers(
         if let Some(memo) = absent_memo.as_ref().filter(|_| !reads_absent) {
             memo.mark_used();
         }
-        let absent_memo = absent_memo.filter(|_| reads_absent);
         // The movers re-run the layers for bounce one, and id 34's later
         // bounces when they read them, and those advance as they run; a
-        // memo hit on the later bounces advances theirs at once.
+        // memo hit on the later bounces advances theirs at once. A slot
+        // whose read-back fails and builds them adds their units then.
         let rerun = if lookup.needs_radiance() {
-            shading_units
-                + if absent_memo.is_some() {
-                    bounce_units
-                } else {
-                    0
-                }
+            shading_units + if reads_absent { bounce_units } else { 0 }
         } else {
             0
         };
         // A pose a `high` entry serves holds more bounces than the build
         // bakes: the total counts each pose at the count it resolves at.
-        control.publish_total(volume_units + lookup.total_units(movers, slot_units));
-        control.advance(volume_units - rerun + lookup.held_units(movers, slot_units));
-        let held = lookup.take_held();
-        let baked = {
-            let bounce_one = lookup.needs_radiance().then(|| {
-                let layer_cache = caches.as_ref().map(|(layers, _)| layers);
-                let resolved = resolve_layers(
-                    &ctx.ray_ctx(),
-                    &patches,
-                    &lights,
-                    &plan,
-                    layer_cache,
-                    control,
-                );
-                PatchRadiance::sum(patches.len(), &plan, &resolved)
-            });
-            let bounce_one = bounce_one.unwrap_or_else(|| PatchRadiance::zeroed(0));
-            let absent = absent_memo.as_ref().map(|memo| {
-                let cached = memo.get(patches.len());
-                if cached.is_some() {
-                    control.advance(bounce_units);
-                }
-                cached.unwrap_or_else(|| {
-                    let started = std::time::Instant::now();
-                    let absent = AbsentLaterBounces {
-                        layers: later_bounce_layers(
-                            &ctx.ray_ctx(),
-                            &patches,
-                            &bounce_one,
-                            bounce_fill,
-                            0,
-                            control,
-                        ),
-                    };
-                    log::info!(
-                        "[MoverLight] probe channel: id 34's {} later bounce(s) over {} static \
-                         patch(es) re-traced for the movers, {:.1} s",
-                        absent.layers.len(),
-                        patches.len(),
-                        started.elapsed().as_secs_f64()
-                    );
-                    memo.put(&absent, patches.len());
-                    absent
-                })
-            });
-            #[cfg(test)]
-            let _absent = hold_absent(absent.as_ref());
-            bake_mover_bounce(
-                ctx,
-                &StaticBounce {
-                    patches: &patches,
-                    bounce_one: &bounce_one,
-                    lights: &lights,
-                    plan: &plan,
-                    bounce_fill,
-                    layout: &layout,
-                    base: &section,
-                    depth_tiles: &depth_tiles,
-                    absent: absent.as_ref(),
-                },
-                lookup.slots(movers, held),
-                movers,
-                lookup.memo(),
-                control,
-            )
+        let total = volume_units + lookup.total_units(movers, slot_units);
+        control.publish_total(total);
+        control.advance(volume_units - rerun);
+        let mut source = HitRadiance {
+            ctx,
+            patches: &patches,
+            lights: &lights,
+            plan: &plan,
+            layers: caches.as_ref().map(|(layers, _)| layers),
+            absent_memo: absent_memo.as_ref(),
+            bounce_fill,
+            control,
+            total,
+            planned: true,
+            shading_units,
+            bounce_units,
         };
+        let bounce_one = lookup.needs_radiance().then(|| source.bounce_one());
+        let absent = bounce_one
+            .as_ref()
+            .filter(|_| reads_absent)
+            .map(|bounce_one| source.absent(bounce_one));
+        #[cfg(test)]
+        let _absent = hold_absent(absent.as_ref());
+        // Anything built past here is a slot's failed read-back: unplanned.
+        source.planned = false;
+        let baked = bake_mover_bounce(
+            ctx,
+            &StaticBounce {
+                patches: &patches,
+                lights: &lights,
+                plan: &plan,
+                bounce_fill,
+                layout: &layout,
+                base: &section,
+                depth_tiles: &depth_tiles,
+            },
+            &mut SlotRadiance::new(bounce_one.as_ref(), absent.as_ref(), Some(&mut source)),
+            lookup.slots(movers),
+            movers,
+            lookup.memo(),
+            control,
+        );
         #[cfg(test)]
         if !movers.is_empty() {
             stage_events::record(stage_events::MOVER_BOUNCE_DONE);
@@ -404,7 +375,7 @@ pub(crate) fn bake_sh_base_with_movers(
     // The pose lookup and the movers' copy of bounce one are mover work:
     // id 34's recorded time leaves them out.
     let id34_before_movers = id34_started.elapsed();
-    let mut lookup = PoseLookup::new(
+    let lookup = PoseLookup::new(
         movers,
         caches
             .as_ref()
@@ -412,7 +383,7 @@ pub(crate) fn bake_sh_base_with_movers(
         ctx.bounce_materials,
         &layout,
         &patches,
-        None,
+        false,
     );
     let bounce_one = lookup.needs_radiance().then(|| radiance.clone());
     let keeps_absent = lookup.needs_radiance()
@@ -474,28 +445,25 @@ pub(crate) fn bake_sh_base_with_movers(
     }
     #[cfg(test)]
     crate::live_bytes::phase("probe gather");
-    let held = lookup.take_held();
-    let baked = {
-        let empty = PatchRadiance::zeroed(0);
-        bake_mover_bounce(
-            ctx,
-            &StaticBounce {
-                patches: &patch_cache.patches,
-                bounce_one: bounce_one.as_ref().unwrap_or(&empty),
-                lights: &lights,
-                plan: &plan,
-                bounce_fill,
-                layout: &layout,
-                base: &section,
-                depth_tiles: &depth_tiles,
-                absent: absent.as_ref(),
-            },
-            lookup.slots(movers, held),
-            movers,
-            lookup.memo(),
-            control,
-        )
-    };
+    // On a volume miss every pose bakes, so the stage built all the posed
+    // bakes read, from id 34's own bake: no slot builds more.
+    let baked = bake_mover_bounce(
+        ctx,
+        &StaticBounce {
+            patches: &patch_cache.patches,
+            lights: &lights,
+            plan: &plan,
+            bounce_fill,
+            layout: &layout,
+            base: &section,
+            depth_tiles: &depth_tiles,
+        },
+        &mut SlotRadiance::new(bounce_one.as_ref(), absent.as_ref(), None),
+        lookup.slots(movers),
+        movers,
+        lookup.memo(),
+        control,
+    );
     #[cfg(test)]
     if !movers.is_empty() {
         stage_events::record(stage_events::MOVER_BOUNCE_DONE);
@@ -518,6 +486,83 @@ pub(crate) fn bake_sh_base_with_movers(
         },
         outcome,
     )
+}
+
+/// What an id-34 volume hit builds for the movers' posed bakes: the cached
+/// layers summed into bounce one, and id 34's later bounces from their memo,
+/// else gathered afresh and written back. Built before the mover bake when
+/// a pending job needs them, else by the first slot whose read-back fails
+/// and needs them, which adds their progress units to the total then.
+struct HitRadiance<'a, 'c> {
+    ctx: &'a ShBakeCtx<'c>,
+    patches: &'a PatchSet,
+    lights: &'a [&'a MapLight],
+    plan: &'a LayerPlan,
+    layers: Option<&'a LayerCache<'a>>,
+    absent_memo: Option<&'a AbsentBounceMemo<'a>>,
+    bounce_fill: f32,
+    control: &'a BakeControl,
+    /// The published progress total.
+    total: usize,
+    /// Whether the published total already counts what is built.
+    planned: bool,
+    shading_units: usize,
+    bounce_units: usize,
+}
+
+impl HitRadiance<'_, '_> {
+    fn add_units(&mut self, units: usize) {
+        if !self.planned {
+            self.total += units;
+            self.control.publish_total(self.total);
+        }
+    }
+}
+
+impl PosedRadianceSource for HitRadiance<'_, '_> {
+    fn bounce_one(&mut self) -> PatchRadiance {
+        self.add_units(self.shading_units);
+        let resolved = resolve_layers(
+            &self.ctx.ray_ctx(),
+            self.patches,
+            self.lights,
+            self.plan,
+            self.layers,
+            self.control,
+        );
+        PatchRadiance::sum(self.patches.len(), self.plan, &resolved)
+    }
+
+    fn absent(&mut self, bounce_one: &PatchRadiance) -> AbsentLaterBounces {
+        self.add_units(self.bounce_units);
+        let memo = self
+            .absent_memo
+            .expect("a job reading id 34's later bounces has their memo");
+        if let Some(cached) = memo.get(self.patches.len()) {
+            self.control.advance(self.bounce_units);
+            return cached;
+        }
+        let started = std::time::Instant::now();
+        let absent = AbsentLaterBounces {
+            layers: later_bounce_layers(
+                &self.ctx.ray_ctx(),
+                self.patches,
+                bounce_one,
+                self.bounce_fill,
+                0,
+                self.control,
+            ),
+        };
+        log::info!(
+            "[MoverLight] probe channel: id 34's {} later bounce(s) over {} static patch(es) \
+             re-traced for the movers, {:.1} s",
+            absent.layers.len(),
+            self.patches.len(),
+            started.elapsed().as_secs_f64()
+        );
+        memo.put(&absent, self.patches.len());
+        absent
+    }
 }
 
 /// Warn once for each static light only the bounce family's test flags:

@@ -17,7 +17,7 @@ use super::direct::ProbeCells;
 use super::edge_copy::copy_job_bounce_edges;
 use super::gather::valid_probes;
 use super::near_field::NearFieldDomain;
-use super::pose_bake::{PoseBaker, PosedBounce};
+use super::pose_bake::{PoseBaker, PosedBounce, ResolvedPoses};
 use super::pose_memo::{PoseKind, PoseMemo};
 use super::posed_scene::PosedScene;
 use super::skip::{SkipBars, SkipCounts, skip_redundant_mid_poses};
@@ -167,6 +167,11 @@ pub(crate) struct MoverBounceRequest {
     /// its mid poses skip, detached from the ledger.
     #[cfg(test)]
     pub(crate) keep_states: bool,
+    /// Test only: (mover, pose) pairs whose memo read fails at the slot
+    /// after the lookup found them, as a cache entry corrupted or evicted
+    /// between the two would.
+    #[cfg(test)]
+    pub(crate) fail_read_back: Vec<(u32, usize)>,
 }
 
 impl MoverBounceRequest {
@@ -191,20 +196,12 @@ pub(crate) struct PoseSlot {
     pub(crate) held: bool,
 }
 
-/// One production job in request order, as the bake meets it.
-pub(crate) enum MoverSlot<'a> {
-    /// Some pose's memo missed: the bake resolves each pose, from the memo
-    /// where `poses` holds it, else by baking it, then reduces the mover.
-    Bake {
-        job: &'a MoverBounceJob,
-        poses: &'a [PoseSlot],
-    },
-    /// Every pose's memo hit and the mover reduced at lookup: it finishes
-    /// where a cold bake would have baked it.
-    Held {
-        job: &'a MoverBounceJob,
-        states: MoverBounceStates,
-    },
+/// One production job in request order, as the bake meets it: each pose
+/// reads back from the memo where `poses` holds it, else bakes, and the
+/// mover finishes.
+pub(crate) struct MoverSlot<'a> {
+    pub(crate) job: &'a MoverBounceJob,
+    pub(crate) poses: &'a [PoseSlot],
 }
 
 /// What [`bake_mover_bounce`] hands back.
@@ -226,11 +223,10 @@ pub(crate) struct MoverBounceBake {
     pub(crate) reduced: Vec<MoverBounceStates>,
 }
 
-/// What every baked pose shares, built at the first slot that bakes.
+/// What every baked pose shares, built at the first pose that bakes.
 pub(super) struct PoseShared<'a> {
     pub(super) reach: PatchReachIndex<'a>,
     pub(super) terms: Vec<super::bounce::LightTerm<'a>>,
-    pub(super) absent: MoverAbsentDepth<'a>,
     #[cfg(test)]
     _reach: crate::live_bytes::Held,
 }
@@ -245,26 +241,121 @@ impl<'a> PoseShared<'a> {
                 inputs.patches.len() as u64 * crate::surface_radiance::REACH_INDEX_BYTES_PER_PATCH,
             ),
             terms: light_terms(inputs.lights, inputs.plan),
-            absent: MoverAbsentDepth::new(inputs.base, inputs.depth_tiles),
         }
     }
 }
 
-/// What every pose of one SH base bake reads: the gate's patches, their
-/// static bounce one (before later bounces), the plan's light order, the
-/// gathered id 34 the bar compares against and its depth tiles before mover
-/// tiles reserve their range, and id 34's own later bounces, when a job
-/// reads them ([`AbsentLaterBounces::needed_by`]).
+/// What every pose of one SH base bake reads: the gate's patches, the
+/// plan's light order, and the gathered id 34 the bar compares against with
+/// its depth tiles before mover tiles reserve their range.
 pub(crate) struct StaticBounce<'a> {
     pub(crate) patches: &'a PatchSet,
-    pub(crate) bounce_one: &'a PatchRadiance,
     pub(crate) lights: &'a [&'a MapLight],
     pub(crate) plan: &'a LayerPlan,
     pub(crate) bounce_fill: f32,
     pub(crate) layout: &'a ProbeGridLayout,
     pub(crate) base: &'a OctahedralShVolumeSection,
     pub(crate) depth_tiles: &'a ProbeDepthTiles,
-    pub(crate) absent: Option<&'a AbsentLaterBounces>,
+}
+
+/// Builds what a baked pose reads when the stage built none of it before
+/// the bake: on an id-34 volume hit whose every pose the lookup found, a
+/// slot whose read-back fails bakes that pose, and needs these then.
+pub(crate) trait PosedRadianceSource {
+    /// The patches' static bounce one: every light's layer resolved and
+    /// summed.
+    fn bounce_one(&mut self) -> PatchRadiance;
+    /// Id 34's later bounces from `bounce_one`: their memo, else gathered.
+    fn absent(&mut self, bounce_one: &PatchRadiance) -> AbsentLaterBounces;
+}
+
+/// One of the inputs a baked pose reads: built before the bake, built at
+/// the first slot that needs it, or not yet built.
+enum Built<'a, T> {
+    Given(&'a T),
+    Owned(T),
+    Absent,
+}
+
+impl<T> Built<'_, T> {
+    fn get(&self) -> Option<&T> {
+        match self {
+            Self::Given(value) => Some(value),
+            Self::Owned(value) => Some(value),
+            Self::Absent => None,
+        }
+    }
+}
+
+/// Bounce one and id 34's later bounces as the posed bakes read them. The
+/// stage hands in what it built for the jobs the lookup left pending; a
+/// pose that bakes and needs more builds it from `source` at its slot, so
+/// every mover, cold or warm, bakes at its own slot.
+pub(crate) struct SlotRadiance<'a> {
+    bounce_one: Built<'a, PatchRadiance>,
+    absent: Built<'a, AbsentLaterBounces>,
+    source: Option<&'a mut dyn PosedRadianceSource>,
+    empty: PatchRadiance,
+    #[cfg(test)]
+    _absent: Option<crate::live_bytes::Held>,
+}
+
+impl<'a> SlotRadiance<'a> {
+    /// What the stage built before the bake, and what builds the rest.
+    pub(crate) fn new(
+        bounce_one: Option<&'a PatchRadiance>,
+        absent: Option<&'a AbsentLaterBounces>,
+        source: Option<&'a mut dyn PosedRadianceSource>,
+    ) -> Self {
+        Self {
+            bounce_one: bounce_one.map_or(Built::Absent, Built::Given),
+            absent: absent.map_or(Built::Absent, Built::Given),
+            source,
+            empty: PatchRadiance::zeroed(0),
+            #[cfg(test)]
+            _absent: None,
+        }
+    }
+
+    /// What a baked pose of `job` reads at `fill`: bounce one when it
+    /// re-bakes radiance, id 34's later bounces when it reads them
+    /// ([`AbsentLaterBounces::needed_by`]), each built first when missing.
+    fn for_job(
+        &mut self,
+        job: &MoverBounceJob,
+        fill: f32,
+    ) -> (&PatchRadiance, Option<&AbsentLaterBounces>) {
+        if job.bounces == 0 {
+            return (&self.empty, self.absent.get());
+        }
+        if self.bounce_one.get().is_none() {
+            let source = self
+                .source
+                .as_mut()
+                .expect("a pose re-baking radiance has bounce one or a source");
+            self.bounce_one = Built::Owned(source.bounce_one());
+        }
+        if self.absent.get().is_none() && AbsentLaterBounces::needed_by([job], fill) {
+            let bounce_one = self.bounce_one.get().expect("built above");
+            let source = self
+                .source
+                .as_mut()
+                .expect("a pose reading id 34's later bounces has them or a source");
+            let absent = source.absent(bounce_one);
+            #[cfg(test)]
+            {
+                self._absent = Some(crate::live_bytes::hold(
+                    "mover absent later bounces",
+                    absent.heap_bytes(),
+                ));
+            }
+            self.absent = Built::Owned(absent);
+        }
+        (
+            self.bounce_one.get().expect("built above"),
+            self.absent.get(),
+        )
+    }
 }
 
 /// What finishing a mover reads beside its states: the skip bars over id 34
@@ -274,10 +365,12 @@ struct Finish<'a> {
     cells: Option<ProbeCells>,
 }
 
-/// Re-bake id 34 per pose of each baked slot, each mover posed alone, and
-/// finish each mover before the next runs. Slots run in request order. A
-/// slot resolves its poses, from `memo` or baked, and reduces them (a held
-/// slot reduced at lookup); edge copy runs and its baked poses are written
+/// Re-bake id 34 per pose of each slot whose memo misses, each mover posed
+/// alone, and finish each mover before the next runs. Slots run in request
+/// order, cold or warm: the lookup only planned. A slot reads back the
+/// poses `memo` holds and bakes the rest, those whose read-back fails among
+/// them, building what they read from `radiance` when it is the first to
+/// need it. It reduces them; edge copy runs and its baked poses are written
 /// to their memo, unless its depth alone passes the tile range. Its depth
 /// then joins the union the tile-range verdict reads, before it skips, so
 /// the verdict never hangs on job order ([`DepthUnion`]); past the range
@@ -289,12 +382,14 @@ struct Finish<'a> {
 pub(crate) fn bake_mover_bounce(
     sh_ctx: &ShBakeCtx<'_>,
     inputs: &StaticBounce<'_>,
+    radiance: &mut SlotRadiance<'_>,
     slots: Vec<MoverSlot<'_>>,
     request: &MoverBounceRequest,
     memo: Option<&PoseMemo<'_>>,
     control: &BakeControl,
 ) -> MoverBounceBake {
     let valid = valid_probes(inputs.layout);
+    let absent_depth = MoverAbsentDepth::new(inputs.base, inputs.depth_tiles);
     let mut shared: Option<PoseShared<'_>> = None;
     let mut finish = Finish {
         bars: None,
@@ -305,26 +400,23 @@ pub(crate) fn bake_mover_bounce(
     let count = slots.len();
     let mut slots = slots.into_iter().enumerate();
     while let Some((at, slot)) = slots.next() {
-        let (job, states) = match slot {
-            MoverSlot::Held { job, states } => (job, states),
-            MoverSlot::Bake { job, poses } => {
-                let shared = shared.get_or_insert_with(|| PoseShared::new(inputs));
-                match bake_slot(
-                    sh_ctx,
-                    inputs,
-                    shared,
-                    job,
-                    poses,
-                    request,
-                    memo,
-                    control,
-                    &valid,
-                    &mut out.poses,
-                ) {
-                    Some(states) => (job, states),
-                    None => continue,
-                }
-            }
+        let Some(states) = bake_slot(
+            &SlotBake {
+                sh_ctx,
+                inputs,
+                job: slot.job,
+                pose_slots: slot.poses,
+                request,
+                memo,
+                control,
+                valid: &valid,
+                absent_depth: &absent_depth,
+            },
+            &mut shared,
+            radiance,
+            &mut out.poses,
+        ) else {
+            continue;
         };
         #[cfg(test)]
         if request.keep_states {
@@ -334,60 +426,67 @@ pub(crate) fn bake_mover_bounce(
         if let Err(refused) = union.verdict(at + 1 < count, request.depth_cap) {
             // The build fails by name before this mover skips; the jobs
             // left never run, so their progress lands at once, their held
-            // poses' included. A held slot's progress landed with its memo
-            // hit.
+            // poses' included.
             control.advance(
                 slots
-                    .filter_map(|(_, slot)| match slot {
-                        MoverSlot::Bake { job, poses } => Some(poses_progress_units(
-                            job,
-                            poses,
+                    .map(|(_, slot)| {
+                        poses_progress_units(
+                            slot.job,
+                            slot.poses,
                             valid.len(),
                             inputs.patches,
                             inputs.bounce_fill,
                             |_| true,
-                        )),
-                        MoverSlot::Held { .. } => None,
+                        )
                     })
                     .sum(),
             );
             out.refused = Some(refused);
             break;
         }
-        finish_mover(states, job, inputs, request, &mut finish, &mut out);
+        finish_mover(states, slot.job, inputs, request, &mut finish, &mut out);
     }
     out
 }
 
-/// Resolve one baked slot's poses, from the memo where it held them, else
-/// by baking them, and reduce them to the mover's states, edge copy run and
-/// its baked poses memoized. `None` when the request keeps each pose's
-/// re-bake instead.
-#[allow(clippy::too_many_arguments)]
-fn bake_slot(
-    sh_ctx: &ShBakeCtx<'_>,
-    inputs: &StaticBounce<'_>,
-    shared: &PoseShared<'_>,
-    job: &MoverBounceJob,
-    pose_slots: &[PoseSlot],
-    request: &MoverBounceRequest,
-    memo: Option<&PoseMemo<'_>>,
-    control: &BakeControl,
-    valid: &[u32],
+/// What one slot's bake reads.
+struct SlotBake<'s, 'a> {
+    sh_ctx: &'s ShBakeCtx<'a>,
+    inputs: &'s StaticBounce<'s>,
+    job: &'s MoverBounceJob,
+    pose_slots: &'s [PoseSlot],
+    request: &'s MoverBounceRequest,
+    memo: Option<&'s PoseMemo<'s>>,
+    control: &'s BakeControl,
+    valid: &'s [u32],
+    absent_depth: &'s MoverAbsentDepth<'s>,
+}
+
+/// Resolve one slot's poses, each read back from the memo where it held
+/// the pose, else baked, and reduce them to the mover's states, edge copy
+/// run and its baked poses memoized. A pose whose read-back fails bakes
+/// here, building the reach index, bounce one and id 34's later bounces
+/// first when the slot is the first to need them. `None` when the request
+/// keeps each pose's re-bake instead.
+fn bake_slot<'s>(
+    slot: &SlotBake<'s, '_>,
+    shared: &mut Option<PoseShared<'s>>,
+    radiance: &mut SlotRadiance<'_>,
     kept: &mut Vec<PosedBounce>,
 ) -> Option<MoverBounceStates> {
-    let started = Instant::now();
-    let baker = PoseBaker {
+    let SlotBake {
         sh_ctx,
-        ctx: sh_ctx.ray_ctx(),
         inputs,
-        shared,
         job,
+        pose_slots,
         request,
+        memo,
         control,
         valid,
-    };
-    let held = read_held_poses(job, pose_slots, memo, inputs.layout);
+        absent_depth,
+    } = *slot;
+    let started = Instant::now();
+    let held = read_held_poses(job, pose_slots, memo, inputs.layout, request);
     // A pose read back advances now; one whose read fails bakes, and
     // advances as it bakes.
     control.advance(poses_progress_units(
@@ -399,10 +498,30 @@ fn bake_slot(
         |pose| held[pose].is_some(),
     ));
     let bounces: Vec<u32> = pose_slots.iter().map(|slot| slot.bounces).collect();
-    let resolved = baker.bake(held, &bounces, kept)?;
+    let resolved = if held.iter().all(Option::is_some) {
+        ResolvedPoses::read_back(held)
+    } else {
+        let shared = shared.get_or_insert_with(|| PoseShared::new(inputs));
+        let (bounce_one, absent) = radiance.for_job(job, inputs.bounce_fill);
+        let baker = PoseBaker {
+            sh_ctx,
+            ctx: sh_ctx.ray_ctx(),
+            inputs,
+            bounce_one,
+            absent,
+            shared,
+            job,
+            request,
+            control,
+            valid,
+        };
+        baker.bake(held, &bounces, kept)?
+    };
+    #[cfg(test)]
+    let _raw = resolved.held;
     let baked = resolved.baked;
     let poses = MoverPoseStates::from_poses(resolved.poses);
-    let mut states = reduce_poses(job.mover_id, &poses, &shared.absent, request.depth_cap);
+    let mut states = reduce_poses(job.mover_id, &poses, absent_depth, request.depth_cap);
     copy_job_bounce_edges(&mut states, job, inputs.layout);
     if let Some(memo) = memo
         && !states.depth_past_range(request.depth_cap)
@@ -411,20 +530,22 @@ fn bake_slot(
     } else {
         drop(poses);
     }
-    log::info!(
-        "[MoverLight] probe channel bounce: mover `{}` (#{}) re-baked {} posed bounce(s) at {} \
-         of {} pose(s), {} near-field probe(s): {} affected probe(s), {} probe(s) carrying \
-         closed-pose depth, {:.1} s",
-        job.label,
-        job.mover_id,
-        baked_bounces(&bounces, &baked),
-        baked.iter().filter(|&&baked| baked).count(),
-        job.scenes.len(),
-        job.domain_probes.len(),
-        states.bounce.len(),
-        states.depth_carried,
-        started.elapsed().as_secs_f64(),
-    );
+    if baked.contains(&true) {
+        log::info!(
+            "[MoverLight] probe channel bounce: mover `{}` (#{}) re-baked {} posed bounce(s) at \
+             {} of {} pose(s), {} near-field probe(s): {} affected probe(s), {} probe(s) \
+             carrying closed-pose depth, {:.1} s",
+            job.label,
+            job.mover_id,
+            baked_bounces(&bounces, &baked),
+            baked.iter().filter(|&&baked| baked).count(),
+            job.scenes.len(),
+            job.domain_probes.len(),
+            states.bounce.len(),
+            states.depth_carried,
+            started.elapsed().as_secs_f64(),
+        );
+    }
     Some(states)
 }
 
@@ -534,18 +655,26 @@ fn read_held_poses(
     poses: &[PoseSlot],
     memo: Option<&PoseMemo<'_>>,
     layout: &ProbeGridLayout,
+    request: &MoverBounceRequest,
 ) -> Vec<Option<PoseState>> {
+    #[cfg(not(test))]
+    let _ = request;
     poses
         .iter()
         .enumerate()
         .map(|(pose, slot)| {
             let (memo, key) = memo.zip(slot.key.as_ref()).filter(|_| slot.held)?;
-            memo.get(
+            let state = memo.get(
                 key,
                 PoseKind::of(pose, poses.len()),
                 layout,
                 &job.domain_probes,
-            )
+            );
+            #[cfg(test)]
+            if request.fail_read_back.contains(&(job.mover_id, pose)) {
+                return None;
+            }
+            state
         })
         .collect()
 }

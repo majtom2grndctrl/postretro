@@ -125,6 +125,8 @@ pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<B
         depth_cap,
         #[cfg(test)]
         keep_states: false,
+        #[cfg(test)]
+        fail_read_back: Vec::new(),
     };
     Ok(BounceHalfPlan { request, cost })
 }

@@ -1884,7 +1884,7 @@ mod tests {
             0,
             &command,
             &postretro_foundation::WeaponPlacementDescriptor::default(),
-            &CollisionWorld::new(),
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&CollisionWorld::new()),
             postretro_collision::EnvironmentView::level_only(0.0),
             &HitZoneStore::new(),
             0.0,
@@ -2105,7 +2105,7 @@ mod tests {
             0,
             &command,
             &postretro_foundation::WeaponPlacementDescriptor::default(),
-            &wall_world(),
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&wall_world()),
             postretro_collision::EnvironmentView::level_only(0.0),
             &HitZoneStore::new(),
             0.0,
@@ -2136,7 +2136,7 @@ mod tests {
             0,
             &command,
             &postretro_foundation::WeaponPlacementDescriptor::default(),
-            &CollisionWorld::new(),
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&CollisionWorld::new()),
             postretro_collision::EnvironmentView::level_only(0.0),
             &HitZoneStore::new(),
             0.0,
@@ -2165,7 +2165,7 @@ mod tests {
             0,
             &command,
             &postretro_foundation::WeaponPlacementDescriptor::default(),
-            &CollisionWorld::new(),
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&CollisionWorld::new()),
             postretro_collision::EnvironmentView::level_only(0.0),
             &HitZoneStore::new(),
             0.0,
@@ -2553,7 +2553,9 @@ mod tests {
                     placement.clone(),
                 )],
                 Some(&mod_default),
-                &CollisionWorld::new(),
+                &crate::collision::moving::CombinedCollisionWorld::static_only(
+                    &CollisionWorld::new(),
+                ),
                 &HitZoneStore::new(),
                 0.0,
                 1.0 / 60.0,
@@ -2619,23 +2621,21 @@ mod tests {
         }
     }
 
-    // A late start fires from the pawn's live eye along its captured aim, so
-    // splash intake must hold until the host's own flight can reach the wall it
-    // meets; FIRE freezes that distance with the shot.
+    // A splash FIRE freezes how far a declared contact may lie from its path
+    // and still count: radius, the launched muzzle's offset off the eye ray,
+    // and prediction slack. Other shots freeze none.
     #[test]
-    fn remote_splash_fire_freezes_the_hosts_static_wall_distance() {
-        const WALL_Z: f32 = -6.0;
+    fn remote_splash_fire_freezes_its_on_path_tolerance() {
         const RADIUS: f32 = 0.25;
-        let wall = CollisionWorld::from_triangles_for_test(
-            vec![
-                Vec3::new(-10.0, -10.0, WALL_Z),
-                Vec3::new(10.0, -10.0, WALL_Z),
-                Vec3::new(10.0, 10.0, WALL_Z),
-                Vec3::new(-10.0, 10.0, WALL_Z),
-            ],
-            vec![[0, 1, 2], [0, 2, 3]],
-        );
-        let fire = |splash: Option<SplashDescriptor>| {
+        let splash = SplashDescriptor {
+            knockback: None,
+            radius: 3.0,
+            min_fraction: 0.0,
+            self_damage: true,
+        };
+        let fire = |splash: Option<SplashDescriptor>,
+                    muzzle: Vec3,
+                    placement: Option<&WeaponPlacementDescriptor>| {
             let registry = Rc::new(RefCell::new(EntityRegistry::new()));
             let (pawn, weapon) = {
                 let mut registry = registry.borrow_mut();
@@ -2649,19 +2649,21 @@ mod tests {
                 projectile.speed = 30.0;
                 projectile.radius = RADIUS;
                 component.splash = splash;
+                component.muzzle_offset = Some(muzzle);
                 registry
                     .set_component(weapon, component)
                     .expect("remote projectile weapon attaches");
                 (pawn, weapon)
             };
-            // Facing yaw 0 and level pitch aim down -Z, at the wall.
             let remote = remote_command(pawn, Some(weapon), 42, 9, true, false);
             let result = run_remote_weapon_commands(
                 &registry,
                 &[remote],
                 &[],
-                None,
-                &wall,
+                placement,
+                &crate::collision::moving::CombinedCollisionWorld::static_only(
+                    &CollisionWorld::new(),
+                ),
                 &HitZoneStore::new(),
                 0.0,
                 1.0 / 60.0,
@@ -2671,26 +2673,56 @@ mod tests {
             };
             authorized.shot.clone()
         };
+        // The muzzle's offset off the eye ray, composed through the placement
+        // the rebuild resolves. A pawn at the origin with facing yaw 0 and
+        // level pitch aims down -Z.
+        let lateral = |muzzle: Vec3, placement: Option<&WeaponPlacementDescriptor>| {
+            let placement =
+                postretro_foundation::resolve_weapon_placement(placement, None, None, None);
+            let eye = Vec3::new(0.0, 0.5, 0.0);
+            let offset = weapon::muzzle_world_origin(eye, Vec3::NEG_Z, &placement, muzzle) - eye;
+            (offset - Vec3::NEG_Z * offset.dot(Vec3::NEG_Z)).length()
+        };
+        let slack = super::commands::SPLASH_ON_PATH_SLACK;
 
-        let rocket = fire(Some(SplashDescriptor {
-            knockback: None,
-            radius: 3.0,
-            min_fraction: 0.0,
-            self_damage: true,
-        }));
-        let eye_to_wall = rocket.fire_origin.z - WALL_Z;
-        let frozen = rocket
-            .projectile_static_contact_distance
-            .expect("a splash shot freezes its static-world contact");
+        let muzzle = Vec3::new(0.3, -0.2, -0.4);
+        let rocket = fire(Some(splash.clone()), muzzle, None);
+        let expected = RADIUS + lateral(muzzle, None) + slack;
         assert!(
-            (frozen - (eye_to_wall - RADIUS)).abs() <= 1.0e-3,
-            "the swept sphere touches the wall one radius short: {frozen}"
+            rocket
+                .splash_on_path_tolerance
+                .is_some_and(|tolerance| (tolerance - expected).abs() <= 1.0e-5),
+            "{:?} vs {expected}",
+            rocket.splash_on_path_tolerance
         );
-        assert_eq!(
-            fire(None).projectile_static_contact_distance,
-            None,
-            "a direct projectile replays nothing and freezes no wall distance"
+
+        // A placement far off the eye carries a short authored muzzle well off
+        // the eye ray: the tolerance follows the launched muzzle, not the
+        // authored length.
+        let offset_placement = WeaponPlacementDescriptor {
+            offset: PlacementOffset {
+                right: 0.6,
+                up: -0.3,
+                forward: 0.8,
+            },
+            rotation: PlacementRotation::default(),
+        };
+        let short_muzzle = Vec3::new(0.0, 0.0, -0.05);
+        let placed = fire(Some(splash), short_muzzle, Some(&offset_placement));
+        let expected = RADIUS + lateral(short_muzzle, Some(&offset_placement)) + slack;
+        let tolerance = placed
+            .splash_on_path_tolerance
+            .expect("a splash FIRE freezes a tolerance");
+        assert!(
+            (tolerance - expected).abs() <= 1.0e-5,
+            "{tolerance} vs {expected}"
         );
+        assert!(
+            tolerance > RADIUS + short_muzzle.length() + slack + 0.5,
+            "{tolerance}"
+        );
+
+        assert_eq!(fire(None, muzzle, None).splash_on_path_tolerance, None);
     }
 
     #[test]
@@ -4301,7 +4333,7 @@ mod tests {
             &edges,
             &edges,
             None,
-            |_, _| {},
+            |_, _, _| {},
             |_| {},
             timing,
         )

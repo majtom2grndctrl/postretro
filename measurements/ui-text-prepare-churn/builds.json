@@ -1,0 +1,15 @@
+{
+  "before_commit": "94f0240814938872f8662e00f08d7a66b0c4b315 (0297abebe^1)",
+  "after_commit": "0297abebe903e8960d3e23051bcc414c1a3a6204 (#645 merge)",
+  "build": "CARGO_INCREMENTAL=0 CARGO_PROFILE_RELEASE_STRIP=none nice -n 10 cargo build --release -j 6 -p postretro -p postretro-script-compiler (no dev-tools), each in its own worktree",
+  "before_postretro_sha256": "6e4683a973353621335e13d2dc45f9ff9d4c2ef9b25b910d9a3811bcadfdf46d",
+  "after_postretro_sha256": "09990a5162071feb93fa0e8743f45e81cc843a33c8d90b1b25395cf3fea7d662",
+  "before_scripts_build_sha256": "0389c00f54ade7660a487fc2400471284e4131975eb1214eaf5f507fcf024d30",
+  "after_scripts_build_sha256": "6367be33d2cc63b1732c7e3a9769e967c65adf252e5831abc17da62deced88de",
+  "start_script_js": "scripts-build --in content/dev/start-script.ts --out content/dev/start-script.js per worktree; outputs byte-identical",
+  "maps": "rebaked with prl-build built at 0297abebe^1 (main's PRLs fail there: ClusterDirectoryVersionMismatch v3 vs v2); #645 touches no compiler/format/content, so the same PRL bytes (APFS clones) served both worktrees; default warm-build flags, -j 6",
+  "prl_sha256": {
+    "campaign-test.prl": "75a5c09cb9e54e11ddee311c32a22d58aa4444a8a39b66788664ca9a506d3557",
+    "stress-warren-hallway-inspection.prl": "56342173596d230282f8d65257f7822de65fc89c9f10dceb8a404fb82fb5c09d"
+  }
+}

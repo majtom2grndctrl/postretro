@@ -777,7 +777,14 @@ fn fly(rig: &mut Rig, world: &CollisionWorld) {
     let registry = Rc::new(RefCell::new(std::mem::take(&mut rig.registry)));
     let zones = HitZoneStore::new();
     for _ in 0..240 {
-        crate::sim::advance(&registry, world, &zones, 0.0, DT, &mut |_| {});
+        crate::sim::advance(
+            &registry,
+            &postretro_physics::collision::moving::CombinedCollisionWorld::static_only(world),
+            &zones,
+            0.0,
+            DT,
+            &mut |_| {},
+        );
         let remaining = registry
             .borrow()
             .iter_with_kind(ComponentKind::Projectile)

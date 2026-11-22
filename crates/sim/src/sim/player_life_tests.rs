@@ -524,7 +524,7 @@ fn life_state_o16_o35_trigger_transition_blocks_weapons_but_keeps_stage_pickup_p
                     auto_close_timers: None,
                     use_edges: &edges,
                 }),
-                |_, _| {},
+                |_, _, _| {},
                 |_| {},
                 TimingGate::OFF,
             )

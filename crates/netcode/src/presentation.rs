@@ -752,7 +752,7 @@ mod tests {
                 projectile_speed: Some(60.0),
                 projectile_lifetime_seconds: Some(10.0),
                 projectile_tick_seconds: Some(1.0 / 60.0),
-                projectile_static_contact_distance: None,
+                splash_on_path_tolerance: None,
                 is_projectile: true,
                 fire_origin: Vec3::ZERO,
                 timeout_budget_ticks: MAX_OPEN_SHOT_AGE_TICKS,
@@ -801,16 +801,15 @@ mod tests {
         );
         let mut projectile_contact = None;
         let mut remote_impacts = Vec::new();
-        assert!(crate::netcode::host_ingest_ready_hit_declarations(
+        // The declaration binds to its march; the march's step this tick
+        // reaches the wall and releases the blast.
+        let ingested = crate::netcode::host_ingest_ready_hit_declarations(
             &mut server,
             &mut registry,
             &collision_world,
-            &hit_zones,
             &allocator,
             &owners,
             &mut open_shots,
-            intake_tick,
-            0.0,
             ready,
             |registry| {
                 health_at_impact_drain = Some((
@@ -826,7 +825,32 @@ mod tests {
             },
             |_, point| projectile_contact = Some(point),
             |impact| remote_impacts.push(impact),
-        ));
+        );
+        let world = crate::collision::moving::CombinedCollisionWorld::static_only(&collision_world);
+        let released = crate::netcode::host_step_splash_marches(
+            &mut server,
+            &mut registry,
+            &world,
+            &hit_zones,
+            &allocator,
+            &mut open_shots,
+            intake_tick,
+            |registry| {
+                health_at_impact_drain = Some((
+                    registry
+                        .get_component::<HealthComponent>(owner)
+                        .expect("owner remains live during impact drain")
+                        .current,
+                    registry
+                        .get_component::<HealthComponent>(clear_victim)
+                        .expect("victim remains live during impact drain")
+                        .current,
+                ));
+            },
+            |_, release| projectile_contact = release.blast,
+            |impact| remote_impacts.push(impact),
+        );
+        assert!(!ingested && released, "the march releases the blast");
         assert_eq!(projectile_contact, Some(Vec3::X));
         assert_eq!(remote_impacts.len(), 1, "one impact per remote shot");
         let (owner_at_drain, victim_at_drain) =

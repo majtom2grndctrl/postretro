@@ -315,7 +315,9 @@ fn client_weapon_catchup_resolves_every_due_ordinal_at_rendered_pose() {
                 Vec3::new(2.0, 0.0, 0.0),
                 Vec3::NEG_Z,
                 &queued.placement,
-                &crate::collision::CollisionWorld::new(),
+                &crate::collision::moving::CombinedCollisionWorld::static_only(
+                    &crate::collision::CollisionWorld::new(),
+                ),
                 postretro_collision::EnvironmentView::level_only(0.0),
                 &registry,
                 &crate::scripting_systems::hit_zones::HitZoneStore::new(),
@@ -671,7 +673,9 @@ fn client_weapon_hidden_stale_resource_flights_still_contact_after_history_evict
                 Vec3::ZERO,
                 Vec3::NEG_Z,
                 &queued.placement,
-                &crate::collision::CollisionWorld::new(),
+                &crate::collision::moving::CombinedCollisionWorld::static_only(
+                    &crate::collision::CollisionWorld::new(),
+                ),
                 postretro_collision::EnvironmentView::level_only(0.0),
                 &registry,
                 &crate::scripting_systems::hit_zones::HitZoneStore::new(),
@@ -704,7 +708,9 @@ fn client_weapon_hidden_stale_resource_flights_still_contact_after_history_evict
             for _ in 0..3 {
                 sim::advance_predicted(
                     &registry,
-                    &crate::collision::CollisionWorld::new(),
+                    &postretro_physics::collision::moving::CombinedCollisionWorld::static_only(
+                        &crate::collision::CollisionWorld::new(),
+                    ),
                     &crate::scripting_systems::hit_zones::HitZoneStore::new(),
                     0.0,
                     0.25,
@@ -810,7 +816,9 @@ fn client_weapon_charge_correction_uses_frozen_zero_scale_and_preserves_live_fli
         Vec3::ZERO,
         Vec3::NEG_Z,
         &queued.placement,
-        &crate::collision::CollisionWorld::new(),
+        &crate::collision::moving::CombinedCollisionWorld::static_only(
+            &crate::collision::CollisionWorld::new(),
+        ),
         postretro_collision::EnvironmentView::level_only(0.0),
         &registry,
         &crate::scripting_systems::hit_zones::HitZoneStore::new(),
@@ -1328,7 +1336,9 @@ fn client_weapon_invalid_old_charge_correction_retracts_only_that_activation() {
         Vec3::ZERO,
         Vec3::NEG_Z,
         &a.placement,
-        &crate::collision::CollisionWorld::new(),
+        &crate::collision::moving::CombinedCollisionWorld::static_only(
+            &crate::collision::CollisionWorld::new(),
+        ),
         postretro_collision::EnvironmentView::level_only(0.0),
         &registry,
         &crate::scripting_systems::hit_zones::HitZoneStore::new(),

@@ -38,12 +38,29 @@ pub enum ContactClassification {
 pub struct CombinedCastHit {
     pub time_of_impact: f32,
     pub normal: Vec3,
+    /// Read through [`CombinedCastHit::source`]. Shot and sight consumers treat
+    /// a mover contact as a world contact and never branch on it.
     pub(crate) source: CollisionSource,
     pub(crate) mover_id: Option<u32>,
     pub(crate) mover_linear_velocity: Vec3,
     pub(crate) mover_tick_delta: Vec3,
     pub(crate) mover_tick_dt: f32,
     pub(crate) classification: ContactClassification,
+}
+
+impl CombinedCastHit {
+    /// Whether the hit came from static geometry or from a mover at its pose.
+    /// Not exact at a flush seam: on a time-of-impact tie a static wall beats a
+    /// mover, but a mover floor beats static, so a coplanar contact can report
+    /// either surface.
+    pub fn source(&self) -> CollisionSource {
+        self.source
+    }
+
+    /// [`CombinedCastHit::source`] is a mover; the same tie caveat holds.
+    pub fn is_mover(&self) -> bool {
+        matches!(self.source, CollisionSource::Mover(_))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -124,7 +141,7 @@ impl<'a> CombinedCollisionWorld<'a> {
 #[derive(Debug)]
 pub struct MoverCollider {
     pub(crate) mover_id: u32,
-    local_mesh: TriMesh,
+    pub(super) local_mesh: TriMesh,
     /// Farthest vertex from the mover origin: the radius rotation sweeps about.
     local_radius: f32,
     /// Mesh-centred bounding sphere for the query broad phase. The authored
@@ -504,22 +521,31 @@ pub(crate) fn point_inside_mover(
         let Some(pose) = poses.pose(mover.mover_id) else {
             return false;
         };
-        let mover_pose = transform_pose(pose.transform);
-        if !mover_bound_may_reach_segment(mover, &mover_pose, point, Vec3::ZERO, 0.0) {
-            return false;
-        }
-        let local = mover_pose.inverse_transform_point(point).as_dvec3();
-        let vertices = mover.local_mesh.vertices();
-        let mut solid_angle = 0.0_f64;
-        for triangle in mover.local_mesh.indices() {
-            let [a, b, c] = triangle.map(|index| vertices[index as usize].as_dvec3() - local);
-            let (la, lb, lc) = (a.length(), b.length(), c.length());
-            let numerator = a.dot(b.cross(c));
-            let denominator = la * lb * lc + a.dot(b) * lc + a.dot(c) * lb + b.dot(c) * la;
-            solid_angle += 2.0 * numerator.atan2(denominator);
-        }
-        (solid_angle / (4.0 * std::f64::consts::PI)).abs() > 0.5
+        point_inside_posed_mover(mover, &transform_pose(pose.transform), point)
     })
+}
+
+/// [`point_inside_mover`] for one mover at an already-built pose. The same
+/// caveat holds: a point on the surface is undefined.
+pub(super) fn point_inside_posed_mover(
+    mover: &MoverCollider,
+    mover_pose: &Pose,
+    point: Vec3,
+) -> bool {
+    if !mover_bound_may_reach_segment(mover, mover_pose, point, Vec3::ZERO, 0.0) {
+        return false;
+    }
+    let local = mover_pose.inverse_transform_point(point).as_dvec3();
+    let vertices = mover.local_mesh.vertices();
+    let mut solid_angle = 0.0_f64;
+    for triangle in mover.local_mesh.indices() {
+        let [a, b, c] = triangle.map(|index| vertices[index as usize].as_dvec3() - local);
+        let (la, lb, lc) = (a.length(), b.length(), c.length());
+        let numerator = a.dot(b.cross(c));
+        let denominator = la * lb * lc + a.dot(b) * lc + a.dot(c) * lb + b.dot(c) * la;
+        solid_angle += 2.0 * numerator.atan2(denominator);
+    }
+    (solid_angle / (4.0 * std::f64::consts::PI)).abs() > 0.5
 }
 
 pub(crate) fn deepest_mover_push_penetration(
@@ -644,7 +670,7 @@ const BROAD_PHASE_RELATIVE_MARGIN: f32 = 1.0e-5;
 /// far movers, but only after the dispatch and swept-AABB setup this skips.
 /// Non-finite inputs, and finite ones that overflow here, fall through to the
 /// narrow phase.
-fn mover_bound_may_reach_segment(
+pub(super) fn mover_bound_may_reach_segment(
     mover: &MoverCollider,
     mover_pose: &Pose,
     start: Vec3,
@@ -904,7 +930,10 @@ fn record_swept_push(
     }
 }
 
-fn choose_nearest(nearest: &mut Option<CombinedCastHit>, candidate: Option<CombinedCastHit>) {
+pub(super) fn choose_nearest(
+    nearest: &mut Option<CombinedCastHit>,
+    candidate: Option<CombinedCastHit>,
+) {
     let Some(candidate) = candidate else {
         return;
     };
@@ -934,7 +963,7 @@ fn hit_tie_prefers(candidate: &CombinedCastHit, current: &CombinedCastHit) -> bo
     candidate_mover_floor && !current_mover_floor
 }
 
-fn static_shape_hit(hit: ShapeCastHit) -> CombinedCastHit {
+pub(super) fn static_shape_hit(hit: ShapeCastHit) -> CombinedCastHit {
     hit_from_parts(
         hit.time_of_impact,
         hit.normal2,
@@ -944,7 +973,7 @@ fn static_shape_hit(hit: ShapeCastHit) -> CombinedCastHit {
 }
 
 /// `hit.normal2` is local to the mover; `mover_pose` rotates it into the world.
-fn mover_shape_hit(
+pub(super) fn mover_shape_hit(
     hit: ShapeCastHit,
     mover_pose: &Pose,
     mover_id: u32,
@@ -1008,7 +1037,7 @@ fn classify_contact(normal: Vec3) -> ContactClassification {
     }
 }
 
-fn transform_pose(transform: Transform) -> Pose {
+pub(super) fn transform_pose(transform: Transform) -> Pose {
     debug_assert!(
         (transform.scale - Vec3::ONE).length_squared() < 1.0e-6,
         "kinematic mover collision ignores non-unit Transform.scale"

@@ -1307,7 +1307,7 @@ fn teleport_same_tick_yaw_reaches_presentation_aims_and_a_remote_start_aim() {
         &std::collections::HashMap::new(),
         &std::collections::HashMap::new(),
         None,
-        |_, _| {},
+        |_, _, _| {},
         |_| {},
         postretro_sim::sim::TimingGate::OFF,
     );

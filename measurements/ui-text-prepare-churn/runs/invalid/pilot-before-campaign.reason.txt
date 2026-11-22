@@ -1,0 +1,2 @@
+screen locked (CGSSessionScreenIsLocked=1) - stalled at Window ready, killed at 195 s
+first attempt: screen locked; second: no start-script.js (release needs precompiled); third: PRL ClusterDirectoryVersionMismatch v3 vs v2 (main's PRL newer) -> rebaked

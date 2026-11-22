@@ -241,7 +241,13 @@ impl App {
                     origin,
                     direction,
                     &queued.placement,
-                    &self.collision_world,
+                    // The client's shot sees movers where its movement
+                    // prediction has them, never at the presented pose.
+                    &crate::collision::moving::CombinedCollisionWorld::new(
+                        &self.collision_world,
+                        &self.kinematic_mover_colliders,
+                        &self.kinematic_mover_tick_states,
+                    ),
                     postretro_collision::EnvironmentView::new(
                         level_gravity,
                         &self.environment_volumes,

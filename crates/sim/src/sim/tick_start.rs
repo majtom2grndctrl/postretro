@@ -113,7 +113,11 @@ pub fn simulate_tick_with_presentation_aim<AiResult>(
     use_pressed: &HashMap<PlayerId, bool>,
     drop_pressed: &HashMap<PlayerId, bool>,
     trigger_context: Option<TriggerTickContext<'_>>,
-    ingest_ready_remote_hits: impl FnMut(&mut EntityRegistry, &mut dyn FnMut(&mut EntityRegistry)),
+    ingest_ready_remote_hits: impl FnMut(
+        &mut EntityRegistry,
+        &CombinedCollisionWorld<'_>,
+        &mut dyn FnMut(&mut EntityRegistry),
+    ),
     on_impact: impl FnMut(&mut EntityRegistry),
     timing: postretro_stage_timing::TimingGate,
 ) -> TickEvents
@@ -185,7 +189,11 @@ pub fn simulate_tick_scheduled<AiResult>(
     use_pressed: &HashMap<PlayerId, bool>,
     drop_pressed: &HashMap<PlayerId, bool>,
     trigger_context: Option<TriggerTickContext<'_>>,
-    ingest_ready_remote_hits: impl FnMut(&mut EntityRegistry, &mut dyn FnMut(&mut EntityRegistry)),
+    ingest_ready_remote_hits: impl FnMut(
+        &mut EntityRegistry,
+        &CombinedCollisionWorld<'_>,
+        &mut dyn FnMut(&mut EntityRegistry),
+    ),
     mut on_impact: impl FnMut(&mut EntityRegistry),
     timing: postretro_stage_timing::TimingGate,
 ) -> TickEvents

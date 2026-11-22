@@ -139,7 +139,7 @@ impl Scene {
             &no_edges,
             &no_edges,
             None,
-            |_, _| {},
+            |_, _, _| {},
             |_| {},
             timing,
         )

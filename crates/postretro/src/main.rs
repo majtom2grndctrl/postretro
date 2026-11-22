@@ -4726,6 +4726,11 @@ impl App {
                     &mut self.kinematic_mover_tick_states,
                     &apply_outcome.mover_corrections,
                 );
+                netcode::settle_mover_correction_snaps(
+                    &mut registry,
+                    &apply_outcome.mover_corrections,
+                    &self.kinematic_mover_colliders,
+                );
                 if let Some(cooldown) = apply_outcome.owner_private_weapon.cooldown {
                     let _ = reconcile_client_weapon_cooldown_from_slot_table(
                         &mut self.client_predicted_shots,

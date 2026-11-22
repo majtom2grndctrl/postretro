@@ -751,6 +751,11 @@ impl LoopbackHarness {
                 );
             self.latest_mover_corrections
                 .extend(outcome.mover_corrections.iter().copied());
+            super::settle_mover_correction_snaps(
+                &mut self.client_registry,
+                &outcome.mover_corrections,
+                &self.mover_colliders,
+            );
 
             // Arm BEFORE reconcile (load-bearing ordering). This is the REAL production
             // client path (`client_receive_and_apply`): arm prediction, then materialize

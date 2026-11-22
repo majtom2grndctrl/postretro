@@ -35,9 +35,15 @@ pub(crate) struct AnchorScene<'a> {
 }
 
 impl AnchorScene<'_> {
-    /// The emitter's point this tick, from its current (not interpolated) pose.
+    /// The emitter's point this tick, from its current (not interpolated) pose,
+    /// carried by any render-only correction it is drawn with, so a mover's
+    /// sound starts on the deck the frame draws.
     pub(crate) fn fire_time_point(&mut self, id: EntityId) -> Option<Vec3> {
         let pose = *self.registry.get_component::<Transform>(id).ok()?;
+        let pose = self
+            .registry
+            .presentation_correction(id)
+            .map_or(pose, |correction| correction.apply(&pose));
         self.placed(id, pose)
     }
 
@@ -79,5 +85,68 @@ impl AnchorScene<'_> {
             return Some(pose.position + Vec3::new(0.0, movement.capsule.eye_height, 0.0));
         }
         Some(pose.position)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use glam::Vec3;
+    use postretro_entities::{
+        EntityRegistry, KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode,
+        Transform,
+    };
+
+    use super::AnchorScene;
+    use crate::runtime_movers::KinematicMoverRenderCollector;
+
+    fn at(x: f32) -> Transform {
+        Transform {
+            position: Vec3::new(x, 0.0, 0.0),
+            ..Transform::default()
+        }
+    }
+
+    // A sound fired from a mover gliding onto a correction starts on the deck
+    // the frame draws, not on the corrected pose the deck has yet to reach.
+    #[test]
+    fn mover_sound_fires_at_the_drawn_pose_while_a_correction_glides() {
+        let mut registry = EntityRegistry::new();
+        let mover = registry.spawn(at(2.0));
+        registry
+            .set_component(
+                mover,
+                KinematicMoverComponent::new(
+                    7,
+                    KinematicMoverConfig {
+                        waypoints: vec![Vec3::ZERO],
+                        waypoint_names: vec!["a".into()],
+                        speed_mps: 0.0,
+                        wait_ms: 0.0,
+                        mode: KinematicMoverMode::Once,
+                        started: false,
+                        spin_axis: Vec3::ZERO,
+                        initial_spin_rate_rad_s: 0.0,
+                        spin_accel_rad_s2: 0.0,
+                        carry_yaw: false,
+                    },
+                ),
+            )
+            .unwrap();
+        registry.correct_transform(mover, at(2.5), true).unwrap();
+        let mut movers = KinematicMoverRenderCollector::new();
+        let mut scene = AnchorScene {
+            registry: &registry,
+            world: None,
+            movers: &mut movers,
+        };
+        let fired = scene.fire_time_point(mover).unwrap();
+        let drawn = scene
+            .presented_point(super::entity_key(mover), 1.0)
+            .unwrap();
+        assert!(
+            (fired - Vec3::new(2.0, 0.0, 0.0)).length() < 1.0e-6,
+            "{fired}"
+        );
+        assert_eq!(fired.to_array(), drawn);
     }
 }

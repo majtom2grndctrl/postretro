@@ -533,6 +533,9 @@ pub struct ClientReplication {
     /// Off-by-default remote-interpolation continuity diagnostics (see `netdiag`).
     /// Inert unless `postretro::netdiag=debug`; pure observability, never gameplay.
     netdiag: crate::netcode::netdiag::RemoteInterpDiag,
+    /// Test A/B switch: write a mover correction to the current pose only, as
+    /// before smoothing, so the drawn mover steps. Off in production.
+    legacy_mover_corrections: bool,
 }
 
 /// The authoritative local-pawn record this snapshot delivered, captured for the
@@ -2109,7 +2112,16 @@ impl ClientReplication {
                 });
             }
             let _ = registry.set_component(id, plan.phase.clone());
-            let _ = registry.set_component(id, plan.transform);
+            if self.legacy_mover_corrections {
+                let _ = registry.set_component(id, plan.transform);
+            } else {
+                // A correction to a mover this binding already drew glides
+                // onto the corrected pose; a first bind or a rebind lands
+                // whole. `settle_mover_correction_snaps` snaps a glide that
+                // would move the deck by the teleport floor.
+                let glide = bound_mover_id == Some(plan.mover_id);
+                let _ = registry.correct_transform(id, plan.transform, glide);
+            }
             self.bindings
                 .mover_network_ids
                 .insert(network_id, plan.mover_id);
@@ -2450,8 +2462,15 @@ impl ClientReplication {
         &mut self.mover_history
     }
 
-    /// Draw every remote at its sampled world pose, as before mover-relative
-    /// rider presentation; the before half of a test's A/B.
+    /// Write mover corrections to the current pose only, as before smoothing;
+    /// the before half of a test's A/B.
+    #[cfg(test)]
+    pub(crate) fn set_legacy_mover_corrections(&mut self, legacy: bool) {
+        self.legacy_mover_corrections = legacy;
+    }
+
+    /// Draw every remote at its sampled world pose; see
+    /// [`RemoteInterpolationBuffer::set_world_space_riders`].
     #[cfg(test)]
     pub(crate) fn set_world_space_riders(&mut self, world_space: bool) {
         self.interp.set_world_space_riders(world_space);

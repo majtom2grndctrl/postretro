@@ -199,3 +199,76 @@ fn remote_rider_stays_planted_through_spin_stop_reversal_and_restart() {
         );
     }
 }
+
+/// A deck corner, so rotation errors show as distance.
+const DECK_CORNER: Vec3 = Vec3::new(1.75, 0.0, 1.75);
+
+/// Worst same-frame step, in metres at the deck corner and radians, of the
+/// client's drawn mover across a snapshot apply: the pose drawn at each alpha
+/// just before the apply against the pose drawn just after it. The glide then
+/// advances as production advances it. Spin changes force mispredictions.
+fn worst_apply_step(legacy: bool) -> (f32, f32) {
+    let mut h =
+        LoopbackHarness::with_spinning_travelling_platform(mandated_link(), SPIN_RATE_RAD_S);
+    h.client_replication.set_legacy_mover_corrections(legacy);
+    let host_mover = h.host_mover.unwrap();
+    let client_mover = h.client_mover.unwrap();
+    let commands = [(200, 0.0), (300, -171.9), (420, 171.9), (520, -90.0)];
+    let drawn = |h: &LoopbackHarness, alpha: f32| {
+        let pose = h
+            .client_registry
+            .interpolated_transform(client_mover, alpha)
+            .unwrap();
+        (pose.position + pose.rotation * DECK_CORNER, pose.rotation)
+    };
+    let (mut worst_m, mut worst_rad) = (0.0_f32, 0.0_f32);
+    for index in 0..640 {
+        for &(_, rate_deg_s) in commands.iter().filter(|(at, _)| *at == index) {
+            let mut mover = h
+                .host_registry
+                .get_component::<KinematicMoverComponent>(host_mover)
+                .unwrap()
+                .clone();
+            apply_mover_command(&mut mover, &MoverCommand::SetSpinRate(rate_deg_s));
+            h.host_registry.set_component(host_mover, mover).unwrap();
+        }
+        h.client_predict_and_send(&idle_command());
+        h.advance_clock();
+        h.host_tick();
+        let before: Vec<_> = ALPHAS.iter().map(|alpha| drawn(&h, *alpha)).collect();
+        h.client_receive();
+        if index >= WARMUP_FRAMES {
+            for (alpha, (corner, rotation)) in ALPHAS.iter().zip(before) {
+                let (after_corner, after_rotation) = drawn(&h, *alpha);
+                worst_m = worst_m.max((after_corner - corner).length());
+                // atan2, not acos: f32 acos loses milliradians near identity.
+                let turn = (after_rotation * rotation.inverse()).normalize();
+                worst_rad = worst_rad.max(2.0 * turn.xyz().length().atan2(turn.w.abs()));
+            }
+        }
+        // Production advances the glide after the frame's apply and ticks; a
+        // glide seeded this frame is drawn whole first.
+        crate::advance_mover_correction_glides(&mut h.client_registry, DT);
+    }
+    (worst_m, worst_rad)
+}
+
+// Regression: a snapshot correction rewrote the mover's current pose without its
+// previous one, so the drawn mover stepped under everyone standing on it.
+#[test]
+fn mover_correction_holds_the_drawn_deck_on_the_frame_it_lands() {
+    let (before_m, before_rad) = worst_apply_step(true);
+    let (after_m, after_rad) = worst_apply_step(false);
+    eprintln!(
+        "[riders] conditioned spin changes, worst same-frame drawn step: before {before_m:.4} m \
+         {before_rad:.4} rad, after {after_m:.6} m {after_rad:.6} rad"
+    );
+    assert!(
+        before_m > 1.0e-3,
+        "the legacy apply steps the deck: {before_m} m"
+    );
+    assert!(
+        after_m <= 1.0e-4 && after_rad <= 1.0e-4,
+        "{after_m} m {after_rad} rad"
+    );
+}

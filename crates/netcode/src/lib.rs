@@ -81,7 +81,7 @@ mod lag_seed;
 mod lifecycle;
 mod movement_state;
 mod mover_glide;
-pub use mover_glide::advance_mover_correction_glides;
+pub use mover_glide::{advance_mover_correction_glides, settle_mover_correction_snaps};
 mod netdiag;
 mod prediction;
 mod presentation;

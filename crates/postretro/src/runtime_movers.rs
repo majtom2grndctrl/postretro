@@ -376,13 +376,26 @@ impl KinematicMoverRenderCollector {
             });
 
             let origin_cell = world.locate_cell(current.position) as u32;
+            // A connected client gliding onto a correction draws the mover away
+            // from its simulation pose, so a presented pose in view draws too.
+            let presented_visible = || {
+                registry.presentation_correction(id).is_some()
+                    && mover_visible_against_cell_bounds(
+                        drawn,
+                        world.locate_cell(interpolated.position) as u32,
+                        world_aabb.min,
+                        world_aabb.max,
+                        drawn_cell_bounds,
+                    )
+            };
             if mover_visible_against_cell_bounds(
                 drawn,
                 origin_cell,
                 current_world_aabb.min,
                 current_world_aabb.max,
                 drawn_cell_bounds,
-            ) || docked_door_borders_visible_cell(drawn, mover, &world.portals)
+            ) || presented_visible()
+                || docked_door_borders_visible_cell(drawn, mover, &world.portals)
             {
                 self.instances.push(instance);
                 self.sh_sample_regions.push(ShSampleRegion::new(
@@ -1908,6 +1921,46 @@ pub(crate) mod tests {
     // draws (cell 0 here; the main view draws cell 1) records for the beauty
     // pass and SH sampling, while a ghost culled at the same pose through
     // `visible_at` reads the main view's cells alone and is not collected.
+    // A connected client gliding a mover onto a correction draws it at its
+    // presented pose: in view there, it draws though its corrected pose is not,
+    // and its SH sample region covers where it is drawn.
+    #[test]
+    fn mover_presented_in_view_draws_while_its_corrected_pose_is_out_of_view() {
+        let mut registry = EntityRegistry::new();
+        let geometry = geometry(0);
+        let mover = spawn_from_geometry(&mut registry, &geometry).unwrap()[0];
+        let world = two_cell_world(geometry);
+        let visible = VisibleCells::Culled(vec![1]);
+        let at = |position: Vec3| Transform {
+            position,
+            ..Transform::default()
+        };
+        let in_view = at(Vec3::splat(12.0));
+        let out_of_view = at(Vec3::new(1.0, 2.0, 3.0));
+        registry.set_presentation_transform(mover, in_view).unwrap();
+        registry
+            .correct_transform(mover, out_of_view, true)
+            .unwrap();
+
+        let mut collector = KinematicMoverRenderCollector::new();
+        collector.collect(&registry, &world, &visible, 0.5);
+        assert_eq!(
+            collector.instances().len(),
+            1,
+            "drawn where it is presented"
+        );
+        let region = collector.sh_sample_regions()[0];
+        assert!(
+            region.min.cmple(Vec3::splat(12.0)).all()
+                && region.max.cmpge(Vec3::new(13.0, 13.0, 12.0)).all()
+        );
+
+        // Without the glide the corrected pose alone decides, and is culled.
+        registry.clear_presentation_correction(mover);
+        collector.collect(&registry, &world, &visible, 0.5);
+        assert!(collector.instances().is_empty());
+    }
+
     #[test]
     fn mover_collector_admits_mirror_only_movers_but_culls_ghosts_against_main_cells() {
         let mut registry = EntityRegistry::new();

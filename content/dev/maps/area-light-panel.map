@@ -88,7 +88,7 @@
 }
 // entity 2
 {
-"classname" "info_player_start"
+"classname" "player_spawn"
 "origin" "64 64 24"
 "angle" "45"
 }

@@ -32,10 +32,16 @@ kit.RUNS = HERE / "runs"
 kit.RAW = HERE / "raw"
 UHD, FHD = kit.UHD, kit.FHD
 AUTO = [1536, 960]
+QHD = [2560, 1440]
 CONFIGS = {"near-4k": ("near", UHD), "near-1080": ("near", FHD), "test-4k": ("test", UHD),
            "mid-4k": ("mid", UHD), "far-4k": ("far", UHD),
            # The 5300M's Auto resolution (landing row M2).
-           "near-auto": ("near", AUTO), "test-auto": ("test", AUTO), "mid-auto": ("mid", AUTO)}
+           "near-auto": ("near", AUTO), "test-auto": ("test", AUTO), "mid-auto": ("mid", AUTO),
+           # reflection-probe-cell-path's remaining-cost table (shape measurement 1):
+           # every view at Auto, 1440p and 4K.
+           "low-4k": ("low", UHD), "low-auto": ("low", AUTO), "far-auto": ("far", AUTO),
+           "near-1440": ("near", QHD), "test-1440": ("test", QHD), "mid-1440": ("mid", QHD),
+           "low-1440": ("low", QHD), "far-1440": ("far", QHD)}
 FREE_MASK = 0x13F
 # Two-binary A/B: these variants run their own binary's shader, no override.
 BINARY_VARIANTS = {"before": "CELL_BIN_BEFORE", "after": "CELL_BIN_AFTER"}

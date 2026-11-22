@@ -1,7 +1,7 @@
 # E17--mover-relative-rider-presentation — plan of record
 
 mode: resumable
-status: approved
+status: approved (all tasks done; results recorded)
 read at: be041cf8
 
 ## Owner rulings
@@ -52,45 +52,45 @@ read at: be041cf8
 
 Row numbers follow the brief's Acceptance list in order.
 
-| AC | Row (short) | Proof | Status |
-|---|---|---|---|
-| 1 | Ten revolutions planted, `1e-4`, client view and host seat (P11) | `remote_rider_stays_planted_on_spinning_travelling_mover_client_view`, `..._host_seat` on a new spin+travel fixture with a second rider, mandated profile | achievable as stated |
-| 2 | Spin start, stop, reversal mid-interval | same fixture, scripted spin changes | achievable as stated |
-| 3 | `carry_yaw` yaw rule; deterministic; pitch/roll no effect | rebase unit tests | achievable as stated |
-| 4 | Same mover attaches; differing ends draw today's world pose | rebase unit tests, both sides | achievable as stated |
-| 5 | Sparse deltas: Transform-only and movement-only attach | interpolation buffer tests | achievable as stated |
-| 6 | Late ground sample decides later samples (P9) | interpolation buffer test | achievable as stated |
-| 7 | Fallbacks: missing ground or history, P8, unloaded, non-finite, zero-scale | rebase unit tests | achievable as stated |
-| 8 | Teleport cut; first attach after the cut | interpolation and rebase test | achievable as stated |
-| 9 | Planted foot within `1e-3`: remote on both seats, local pawn and NPC on SP/host, vertical mover | foot-probe tests against the presented pose source | achievable as stated |
-| 10 | Correction frame ≤1e-4 m and rad; same convergence time at 30/60/240 Hz | registry smoothing tests plus frame-loop harness | achievable as stated |
-| 11 | Zero-tick correction never steps (P1) | frame harness | achievable as stated |
-| 12 | One pose for every reader on the correction frame (P2) | agreement test | achievable as stated |
-| 13 | Before/after worst same-frame step recorded | measurement test, figures in this plan | achievable as stated |
-| 14 | Compose; bounds snap incl. rotation-only; whole snap (P18); clears | smoothing tests | achievable as stated |
-| 15 | Client eye on corrected mover within `1e-4` (P3); `carry_yaw` yaw; mispredict glides world (P17) | client eye harness | achievable as stated |
-| 16 | `carry_yaw` zero-tick yaw (P13) | client eye harness | achievable as stated |
-| 17 | Eye ≤ own motion on correction frame (P14) | client eye harness | achievable as stated |
-| 18 | Jump off or step to another mover mid-glide (P15) | hand-off tests | achievable as stated |
-| 19 | One snapshot corrects mover and moves ground (P5, P15) | hand-off tests | achievable as stated |
-| 20 | Land on a mover mid-glide (P4, P15) | hand-off tests | achievable as stated |
-| 21 | Teleport off mid-glide cuts clean (P6) | hand-off tests | achievable as stated |
-| 22 | Rotation-only snap cuts the eye (P7) | hand-off tests | achievable as stated |
-| 23 | Despawn or rebind mid-glide (P12, P16) | hand-off tests | achievable as stated |
-| 24 | Static ground or airborne: eye bit-equal; mesh bit-equal except a client mesh carries the eye's world offset (restated) | eye and mesh equality tests | achievable as restated |
-| 25 | Quarter turn: arc midpoint; constant radius | local eye tests on SP, host and client | achievable as stated |
-| 26 | Pitched or rolled mover: eye height along world-up | local eye test | achievable as stated |
-| 27 | Transitions, holds, cuts and missing pawn draw today's blend (P19) | local eye tests | achievable as stated |
-| 28 | Teleport-class correction on a gliding mover moves the eye once (P19) | local eye test | achievable as stated |
-| 29 | Client mesh ≤ own motion on hand-off frames | mesh hand-off test | achievable as stated |
-| 30 | `carry_yaw` hand-off yaw; command yaw unchanged (P20) | hand-off tests | achievable as stated |
-| 31 | Every consumer agrees with the presented pose under smoothing | agreement test: beauty, shadow, occluder, light, ghost, sound, rebase, probe, eye, mesh, `presented_landing` | achievable as stated |
-| 32 | Presented pose in view draws; SH and fired sound follow | collector and anchor tests | achievable as stated |
-| 33 | Authority bit-equal with features disabled; `WIRE_VERSION` unchanged | A/B harness run with a presentation-off switch | achievable as stated |
-| 34 | `carry_yaw` legs relative to aim equal; off → equal outright | remote locomotion test | achievable as stated |
-| 35 | Non-riders, static, no-ground and mover-less maps bit-equal | equality tests | achievable as stated |
-| 36 | Every remote riding, several movers: bounds, zero allocation, Presentation stage cost before/after | stress fixture plus `alloc_probe` (installed in netcode's tests), cost figures here | achievable as stated (see Corrections, hot paths) |
-| M1 | Co-op carousel under the lag proxy; README recipe | owner, in-engine | manual |
+| AC | Row (short) | Proof | Status | Result |
+|---|---|---|---|---|
+| 1 | Ten revolutions planted, `1e-4`, client view and host seat (P11) | `remote_rider_stays_planted_on_spinning_travelling_mover_client_view`, `..._host_seat` on a new spin+travel fixture with a second rider, mandated profile | achievable as stated | pass: client 0.6273 → 0.000006 m, host 0.0465 → 0.000006 m |
+| 2 | Spin start, stop, reversal mid-interval | same fixture, scripted spin changes | achievable as stated | pass: ≤ 0.000019 m both seats |
+| 3 | `carry_yaw` yaw rule; deterministic; pitch/roll no effect | rebase unit tests | achievable as stated | pass |
+| 4 | Same mover attaches; differing ends draw today's world pose | rebase unit tests, both sides | achievable as stated | pass (see review item R1) |
+| 5 | Sparse deltas: Transform-only and movement-only attach | interpolation buffer tests | achievable as stated | pass |
+| 6 | Late ground sample decides later samples (P9) | interpolation buffer test | achievable as stated | pass |
+| 7 | Fallbacks: missing ground or history, P8, unloaded, non-finite, zero-scale | rebase unit tests | achievable as stated | pass |
+| 8 | Teleport cut; first attach after the cut | interpolation and rebase test | achievable as stated | pass |
+| 9 | Planted foot within `1e-3`: remote on both seats, local pawn and NPC on SP/host, vertical mover | foot-probe tests against the presented pose source | achievable as stated | pass: NPC (single-player/host pass) and rebased remote (client pass); the local pawn shares the NPC path (`rides_mover` on its ground); host seat uses the same presented table |
+| 10 | Correction frame ≤1e-4 m and rad; same convergence time at 30/60/240 Hz | registry smoothing tests plus frame-loop harness | achievable as stated | pass: same remainder at 30/60/240 Hz; 1 µm conditioned step |
+| 11 | Zero-tick correction never steps (P1) | frame harness | achievable as stated | pass |
+| 12 | One pose for every reader on the correction frame (P2) | agreement test | achievable as stated | pass |
+| 13 | Before/after worst same-frame step recorded | measurement test, figures in this plan | achievable as stated | pass: conditioned 0.7397 m / 0.3000 rad → 0.000001 m / 0.000000 rad; synthetic zero-tick 0.2600 → 0 m |
+| 14 | Compose; bounds snap incl. rotation-only; whole snap (P18); clears | smoothing tests | achievable as stated | pass |
+| 15 | Client eye on corrected mover within `1e-4` (P3); `carry_yaw` yaw; mispredict glides world (P17) | client eye harness | achievable as stated | pass at unit level (eye on drawn deck through a glide, P13 view yaw, P17); no end-to-end 30/60/240 Hz eye harness |
+| 16 | `carry_yaw` zero-tick yaw (P13) | client eye harness | achievable as stated | pass: `carry_yaw_view_stays_on_the_drawn_deck_when_a_correction_changes_spin` (fixed after review) |
+| 17 | Eye ≤ own motion on correction frame (P14) | client eye harness | achievable as stated | pass |
+| 18 | Jump off or step to another mover mid-glide (P15) | hand-off tests | achievable as stated | pass |
+| 19 | One snapshot corrects mover and moves ground (P5, P15) | hand-off tests | achievable as stated | pass: share kept out when the eye rode the deck (fixed after review); no combined eye-level P5 test |
+| 20 | Land on a mover mid-glide (P4, P15) | hand-off tests | achievable as stated | pass |
+| 21 | Teleport off mid-glide cuts clean (P6) | hand-off tests | achievable as stated | pass: `apply_time_cut_while_riding_stays_a_cut` (fixed after review) |
+| 22 | Rotation-only snap cuts the eye (P7) | hand-off tests | achievable as stated | pass |
+| 23 | Despawn or rebind mid-glide (P12, P16) | hand-off tests | achievable as stated | pass |
+| 24 | Static ground or airborne: eye bit-equal; mesh bit-equal except a client mesh carries the eye's world offset (restated) | eye and mesh equality tests | achievable as restated | pass: eye bit-exact off movers; mesh pinned only riding or with a client offset in flight |
+| 25 | Quarter turn: arc midpoint; constant radius | local eye tests on SP, host and client | achievable as stated | pass |
+| 26 | Pitched or rolled mover: eye height along world-up | local eye test | achievable as stated | pass |
+| 27 | Transitions, holds, cuts and missing pawn draw today's blend (P19) | local eye tests | achievable as stated | pass |
+| 28 | Teleport-class correction on a gliding mover moves the eye once (P19) | local eye test | achievable as stated | partial: the cut holds and the next attach hands the glide off (covered piecewise); no single test of a teleport-class correction landing on a gliding deck |
+| 29 | Client mesh ≤ own motion on hand-off frames | mesh hand-off test | achievable as stated | pass |
+| 30 | `carry_yaw` hand-off yaw; command yaw unchanged (P20) | hand-off tests | achievable as stated | pass |
+| 31 | Every consumer agrees with the presented pose under smoothing | agreement test: beauty, shadow, occluder, light, ghost, sound, rebase, probe, eye, mesh, `presented_landing` | achievable as stated | pass |
+| 32 | Presented pose in view draws; SH and fired sound follow | collector and anchor tests | achievable as stated | pass |
+| 33 | Authority bit-equal with features disabled; `WIRE_VERSION` unchanged | A/B harness run with a presentation-off switch | achievable as stated | pass |
+| 34 | `carry_yaw` legs relative to aim equal; off → equal outright | remote locomotion test | achievable as stated | pass |
+| 35 | Non-riders, static, no-ground and mover-less maps bit-equal | equality tests | achievable as stated | pass at unit level (world fallback and blends bit-exact, other entities untouched by a glide, authority A/B); no full-render equality run |
+| 36 | Every remote riding, several movers: bounds, zero allocation, Presentation stage cost before/after | stress fixture plus `alloc_probe` (installed in netcode's tests), cost figures here | achievable as stated (see Corrections, hot paths) | partial: zero allocations for rebase, glide advance, presented poses, eye; rider foot probe allocates 6 per probe in the shared pose sampler (owner item O2); Presentation stage before/after needs an in-engine run (owner item O4) |
+| M1 | Co-op carousel under the lag proxy; README recipe | owner, in-engine | manual | outstanding: manual, owner in-engine |
 
 ## Tasks
 
@@ -111,3 +111,31 @@ Row numbers follow the brief's Acceptance list in order.
 Hot paths every task honours: the registry accessor, rider placement, rider foot probes and the smoothing advance. None allocates per frame in steady state, and every per-frame pass runs inside `FrameStage::Presentation`.
 
 Out of scope, noted for a follow-up: `crates/sim/src/sim/tick.rs.orig` is a tracked stray merge artifact (from merge 3b4be03c) and is not compiled.
+
+## Review loop
+
+One `/review-panel` round: 3 slices plus a seam pass, 10 read-only reviewers (3 correctness tracers, 2 adversarial testers and 1 contract verifier on opus; 3 hygiene/drift on sonnet; 1 seam tracer). Fixed:
+
+- 🔴 A teleport or cut adopted during snapshot apply while riding was undone by the apply-time eye hand-off (found by 4 reviewers). The hand-off now skips held endpoints, and the view-yaw hand-off clears on any held eye. Test: `apply_time_cut_while_riding_stays_a_cut`.
+- 🔴 A snapshot that corrected the deck and moved the pawn's ground off it counted the mover share twice (3 reviewers). The share is now kept out whenever the eye rode the corrected deck; the detach hand-off adds the glide once.
+- 🟡 With carry_yaw, view yaw left the drawn deck on zero-tick frames when a correction changed the spin rate (4 reviewers). The view now turns with the deck as drawn, `settled + drawn world-up turn since the tick start`. This reduces to the old α·Δ off glides. Test added.
+- 🟡 The view-yaw hand-off missed a glide lost under the same deck (despawn, rebind).
+- 🟡 The host-seat look-ahead pose for ghost voices skipped the rebase; it now shares `rebase_on_presented_mover`.
+- 🟡 "First bind lands whole" was dead code (the binding is inserted first); first bind now needs mover history before it glides.
+- 🟢 `fire_time_point` applies only a mover's glide. `rebased_riders` clears on reset and when no render tick exists. The ghost-link harness records real host mover poses. Dead `PoseCorrection::max_point_displacement` removed.
+- Comment drift: three doc blocks moved back onto their functions (`client_decay_local_correction`, `net_sample_remote_interpolation`, the mirror test). Docs updated for `interpolated_transform`, the correction field, foot-probe determinism, mover cull, host-seat probe, `InterpolableState::lerp` / `interpolated_state`, and one stale `main.rs` pointer.
+
+Left as is, with reasons:
+- Pin and row tags in code comments: the repo already tags pins this way; the prose states each rule.
+- Host foot-probes client pawns twice per frame (Presentation, then HostSend). Harmless: the HostSend probe wins. It goes away with owner item O2.
+- A snap cut briefly drops the client mesh's world offset (centimetres) until the next attached interval.
+- The apply-time hand-off on a frame that ticks reads the post-drain alpha (centimetre error on rotating glides). Zero-tick frames, which P12/P16 name, are exact.
+
+After the fixes, these pass: netcode lib 1143, sim lib 2227, entities 353, physics 559, `postretro --features dev-tools` bin 3203. `/preflight` has not run: only the owner can invoke it.
+
+## Owner items
+
+- **R1 — remote riders step on leaving or landing.** The Transitions Decision and row 4 draw a remote rider's leave/land interval exactly in world space. The rider was drawn on the current deck the frame before, so it jumps by the mover's motion over the interpolation delay: up to about 0.6 m on the client view and 0.05 m on the host seat. That conflicts with the Problem's "landing, leaving and changing movers look as they do today" and with M1's "no correction pop". A fix (blend the transition between the deck-placed and world poses, or hand the gap off) changes Decision/row 4 wording, so it waits for the owner.
+- **O2 — rider foot probe allocations.** 6 per probe inside the shared hit-zone pose sampler (`sample_world_pose_for_probe` clones the mesh animation and returns a joint `Vec`). The Hot-paths Decision says none allocates per frame. Fixing it refactors the sampler that hit detection shares: extend this brief, or file a follow-up?
+- **O3 — host-seat stage attribution.** Host-seat rebase and probes run in HostSend, not Presentation (see Corrections).
+- **O4 — measurements.** The Presentation CPU stage before/after figures and M1 need an in-engine run.

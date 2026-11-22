@@ -38,33 +38,58 @@ fn help_flags(help: &str) -> std::collections::BTreeSet<String> {
         .collect()
 }
 
-/// The parser and the help name the same flags, apart from `-h`/`--help`
-/// and `foreign` (another program's flags the help mentions).
-fn assert_help_matches_parser(source: &str, marker: &str, help: &str, foreign: &[&str]) {
-    let exempt =
-        |flag: &String| flag != "-h" && flag != "--help" && !foreign.contains(&flag.as_str());
-    let parsed: std::collections::BTreeSet<_> = parser_flags(source, marker)
-        .into_iter()
-        .filter(exempt)
-        .collect();
-    let listed: std::collections::BTreeSet<_> =
-        help_flags(help).into_iter().filter(exempt).collect();
-    assert!(!parsed.is_empty(), "no flags found in `{marker}`");
-    let undocumented: Vec<_> = parsed.difference(&listed).collect();
-    let unparsed: Vec<_> = listed.difference(&parsed).collect();
+/// Flags that open an entry line: `-j, --jobs <N>   ...` names `-j` and
+/// `--jobs`. A flag named only in another entry's prose has no line of its own.
+fn entry_flags(help: &str) -> std::collections::BTreeSet<String> {
+    help.lines()
+        .flat_map(|line| {
+            line.split_whitespace()
+                .map(|word| word.trim_end_matches(','))
+                .take_while(|word| is_flag_name(word))
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Every flag the parser matches has its own help entry, every entry is one
+/// the parser matches, and prose names no flag the parser lacks.
+#[test]
+fn help_lists_every_flag_the_parser_accepts() {
+    let help = help_text();
+    let exempt = |flag: &String| flag != "-h" && flag != "--help";
+    let parsed: std::collections::BTreeSet<_> =
+        parser_flags(include_str!("main.rs"), "fn parse_args_from")
+            .into_iter()
+            .filter(exempt)
+            .collect();
+    let entries: std::collections::BTreeSet<_> =
+        entry_flags(&help).into_iter().filter(exempt).collect();
+    assert!(
+        parsed.len() > 30,
+        "only {} parser flags found",
+        parsed.len()
+    );
+    let undocumented: Vec<_> = parsed.difference(&entries).collect();
+    let unparsed: Vec<_> = entries.difference(&parsed).collect();
     assert!(
         undocumented.is_empty() && unparsed.is_empty(),
-        "help and parser disagree: parsed but missing from help {undocumented:?}; \
-         in help but never parsed {unparsed:?}"
+        "help and parser disagree: parsed but no help entry {undocumented:?}; \
+         help entry but never parsed {unparsed:?}"
+    );
+    let stray: Vec<_> = help_flags(&help)
+        .into_iter()
+        .filter(|flag| exempt(flag) && !parsed.contains(flag))
+        .collect();
+    assert!(
+        stray.is_empty(),
+        "help prose names unparsed flags {stray:?}"
     );
 }
 
+/// An entry line names its flags; a flag left only in prose does not count.
 #[test]
-fn help_lists_every_flag_the_parser_accepts() {
-    assert_help_matches_parser(
-        include_str!("main.rs"),
-        "fn parse_args_from",
-        &help_text(),
-        &[],
-    );
+fn entry_flags_skip_prose_mentions() {
+    let help = "OPTIONS:\n    -j, --jobs <N>   Workers\n    --release   Implies --no-cache\n";
+    let flags: Vec<_> = entry_flags(help).into_iter().collect();
+    assert_eq!(flags, ["--jobs", "--release", "-j"]);
 }

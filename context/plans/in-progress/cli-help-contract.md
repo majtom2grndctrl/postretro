@@ -16,7 +16,7 @@
 ## Invariants
 
 - **Engine streams and exit codes.** Requested help goes to **stdout** and exits **0**. A usage error goes to **stderr** and exits **2**. Existing binaries keep their current streams: `prl-build`'s data-script test reads `scripts-build --help` from stderr.
-- **What counts as a flag token.** Any argv token after `argv[0]` that starts with `-` and is not consumed as a preceding flag's value. `-h` and `--help` print help wherever they appear as flag tokens.
+- **What counts as a flag token.** Any argv token after `argv[0]` that starts with `-` and is not consumed as a preceding flag's value, except a bare `--`: `xtask run <map> -- <args>` forwards one, so it passes. `-h` and `--help` print help wherever they appear as flag tokens.
 - **Value consumption matches today's parsers exactly.** A value-taking flag consumes the next token unless that token starts with `--`. `--host` and `--connect` also leave an empty next token unconsumed. A value starting with a single `-` (for example `--start-pose -1,2,3,0,0`) is a value, not a flag. The registry records each flag's value shape (none, required, optional), and both the unknown-flag check and `resolve_map_path` derive their skipping from it. If `resolve_map_path` keeps its own list, a test asserts that the list and the registry agree.
 - **The `=` form is accepted only where the owning parser accepts it.** The registry records which flags accept `--flag=value`. The check rejects `--flag=value` for a flag whose parser ignores that form. It must never accept a token the subsystem then silently drops.
 - **Positional tokens are unchanged.** The first non-flag token is the map; extra positionals keep today's behaviour.

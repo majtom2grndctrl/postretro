@@ -1,6 +1,6 @@
 // Engine command-line flag registry: every flag's name, value shape, `=` form,
 // feature gate and help line; `--help` and the unknown-flag check come from it.
-// See: context/plans/in-progress/cli-help-contract.md · context/lib/boot_sequence.md §1
+// See: context/lib/development_guide.md §Build and run (Command-line flags)
 
 use std::io::Write as _;
 

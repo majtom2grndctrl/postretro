@@ -30,22 +30,27 @@ enum Command {
 }
 
 /// Every token is checked before anything is written: an unrecognised one is
-/// a usage error rather than a silent regeneration of `sdk/types/`.
+/// a usage error rather than a silent regeneration of `sdk/types/`. Help wins
+/// wherever it appears.
 fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Command, String> {
-    let mut iter = args.into_iter().skip(1);
+    let args: Vec<String> = args.into_iter().skip(1).collect();
+    if args.iter().any(|arg| arg == "-h" || arg == "--help") {
+        return Ok(Command::Help);
+    }
+    let mut iter = args.into_iter();
     let mut out = None;
     while let Some(arg) = iter.next() {
-        if arg == "-h" || arg == "--help" {
-            return Ok(Command::Help);
-        }
         let value = if arg == "--out" {
-            iter.next()
-                .ok_or_else(|| "--out requires a directory".to_string())?
+            // A `--` token is the next flag, not a directory to write into.
+            iter.next().filter(|value| !value.starts_with("--"))
         } else if let Some(value) = arg.strip_prefix("--out=") {
-            value.to_string()
+            Some(value.to_string())
         } else {
             return Err(format!("unexpected argument `{arg}`"));
         };
+        let value = value
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "--out requires a directory".to_string())?;
         if out.replace(PathBuf::from(value)).is_some() {
             return Err("--out given more than once".to_string());
         }
@@ -106,6 +111,8 @@ mod tests {
         assert_eq!(parse(&["--help"]), Ok(Command::Help));
         assert_eq!(parse(&["-h"]), Ok(Command::Help));
         assert_eq!(parse(&["--out", "x", "--help"]), Ok(Command::Help));
+        assert_eq!(parse(&["--hepl", "--help"]), Ok(Command::Help));
+        assert_eq!(parse(&["--out", "--help"]), Ok(Command::Help));
     }
 
     #[test]
@@ -116,6 +123,9 @@ mod tests {
         for args in [
             &["--hepl"][..],
             &["--out"],
+            &["--out", "--hepl"],
+            &["--out="],
+            &["--out", ""],
             &["stray"],
             &["--out=a", "--out=b"],
         ] {

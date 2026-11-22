@@ -1,6 +1,6 @@
 // Flag registry tests: help and rejection, value skipping shared with the map
 // scan, and a source scan that keeps every parsed flag registered.
-// See: context/plans/in-progress/cli-help-contract.md
+// See: context/lib/development_guide.md §Build and run (Command-line flags)
 
 use std::path::{Path, PathBuf};
 
@@ -41,7 +41,10 @@ fn a_help_token_consumed_as_a_value_is_not_a_help_request() {
 fn a_bare_separator_is_stepped_over_not_rejected() {
     // `xtask run <map> -- --host` forwards the second `--` to the engine.
     assert_eq!(check(&argv(&["maps/x.prl", "--", "--host"])), Verdict::Run);
-    assert_eq!(check(&argv(&["--", "--hepl"])), Verdict::Unknown("--hepl".into()));
+    assert_eq!(
+        check(&argv(&["--", "--hepl"])),
+        Verdict::Unknown("--hepl".into())
+    );
     assert_eq!(check(&argv(&["--", "--help"])), Verdict::Help);
 }
 

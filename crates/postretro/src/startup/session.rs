@@ -1840,4 +1840,67 @@ mod tests {
             Some(PathBuf::from("maps/x.prl")),
         );
     }
+
+    /// The unknown-flag check passes `--flag=value` for every flag registered
+    /// with the `=` form, so its parser must read that form, not drop it. A
+    /// new value flag fails here until its parser is checked.
+    #[test]
+    fn every_registered_equals_form_is_read_by_its_parser() {
+        use crate::startup::camera_route_flags::{
+            CAMERA_ROUTE_FLAG, CAMERA_ROUTE_HOLD_FLAG, CAMERA_ROUTE_PACING_FLAG,
+            CAMERA_ROUTE_REPORT_FLAG, CAMERA_ROUTE_STALL_TIMEOUT_FLAG, PRESENT_MODE_FLAG,
+            RECORD_CAMERA_ROUTE_FLAG,
+        };
+        use crate::startup::cli_flags::{
+            CONNECT_FLAG, FLAGS, HOST_FLAG, OBSERVE_LIVE_FLAG, PASSWORD_FLAG,
+        };
+        use crate::startup::start_pose::{START_POSE_FLAG, start_pose_arg};
+        use postretro_netcode::{NetRole, parse_net_config};
+
+        let mut checked = 0;
+        for spec in FLAGS.iter().filter(|spec| spec.equals_form) {
+            let name = spec.name;
+            let launch = |value: &str| argv(&[&format!("{name}={value}")]);
+            let read = match name {
+                MOD_FLAG | BAKED_ROOT_FLAG | CORE_ROOT_FLAG | APP_NAME_FLAG => {
+                    path_flag_value(&launch("x"), name) == Some(PathBuf::from("x"))
+                }
+                CONTENT_ROOT_FLAG => names_flag(&launch("x"), name),
+                POOL_SEED_FLAG => matches!(pool_seed_arg(&launch("7")), PoolSeedArg::Valid(7)),
+                HEADLESS_FLAG => headless_arg(&launch("r.json")) == Some(Some("r.json")),
+                CAPTURE_FLAG => capture_arg(&launch("s.json")) == Some(Some("s.json")),
+                START_POSE_FLAG => start_pose_arg(&launch("1,2,3,0,0")).is_some(),
+                HOST_FLAG => {
+                    parse_net_config(&launch("30000")).map(|net| net.role)
+                        == Ok(NetRole::Host { port: 30000 })
+                }
+                CONNECT_FLAG => matches!(
+                    parse_net_config(&launch("10.0.0.2")).map(|net| net.role),
+                    Ok(NetRole::Connect { .. })
+                ),
+                PASSWORD_FLAG => {
+                    parse_net_config(&launch("p")).map(|net| net.password)
+                        == Ok(Some("p".to_string()))
+                }
+                #[cfg(feature = "observe-live")]
+                OBSERVE_LIVE_FLAG => observe_live_port_arg(&launch("8998")) == Some(8998),
+                // A build without the feature reads neither form.
+                #[cfg(not(feature = "observe-live"))]
+                OBSERVE_LIVE_FLAG => true,
+                // One shared reader in `playback::args`; its tests cover each
+                // flag's `=` form in a `dev-tools` build.
+                CAMERA_ROUTE_FLAG
+                | CAMERA_ROUTE_HOLD_FLAG
+                | CAMERA_ROUTE_PACING_FLAG
+                | CAMERA_ROUTE_REPORT_FLAG
+                | CAMERA_ROUTE_STALL_TIMEOUT_FLAG
+                | RECORD_CAMERA_ROUTE_FLAG
+                | PRESENT_MODE_FLAG => true,
+                other => panic!("no `=`-form parser check for {other}; add one here"),
+            };
+            assert!(read, "{name}=… is accepted by the check but not read");
+            checked += 1;
+        }
+        assert!(checked >= 20, "only {checked} `=` forms checked");
+    }
 }

@@ -1,0 +1,13 @@
+{
+  "label": "m2-after-campaign",
+  "main_thread_samples": 6054,
+  "render_submit_frame": "_RNvMs_NtNtCsg8CI1sGq4AB_18postretro_renderer6render21renderer_render_frameNtNtB6_14renderer_types8Renderer21render_frame_indirect  (in postretro) + 787  [0x10b3dfff3]",
+  "render_submit": 1167,
+  "triage_submissions": 42,
+  "queue_write_buffer": 0,
+  "queue_write_buffer_anywhere": 0,
+  "glyphon_qwb_anywhere": 0,
+  "glyphon_anywhere": 2,
+  "triage_submissions_share": 0.036,
+  "queue_write_buffer_share": 0.0
+}

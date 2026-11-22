@@ -1,0 +1,12 @@
+{'label': 'm1r2-after-campaign', 'elapsed': 20.04, 'exit': -15, 'timing_windows': 8, 'invalid': None, 'foreground_all_true_after_activate': True, 'cpu_speed_limit_before': 100}
+{'label': 'm1r2-before-campaign', 'elapsed': 21.21, 'exit': -15, 'timing_windows': 8, 'invalid': None, 'foreground_all_true_after_activate': True, 'cpu_speed_limit_before': 100}
+{'label': 'm1r2-after-hallway', 'elapsed': 22.05, 'exit': -15, 'timing_windows': 8, 'invalid': None, 'foreground_all_true_after_activate': True, 'cpu_speed_limit_before': 100}
+{'label': 'm1r2-before-hallway', 'elapsed': 22.14, 'exit': -15, 'timing_windows': 8, 'invalid': None, 'foreground_all_true_after_activate': True, 'cpu_speed_limit_before': 100}
+{'label': 'm1r3-before-campaign', 'elapsed': 20.86, 'exit': -15, 'timing_windows': 8, 'invalid': None, 'foreground_all_true_after_activate': True, 'cpu_speed_limit_before': 100}
+{'label': 'm1r3-after-campaign', 'elapsed': 20.75, 'exit': -15, 'timing_windows': 8, 'invalid': None, 'foreground_all_true_after_activate': True, 'cpu_speed_limit_before': 100}
+{'label': 'm1r3-before-hallway', 'elapsed': 21.96, 'exit': -15, 'timing_windows': 8, 'invalid': None, 'foreground_all_true_after_activate': True, 'cpu_speed_limit_before': 100}
+{'label': 'm1r3-after-hallway', 'elapsed': 20.88, 'exit': -15, 'timing_windows': 8, 'invalid': None, 'foreground_all_true_after_activate': True, 'cpu_speed_limit_before': 100}
+{'label': 'm1r4-after-campaign', 'elapsed': 20.99, 'exit': -15, 'timing_windows': 8, 'invalid': None, 'foreground_all_true_after_activate': True, 'cpu_speed_limit_before': 100}
+{'label': 'm1r4-before-campaign', 'elapsed': 20.79, 'exit': -15, 'timing_windows': 8, 'invalid': None, 'foreground_all_true_after_activate': True, 'cpu_speed_limit_before': 100}
+{'label': 'm1r4-after-hallway', 'elapsed': 21.92, 'exit': -15, 'timing_windows': 8, 'invalid': None, 'foreground_all_true_after_activate': True, 'cpu_speed_limit_before': 100}
+{'label': 'm1r4-before-hallway', 'elapsed': 20.98, 'exit': -15, 'timing_windows': 8, 'invalid': None, 'foreground_all_true_after_activate': True, 'cpu_speed_limit_before': 100}

@@ -1,7 +1,7 @@
 # ui-text-prepare-churn — plan of record
 
 mode: compact
-status: active (results recorded; awaiting "land the plane")
+status: done (landed 2026-11-21)
 read at: 481ce6894
 
 ## Corrections
@@ -54,10 +54,14 @@ Adapter-gated tests live in `crates/renderer/src/render/ui/text_prepare_gate_tes
 | A18 debug guard counts encodes (O20); drift guard passes | `second_encode_before_submit_trips_guard_even_without_prepare` (debug; matches the guard message) + `renderer_direct_uploads_and_submissions_have_lifecycle_owners`, `renderer_uses_only_the_shared_staging_pool` | achievable as stated | pass |
 | A19 grep gates | `glyphon_and_wgpu_come_from_the_registry_unpatched`, `ui_md_states_the_change_gated_text_contract` | achievable as stated | pass |
 | A20 adapter-gated rows ran, count reported | run the module on this machine's adapter; report ran/skipped from the test output | achievable as stated | pass: 31 adapter-gated rows ran on GTX 1660 Super (Vulkan), 0 skipped |
-| M1 Mac release medians | owner, Mac. A settled UI never reclaims, so a window whose frames are all settled counts zero. A window holding a change counts that change, and a due reclaim lands on the change frame | manual | outstanding: owner |
-| M2 post-change `sample` shares | owner, Mac | manual | outstanding: owner |
-| M3 combat prepare-count residue | owner, Mac | manual | outstanding: owner |
-| M4 visual: no stale/missing text | owner, in-engine | manual | outstanding: owner |
+| M1 Mac release medians | owner, Mac. A settled UI never reclaims, so a window whose frames are all settled counts zero. A window holding a change counts that change, and a due reclaim lands on the change frame | manual | pass: `rec_ui` 0.576→0.072 ms campaign, 0.456→0.061 ms hallway; `render_submit` 3.762→3.011 / 2.995→2.260 ms; work CPU −1.09 / −0.94 ms; frame total unchanged (vsync-capped); before/after ranges disjoint on every CPU row; `ui_text_spans_prepared` 0 in every window. 4 interleaved runs per binary per map, A/B `94f024081` vs `0297abebe` (`measurements/ui-text-prepare-churn/results.md`) |
+| M2 post-change `sample` shares | owner, Mac | manual | pass: `triage_submissions` share of `render_submit` 24.7%→3.6% campaign, 30.4%→3.0% hallway; no glyphon `queue_write_buffer` frame at rest (glyphon writes go through recording; their staging frees showed as `triage_submissions`) |
+| M3 combat prepare-count residue | owner, Mac | manual | outstanding, deferred: no scripted damage hook, needs a played combat window (recipe in `results.md`). Feeds only the open fork-vs-own question, which stays open |
+| M4 visual: no stale/missing text | owner, in-engine | manual | pass (owner report, 2026-11-21): no stale or missing text seen in play since the merge |
+
+## Landing verification (2026-11-21)
+- Automated rows re-run on this Mac's Metal adapter at `09f443fd8`: 52 passed, 0 failed, no self-skips, including both `ui_text_timing` tests the PR could not run on real hardware.
+- A/B harness and summaries: `measurements/ui-text-prepare-churn/`. The PRLs on main fail to load at `0297abebe` (`ClusterDirectoryVersionMismatch` v3 vs v2), so both maps were rebaked with that commit's compiler; the PR does not touch the compiler, so both binaries loaded identical bytes.
 
 ## Tasks
 

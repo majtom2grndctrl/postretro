@@ -275,7 +275,7 @@ Row 11 now reads, in the brief and here:
 | 60 no area → no entries; cap fails; loader rejects (O5) | compiler + loader tests | achievable | pass |
 | M1 hallway cold/warm bake vs 4 × 4 grid | owner run, recorded here | manual | outstanding: owner manual check |
 | M2 penumbra RMS at 32/64 vs 256 | measurement run + owner A/B | manual | outstanding: owner manual check |
-| M3 skylight vs template grid A/B | owner, in-engine | manual | pass (owner, 2026-11-22, `area-lights-ab-panel` vs `-grid`): the 16-point grid floods the ceiling around the panel and reads over-exposed; the panel reads as light leaving the glass, away from the ceiling. Reach edge in the corridor not yet reported |
+| M3 skylight vs template grid A/B | owner, in-engine | manual | pass (owner, 2026-11-22, `area-lights-ab-panel` vs `-grid`): the 16-point grid floods the ceiling around the panel and reads over-exposed; the panel reads as light leaving the glass, away from the ceiling. The corridor panel fades out with no visible edge at its reach |
 | M4 scripted flicker in step | owner, in-engine | manual | pass (owner, 2026-11-22, `area-lights-demo`): panes and room light pulse together |
 | M5 entities under skylight | owner, in-engine | manual | pass (owner, 2026-11-22, `area-lights-ab-panel`): dummies and enemy lit and shaded as expected; no entity shadow, as the v1 refusal intends |
 

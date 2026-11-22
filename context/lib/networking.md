@@ -1024,11 +1024,12 @@ the impact it saw without choosing where the blast lands off that path.
   fixes the tolerance: projectile radius, plus the launched muzzle's offset from the eye
   ray, plus slack for eye prediction.
 - **Deciding point.** A host world contact nearer than the declared point wins, with its
-  own surface. So does one within a small fixed slack past a declared world point: before
-  a world point lands in open air, the host casts that slack ahead, so a wall just beyond
-  the point still takes the blast despite float noise between the two casts. Otherwise the blast lands at the declared point. A
-  declared enemy still live there is the impact target, so the weapon's direct push
-  composes with splash. Otherwise the declared normal orients the blast.
+  own surface. So does one within a small fixed slack past a declared world point:
+  before a world point lands in open air, the host casts that slack ahead, so a wall
+  just beyond the point still takes the blast despite float noise between the two casts.
+  Otherwise the blast lands at the declared point. A declared enemy still live there is
+  the impact target, so the weapon's direct push composes with splash. Otherwise the
+  declared normal orients the blast.
 - **Fallbacks.** With an off-path first contact, the host's own march contact decides.
   A declaration with no valid contact sets off nothing. A march that runs out of range
   or lifetime first still lands a declared point inside the path it covered; one beyond
@@ -1123,14 +1124,15 @@ predicted poses differ by up to a round trip of travel.
 - **Presentation-contact marker:** target `u32::MAX` marks a record with no damage
   target — a world contact, or an entity contact no longer nameable. Projectile and
   hitscan declarations share it. For direct projectiles, the finite in-range point may
-  retire presentation even when entity lookup or damage validation fails. For splash,
-  a world record under the marker is a candidate blast point: the host march decides
-  whether it or the host's own contact lands the blast (§Combat authority). Empty projectile declarations remain normal
-  travel/range expiry. Hitscan declarations carry every world contact under the marker,
-  so the host holds a remote shot's full contact set. The host validates a hitscan world
-  contact with the checks an entity hit gets — range from the live eye, and eye line of
-  sight to a point pulled 1 cm back from the contact, so the struck surface never blocks
-  its own validation. It applies no damage from one.
+  retire presentation even when entity lookup or damage validation fails. For splash, a
+  world record under the marker is a candidate blast point: the host march decides
+  whether it or the host's own contact lands the blast (§Combat authority). Empty
+  projectile declarations remain normal travel/range expiry. Hitscan declarations carry
+  every world contact under the marker, so the host holds a remote shot's full contact
+  set. The host validates a hitscan world contact with the checks an entity hit gets —
+  range from the live eye, and eye line of sight to a point pulled 1 cm back from the
+  contact, so the struck surface never blocks its own validation. It applies no damage
+  from one.
 - **Declared normals are contact data only.** An accepted entity or world contact whose
   declared normal is non-finite or non-unit keeps its contact with a zero normal, so the
   burst takes its upward fallback; the invalid normal never affects damage validation.

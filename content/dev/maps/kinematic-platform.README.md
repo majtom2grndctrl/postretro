@@ -97,6 +97,28 @@ The fixture uses two complete world-material bundles:
    `--lightmap-density 0.02` also cuts the room's long floor and walls. Walk
    across and slide along them; nothing snags at a cut.
 
+9. **Co-op riders on the carousel (host + client under the lag proxy).** Build
+   with `dev-tools` and compile the map as above. Run a listen host and a
+   client over loopback, conditioning the client only to the harness profile
+   (`context/lib/networking.md` §Testing the conditioned link):
+
+   ```bash
+   # Terminal 1 — host
+   RUST_LOG=info cargo run -p xtask -- run --features dev-tools -- /private/tmp/kinematic-platform.prl --host
+   # Terminal 2 — client, conditioned 45..105 ms one-way, 5% loss
+   POSTRETRO_NET_LAG=45,60,5 RUST_LOG=info cargo run -p xtask -- run --features dev-tools -- /private/tmp/kinematic-platform.prl --connect 127.0.0.1:<port>
+   ```
+
+   Both players stand on the carousel slab, on opposite sides, facing each
+   other, for several turns. On each screen the other player stays planted:
+   feet on the deck, no slide across it, no pop when a snapshot lands. Each
+   player's own view stays steady and its yaw turns with the slab. Jump off
+   and land back on, and step off onto the floor: the view and the other
+   player move only by their own motion. Where a script or the console can
+   issue `setSpinRate` to the carousel, reverse and stop the spin mid-ride and
+   repeat. The automated riders harness covers spin reversal under this
+   profile (`postretro-netcode` `predict_reconcile_harness_riders`).
+
 These are visual, in-engine checks. Map compilation only validates authored
 content and cannot prove shadow-pool receipt, promotion crossfades, or the
 absence of dynamic specular.

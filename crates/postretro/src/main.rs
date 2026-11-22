@@ -5325,6 +5325,7 @@ impl App {
             owners,
             allocator,
             &registry,
+            &self.kinematic_mover_tick_states,
             current_tick,
         );
     }

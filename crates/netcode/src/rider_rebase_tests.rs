@@ -193,3 +193,38 @@ fn held_bracket_rides_the_presented_mover() {
     let placed = rebase_rider(&bracket, &held.transform, authoritative, presented).unwrap();
     assert!((placed.position - point_on(&PRESENTED, LOCAL_POINT)).length() < 1.0e-5);
 }
+
+mod host_mover_poses {
+    use glam::Vec3;
+    use postretro_entities::{EntityRegistry, Transform};
+
+    use crate::rider_rebase::{HOST_MOVER_POSE_TICKS, RiderMoverPoses};
+
+    fn at(x: f32) -> Transform {
+        Transform {
+            position: Vec3::new(x, 0.0, 0.0),
+            ..Transform::default()
+        }
+    }
+
+    #[test]
+    fn host_mover_pose_answers_exact_ticks_only_within_its_bound() {
+        let mut registry = EntityRegistry::new();
+        let entity = registry.spawn(Transform::default());
+        let mut poses = RiderMoverPoses::default();
+        let first = 100u32;
+        for offset in 0..=HOST_MOVER_POSE_TICKS as u32 {
+            poses.record(3, entity, first + offset, at(offset as f32));
+        }
+        // A repeat for the newest tick replaces it.
+        let newest = first + HOST_MOVER_POSE_TICKS as u32;
+        poses.record(3, entity, newest, at(-1.0));
+        assert_eq!(poses.pose_at(3, newest), Some(at(-1.0)));
+        assert_eq!(poses.pose_at(3, first + 1), Some(at(1.0)));
+        assert_eq!(poses.pose_at(3, first), None, "evicted past the bound");
+        assert_eq!(poses.pose_at(3, newest + 1), None, "never extrapolated");
+        assert_eq!(poses.pose_at(4, newest), None);
+        assert_eq!(poses.entity(3), Some(entity));
+        assert_eq!(poses.entity(4), None);
+    }
+}

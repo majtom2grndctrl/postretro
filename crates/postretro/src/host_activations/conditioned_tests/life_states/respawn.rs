@@ -268,6 +268,7 @@ fn respawn_conditioned_o10_o28_coalesced_observer_cuts_once_without_replaying_la
         &life.fixture.owners,
         &life.fixture.allocator,
         &life.ctx.registry.borrow(),
+        &postretro_physics::kinematic_mover::MoverTickStateTable::default(),
         teleport_tick - 1,
     );
     assert!(
@@ -295,6 +296,7 @@ fn respawn_conditioned_o10_o28_coalesced_observer_cuts_once_without_replaying_la
         &life.fixture.owners,
         &life.fixture.allocator,
         &life.ctx.registry.borrow(),
+        &postretro_physics::kinematic_mover::MoverTickStateTable::default(),
         teleport_tick,
     );
     let cues = netcode::host_take_client_pawn_teleports(
@@ -353,6 +355,7 @@ fn respawn_conditioned_o10_o28_coalesced_observer_cuts_once_without_replaying_la
         &life.fixture.owners,
         &life.fixture.allocator,
         &registry,
+        &postretro_physics::kinematic_mover::MoverTickStateTable::default(),
         respawn_tick,
     );
     drop(registry);

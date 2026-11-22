@@ -455,6 +455,7 @@ macro_rules! host_frame {
                 &host.owners,
                 &host.allocator,
                 &host.registry,
+                &postretro_physics::kinematic_mover::MoverTickStateTable::default(),
                 host.tick,
             );
             let tick_observed = crate::netcode::host_take_client_pawn_teleports(

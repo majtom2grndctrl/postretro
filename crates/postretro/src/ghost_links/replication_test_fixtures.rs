@@ -1019,6 +1019,7 @@ impl Loopback {
             &self.owners,
             &self.allocator,
             &registry,
+            &postretro_physics::kinematic_mover::MoverTickStateTable::default(),
             self.tick,
         );
         let _ = netcode::host_take_client_pawn_teleports(

@@ -36,7 +36,9 @@ use super::interpolation::{
 };
 use crate::collision::CollisionWorld;
 use crate::collision::moving::{MoverCollider, MoverPoseSource};
+use crate::kinematic_mover::MoverTickStateTable;
 use crate::scripting_systems::hit_zones::HitZoneStore;
+use postretro_foundation::GroundRef;
 
 /// Delay, in host authoritative ticks, between a client pawn's newest recorded pose
 /// and the pose the host presents. Reuses the input playout margin (`INPUT_BUFFER_TARGET`,
@@ -55,11 +57,16 @@ pub(crate) const PRESENTATION_DELAY_TICKS: u32 = INPUT_BUFFER_TARGET as u32;
 /// delayed sample as its pose (see [`present_client_pawns`]). Dense per-tick samples
 /// keep the presentation in the buffer's interpolate branch, never the
 /// velocity-extrapolation branch.
+///
+/// A pawn standing on a mover also records that mover's end-of-tick pose from
+/// `mover_states` under the same `tick` label, so the delayed sample is placed
+/// relative to the mover pose of its own tick (pin P11).
 pub fn record_client_pawn_poses(
     buffer: &mut RemoteInterpolationBuffer,
     owners: &MovementOwners,
     allocator: &NetworkIdAllocator,
     registry: &EntityRegistry,
+    mover_states: &MoverTickStateTable,
     tick: u32,
 ) {
     for (pawn, _client_id) in owners.iter() {
@@ -78,10 +85,18 @@ pub fn record_client_pawn_poses(
             .ok()
             .and_then(|mesh| mesh.pose_inputs)
             .map_or(0.0, |inputs| inputs.aim_pitch);
+        let ground = movement.map(|movement| movement.ground);
+        if let Some(GroundRef::Mover(mover_id)) = ground
+            && let Some(mover) = mover_states.get(mover_id)
+        {
+            buffer
+                .host_mover_poses
+                .record(mover_id, mover.entity, tick, mover.transform);
+        }
         buffer.record(
             network_id,
             TransformSample {
-                ground: None,
+                ground,
                 teleport: movement.map(|movement| TeleportSample {
                     generation: movement.teleport.generation,
                     last_teleporter: movement.teleport.last_teleporter,
@@ -191,9 +206,22 @@ pub fn present_client_pawns(
         let Some(network_id) = allocator.network_id_for_entity(pawn) else {
             continue;
         };
-        let Some(pose) = buffer.presented_pose(network_id, target) else {
+        let Some(mut pose) = buffer.presented_pose(network_id, target) else {
             continue;
         };
+        if let Some(placed) = pose.rider_bracket.and_then(|bracket| {
+            crate::rider_rebase::rebase_rider(
+                &bracket,
+                &pose.transform,
+                |mover_id, tick| buffer.host_mover_poses.pose_at(mover_id, tick),
+                |mover_id| {
+                    let mover = buffer.host_mover_poses.entity(mover_id)?;
+                    registry.interpolated_transform(mover, alpha).ok()
+                },
+            )
+        }) {
+            pose.transform = placed;
+        }
         let _ = registry.set_presentation_transform(pawn, pose.transform);
         // The drawn transform is the delayed capsule centre, so the feet-authored
         // mesh drops by the delayed sample's capsule, not the live one: across a
@@ -468,13 +496,27 @@ mod tests {
             .unwrap();
         registry.set_component(pawn, movement.clone()).unwrap();
         for tick in 0..3 {
-            record_client_pawn_poses(&mut buffer, &owners, &allocator, &registry, tick);
+            record_client_pawn_poses(
+                &mut buffer,
+                &owners,
+                &allocator,
+                &registry,
+                &MoverTickStateTable::default(),
+                tick,
+            );
         }
         // Tick 3 crouches with the feet planted.
         movement.capsule.half_height = crouched;
         registry.set_component(pawn, movement).unwrap();
         registry.set_component(pawn, at(crouched)).unwrap();
-        record_client_pawn_poses(&mut buffer, &owners, &allocator, &registry, 3);
+        record_client_pawn_poses(
+            &mut buffer,
+            &owners,
+            &allocator,
+            &registry,
+            &MoverTickStateTable::default(),
+            3,
+        );
         let feet = |registry: &EntityRegistry| {
             let position = registry.get_component::<Transform>(pawn).unwrap().position;
             let offset = registry
@@ -548,7 +590,14 @@ mod tests {
                 crate::predict_reconcile_harness_test_fixtures::component(),
             )
             .unwrap();
-        record_client_pawn_poses(&mut buffer, &owners, &allocator, &registry, 0);
+        record_client_pawn_poses(
+            &mut buffer,
+            &owners,
+            &allocator,
+            &registry,
+            &MoverTickStateTable::default(),
+            0,
+        );
         assert!(take_client_pawn_teleports(&mut buffer, &owners, &allocator).is_empty());
         for (tick, generation, last, x) in [(1, 255, 0, 100.0), (2, 0, 1, 200.0)] {
             let mut movement = registry
@@ -559,7 +608,14 @@ mod tests {
             movement.teleport.last_teleporter = last;
             registry.set_component(pawn, movement).unwrap();
             registry.set_component(pawn, pose_at(x, 0.5)).unwrap();
-            record_client_pawn_poses(&mut buffer, &owners, &allocator, &registry, tick);
+            record_client_pawn_poses(
+                &mut buffer,
+                &owners,
+                &allocator,
+                &registry,
+                &MoverTickStateTable::default(),
+                tick,
+            );
             let cues = take_client_pawn_teleports(&mut buffer, &owners, &allocator);
             assert_eq!(cues.len(), 1, "tick {tick}: one change, one cue");
             assert_eq!(cues[0].entity_id, pawn);
@@ -653,10 +709,24 @@ mod tests {
         // Facing -Z and walking forward at the source, then a quarter-turn teleport.
         for t in 0..4u32 {
             tick(&mut registry, t as f32 * 0.1, 0.0, 0);
-            record_client_pawn_poses(&mut buffer, &owners, &allocator, &registry, t);
+            record_client_pawn_poses(
+                &mut buffer,
+                &owners,
+                &allocator,
+                &registry,
+                &MoverTickStateTable::default(),
+                t,
+            );
         }
         tick(&mut registry, 100.0, FRAC_PI_2, 1);
-        record_client_pawn_poses(&mut buffer, &owners, &allocator, &registry, 4);
+        record_client_pawn_poses(
+            &mut buffer,
+            &owners,
+            &allocator,
+            &registry,
+            &MoverTickStateTable::default(),
+            4,
+        );
         let inputs = |registry: &EntityRegistry| {
             registry
                 .get_component::<MeshComponent>(pawn)
@@ -694,7 +764,14 @@ mod tests {
         // Two ticks later the delayed target reaches the arrival sample.
         for t in 5..7u32 {
             tick(&mut registry, 100.0, FRAC_PI_2, 1);
-            record_client_pawn_poses(&mut buffer, &owners, &allocator, &registry, t);
+            record_client_pawn_poses(
+                &mut buffer,
+                &owners,
+                &allocator,
+                &registry,
+                &MoverTickStateTable::default(),
+                t,
+            );
         }
         present_client_pawns(&buffer, &owners, &allocator, &mut registry, 7, 0.0);
         assert!(
@@ -734,7 +811,14 @@ mod tests {
             let x = (tick - 100) as f32 * 2.0;
             let yaw = (tick - 100) as f32 * 0.1;
             registry.set_component(pawn, pose_at(x, yaw)).unwrap();
-            record_client_pawn_poses(&mut buffer, &owners, &allocator, &registry, tick);
+            record_client_pawn_poses(
+                &mut buffer,
+                &owners,
+                &allocator,
+                &registry,
+                &MoverTickStateTable::default(),
+                tick,
+            );
         }
 
         // current_tick = 105 (one past the newest recorded tick 104), delay 2, alpha 0.5:
@@ -783,7 +867,14 @@ mod tests {
             registry
                 .set_component(pawn, pose_at(stamp as f32, 0.0))
                 .unwrap();
-            record_client_pawn_poses(&mut buffer, &owners, &allocator, &registry, tick);
+            record_client_pawn_poses(
+                &mut buffer,
+                &owners,
+                &allocator,
+                &registry,
+                &MoverTickStateTable::default(),
+                tick,
+            );
             crate::host::complete_host_fixed_tick(&mut tick, &mut snapshot_due);
         }
         for alpha in [0.0, 0.25, 0.5, 0.9] {
@@ -843,7 +934,14 @@ mod tests {
             }
             let x = if tick >= swap_tick { 100.0 } else { 0.0 };
             registry.set_component(pawn, pose_at(x, 0.0)).unwrap();
-            record_client_pawn_poses(&mut buffer, &owners, &allocator, &registry, tick);
+            record_client_pawn_poses(
+                &mut buffer,
+                &owners,
+                &allocator,
+                &registry,
+                &MoverTickStateTable::default(),
+                tick,
+            );
             crate::host::complete_host_fixed_tick(&mut tick, &mut snapshot_due);
         }
         let swap_stamp = f64::from(swap_tick + 1);
@@ -933,7 +1031,14 @@ mod tests {
         for tick in 100..=104u32 {
             let x = (tick - 100) as f32 * 2.0;
             registry.set_component(pawn, pose_at(x, 0.0)).unwrap();
-            record_client_pawn_poses(&mut buffer, &owners, &allocator, &registry, tick);
+            record_client_pawn_poses(
+                &mut buffer,
+                &owners,
+                &allocator,
+                &registry,
+                &MoverTickStateTable::default(),
+                tick,
+            );
         }
 
         // Four render frames at the same fixed tick (current_tick constant), alpha rising:
@@ -973,7 +1078,14 @@ mod tests {
         for tick in 100..=104u32 {
             let x = (tick - 100) as f32 * 2.0;
             registry.set_component(pawn, pose_at(x, 0.0)).unwrap();
-            record_client_pawn_poses(&mut buffer, &owners, &allocator, &registry, tick);
+            record_client_pawn_poses(
+                &mut buffer,
+                &owners,
+                &allocator,
+                &registry,
+                &MoverTickStateTable::default(),
+                tick,
+            );
         }
         // Authoritative newest is tick 104 -> x = 8.0. A present writes a delayed pose.
         present_client_pawns(&buffer, &owners, &allocator, &mut registry, 105, 0.0);
@@ -1033,7 +1145,14 @@ mod tests {
             registry
                 .set_component(host_pawn, pose_at(50.0 + x, 0.0))
                 .unwrap();
-            record_client_pawn_poses(&mut buffer, &owners, &allocator, &registry, tick);
+            record_client_pawn_poses(
+                &mut buffer,
+                &owners,
+                &allocator,
+                &registry,
+                &MoverTickStateTable::default(),
+                tick,
+            );
         }
 
         assert_eq!(
@@ -1143,7 +1262,14 @@ mod tests {
             .unwrap();
         registry.set_component(pawn, movement).unwrap();
         for tick in 0..3 {
-            record_client_pawn_poses(&mut buffer, &owners, &allocator, &registry, tick);
+            record_client_pawn_poses(
+                &mut buffer,
+                &owners,
+                &allocator,
+                &registry,
+                &MoverTickStateTable::default(),
+                tick,
+            );
         }
         // Tick 3 teleports: the live pose and generation move to the arrival.
         let mut movement = registry
@@ -1153,7 +1279,14 @@ mod tests {
         movement.teleport.generation = movement.teleport.generation.wrapping_add(1);
         registry.set_component(pawn, movement).unwrap();
         registry.set_component(pawn, arrival).unwrap();
-        record_client_pawn_poses(&mut buffer, &owners, &allocator, &registry, 3);
+        record_client_pawn_poses(
+            &mut buffer,
+            &owners,
+            &allocator,
+            &registry,
+            &MoverTickStateTable::default(),
+            3,
+        );
 
         // The fixed tick's pose pass probes the live arrival pose.
         let movers = MoverTickStateTable::default();

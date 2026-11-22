@@ -2,8 +2,10 @@
 // place through its presented pose.
 // See: context/lib/networking.md §Host-side remote-pawn presentation
 
+use std::collections::{HashMap, VecDeque};
+
 use glam::Affine3A;
-use postretro_entities::Transform;
+use postretro_entities::{EntityId, Transform};
 use postretro_foundation::GroundRef;
 
 use crate::interpolation::RiderBracket;
@@ -71,6 +73,72 @@ fn mover_frame(transform: &Transform) -> Option<Affine3A> {
         transform.rotation.normalize(),
         transform.position,
     ))
+}
+
+/// Ticks of mover pose the host keeps per ridden mover: the delayed target
+/// plus the in-flight tick, with margin, never more than the rider buffer holds.
+pub(crate) const HOST_MOVER_POSE_TICKS: usize = 16;
+
+/// The host seat's end-of-tick pose of each mover a client pawn stood on, keyed
+/// by the tick label its rider samples carry (pin P11). Recorded beside each
+/// rider sample, so a delayed sample finds its mover's pose for the same tick.
+/// A connected client reads mover history instead.
+#[derive(Debug, Default)]
+pub(crate) struct RiderMoverPoses {
+    movers: HashMap<u32, RiddenMover>,
+}
+
+#[derive(Debug)]
+struct RiddenMover {
+    entity: EntityId,
+    poses: VecDeque<(u32, Transform)>,
+}
+
+impl RiderMoverPoses {
+    /// Record `mover_id`'s pose for `tick`. A repeat for the same tick replaces
+    /// it; the oldest tick past the bound is dropped. Allocates only the first
+    /// time a mover is ridden.
+    pub(crate) fn record(
+        &mut self,
+        mover_id: u32,
+        entity: EntityId,
+        tick: u32,
+        transform: Transform,
+    ) {
+        let ridden = self.movers.entry(mover_id).or_insert_with(|| RiddenMover {
+            entity,
+            poses: VecDeque::with_capacity(HOST_MOVER_POSE_TICKS + 1),
+        });
+        ridden.entity = entity;
+        if ridden
+            .poses
+            .back()
+            .is_some_and(|(newest, _)| *newest == tick)
+        {
+            ridden.poses.pop_back();
+        }
+        ridden.poses.push_back((tick, transform));
+        while ridden.poses.len() > HOST_MOVER_POSE_TICKS {
+            ridden.poses.pop_front();
+        }
+    }
+
+    /// The pose recorded for exactly `tick`, if it is still held.
+    pub(crate) fn pose_at(&self, mover_id: u32, tick: u32) -> Option<Transform> {
+        self.movers
+            .get(&mover_id)?
+            .poses
+            .iter()
+            .rev()
+            .find(|(recorded, _)| *recorded == tick)
+            .map(|(_, transform)| *transform)
+    }
+
+    /// The entity last recorded for `mover_id`, whose presented pose places
+    /// the rider. A despawned entity fails that read and the rider falls back.
+    pub(crate) fn entity(&self, mover_id: u32) -> Option<EntityId> {
+        self.movers.get(&mover_id).map(|ridden| ridden.entity)
+    }
 }
 
 #[cfg(test)]

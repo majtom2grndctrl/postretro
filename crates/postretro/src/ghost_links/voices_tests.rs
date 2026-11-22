@@ -827,6 +827,7 @@ fn an_impact_owner_on_the_host_seat_is_judged_at_its_presented_pose() {
                 &owners,
                 &allocator,
                 &level.registry,
+                &postretro_physics::kinematic_mover::MoverTickStateTable::default(),
                 tick,
             );
         }

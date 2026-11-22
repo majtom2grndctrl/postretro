@@ -194,6 +194,11 @@ pub(crate) struct LoopbackHarness {
     /// tick with an idle input so it rides whatever it stands on.
     pub(crate) host_second_rider: Option<EntityId>,
 
+    /// The host seat's delayed presentation of the client's pawn, when a
+    /// scenario draws it: recorded each host tick, restored before each host
+    /// frame, presented on demand ([`Self::host_present`]).
+    pub(crate) host_seat: Option<super::interpolation::RemoteInterpolationBuffer>,
+
     // --- Link conditioners (one per direction) + virtual clock ---
     pub(crate) to_server: PacketConditioner,
     pub(crate) to_client: PacketConditioner,
@@ -332,6 +337,7 @@ impl LoopbackHarness {
             host_bystander,
             client_bystander,
             host_second_rider: None,
+            host_seat: None,
             to_server: PacketConditioner::new(link),
             to_client: PacketConditioner::new(link),
             down_drop: None,
@@ -446,6 +452,14 @@ impl LoopbackHarness {
     /// takes effect from the next tick, whose view is built at its start.
     pub(crate) fn host_frame(&mut self, ticks: u32, mut between_ticks: impl FnMut(&mut Self, u32)) {
         self.host_poll();
+        if let Some(seat) = &self.host_seat {
+            super::host_presentation::restore_client_pawn_authoritative_poses(
+                seat,
+                &self.owners,
+                &self.allocator,
+                &mut self.host_registry,
+            );
+        }
         for tick in 0..ticks {
             self.host_simulate_tick();
             between_ticks(self, tick);
@@ -603,7 +617,33 @@ impl LoopbackHarness {
             &mut mover_events,
             &mut |_| {},
         );
+        if let Some(seat) = &mut self.host_seat {
+            super::host_presentation::record_client_pawn_poses(
+                seat,
+                &self.owners,
+                &self.allocator,
+                &self.host_registry,
+                &self.host_mover_states,
+                self.server_tick,
+            );
+        }
         self.server_tick = self.server_tick.wrapping_add(1);
+    }
+
+    /// The host seat's render-frame present: the client's pawn at the delayed
+    /// target, `alpha` past the newest tick. The next host frame restores the
+    /// authoritative pose before it ticks.
+    pub(crate) fn host_present(&mut self, alpha: f32) {
+        if let Some(seat) = &self.host_seat {
+            super::host_presentation::present_client_pawns(
+                seat,
+                &self.owners,
+                &self.allocator,
+                &mut self.host_registry,
+                self.server_tick,
+                alpha,
+            );
+        }
     }
 
     fn host_send(&mut self) {

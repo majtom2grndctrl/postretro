@@ -234,6 +234,7 @@ impl Rig {
             &self.owners,
             &self.allocator,
             &registry,
+            &postretro_physics::kinematic_mover::MoverTickStateTable::default(),
             self.tick,
         );
         crate::host_take_client_pawn_teleports(&mut self.buffer, &self.owners, &self.allocator);

@@ -73,7 +73,6 @@ impl ClientReplication {
                 .insert(network_id, pose.state_tick);
             let mut transform = pose
                 .rider_bracket
-                .filter(|_| !self.world_space_riders)
                 .and_then(|bracket| {
                     crate::rider_rebase::rebase_rider(
                         &bracket,

@@ -374,6 +374,7 @@ impl LoopbackHarness {
         h.replicable.register(second);
         h.allocator.stamp(second);
         h.host_second_rider = Some(second);
+        h.host_seat = Some(Default::default());
 
         let spawn = |registry: &mut EntityRegistry| {
             let id = registry.spawn(Transform::default());

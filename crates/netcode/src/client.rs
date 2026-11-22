@@ -533,9 +533,6 @@ pub struct ClientReplication {
     /// Off-by-default remote-interpolation continuity diagnostics (see `netdiag`).
     /// Inert unless `postretro::netdiag=debug`; pure observability, never gameplay.
     netdiag: crate::netcode::netdiag::RemoteInterpDiag,
-    /// Test A/B switch: draw every remote at its sampled world pose, as before
-    /// mover-relative rider presentation. Off in production.
-    world_space_riders: bool,
 }
 
 /// The authoritative local-pawn record this snapshot delivered, captured for the
@@ -2457,7 +2454,7 @@ impl ClientReplication {
     /// rider presentation; the before half of a test's A/B.
     #[cfg(test)]
     pub(crate) fn set_world_space_riders(&mut self, world_space: bool) {
-        self.world_space_riders = world_space;
+        self.interp.set_world_space_riders(world_space);
     }
 
     /// Server tick carried by the latest accepted snapshot. Presentation clocks

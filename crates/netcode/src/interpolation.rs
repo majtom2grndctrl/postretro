@@ -1002,6 +1002,12 @@ fn transform_velocity_between(a: &TransformSample, b: &TransformSample) -> Optio
 pub struct RemoteInterpolationBuffer {
     buffers: HashMap<NetworkId, EntityBuffer>,
     pending_teleports: observed_teleports::PendingObservedTeleports,
+    /// Host seat only: each ridden mover's pose at the ticks its riders were
+    /// recorded, for the rider rebase. A client's stays empty.
+    pub(crate) host_mover_poses: crate::rider_rebase::RiderMoverPoses,
+    /// Test A/B switch: resolve poses without their rider bracket, so every
+    /// remote draws at its sampled world pose as before rider rebasing.
+    world_space_riders: bool,
 }
 
 impl RemoteInterpolationBuffer {
@@ -1092,7 +1098,17 @@ impl RemoteInterpolationBuffer {
         network_id: NetworkId,
         target_tick: f64,
     ) -> Option<PresentedPose> {
-        self.buffers.get(&network_id)?.sample_at(target_tick)
+        let mut pose = self.buffers.get(&network_id)?.sample_at(target_tick)?;
+        if self.world_space_riders {
+            pose.rider_bracket = None;
+        }
+        Some(pose)
+    }
+
+    /// Draw every remote at its sampled world pose; the before half of an A/B.
+    #[cfg(test)]
+    pub(crate) fn set_world_space_riders(&mut self, world_space: bool) {
+        self.world_space_riders = world_space;
     }
 
     /// Newest recorded authoritative transform for `network_id`, if any sample

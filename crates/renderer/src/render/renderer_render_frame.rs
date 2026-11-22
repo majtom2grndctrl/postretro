@@ -637,7 +637,6 @@ impl Renderer {
                     frame_light_term_mask.bits(),
                     full.ambient_floor,
                     full.frame_indirect_scale,
-                    full.frame_specular_style,
                 );
             }
             let kinematic_ts = self
@@ -671,6 +670,7 @@ impl Renderer {
                 &self.level().kinematic,
                 &self.level().gpu_textures,
                 MoverView::Main,
+                self.full().frame_specular_style,
             );
         }
 

@@ -1,0 +1,1081 @@
+{
+  "setpiece:old-none": {
+    "runs": 3,
+    "frames": 720,
+    "mover": {
+      "median": 21.623,
+      "p95": 21.956,
+      "per_run_median": [
+        21.604,
+        21.62,
+        21.665
+      ]
+    },
+    "forward": {
+      "median": 29.194,
+      "p95": 29.756,
+      "per_run_median": [
+        29.217,
+        29.182,
+        29.179
+      ]
+    },
+    "GPU frame": {
+      "median": 55.877,
+      "p95": 58.867,
+      "per_run_median": [
+        55.813,
+        55.818,
+        56.01
+      ]
+    },
+    "delta_mover_vs_old": null,
+    "delta_mover_vs_head": null
+  },
+  "setpiece:head-smooth": {
+    "runs": 3,
+    "frames": 720,
+    "mover": {
+      "median": 24.067,
+      "p95": 24.213,
+      "per_run_median": [
+        24.059,
+        24.077,
+        24.076
+      ]
+    },
+    "forward": {
+      "median": 28.916,
+      "p95": 29.456,
+      "per_run_median": [
+        28.552,
+        28.971,
+        28.943
+      ]
+    },
+    "GPU frame": {
+      "median": 59.089,
+      "p95": 61.0,
+      "per_run_median": [
+        59.293,
+        59.126,
+        58.82
+      ]
+    },
+    "delta_mover_vs_old": {
+      "ms": 2.444,
+      "pct": 11.3,
+      "pairs_min": 2.394,
+      "pairs_max": 2.473
+    },
+    "delta_mover_vs_head": null
+  },
+  "setpiece:head-pixel": {
+    "runs": 3,
+    "frames": 720,
+    "mover": {
+      "median": 25.756,
+      "p95": 26.015,
+      "per_run_median": [
+        25.738,
+        25.776,
+        25.761
+      ]
+    },
+    "forward": {
+      "median": 28.149,
+      "p95": 29.369,
+      "per_run_median": [
+        29.239,
+        28.182,
+        27.885
+      ]
+    },
+    "GPU frame": {
+      "median": 60.402,
+      "p95": 62.573,
+      "per_run_median": [
+        62.231,
+        60.605,
+        59.521
+      ]
+    },
+    "delta_mover_vs_old": {
+      "ms": 4.133,
+      "pct": 19.1,
+      "pairs_min": 4.073,
+      "pairs_max": 4.172
+    },
+    "delta_mover_vs_head": null
+  },
+  "setpiece:v1-smooth": {
+    "runs": 3,
+    "frames": 720,
+    "mover": {
+      "median": 35.203,
+      "p95": 35.372,
+      "per_run_median": [
+        35.198,
+        35.231,
+        35.167
+      ]
+    },
+    "forward": {
+      "median": 27.595,
+      "p95": 28.982,
+      "per_run_median": [
+        27.824,
+        27.57,
+        27.527
+      ]
+    },
+    "GPU frame": {
+      "median": 68.629,
+      "p95": 69.835,
+      "per_run_median": [
+        68.651,
+        68.664,
+        68.591
+      ]
+    },
+    "delta_mover_vs_old": {
+      "ms": 13.58,
+      "pct": 62.8,
+      "pairs_min": 13.502,
+      "pairs_max": 13.627
+    },
+    "delta_mover_vs_head": {
+      "ms": 11.136,
+      "pct": 46.3,
+      "pairs_min": 11.09,
+      "pairs_max": 11.172
+    }
+  },
+  "setpiece:v1p-pixel": {
+    "runs": 3,
+    "frames": 720,
+    "mover": {
+      "median": 25.617,
+      "p95": 25.765,
+      "per_run_median": [
+        25.656,
+        25.587,
+        25.599
+      ]
+    },
+    "forward": {
+      "median": 28.841,
+      "p95": 29.4,
+      "per_run_median": [
+        27.924,
+        29.285,
+        29.308
+      ]
+    },
+    "GPU frame": {
+      "median": 61.344,
+      "p95": 62.448,
+      "per_run_median": [
+        59.878,
+        62.098,
+        62.189
+      ]
+    },
+    "delta_mover_vs_old": {
+      "ms": 3.994,
+      "pct": 18.5,
+      "pairs_min": 3.922,
+      "pairs_max": 4.052
+    },
+    "delta_mover_vs_head": {
+      "ms": -0.139,
+      "pct": -0.5,
+      "pairs_min": -0.189,
+      "pairs_max": -0.082
+    }
+  },
+  "setpiece:v2-smooth": {
+    "runs": 3,
+    "frames": 720,
+    "mover": {
+      "median": 33.22,
+      "p95": 33.368,
+      "per_run_median": [
+        33.198,
+        33.273,
+        33.208
+      ]
+    },
+    "forward": {
+      "median": 27.797,
+      "p95": 29.049,
+      "per_run_median": [
+        27.592,
+        28.069,
+        27.585
+      ]
+    },
+    "GPU frame": {
+      "median": 66.989,
+      "p95": 69.707,
+      "per_run_median": [
+        67.095,
+        67.094,
+        66.773
+      ]
+    },
+    "delta_mover_vs_old": {
+      "ms": 11.597,
+      "pct": 53.6,
+      "pairs_min": 11.533,
+      "pairs_max": 11.669
+    },
+    "delta_mover_vs_head": {
+      "ms": 9.153,
+      "pct": 38.0,
+      "pairs_min": 9.121,
+      "pairs_max": 9.214
+    }
+  },
+  "setpiece:v3-smooth": {
+    "runs": 3,
+    "frames": 720,
+    "mover": {
+      "median": 24.015,
+      "p95": 24.167,
+      "per_run_median": [
+        24.021,
+        24.03,
+        23.997
+      ]
+    },
+    "forward": {
+      "median": 28.65,
+      "p95": 29.111,
+      "per_run_median": [
+        28.289,
+        28.628,
+        28.871
+      ]
+    },
+    "GPU frame": {
+      "median": 59.209,
+      "p95": 60.494,
+      "per_run_median": [
+        58.389,
+        59.191,
+        59.827
+      ]
+    },
+    "delta_mover_vs_old": {
+      "ms": 2.392,
+      "pct": 11.1,
+      "pairs_min": 2.332,
+      "pairs_max": 2.426
+    },
+    "delta_mover_vs_head": {
+      "ms": -0.052,
+      "pct": -0.2,
+      "pairs_min": -0.08,
+      "pairs_max": -0.029
+    }
+  },
+  "setpiece:v3-pixel": {
+    "runs": 3,
+    "frames": 720,
+    "mover": {
+      "median": 25.716,
+      "p95": 25.865,
+      "per_run_median": [
+        25.764,
+        25.697,
+        25.694
+      ]
+    },
+    "forward": {
+      "median": 28.91,
+      "p95": 29.414,
+      "per_run_median": [
+        27.909,
+        29.282,
+        29.288
+      ]
+    },
+    "GPU frame": {
+      "median": 60.933,
+      "p95": 62.464,
+      "per_run_median": [
+        59.501,
+        62.142,
+        61.954
+      ]
+    },
+    "delta_mover_vs_old": {
+      "ms": 4.093,
+      "pct": 18.9,
+      "pairs_min": 4.029,
+      "pairs_max": 4.16
+    },
+    "delta_mover_vs_head": {
+      "ms": -0.04,
+      "pct": -0.2,
+      "pairs_min": -0.082,
+      "pairs_max": 0.026
+    }
+  },
+  "setpiece:v4-pixel": {
+    "runs": 3,
+    "frames": 720,
+    "mover": {
+      "median": 25.681,
+      "p95": 25.983,
+      "per_run_median": [
+        25.665,
+        25.727,
+        25.653
+      ]
+    },
+    "forward": {
+      "median": 27.919,
+      "p95": 29.328,
+      "per_run_median": [
+        27.918,
+        27.912,
+        27.922
+      ]
+    },
+    "GPU frame": {
+      "median": 59.628,
+      "p95": 62.324,
+      "per_run_median": [
+        59.242,
+        59.387,
+        60.354
+      ]
+    },
+    "delta_mover_vs_old": {
+      "ms": 4.058,
+      "pct": 18.8,
+      "pairs_min": 3.988,
+      "pairs_max": 4.123
+    },
+    "delta_mover_vs_head": {
+      "ms": -0.075,
+      "pct": -0.3,
+      "pairs_min": -0.123,
+      "pairs_max": -0.011
+    }
+  },
+  "ramp:old-none": {
+    "runs": 3,
+    "frames": 719,
+    "mover": {
+      "median": 20.664,
+      "p95": 21.018,
+      "per_run_median": [
+        20.655,
+        20.65,
+        20.703
+      ]
+    },
+    "forward": {
+      "median": 22.483,
+      "p95": 22.596,
+      "per_run_median": [
+        21.928,
+        22.506,
+        22.489
+      ]
+    },
+    "GPU frame": {
+      "median": 46.259,
+      "p95": 47.926,
+      "per_run_median": [
+        46.232,
+        46.239,
+        46.319
+      ]
+    },
+    "delta_mover_vs_old": null,
+    "delta_mover_vs_head": null
+  },
+  "ramp:head-smooth": {
+    "runs": 3,
+    "frames": 720,
+    "mover": {
+      "median": 23.247,
+      "p95": 23.444,
+      "per_run_median": [
+        23.323,
+        23.222,
+        23.227
+      ]
+    },
+    "forward": {
+      "median": 22.601,
+      "p95": 22.739,
+      "per_run_median": [
+        22.564,
+        22.615,
+        22.643
+      ]
+    },
+    "GPU frame": {
+      "median": 50.241,
+      "p95": 50.888,
+      "per_run_median": [
+        50.172,
+        50.368,
+        50.294
+      ]
+    },
+    "delta_mover_vs_old": {
+      "ms": 2.583,
+      "pct": 12.5,
+      "pairs_min": 2.519,
+      "pairs_max": 2.673
+    },
+    "delta_mover_vs_head": null
+  },
+  "ramp:head-pixel": {
+    "runs": 3,
+    "frames": 720,
+    "mover": {
+      "median": 24.278,
+      "p95": 24.424,
+      "per_run_median": [
+        24.303,
+        24.279,
+        24.248
+      ]
+    },
+    "forward": {
+      "median": 22.913,
+      "p95": 23.085,
+      "per_run_median": [
+        22.847,
+        22.992,
+        23.011
+      ]
+    },
+    "GPU frame": {
+      "median": 51.673,
+      "p95": 52.206,
+      "per_run_median": [
+        51.534,
+        51.916,
+        51.888
+      ]
+    },
+    "delta_mover_vs_old": {
+      "ms": 3.614,
+      "pct": 17.5,
+      "pairs_min": 3.545,
+      "pairs_max": 3.653
+    },
+    "delta_mover_vs_head": null
+  },
+  "ramp:v1-smooth": {
+    "runs": 1,
+    "frames": 240,
+    "mover": {
+      "median": 33.487,
+      "p95": 33.63,
+      "per_run_median": [
+        33.487
+      ]
+    },
+    "forward": {
+      "median": 22.464,
+      "p95": 22.526,
+      "per_run_median": [
+        22.464
+      ]
+    },
+    "GPU frame": {
+      "median": 60.495,
+      "p95": 60.733,
+      "per_run_median": [
+        60.495
+      ]
+    },
+    "delta_mover_vs_old": {
+      "ms": 12.823,
+      "pct": 62.1,
+      "pairs_min": 12.784,
+      "pairs_max": 12.837
+    },
+    "delta_mover_vs_head": {
+      "ms": 10.24,
+      "pct": 44.0,
+      "pairs_min": 10.164,
+      "pairs_max": 10.265
+    }
+  },
+  "ramp:v1p-pixel": {
+    "runs": 3,
+    "frames": 720,
+    "mover": {
+      "median": 24.176,
+      "p95": 24.322,
+      "per_run_median": [
+        24.173,
+        24.174,
+        24.182
+      ]
+    },
+    "forward": {
+      "median": 22.832,
+      "p95": 23.038,
+      "per_run_median": [
+        22.822,
+        22.96,
+        22.823
+      ]
+    },
+    "GPU frame": {
+      "median": 51.435,
+      "p95": 52.049,
+      "per_run_median": [
+        51.375,
+        51.648,
+        51.445
+      ]
+    },
+    "delta_mover_vs_old": {
+      "ms": 3.512,
+      "pct": 17.0,
+      "pairs_min": 3.47,
+      "pairs_max": 3.532
+    },
+    "delta_mover_vs_head": {
+      "ms": -0.102,
+      "pct": -0.4,
+      "pairs_min": -0.13,
+      "pairs_max": -0.066
+    }
+  },
+  "ramp:v2-smooth": {
+    "runs": 1,
+    "frames": 240,
+    "mover": {
+      "median": 31.578,
+      "p95": 31.695,
+      "per_run_median": [
+        31.578
+      ]
+    },
+    "forward": {
+      "median": 22.486,
+      "p95": 22.583,
+      "per_run_median": [
+        22.486
+      ]
+    },
+    "GPU frame": {
+      "median": 58.533,
+      "p95": 58.793,
+      "per_run_median": [
+        58.533
+      ]
+    },
+    "delta_mover_vs_old": {
+      "ms": 10.914,
+      "pct": 52.8,
+      "pairs_min": 10.875,
+      "pairs_max": 10.928
+    },
+    "delta_mover_vs_head": {
+      "ms": 8.331,
+      "pct": 35.8,
+      "pairs_min": 8.255,
+      "pairs_max": 8.356
+    }
+  },
+  "ramp:v3-smooth": {
+    "runs": 3,
+    "frames": 719,
+    "mover": {
+      "median": 23.215,
+      "p95": 23.413,
+      "per_run_median": [
+        23.18,
+        23.252,
+        23.242
+      ]
+    },
+    "forward": {
+      "median": 22.511,
+      "p95": 22.812,
+      "per_run_median": [
+        22.46,
+        22.695,
+        22.681
+      ]
+    },
+    "GPU frame": {
+      "median": 50.134,
+      "p95": 51.023,
+      "per_run_median": [
+        49.909,
+        50.382,
+        50.392
+      ]
+    },
+    "delta_mover_vs_old": {
+      "ms": 2.551,
+      "pct": 12.3,
+      "pairs_min": 2.477,
+      "pairs_max": 2.602
+    },
+    "delta_mover_vs_head": {
+      "ms": -0.032,
+      "pct": -0.1,
+      "pairs_min": -0.143,
+      "pairs_max": 0.03
+    }
+  },
+  "setpiece:v0-none": {
+    "runs": 3,
+    "frames": 720,
+    "mover": {
+      "median": 21.631,
+      "p95": 22.002,
+      "per_run_median": [
+        21.664,
+        21.601,
+        21.607
+      ]
+    },
+    "forward": {
+      "median": 29.305,
+      "p95": 29.853,
+      "per_run_median": [
+        29.306,
+        29.295,
+        29.319
+      ]
+    },
+    "GPU frame": {
+      "median": 55.848,
+      "p95": 58.961,
+      "per_run_median": [
+        56.064,
+        55.613,
+        55.666
+      ]
+    },
+    "delta_mover_vs_old": {
+      "ms": 0.008,
+      "pct": 0.0,
+      "pairs_min": -0.064,
+      "pairs_max": 0.06
+    },
+    "delta_mover_vs_head": null
+  },
+  "setpiece:b1-none": {
+    "runs": 3,
+    "frames": 720,
+    "mover": {
+      "median": 22.691,
+      "p95": 23.01,
+      "per_run_median": [
+        22.701,
+        22.675,
+        22.701
+      ]
+    },
+    "forward": {
+      "median": 29.359,
+      "p95": 29.855,
+      "per_run_median": [
+        29.354,
+        29.378,
+        29.351
+      ]
+    },
+    "GPU frame": {
+      "median": 57.314,
+      "p95": 59.945,
+      "per_run_median": [
+        57.713,
+        57.114,
+        57.18
+      ]
+    },
+    "delta_mover_vs_old": {
+      "ms": 1.068,
+      "pct": 4.9,
+      "pairs_min": 1.01,
+      "pairs_max": 1.097
+    },
+    "delta_mover_vs_head": null
+  },
+  "setpiece:b2-none": {
+    "runs": 3,
+    "frames": 720,
+    "mover": {
+      "median": 21.555,
+      "p95": 21.931,
+      "per_run_median": [
+        21.546,
+        21.529,
+        21.569
+      ]
+    },
+    "forward": {
+      "median": 29.309,
+      "p95": 29.877,
+      "per_run_median": [
+        29.315,
+        29.317,
+        29.307
+      ]
+    },
+    "GPU frame": {
+      "median": 55.812,
+      "p95": 58.882,
+      "per_run_median": [
+        55.695,
+        55.439,
+        56.32
+      ]
+    },
+    "delta_mover_vs_old": {
+      "ms": -0.068,
+      "pct": -0.3,
+      "pairs_min": -0.136,
+      "pairs_max": -0.035
+    },
+    "delta_mover_vs_head": null
+  },
+  "setpiece:v5s-smooth": {
+    "runs": 3,
+    "frames": 720,
+    "mover": {
+      "median": 21.259,
+      "p95": 21.62,
+      "per_run_median": [
+        21.255,
+        21.301,
+        21.214
+      ]
+    },
+    "forward": {
+      "median": 28.681,
+      "p95": 29.309,
+      "per_run_median": [
+        28.82,
+        28.58,
+        28.909
+      ]
+    },
+    "GPU frame": {
+      "median": 54.794,
+      "p95": 58.16,
+      "per_run_median": [
+        54.759,
+        54.814,
+        54.882
+      ]
+    },
+    "delta_mover_vs_old": {
+      "ms": -0.364,
+      "pct": -1.7,
+      "pairs_min": -0.451,
+      "pairs_max": -0.303
+    },
+    "delta_mover_vs_head": {
+      "ms": -2.808,
+      "pct": -11.7,
+      "pairs_min": -2.863,
+      "pairs_max": -2.758
+    }
+  },
+  "setpiece:v5p-pixel": {
+    "runs": 3,
+    "frames": 720,
+    "mover": {
+      "median": 25.731,
+      "p95": 25.885,
+      "per_run_median": [
+        25.716,
+        25.741,
+        25.734
+      ]
+    },
+    "forward": {
+      "median": 29.301,
+      "p95": 29.433,
+      "per_run_median": [
+        29.308,
+        29.301,
+        29.282
+      ]
+    },
+    "GPU frame": {
+      "median": 62.258,
+      "p95": 62.568,
+      "per_run_median": [
+        62.345,
+        62.15,
+        62.258
+      ]
+    },
+    "delta_mover_vs_old": {
+      "ms": 4.108,
+      "pct": 19.0,
+      "pairs_min": 4.051,
+      "pairs_max": 4.137
+    },
+    "delta_mover_vs_head": {
+      "ms": -0.025,
+      "pct": -0.1,
+      "pairs_min": -0.06,
+      "pairs_max": 0.003
+    }
+  },
+  "ramp:v3-pixel": {
+    "runs": 3,
+    "frames": 720,
+    "mover": {
+      "median": 24.273,
+      "p95": 24.408,
+      "per_run_median": [
+        24.259,
+        24.275,
+        24.287
+      ]
+    },
+    "forward": {
+      "median": 22.844,
+      "p95": 23.078,
+      "per_run_median": [
+        22.815,
+        22.846,
+        22.994
+      ]
+    },
+    "GPU frame": {
+      "median": 51.535,
+      "p95": 52.14,
+      "per_run_median": [
+        51.372,
+        51.526,
+        51.903
+      ]
+    },
+    "delta_mover_vs_old": {
+      "ms": 3.609,
+      "pct": 17.5,
+      "pairs_min": 3.556,
+      "pairs_max": 3.637
+    },
+    "delta_mover_vs_head": {
+      "ms": -0.005,
+      "pct": -0.0,
+      "pairs_min": -0.044,
+      "pairs_max": 0.039
+    }
+  },
+  "ramp:v0-none": {
+    "runs": 3,
+    "frames": 720,
+    "mover": {
+      "median": 20.693,
+      "p95": 21.027,
+      "per_run_median": [
+        20.697,
+        20.826,
+        20.67
+      ]
+    },
+    "forward": {
+      "median": 22.813,
+      "p95": 23.08,
+      "per_run_median": [
+        22.345,
+        22.777,
+        22.982
+      ]
+    },
+    "GPU frame": {
+      "median": 46.75,
+      "p95": 48.643,
+      "per_run_median": [
+        46.585,
+        46.647,
+        46.923
+      ]
+    },
+    "delta_mover_vs_old": {
+      "ms": 0.029,
+      "pct": 0.1,
+      "pairs_min": -0.033,
+      "pairs_max": 0.176
+    },
+    "delta_mover_vs_head": null
+  },
+  "ramp:b1-none": {
+    "runs": 3,
+    "frames": 719,
+    "mover": {
+      "median": 21.891,
+      "p95": 22.124,
+      "per_run_median": [
+        21.893,
+        21.876,
+        21.897
+      ]
+    },
+    "forward": {
+      "median": 22.834,
+      "p95": 23.088,
+      "per_run_median": [
+        22.838,
+        22.8,
+        22.966
+      ]
+    },
+    "GPU frame": {
+      "median": 48.107,
+      "p95": 49.856,
+      "per_run_median": [
+        48.513,
+        47.805,
+        48.651
+      ]
+    },
+    "delta_mover_vs_old": {
+      "ms": 1.227,
+      "pct": 5.9,
+      "pairs_min": 1.173,
+      "pairs_max": 1.247
+    },
+    "delta_mover_vs_head": null
+  },
+  "ramp:b2-none": {
+    "runs": 3,
+    "frames": 720,
+    "mover": {
+      "median": 20.783,
+      "p95": 20.997,
+      "per_run_median": [
+        20.698,
+        20.892,
+        20.698
+      ]
+    },
+    "forward": {
+      "median": 22.208,
+      "p95": 23.015,
+      "per_run_median": [
+        22.286,
+        22.184,
+        22.22
+      ]
+    },
+    "GPU frame": {
+      "median": 46.627,
+      "p95": 48.548,
+      "per_run_median": [
+        46.498,
+        46.658,
+        46.695
+      ]
+    },
+    "delta_mover_vs_old": {
+      "ms": 0.119,
+      "pct": 0.6,
+      "pairs_min": -0.005,
+      "pairs_max": 0.242
+    },
+    "delta_mover_vs_head": null
+  },
+  "ramp:v5s-smooth": {
+    "runs": 3,
+    "frames": 720,
+    "mover": {
+      "median": 20.232,
+      "p95": 20.564,
+      "per_run_median": [
+        20.266,
+        20.18,
+        20.234
+      ]
+    },
+    "forward": {
+      "median": 21.956,
+      "p95": 22.81,
+      "per_run_median": [
+        21.86,
+        21.892,
+        22.567
+      ]
+    },
+    "GPU frame": {
+      "median": 46.052,
+      "p95": 47.988,
+      "per_run_median": [
+        46.006,
+        45.959,
+        46.214
+      ]
+    },
+    "delta_mover_vs_old": {
+      "ms": -0.432,
+      "pct": -2.1,
+      "pairs_min": -0.523,
+      "pairs_max": -0.384
+    },
+    "delta_mover_vs_head": {
+      "ms": -3.015,
+      "pct": -13.0,
+      "pairs_min": -3.143,
+      "pairs_max": -2.956
+    }
+  },
+  "ramp:v5p-pixel": {
+    "runs": 3,
+    "frames": 720,
+    "mover": {
+      "median": 24.187,
+      "p95": 24.321,
+      "per_run_median": [
+        24.186,
+        24.192,
+        24.187
+      ]
+    },
+    "forward": {
+      "median": 22.841,
+      "p95": 23.009,
+      "per_run_median": [
+        22.842,
+        22.815,
+        22.922
+      ]
+    },
+    "GPU frame": {
+      "median": 51.407,
+      "p95": 51.946,
+      "per_run_median": [
+        51.413,
+        51.241,
+        51.594
+      ]
+    },
+    "delta_mover_vs_old": {
+      "ms": 3.523,
+      "pct": 17.0,
+      "pairs_min": 3.483,
+      "pairs_max": 3.542
+    },
+    "delta_mover_vs_head": {
+      "ms": -0.091,
+      "pct": -0.4,
+      "pairs_min": -0.117,
+      "pairs_max": -0.056
+    }
+  }
+}

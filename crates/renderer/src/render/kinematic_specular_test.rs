@@ -469,107 +469,7 @@ fn mover_point_height_is_the_hit_height_on_every_top_hit() {
     }
 }
 
-#[test]
-fn smooth_specular_matches_the_frozen_pre_change_function() {
-    let Some(ctx) = gpu_or_skip("kinematic smooth_specular_matches_the_frozen_pre_change_function")
-    else {
-        return;
-    };
-    // The whole loop: a dynamic light the Surface Depth self-shadow marches,
-    // an animated-tail spot under its brightness curve, then selected-static
-    // point, spot, directional, ranged and influence-limited records.
-    let dynamic = MoverLight::point([1.0, 0.6, 1.5], 3.0);
-    let animated = MoverLight {
-        color: [0.8, 0.6, 0.4],
-        ..spot_light()
-    };
-    let lights = [
-        dynamic,
-        animated,
-        flank_light(),
-        spot_light(),
-        sun(),
-        ranged_light(),
-        influence_light(),
-        terminator_light(),
-    ];
-    let smooth = MoverCase {
-        dynamic_light_count: 1,
-        scripted_light_count: 2,
-        ..MoverCase::new(Style::Smooth, Output::Loop)
-    };
-    let mut cases = Vec::new();
-    for march in [false, true] {
-        for shadow_pattern in [false, true] {
-            cases.push((
-                format!("march {march}, shadows {shadow_pattern}"),
-                MoverCase {
-                    march,
-                    shadow_pattern,
-                    ..smooth
-                },
-            ));
-        }
-    }
-    cases.extend([
-        (
-            "specular off".to_owned(),
-            MoverCase {
-                march: true,
-                use_specular: false,
-                ..smooth
-            },
-        ),
-        (
-            "sharp exponent".to_owned(),
-            MoverCase {
-                march: true,
-                exponent: 96.0,
-                ..smooth
-            },
-        ),
-        (
-            "tilted normal".to_owned(),
-            MoverCase {
-                fixed_normal: Some(TILTED),
-                ..smooth
-            },
-        ),
-        (
-            "low eye".to_owned(),
-            MoverCase {
-                march: true,
-                eye: [0.25, 0.03, 0.25],
-                ..smooth
-            },
-        ),
-    ]);
-    for (name, case) in cases {
-        let current = render(&ctx, &lights, case, Observe::Shade);
-        let frozen = render(
-            &ctx,
-            &lights,
-            MoverCase {
-                output: Output::Frozen,
-                ..case
-            },
-            Observe::Shade,
-        );
-        for (i, (c, f)) in current.iter().zip(&frozen).enumerate() {
-            assert_eq!(
-                bits(*c),
-                bits(*f),
-                "{name}: fragment {i} is {c:?}, the 1c7fc9e3a loop drew {f:?}"
-            );
-        }
-        assert!(
-            current.iter().any(|p| p[0] > 0.0),
-            "{name}: the lights must reach the floor"
-        );
-    }
-}
-
-// --- Per-texel sharpness and tint through the mover's fs_main ---
+// --- Per-texel sharpness and tint through the mover's beauty entries ---
 
 use super::kinematic_specular_harness::{MaterialPath, checker_height_byte, render_material};
 use super::specular_slot_fixtures::{
@@ -658,6 +558,44 @@ fn assert_bitwise_equal(current: &[[f32; 4]], oracle: &[[f32; 4]], what: &str) {
     }
 }
 
+/// The float-reassociation bound the tint rows use, per channel.
+fn reassociation_bound(expected: f32) -> f32 {
+    2.0e-6 + expected.abs() * 2.0e-5
+}
+
+fn assert_within_reassociation(current: &[[f32; 4]], oracle: &[[f32; 4]], what: &str) {
+    for (i, (c, o)) in current.iter().zip(oracle).enumerate() {
+        for k in 0..3 {
+            assert!(
+                (c[k] - o[k]).abs() <= reassociation_bound(o[k]),
+                "{what}: fragment {i} channel {k} is {c:?}, before the change {o:?}"
+            );
+        }
+        assert_eq!(c[3].to_bits(), o[3].to_bits(), "{what}: fragment {i} alpha");
+    }
+}
+
+/// Some fragment's specular-on shade clears its specular-off shade by more
+/// than the reassociation bound, so the bound cannot hide a lost highlight.
+fn assert_specular_reaches(on: &[[f32; 4]], off: &[[f32; 4]], what: &str) {
+    assert!(
+        on.iter()
+            .zip(off)
+            .any(|(on, off)| (0..3).any(|k| on[k] - off[k] > reassociation_bound(off[k]))),
+        "{what}: specular must clear the reassociation bound somewhere"
+    );
+}
+
+/// The style's comparison against the pre-change oracle: pixel keeps its
+/// bits; smooth sums specular apart from diffuse, so it holds within float
+/// reassociation.
+fn assert_matches_oracle(style: Style, current: &[[f32; 4]], oracle: &[[f32; 4]], what: &str) {
+    match style {
+        Style::Pixel => assert_bitwise_equal(current, oracle, what),
+        Style::Smooth => assert_within_reassociation(current, oracle, what),
+    }
+}
+
 fn render_both(
     ctx: &super::gpu_test_harness::GpuCtx,
     lights: &[MoverLight],
@@ -719,7 +657,7 @@ fn sharpness_decode_matches_the_cpu_reference() {
             }
         }
         let (current, oracle) = render_both(&ctx, &lights, case, &material, true);
-        assert_bitwise_equal(&current, &oracle, &format!("{style:?}"));
+        assert_matches_oracle(style, &current, &oracle, &format!("{style:?}"));
         assert!(
             current.iter().any(|p| p[0] > 0.3),
             "{style:?}: the lights reach the floor"
@@ -797,10 +735,21 @@ fn tint_mix_matches_the_cpu_reference() {
                 }
                 None => {
                     assert_eq!(texel[i][2], 0.0, "{what}: untinted");
-                    // An untinted texel's specular stays in the loop's lit
-                    // sum; nothing reaches the tinted one.
-                    assert_eq!(rgb(raw[i]), [0.0; 3], "{what}");
-                    assert_eq!(rgb(out[i]), [0.0; 3], "{what}");
+                    match style {
+                        // An untinted texel's specular stays in the pixel
+                        // loop's lit sum; nothing reaches the tinted one.
+                        Style::Pixel => {
+                            assert_eq!(rgb(raw[i]), [0.0; 3], "{what}");
+                            assert_eq!(rgb(out[i]), [0.0; 3], "{what}");
+                        }
+                        // Smooth's one sum takes the raw albedo.
+                        Style::Smooth => {
+                            assert!(raw[i][0] > 0.0, "{what}: the lights reach the texel");
+                            let albedo = rgb(albedo[i]);
+                            let expected = std::array::from_fn(|c| raw[i][c] * albedo[c]);
+                            assert_rgb_close(out[i], expected, &what);
+                        }
+                    }
                 }
             }
         }
@@ -826,10 +775,12 @@ fn untinted_slot(format: SlotFormat) -> impl Fn(u32, u32) -> [u8; 4] {
     }
 }
 
+// Pixel's untinted texels keep their pre-tint bits; smooth's whole-loop row
+// is `smooth_shade_matches_the_frozen_pre_change_loop_within_reassociation`.
 #[test]
-fn untinted_specular_matches_the_frozen_pre_change_function() {
+fn untinted_pixel_specular_matches_the_frozen_pre_change_function() {
     let Some(ctx) =
-        gpu_or_skip("kinematic untinted_specular_matches_the_frozen_pre_change_function")
+        gpu_or_skip("kinematic untinted_pixel_specular_matches_the_frozen_pre_change_function")
     else {
         return;
     };
@@ -848,22 +799,147 @@ fn untinted_specular_matches_the_frozen_pre_change_function() {
         } else {
             &[false, true]
         };
-        for style in [Style::Pixel, Style::Smooth] {
-            for &march in marches {
-                for shadow_pattern in [false, true] {
-                    let case = MoverCase {
+        for &march in marches {
+            for shadow_pattern in [false, true] {
+                let case = MoverCase {
+                    march,
+                    shadow_pattern,
+                    ..whole_loop(MoverCase::material(Style::Pixel, MaterialPath::Current))
+                };
+                let (current, oracle) =
+                    render_both(&ctx, &lights, case, &material, format == SlotFormat::Rgba8);
+                assert_bitwise_equal(
+                    &current,
+                    &oracle,
+                    &format!("{format:?}, march {march}, shadows {shadow_pattern}"),
+                );
+            }
+        }
+    }
+}
+
+/// The four-channel checker the whole-loop cases shade over: full intensity,
+/// the height checker, no `_p` and no `_t`, under a varied albedo.
+fn whole_loop_material(ctx: &super::gpu_test_harness::GpuCtx) -> MaterialTextures {
+    material_textures(
+        ctx,
+        LATTICE,
+        &varied_albedo,
+        SlotFormat::Rgba8,
+        &|tx, ty| [255, checker_height_byte(tx % LATTICE, ty % LATTICE), 0, 255],
+    )
+}
+
+// The smooth pipeline sums specular apart from diffuse and colours it once
+// after the loop, so its shade matches the 1c7fc9e3a loop composed the old
+// way (one lit sum the albedo multiplies) only up to float reassociation
+// (rendering_pipeline.md §4, Tint and output). The current side is the smooth
+// entry's own loop and composition, spliced from the shader; the bound is the
+// tint rows'. Every case but specular-off proves the bound hides no highlight.
+#[test]
+fn smooth_shade_matches_the_frozen_pre_change_loop_within_reassociation() {
+    let Some(ctx) = gpu_or_skip(
+        "kinematic smooth_shade_matches_the_frozen_pre_change_loop_within_reassociation",
+    ) else {
+        return;
+    };
+    let lights = whole_loop_lights();
+    let smooth = whole_loop(MoverCase::material(Style::Smooth, MaterialPath::Current));
+    let check = |name: &str, case: MoverCase, material: &MaterialTextures, decodes: bool| {
+        let (current, oracle) = render_both(&ctx, &lights, case, material, decodes);
+        assert_within_reassociation(&current, &oracle, name);
+        if case.use_specular {
+            let off = render_material(
+                &ctx,
+                &lights,
+                MoverCase {
+                    use_specular: false,
+                    ..case
+                },
+                Observe::Shade,
+                material,
+            );
+            assert_specular_reaches(&current, &off, name);
+        }
+    };
+
+    let checker = whole_loop_material(&ctx);
+    for march in [false, true] {
+        for shadow_pattern in [false, true] {
+            check(
+                &format!("march {march}, shadows {shadow_pattern}"),
+                MoverCase {
+                    march,
+                    shadow_pattern,
+                    ..smooth
+                },
+                &checker,
+                false,
+            );
+        }
+    }
+    for (name, case) in [
+        (
+            "specular off",
+            MoverCase {
+                march: true,
+                use_specular: false,
+                ..smooth
+            },
+        ),
+        (
+            "sharp exponent",
+            MoverCase {
+                march: true,
+                exponent: 96.0,
+                ..smooth
+            },
+        ),
+        (
+            "tilted normal",
+            MoverCase {
+                fixed_normal: Some(TILTED),
+                ..smooth
+            },
+        ),
+        (
+            "low eye",
+            MoverCase {
+                march: true,
+                eye: [0.25, 0.03, 0.25],
+                ..smooth
+            },
+        ),
+    ] {
+        check(name, case, &checker, false);
+    }
+
+    for format in [SlotFormat::R8, SlotFormat::Rg8, SlotFormat::Rgba8] {
+        let material = material_textures(
+            &ctx,
+            LATTICE,
+            &varied_albedo,
+            format,
+            &untinted_slot(format),
+        );
+        // A one-channel slot never marches: has-depth is clear for it.
+        let marches: &[bool] = if format == SlotFormat::R8 {
+            &[false]
+        } else {
+            &[false, true]
+        };
+        for &march in marches {
+            for shadow_pattern in [false, true] {
+                check(
+                    &format!("{format:?} untinted, march {march}, shadows {shadow_pattern}"),
+                    MoverCase {
                         march,
                         shadow_pattern,
-                        ..whole_loop(MoverCase::material(style, MaterialPath::Current))
-                    };
-                    let (current, oracle) =
-                        render_both(&ctx, &lights, case, &material, format == SlotFormat::Rgba8);
-                    assert_bitwise_equal(
-                        &current,
-                        &oracle,
-                        &format!("{format:?}, {style:?}, march {march}, shadows {shadow_pattern}"),
-                    );
-                }
+                        ..smooth
+                    },
+                    &material,
+                    format == SlotFormat::Rgba8,
+                );
             }
         }
     }
@@ -977,7 +1053,7 @@ fn narrow_specular_slots_shade_in_raw_albedo() {
                     assert_eq!(tinted, 0.0, "{what}: fragment {i}: raw albedo");
                 }
                 let (current, oracle) = render_both(&ctx, &lights, case, &material, false);
-                assert_bitwise_equal(&current, &oracle, &what);
+                assert_matches_oracle(style, &current, &oracle, &what);
             }
         }
     }
@@ -1093,6 +1169,20 @@ fn sharpness_and_tint_hold_through_surface_depth_off_and_on() {
                     marches && quality == On,
                     "{what}: the march runs only for `_h` at On"
                 );
+                // Highlights survive the toggle: specular clears the
+                // reassociation bound somewhere at every step.
+                let shade = render_material(&ctx, &lights, case, Observe::Shade, &material);
+                let unlit = render_material(
+                    &ctx,
+                    &lights,
+                    MoverCase {
+                        use_specular: false,
+                        ..case
+                    },
+                    Observe::Shade,
+                    &material,
+                );
+                assert_specular_reaches(&shade, &unlit, &what);
             }
         }
     }

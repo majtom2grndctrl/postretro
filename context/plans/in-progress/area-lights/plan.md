@@ -252,7 +252,7 @@ Row 11 now reads, in the brief and here:
 | 37 `--soft-shadow-samples` re-keys texel paths only | warm-rebuild cache test | achievable | pass (`area_light_warm_rebuild`, now also vs a cold 16-sample build) |
 | 38 AlphaLights v5 round trip; v4/unknown rejected | `level-format` tests | achievable | pass |
 | 39 no-area map byte-identical | every bake section vs `main` build on fixtures | achievable | pass (opt-in gate vs `11f27aaa9` binaries, rerun after review fixes: only id 18 version word differs) |
-| 40 area fixture in `GATE_FIXTURES` | profiled fixture, determinism gate | achievable | pass (determinism gate; budget gate stale on `main` itself, not this branch) |
+| 40 area fixture in `GATE_FIXTURES` | profiled fixture, determinism gate | achievable | pass (determinism gate; budget gate stale on `main` itself, not this branch). After the `player_spawn` fix (2026-11-22), the budget gate run on `area-light-panel` alone matches both its id 22 and id 42 goldens |
 | 41 scripting example on `content/dev` | dev-map script test + TS/Luau checks | achievable | pass, except TS and Luau type checks outstanding (`tsc`, `luau-analyze` not installed) |
 | 42 `sweep` refused; spot still works | `script_primitives` test | achievable | pass |
 | 43 tagged sweep S1, A, S2 unchanged (O14) | host + client replication test | achievable | pass |

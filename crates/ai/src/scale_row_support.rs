@@ -287,6 +287,41 @@ pub(super) struct World<'a> {
     pub(super) collision: &'a CollisionWorld,
     pub(super) factions: &'a FactionRegistry,
     pub(super) sentiment: &'a RefCell<FactionSentimentState>,
+    /// Closed doors the AI sees at their pose; none unless the run asks.
+    pub(super) doors: &'a ArenaDoors,
+}
+
+/// One closed door per arena for the mover-sight scale rows
+/// (`E17--movers-block-shots-and-sight`, S1): 8 m wide and 4 m tall, across
+/// the arena's x axis at its centre, near its z = 8 edge. Present only when
+/// `POSTRETRO_SCALE_DOORS=1`; otherwise empty, and every row runs as before.
+pub(super) struct ArenaDoors {
+    pub(super) movers: Vec<crate::collision::moving::MoverCollider>,
+    pub(super) poses: crate::collision::test_movers::DoorPoses,
+}
+
+impl ArenaDoors {
+    pub(super) fn from_env() -> Self {
+        let wanted = std::env::var("POSTRETRO_SCALE_DOORS").is_ok_and(|value| value == "1");
+        let mut doors = Self {
+            movers: Vec::new(),
+            poses: Default::default(),
+        };
+        if wanted {
+            for arena in 0..ARENAS {
+                let id = 1_000 + arena as u32;
+                doors
+                    .movers
+                    .push(crate::collision::test_movers::door_slab(id, 0.1, 4.0, 4.0));
+                doors.poses.set(
+                    id,
+                    Vec3::new(arena_x0(arena) + ARENA * 0.5, 0.0, 8.0),
+                    glam::Quat::IDENTITY,
+                );
+            }
+        }
+        doors
+    }
 }
 
 /// One tick's measured stages.
@@ -328,7 +363,11 @@ pub(super) fn ai_stage(
     let mut cost = TickCost::default();
     let inputs = |schedule| AiTickInputs {
         nav_graph: Some(world.nav),
-        mover_nav: crate::nav::MoverNav::none(),
+        mover_nav: crate::nav::MoverNav {
+            gate: crate::nav::NavGate::OPEN,
+            movers: &world.doors.movers,
+            poses: &world.doors.poses,
+        },
         collision_world: Some(world.collision),
         descriptors: &[],
         descriptor_generation: 0,

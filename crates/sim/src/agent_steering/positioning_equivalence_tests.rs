@@ -592,9 +592,10 @@ fn a_slot_on_two_targets_rings_keeps_each_targets_route_verdict() {
 }
 
 // A batch whose queries read different worlds shares no placement work: one
-// sees the door open and one shut (same movers, different gates), then each
+// sees the door open (gate open, leaf posed nowhere) and one shut, then each
 // carries its own agent slice. Sharing (8, 5)'s route verdict to the east
 // target across them would hand the shut-door query the open door's answer.
+// Slot sight sees the leaf at its pose, so the open world must not pose it.
 #[test]
 fn queries_reading_different_worlds_do_not_share_placement_work() {
     let mut rig = closed_door();
@@ -617,7 +618,7 @@ fn queries_reading_different_worlds_do_not_share_placement_work() {
     let open = crate::nav::MoverNav {
         gate: crate::nav::NavGate::OPEN,
         movers: &rig.colliders,
-        poses: &rig.movers,
+        poses: &crate::collision::moving::EMPTY_MOVER_POSES,
     };
     let shut = crate::nav::MoverNav {
         gate: rig.gate(),

@@ -182,7 +182,7 @@ impl Fixture {
                 auto_close_timers: None,
                 use_edges: &edges,
             }),
-            |_, _| {},
+            |_, _, _| {},
             |_| {},
             crate::sim::TimingGate::OFF,
         )

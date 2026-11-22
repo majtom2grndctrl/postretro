@@ -20,6 +20,8 @@ mod emissive_gates;
 #[cfg(test)]
 mod environment_gates;
 #[cfg(test)]
+mod mover_shot_gates;
+#[cfg(test)]
 mod seam_gates;
 #[cfg(test)]
 mod stance_gates;

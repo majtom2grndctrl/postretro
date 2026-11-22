@@ -26,7 +26,8 @@ pub(in crate::sim) fn run_local_weapon_command(
         select_slot,
         command,
         reload_pressed,
-        collision_world,
+        // The headless wrapper has no movers; shots see the static world alone.
+        &CombinedCollisionWorld::static_only(collision_world),
         EnvironmentView::level_only(0.0),
         hit_zone_store,
         anim_time,
@@ -51,7 +52,7 @@ pub(in crate::sim) fn run_local_weapon_command_with_content(
     select_slot: Option<usize>,
     command: &WeaponFireCommand,
     reload_pressed: bool,
-    collision_world: &CollisionWorld,
+    collision_world: &CombinedCollisionWorld<'_>,
     environment: EnvironmentView<'_>,
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
@@ -102,7 +103,8 @@ pub(in crate::sim) fn run_client_weapon_equip(
         select_slot,
         command,
         false,
-        collision_world,
+        // Equip never fires, so no shot reads the movers.
+        &CombinedCollisionWorld::static_only(collision_world),
         // Equip never fires, so no pellet crosses a volume.
         EnvironmentView::level_only(0.0),
         hit_zone_store,
@@ -125,7 +127,7 @@ fn run_local_weapon_command_inner(
     select_slot: Option<usize>,
     command: &WeaponFireCommand,
     reload_pressed: bool,
-    collision_world: &CollisionWorld,
+    collision_world: &CombinedCollisionWorld<'_>,
     environment: EnvironmentView<'_>,
     hit_zone_store: &HitZoneStore,
     anim_time: f64,

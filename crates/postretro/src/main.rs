@@ -5096,7 +5096,13 @@ impl App {
             };
             sim::advance_predicted(
                 &session.scripting.script_ctx.registry,
-                &self.collision_world,
+                // Predicted projectiles meet movers where this client's
+                // movement prediction has them, never the presented pose.
+                &collision::moving::CombinedCollisionWorld::new(
+                    &self.collision_world,
+                    &self.kinematic_mover_colliders,
+                    &self.kinematic_mover_tick_states,
+                ),
                 &session.hit_zone_store,
                 frame_anim_time,
                 frame_dt,
@@ -5891,7 +5897,6 @@ impl App {
 
     fn host_flush_pending_hit_declarations(
         &mut self,
-        anim_time: f64,
         remote_impacts: &mut Vec<postretro_sim::emission::WeaponEmission>,
     ) -> bool {
         let Some(script_ctx) = self
@@ -5905,7 +5910,6 @@ impl App {
             return false;
         };
         let scripting = &mut session.scripting;
-        let hit_zone_store = &session.hit_zone_store;
         let overlay_config = scripting.impact_policy_runtime.client_overlay_config();
         let overlay_tracker = &mut session.host_overlay_fact_tracker;
         let Some(netcode::NetEndpoint::Host {
@@ -5953,12 +5957,9 @@ impl App {
             server,
             &mut registry,
             &self.collision_world,
-            hit_zone_store,
             &identities.allocator(),
             owners,
             open_shots,
-            *tick,
-            anim_time,
             ready,
             |registry| {
                 scripting.evaluate_pending_in_tick_impacts_with_overlay_sink(

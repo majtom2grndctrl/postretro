@@ -38,6 +38,9 @@ use postretro_level_loader::LevelWorld;
 mod capsule_triangle;
 pub mod moving;
 mod overlap;
+pub mod shot_queries;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_movers;
 pub use overlap::{MAP_UNIT_METRES, OverlapCheckTimer, StaticOverlap};
 mod skin_cast;
 mod solid_cells;
@@ -450,7 +453,7 @@ pub fn cast_sphere_exact(
     cast_sphere_exact_parry(world, pos, radius, dir, max_toi).map(shape_cast_hit)
 }
 
-fn cast_sphere_exact_parry(
+pub(crate) fn cast_sphere_exact_parry(
     world: &CollisionWorld,
     pos: Vec3,
     radius: f32,

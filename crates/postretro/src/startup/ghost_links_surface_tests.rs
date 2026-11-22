@@ -702,7 +702,7 @@ impl Level {
                 auto_close_timers: Some(auto_close),
                 use_edges: &use_edges,
             }),
-            |_, _| {},
+            |_, _, _| {},
             |registry| scripting.evaluate_pending_in_tick_impacts(registry),
             postretro_stage_timing::TimingGate::OFF,
         );

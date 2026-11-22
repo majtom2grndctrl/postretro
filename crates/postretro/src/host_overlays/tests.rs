@@ -146,3 +146,91 @@ fn remote_hit_registration_covers_fresh_splash_targets_during_immutable_intake()
     drop(intake_allocator);
     assert_eq!(tracked.len(), 2);
 }
+
+/// A client splash shot whose march is open: it can release a blast on a tick
+/// that ingests no declaration.
+fn marching_splash_shot(
+    pawn: EntityId,
+    weapon: EntityId,
+) -> postretro_combat_model::AuthorizedShot {
+    postretro_combat_model::AuthorizedShot {
+        sounds: None,
+        action: None,
+        source_weapon: None,
+        knockback: None,
+        shot_id: postretro_combat_model::ShotId::from_parts(
+            4,
+            10,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        ),
+        pawn,
+        pawn_life: 0,
+        weapon,
+        fire_tick: 10,
+        damage: 50.0,
+        range: 20.0,
+        pellet_count: 1,
+        credit_source: "weapon.test.remote-splash".into(),
+        splash: Some(postretro_foundation::SplashDescriptor {
+            knockback: None,
+            radius: 4.0,
+            min_fraction: 0.0,
+            self_damage: true,
+        }),
+        projectile_radius: Some(0.0),
+        projectile_direction: Some(Vec3::X),
+        projectile_speed: Some(60.0),
+        projectile_lifetime_seconds: Some(10.0),
+        projectile_tick_seconds: Some(1.0 / 60.0),
+        splash_on_path_tolerance: Some(0.25),
+        is_projectile: true,
+        fire_origin: Vec3::ZERO,
+        timeout_budget_ticks: 180,
+        damage_type: None,
+    }
+}
+
+// A march bound on an earlier tick releases its blast on a tick with no
+// ready declaration. Its open march alone registers same-tick spawns first, so
+// the blast's damage on a fresh NPC is presented while intake holds the
+// allocator, instead of panicking on the registration borrow.
+#[test]
+fn open_march_registers_fresh_splash_targets_on_a_tick_without_declarations() {
+    let ctx = ScriptCtx::new();
+    let mut runtime = runtime(&ctx);
+    let config = runtime.client_overlay_config().unwrap();
+    let mut allocator = NetworkIdAllocator::for_test();
+    let mut replicable = ReplicableSet::default();
+    let mut tracked = HashSet::new();
+    let mut overrides = PresentationOverrides::default();
+    let mut tracker = HostOverlayFactTracker::default();
+    let identities = HostOverlayIdentities::new(&mut allocator, &mut replicable, &mut tracked);
+    let mut registry = ctx.registry.borrow_mut();
+    let pawn = registry.spawn(Transform::default());
+    let weapon = registry.spawn(Transform::default());
+    let mut open_shots = OpenAuthorizedShots::default();
+    assert!(
+        !remote_hits_may_land(false, &open_shots),
+        "no declaration and no march: nothing can land"
+    );
+    open_shots.record(marching_splash_shot(pawn, weapon), 7);
+    assert!(open_shots.has_marches());
+    assert!(
+        remote_hits_may_land(false, &open_shots),
+        "an open march can release with no declaration ready"
+    );
+
+    // Spawned by a trigger earlier this tick, inside the blast.
+    let fresh = fresh_target(&mut registry);
+    identities.register_before_remote_hits(&registry, &mut overrides);
+    let intake_allocator = identities.allocator();
+    ctx.presentation_script_time.set(3.0);
+    hit(&mut registry, fresh);
+    runtime.evaluate_pending_in_registry_with_overlay_sink(&mut registry, |registry, damage| {
+        identities.record_damage(registry, damage, &mut overrides, &mut tracker, &config);
+    });
+    assert_eq!(tracker.tracked_len(), 1, "the march's blast is presented");
+    drop(intake_allocator);
+    assert!(tracked.contains(&fresh));
+}

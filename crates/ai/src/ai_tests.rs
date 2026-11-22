@@ -2621,7 +2621,7 @@ fn projectile_peer_hit_reaches_retaliation_selection_in_the_same_simulation_tick
         &no_edges,
         &no_edges,
         None,
-        |_, _| {},
+        |_, _, _| {},
         |_| {},
         crate::sim::TimingGate::OFF,
     );
@@ -2834,7 +2834,7 @@ impl FactionSentimentHarness {
             &no_edges,
             &no_edges,
             None,
-            |_, _| {},
+            |_, _, _| {},
             |registry| policies.evaluate_pending_in_registry(registry),
             crate::sim::TimingGate::OFF,
         )
@@ -3247,7 +3247,7 @@ fn lethal_ready_remote_hit_quiesces_brain_before_same_tick_ai_outcomes() {
         &no_edges,
         &no_edges,
         None,
-        |registry, on_impact| {
+        |registry, _, on_impact| {
             apply_damage_with_context(
                 registry,
                 enemy,
@@ -11500,7 +11500,7 @@ fn projectile_weapon_attack_uses_resolved_range_and_damages_on_later_projectile_
     let mut ignore_impact = |_: &mut EntityRegistry| {};
     crate::sim::advance(
         &registry,
-        &world,
+        &postretro_physics::collision::moving::CombinedCollisionWorld::static_only(&world),
         &hit_zones,
         0.0,
         1.0 / 60.0,
@@ -11512,7 +11512,14 @@ fn projectile_weapon_attack_uses_resolved_range_and_damages_on_later_projectile_
         "spawn grace prevents an impact during the fire tick's projectile pass"
     );
 
-    crate::sim::advance(&registry, &world, &hit_zones, 0.0, 1.0, &mut ignore_impact);
+    crate::sim::advance(
+        &registry,
+        &postretro_physics::collision::moving::CombinedCollisionWorld::static_only(&world),
+        &hit_zones,
+        0.0,
+        1.0,
+        &mut ignore_impact,
+    );
     let registry = registry.borrow();
     assert_eq!(player_hp(&registry, pawn), 87.0);
     assert!(!registry.exists(projectile));
@@ -12355,13 +12362,20 @@ fn projectile_weapon_attack_into_a_wall_despawns_without_damage() {
     let mut ignore_impact = |_: &mut EntityRegistry| {};
     crate::sim::advance(
         &registry,
-        &wall,
+        &postretro_physics::collision::moving::CombinedCollisionWorld::static_only(&wall),
         &hit_zones,
         0.0,
         1.0 / 60.0,
         &mut ignore_impact,
     );
-    crate::sim::advance(&registry, &wall, &hit_zones, 0.0, 1.0, &mut ignore_impact);
+    crate::sim::advance(
+        &registry,
+        &postretro_physics::collision::moving::CombinedCollisionWorld::static_only(&wall),
+        &hit_zones,
+        0.0,
+        1.0,
+        &mut ignore_impact,
+    );
 
     let registry = registry.borrow();
     assert!(!registry.exists(projectile));
@@ -13752,6 +13766,8 @@ mod decide;
 
 #[path = "awareness_tests.rs"]
 mod awareness;
+#[path = "mover_sight_tests.rs"]
+mod mover_sight;
 
 #[path = "tier_tests.rs"]
 mod tier;

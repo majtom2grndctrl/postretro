@@ -550,7 +550,9 @@ fn assert_fixture_targets_hittable(app: &crate::App) {
                 1,
                 &[0.0],
                 &[],
-                &collision,
+                &postretro_physics::collision::moving::CombinedCollisionWorld::static_only(
+                    &collision,
+                ),
                 &registry,
                 store,
                 0.0,

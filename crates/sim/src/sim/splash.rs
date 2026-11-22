@@ -6,8 +6,8 @@ use postretro_entities::{EntityId, EntityRegistry};
 use postretro_foundation::SplashDescriptor;
 use postretro_render_data::cone_frustum::Aabb;
 
-use crate::collision::CollisionWorld;
-use crate::collision::line_of_sight;
+use crate::collision::moving::CombinedCollisionWorld;
+use crate::collision::shot_queries::line_of_sight_combined;
 use crate::scripting_systems::health::is_damage_target_eligible;
 use crate::scripting_systems::hit_zones::{
     HitZoneStore, damageable_volume, for_each_hittable_candidate,
@@ -20,33 +20,32 @@ use crate::weapon::{ActivationOutcome, DamagePayload, WeaponImpact};
 pub(crate) struct SphereEntity {
     pub(crate) entity: EntityId,
     /// Nearest point on the candidate's damageable volume, used as the
-    /// static-world occlusion segment endpoint.
+    /// occlusion segment endpoint.
     pub(crate) nearest_point: Vec3,
     pub(crate) distance: f32,
 }
 
-// Keep this aligned with `collision::line_of_sight`'s zero-length guard. A
+// Keep this aligned with `line_of_sight_combined`'s zero-length guard. A
 // blast center inside (or effectively on) a damageable volume has no segment
-// to test, and `line_of_sight` deliberately reports such a segment as false.
+// to test, and the sight query deliberately reports such a segment as false.
 // Splash treats it as clear so direct and point-blank targets cannot
 // self-occlude.
 const ZERO_LENGTH_OCCLUSION_EPSILON: f32 = 1.0e-5;
 
 /// Return every live, non-excluded damageable entity whose broad-phase volume
 /// intersects the sphere at `center`. `occlusion_origin` affects only the
-/// static-world sightline; it never changes the overlap sphere, falloff center,
+/// sightline; it never changes the overlap sphere, falloff center,
 /// or returned nearest-point distance.
 ///
-/// When `occlude` is present, static-world geometry can remove candidates
-/// hidden from the blast center. Dynamic movers and entities do not participate
-/// because `line_of_sight` queries static world geometry only.
+/// When `occlude` is present, static geometry and movers at their pose remove
+/// candidates hidden from the blast center. Entities never occlude.
 pub(crate) fn entities_in_sphere(
     registry: &EntityRegistry,
     hit_zone_store: &HitZoneStore,
     center: Vec3,
     radius: f32,
     exclude: impl Fn(EntityId) -> bool,
-    occlude: Option<&CollisionWorld>,
+    occlude: Option<&CombinedCollisionWorld<'_>>,
     occlusion_origin: Vec3,
 ) -> Vec<SphereEntity> {
     if !center.is_finite() || !radius.is_finite() || radius <= 0.0 || !occlusion_origin.is_finite()
@@ -65,11 +64,11 @@ pub(crate) fn entities_in_sphere(
         let nearest_point = closest_point_on_aabb(center, volume);
         let distance = center.distance(nearest_point);
         if distance <= radius {
-            let blocked_by_static_world = occlude.is_some_and(|world| {
+            let occluded = occlude.is_some_and(|world| {
                 distance > ZERO_LENGTH_OCCLUSION_EPSILON
-                    && !line_of_sight(occlusion_origin, nearest_point, world)
+                    && !line_of_sight_combined(occlusion_origin, nearest_point, world)
             });
-            if blocked_by_static_world {
+            if occluded {
                 return;
             }
             entities.push(SphereEntity {
@@ -113,7 +112,7 @@ pub(crate) fn splash_damage_amount(
 /// chokepoint. Candidate collection happens before any damage so one target's
 /// health change cannot alter the membership or falloff of another target in
 /// the same blast. `occlusion_origin` may differ from `center` solely to start
-/// the static-world sightline clear of a contacted world triangle.
+/// the sightline clear of a contacted surface, or out of an enclosing mover.
 /// `credit_owner` false (a trap's shot) leaves every hit attackerless while
 /// `owner_pawn` still governs self-damage. Returns whether at least one target
 /// received a damage or knockback dispatch.
@@ -121,7 +120,7 @@ pub(crate) fn splash_damage_amount(
 pub fn emit_splash_damage(
     registry: &mut EntityRegistry,
     hit_zone_store: &HitZoneStore,
-    collision_world: &CollisionWorld,
+    collision_world: &CombinedCollisionWorld<'_>,
     center: Vec3,
     occlusion_origin: Vec3,
     splash: &SplashDescriptor,
@@ -158,7 +157,7 @@ pub fn emit_splash_damage(
 pub fn emit_shot_splash_damage(
     registry: &mut EntityRegistry,
     hit_zone_store: &HitZoneStore,
-    collision_world: &CollisionWorld,
+    collision_world: &CombinedCollisionWorld<'_>,
     center: Vec3,
     occlusion_origin: Vec3,
     splash: &SplashDescriptor,
@@ -251,6 +250,7 @@ pub fn emit_shot_splash_damage(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::collision::CollisionWorld;
     use glam::Vec3;
     use postretro_entities::Transform;
     use postretro_entities::components::health::{HealthComponent, Hitbox};
@@ -365,7 +365,7 @@ mod tests {
         emit_splash_damage(
             &mut registry,
             &zones,
-            &world,
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&world),
             Vec3::ZERO,
             Vec3::ZERO,
             &splash,
@@ -421,7 +421,7 @@ mod tests {
         emit_splash_damage(
             &mut registry,
             &zones,
-            &world,
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&world),
             Vec3::ZERO,
             Vec3::ZERO,
             &splash,
@@ -469,7 +469,7 @@ mod tests {
         emit_splash_damage(
             &mut registry,
             &zones,
-            &world,
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&world),
             Vec3::ZERO,
             Vec3::ZERO,
             &splash,
@@ -509,7 +509,7 @@ mod tests {
         emit_splash_damage(
             &mut registry,
             &zones,
-            &world,
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&world),
             Vec3::ZERO,
             Vec3::ZERO,
             &splash,
@@ -578,7 +578,9 @@ mod tests {
         assert!(emit_splash_damage(
             &mut registry,
             &HitZoneStore::new(),
-            &CollisionWorld::default(),
+            &crate::collision::moving::CombinedCollisionWorld::static_only(
+                &CollisionWorld::default()
+            ),
             Vec3::ZERO,
             Vec3::ZERO,
             &splash,
@@ -629,7 +631,7 @@ mod tests {
         emit_splash_damage(
             &mut registry,
             &HitZoneStore::new(),
-            &wall_at_x(2.0),
+            &crate::collision::moving::CombinedCollisionWorld::static_only(&wall_at_x(2.0)),
             Vec3::ZERO,
             Vec3::ZERO,
             &splash,
@@ -689,7 +691,9 @@ mod tests {
         emit_splash_damage(
             &mut registry,
             &HitZoneStore::new(),
-            &CollisionWorld::default(),
+            &crate::collision::moving::CombinedCollisionWorld::static_only(
+                &CollisionWorld::default(),
+            ),
             Vec3::ZERO,
             Vec3::ZERO,
             &splash,
@@ -749,7 +753,9 @@ mod tests {
         emit_splash_damage(
             &mut registry,
             &HitZoneStore::new(),
-            &CollisionWorld::default(),
+            &crate::collision::moving::CombinedCollisionWorld::static_only(
+                &CollisionWorld::default(),
+            ),
             Vec3::ZERO,
             Vec3::ZERO,
             &splash,
@@ -823,7 +829,9 @@ mod tests {
         emit_splash_damage(
             &mut registry,
             &HitZoneStore::new(),
-            &CollisionWorld::default(),
+            &crate::collision::moving::CombinedCollisionWorld::static_only(
+                &CollisionWorld::default(),
+            ),
             Vec3::ZERO,
             Vec3::ZERO,
             &splash,

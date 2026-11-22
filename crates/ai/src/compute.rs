@@ -46,7 +46,8 @@ pub(super) fn evaluate(
     dt_ms: f32,
     nav_graph: Option<&crate::nav::NavGraph>,
     gate: crate::nav::NavGate<'_>,
-    collision_world: Option<&crate::collision::CollisionWorld>,
+    // Static geometry plus movers at this tick's pose: every sight test.
+    collision_world: Option<&crate::collision::moving::CombinedCollisionWorld<'_>>,
     factions: &LiveFactionSentiment<'_>,
     turns: &attack_turns::AttackTurnRuntime,
     clips: Option<&crate::scripting_systems::hit_zones::HitZoneStore>,

@@ -337,7 +337,7 @@ impl World {
     fn real_tick(
         &mut self,
         assist_held: bool,
-        ingest: impl FnMut(&mut EntityRegistry, &mut dyn FnMut(&mut EntityRegistry)),
+        mut ingest: impl FnMut(&mut EntityRegistry, &mut dyn FnMut(&mut EntityRegistry)),
     ) -> TickEvents {
         use crate::ai_host::AiTickResult;
         use crate::collision::CollisionWorld;
@@ -401,7 +401,7 @@ impl World {
                 auto_close_timers: None,
                 use_edges: &edges,
             }),
-            ingest,
+            |registry, _, on_impact| ingest(registry, on_impact),
             |_| {},
             crate::sim::TimingGate::OFF,
         )

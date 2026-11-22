@@ -83,6 +83,19 @@ pub struct CombatQuery<'a> {
     pub ring: Option<SlotRing>,
 }
 
+impl CombatQuery<'_> {
+    /// Slot sight from `eye` to the target, through static geometry and
+    /// movers at this tick's pose. Placement stays static.
+    pub(crate) fn slot_sees_target(&self, eye: Vec3) -> bool {
+        let world = crate::collision::moving::CombinedCollisionWorld::new(
+            self.collision_world,
+            self.mover_nav.movers,
+            self.mover_nav.poses,
+        );
+        crate::collision::shot_queries::line_of_sight_combined(eye, self.target_aim, &world)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CombatAgentSnapshot {
     pub claimant_id: u32,
@@ -411,6 +424,9 @@ fn compare_proposals(a: &CombatProposal, b: &CombatProposal) -> Ordering {
 }
 
 #[cfg(test)]
+mod mover_sight_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::nav::find_path;
@@ -421,7 +437,7 @@ mod tests {
     const AGENT_RADIUS: f32 = 0.3;
     const AGENT_HEIGHT: f32 = 1.8;
     const STEP_HEIGHT: f32 = 0.4;
-    const REST_Y: f32 = AGENT_HEIGHT * 0.5 + crate::collision::SKIN_DISTANCE;
+    pub(super) const REST_Y: f32 = AGENT_HEIGHT * 0.5 + crate::collision::SKIN_DISTANCE;
     const LOS_EYE_OFFSET: Vec3 = Vec3::new(0.0, 1.0, 0.0);
 
     fn nav_region(x0: u32, z0: u32, x1: u32, z1: u32) -> NavRegion {
@@ -453,7 +469,7 @@ mod tests {
         }
     }
 
-    fn open_nav_graph() -> NavGraph {
+    pub(super) fn open_nav_graph() -> NavGraph {
         NavGraph::from_section(&nav_section(vec![nav_region(0, 0, 12, 12)], vec![]))
     }
 
@@ -484,7 +500,7 @@ mod tests {
         ))
     }
 
-    fn floor_world() -> CollisionWorld {
+    pub(super) fn floor_world() -> CollisionWorld {
         let points = vec![
             Vec3::new(-20.0, 0.0, -20.0),
             Vec3::new(20.0, 0.0, -20.0),
@@ -589,7 +605,7 @@ mod tests {
         }
     }
 
-    fn query_with<'a>(
+    pub(super) fn query_with<'a>(
         claimant_id: u32,
         nav_graph: &'a NavGraph,
         collision_world: &'a CollisionWorld,

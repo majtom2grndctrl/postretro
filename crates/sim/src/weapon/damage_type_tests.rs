@@ -44,7 +44,7 @@ fn shot(registry: &EntityRegistry, weapon: &mut WeaponComponent) -> WeaponFireEv
             can_fire: true,
         },
         &WeaponPlacementDescriptor::default(),
-        &CollisionWorld::new(),
+        &crate::collision::moving::CombinedCollisionWorld::static_only(&CollisionWorld::new()),
         EnvironmentView::new(-9.81, &EnvironmentVolumes::default(), &[]),
         &HitZoneStore::new(),
         0.0,

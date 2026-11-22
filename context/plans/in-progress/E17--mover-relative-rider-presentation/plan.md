@@ -1,31 +1,13 @@
 # E17--mover-relative-rider-presentation — plan of record
 
 mode: resumable
-status: blocked
+status: approved
 read at: be041cf8
 
-## Block
+## Owner rulings
 
-Acceptance rows 24 and 29 contradict each other whenever a connected client's reconcile offset is still gliding when its eye hands off.
-
-- **Source fact.** The client's own pawn mesh never carries `ClientPrediction::presentation_offset`. `present_local_pose` (`crates/netcode/src/prediction.rs`) is marked "no production caller". `MeshRenderCollector::collect_inner` draws every pawn at `interpolated_transform` with no local special case. The eye carries the offset; the mesh does not.
-- **Row 29** needs the client mesh to move by no more than its own motion on every hand-off frame.
-- **The Decision** says that when attached, the mesh takes the placed result "world offset included". Off the mover it keeps "today's world-space blend", which carries no offset.
-- **The conflict.** On a landing or a leave with a nonzero offset `o`, the mesh steps by `o`. Row 29 fails. Making the mesh carry `o` everywhere fixes row 29, but then row 24 ("a client pawn on static ground or airborne draw[s] … a pawn mesh bit-equal to before") fails while any offset glides.
-
-Proposed restatement, option A (recommended). The client mesh follows the eye, so the two agree on every frame:
-
-> Row 24: "Single-player, the host's own pawn and a client pawn on static ground or airborne draw an eye bit-equal to before. Their pawn mesh is bit-equal to before, except that a connected client's mesh now carries the same world-space presentation offset as its eye while one glides."
-
-The Decision's mesh clause would then read "…take the result, world offset included; any other case keeps today's world-space blend, and a connected client's mesh also takes the world offset."
-
-Option B keeps today's offset-free mesh off the mover and narrows row 29 instead:
-
-> Row 29: "…moves by no more than its own motion plus the world-space offset it does not carry, on every frame where its eye hands off."
-
-Under B, the mesh visibly steps on a hand-off during a glide.
-
-Only the owner can pick, since both options change an Acceptance row. Implementation does not start until this clears. Everything below is the plan for either option. Only task 8 differs.
+- **Rows 24/29 (was blocked).** Option A. A connected client's pawn mesh (shadow and mirror) always carries the same world-space presentation offset as its eye, so the mesh and eye agree on every frame and a hand-off never steps the mesh. Brief updated: the local-eye Decision's mesh clause, and row 24 now reads "…draw an eye bit-equal to before. Their pawn mesh is bit-equal to before, except that a connected client's mesh now carries the same world-space presentation offset as its eye while one glides." Source fact behind it: `present_local_pose` has no production caller, so today the client mesh carries no offset.
+- **Plan approved** by the owner with that ruling.
 
 ## Corrections
 
@@ -93,12 +75,12 @@ Row numbers follow the brief's Acceptance list in order.
 | 21 | Teleport off mid-glide cuts clean (P6) | hand-off tests | achievable as stated |
 | 22 | Rotation-only snap cuts the eye (P7) | hand-off tests | achievable as stated |
 | 23 | Despawn or rebind mid-glide (P12, P16) | hand-off tests | achievable as stated |
-| 24 | Static ground or airborne: eye and mesh bit-equal | eye and mesh equality tests | **needs restatement** (see Block) |
+| 24 | Static ground or airborne: eye bit-equal; mesh bit-equal except a client mesh carries the eye's world offset (restated) | eye and mesh equality tests | achievable as restated |
 | 25 | Quarter turn: arc midpoint; constant radius | local eye tests on SP, host and client | achievable as stated |
 | 26 | Pitched or rolled mover: eye height along world-up | local eye test | achievable as stated |
 | 27 | Transitions, holds, cuts and missing pawn draw today's blend (P19) | local eye tests | achievable as stated |
 | 28 | Teleport-class correction on a gliding mover moves the eye once (P19) | local eye test | achievable as stated |
-| 29 | Client mesh ≤ own motion on hand-off frames | mesh hand-off test | achievable once row 24 is restated (option A); restated itself under option B |
+| 29 | Client mesh ≤ own motion on hand-off frames | mesh hand-off test | achievable as stated |
 | 30 | `carry_yaw` hand-off yaw; command yaw unchanged (P20) | hand-off tests | achievable as stated |
 | 31 | Every consumer agrees with the presented pose under smoothing | agreement test: beauty, shadow, occluder, light, ghost, sound, rebase, probe, eye, mesh, `presented_landing` | achievable as stated |
 | 32 | Presented pose in view draws; SH and fired sound follow | collector and anchor tests | achievable as stated |
@@ -119,7 +101,7 @@ Row numbers follow the brief's Acceptance list in order.
 | 5 | **Registry render-only correction** (`entities`). Sparse per-entity correction applied after the blend in `interpolated_transform`. Advance once per frame at frame-rate-independent τ. Clear on despawn, unload, rebind and non-finite input. No allocation in steady state. Rows 10, 14 (registry part). | integrating executor | 1 | |
 | 6 | **Client mover-correction seeding.** Capture the pre-correction presented pose at apply. Seed from the previous frame's drawn pose, so corrections compose. Snap when any point of the mover's bounds moves by the teleport floor, including rotation-only corrections. Fix zero-tick previous-slot handling (P1, P18). Point the cull and the fire-time sound anchor at the presented pose. Write the before/after step measurement. Rows 10–14, 32. | integrating executor | 5 | |
 | 7 | **Presented `MoverPoseSource` and per-frame foot probes on every seat.** Move SP/host rider probes out of `SteerPose` into a per-frame Presentation pass over riders only; non-riders keep the per-tick probe. Point the host-seat and client probes at the presented source. Row 9. | integrating executor | 3, 6 | |
-| 8 | **Local eye rides the deck.** Endpoints carry the capsule centre and ground. When both name one mover, blend in the mover frame and place through the presented pose, with the world offset and eye height added along world-up. The mesh (shadow and mirror) follows the block's ruling. View yaw takes the presented correction's world-up yaw. Every `push_state`/`hold_state` caller: holds never attach. Rows 24–28, 31. | integrating executor | 6 | |
+| 8 | **Local eye rides the deck.** Endpoints carry the capsule centre and ground. When both name one mover, blend in the mover frame and place through the presented pose, with the world offset and eye height added along world-up. On a client the mesh (shadow and mirror) always carries the world offset, attached or not (owner ruling). View yaw takes the presented correction's world-up yaw. Every `push_state`/`hold_state` caller: holds never attach. Rows 24–28, 31. | integrating executor | 6 | |
 | 9 | **Own-pawn share and hand-offs.** Keep the mover-explained share out of the reconcile offset. Hand the residual at the eye's point between deck and world offset on land, leave, change, despawn and rebind. Add the render-only view-yaw offset. Teleports cut; a snapping deck cuts. Rows 15–23, 29, 30. | integrating executor | 8 | |
 | 10 | **Authority and scope proofs and the stress run.** Presentation-off A/B bit-equality, including serialized snapshots and `WIRE_VERSION`. Non-rider equality. An every-remote-riding fixture across several movers. `alloc_probe` in netcode tests. Presentation stage cost before and after. Rows 33, 35, 36. | integrating executor | 4, 7, 9 | |
 | 11 | **Manual recipe and context.** Co-op carousel recipe in `content/dev/maps/kinematic-platform.README.md`. Row M1 setup. | integrating executor | 10 | |

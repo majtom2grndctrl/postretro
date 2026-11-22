@@ -44,7 +44,7 @@ Read at e761fb13. Findings that inform the brief; the brief carries the conclusi
 - `networking.md` randomness posture: host-only, load-time, consequences-only. Enemy behavior draws are a second carved exception, "decided, not yet built" in the doc, though `behavior_draws.rs` exists. The set draw rides it and runs at spawn, so the doc amendment says so.
 - `done/E16--wieldable-switching-inventory/`: a live loadout edit applies at the next install, not to a live inventory. Held NPC equipment follows that rule on hot reload.
 - `done/E10--enemy-stances-and-telegraphs/`: rejects a reached rest with no way out. This brief runs that check once per declared set.
-- Roadmap "Patrol routes": per-instance variants chosen by map or script. It reuses this brief's selection pattern.
+- Roadmap "Patrol routes": per-instance variants chosen by map or script. It may cite this brief's selection rule but decides its own unknown-name behavior.
 
 ## Validation history input
-The first `/validate-plan` returned Reshape: set identity as runtime state forecloses single-weapon changes. The owner chose held weapons as the state (2026-11-22).
+The first `/validate-plan` returned Reshape: set identity as runtime state forecloses single-weapon changes. The owner chose held weapons as the state (2026-11-22). The second `/validate-plan` returned Reshape on layers: replacing the whole stack diverged from `grantLayer`'s existing-layers-only rule and the reload path. The owner chose literal capacity overrides on declared layers, and kept the selection rule specific to equipment rather than a general variant pattern (2026-11-22).

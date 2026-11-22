@@ -20,16 +20,16 @@ read at: e761fb131
 | AC | Proof | Status |
 |---|---|---|
 | 1 parity of blended sums vs per-fragment ratio | `ratio_blended_from_probe_sums_matches_the_per_fragment_ratio` (render-cpu) | achievable as stated |
-| 2 frame ordering (P1) | source-order gates: app frame loop and capture setup; renderer `record_scene_passes` timing prefill < sums dispatch < fluid pass, nothing between writes descriptors/samples | achievable as stated |
-| 3 entry globals | naga `global_uses` test: no entry uses `anim_descriptors` or reaches `fluid_reflection_ratio`; reflecting entry uses `fluid_probe_sums`; reflection-free uses none | achievable as stated |
-| 4 dispatch condition snapshot (P6) | source gate on the frame's one mask/tier snapshot + GPU frame with a mask set after upload | achievable as stated |
-| 5 IP fences | grep gates over layouts, usages, consumers | achievable as stated |
-| 6 light-evaluation source gates retargeted | existing gates extended to `fluid_reflection_sums.wgsl` | achievable as stated |
-| 7 GPU-free references + text pins | render-cpu refs; text pins for sums shader and fragment blend | achievable as stated |
-| 8 no-history inventory | sums shader binding inventory test | achievable as stated |
-| 9 budget pins incl. compute | `pipeline_budget_tests.rs` | achievable as stated |
-| 10 labelled timing pair | timing label gate + pair recorded in the sums pass | achievable as stated |
-| 11 lifetime/creation source gates | grep gates | achievable as stated |
+| 2 frame ordering (P1) | `the_sums_pass_records_after_the_flush_and_before_the_fluid_pass` + `the_frames_one_descriptor_flush_precedes_the_fluid_pass` | achievable as stated |
+| 3 entry globals | `the_reflection_free_entry_declares_none_of_the_reflection_globals`, `the_reflection_free_variant_compiles_no_reflection_into_its_executable_path` | achievable as stated |
+| 4 dispatch condition snapshot (P6) | `the_sums_dispatch_reads_the_fluid_passs_own_reflecting_draws`, `fluid_pass_picks_variants_by_the_frames_group_0_mask` + GPU frame (worker) | achievable as stated |
+| 5 IP fences | `the_sums_ip_fences_hold` | achievable as stated |
+| 6 light-evaluation source gates retargeted | `the_sums_pass_light_evaluation_reads_no_promotion_mask_or_sh` | achievable as stated |
+| 7 GPU-free references + text pins | `the_sums_pass_and_blend_wgsl_match_the_cpu_references`, `fluid_reflection_wgsl_bodies_match_the_cpu_reference` | achievable as stated |
+| 8 no-history inventory | `fluid_pass_declares_no_history_or_precomputed_intersection_binding` | achievable as stated |
+| 9 budget pins incl. compute | `fluid_sums_pipeline_compute_bindings_stay_within_limits`, `fluid_pipeline_fragment_uniforms_and_samplers_stay_within_limits` | achievable as stated |
+| 10 labelled timing pair | `the_sums_pass_owns_a_labelled_timing_pair` | achievable as stated |
+| 11 lifetime/creation source gates | `the_sums_live_with_the_level_and_their_pipeline_builds_at_full_init` | achievable as stated |
 | 12 dispatch counts (P2) | GPU gate, dispatch counter | achievable as stated |
 | 13 P6 low tier / planar plane / compose-only | GPU gate | achievable as stated |
 | 14 script switch on N (P1) | GPU gate | achievable as stated |
@@ -51,7 +51,7 @@ read at: e761fb131
 |---|---|---|---|---|
 | 1 | Behaviour-preserving splits: the frame's fluid block out of `renderer_render_frame.rs`; the level-install half out of `fluid_surface.rs`; retarget source gates | integrating executor | — | done: `renderer_fluid_frame.rs`, `fluid_surface/install.rs`; renderer lib 1440 pass |
 | 2 | Thin slice: CPU refs (sums, blend) + parity test; shaders; sums buffer, layouts, pipeline at full init; dispatch in the fluid block; existing GPU live-lighting case passes | integrating executor | 1 | done: parity test (12k cases), fluid suite 105 pass on Metal incl. `a_probe_reads_darker_by_its_lights_share_when_its_descriptor_switches_off` |
-| 3 | Source gates and pins (AC 2–11) | integrating executor | 2 | |
-| 4 | GPU gates (AC 12–22) | integrating executor | 2 | |
+| 3 | Source gates and pins (AC 2–11) | integrating executor | 2 | done |
+| 4 | GPU gates (AC 12–22) | worker (delegated), integrated by executor | 2 | in progress |
 | 5 | Register screen of `fs_main_reflecting` before/after; 5300M A/B at probes 4K first, then near/mid and Auto | integrating executor + owner | 2 | |
 | 6 | Preflight, review panel, fixes | integrating executor | 3, 4 | |

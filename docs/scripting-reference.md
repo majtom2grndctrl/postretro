@@ -3852,7 +3852,7 @@ An area light (`lightType` `"Area"`) is an ordinary member of `getMapEntities("l
 - **Direction does not.** An area light has no aim, so `sweep`, or any `setLightAnimation` carrying `direction`, fails with `InvalidArgument` and leaves the light's animation unchanged.
 - **A refused target stops the whole step.** A tagged or group `setLightAnimation` checks every target before it writes any. If one target refuses, for example a `sweep` over spot lights and an area light, no target changes, and nothing reaches co-op clients.
 - **A refused `levelLoad` step never runs.** It does not start the light or reserve its animated bake. An area light with `_start_inactive 1` whose only `levelLoad` step is a `sweep` starts dark.
-- **A `light 0` area light holds its last one-shot value.** It lights nothing, so a finished `fade` or one-shot colour change cannot be folded into its brightness. Its `animation` instead becomes a looping one-key hold at the final brightness and colour, with `playCount` `null`. Clearing that animation returns its glow to `_glow` × `_color`.
+- **A `light 0` area light holds its last one-shot value.** It lights nothing, so a finished `fade` or one-shot colour change cannot be folded into its brightness. Its `animation` instead becomes a looping one-key hold at the final brightness and colour, with `playCount` `null`. Clearing that animation, or setting another one, replaces the hold, so the next animation starts from `_glow` × `_color` rather than the held value. On a lit light, a second shot starts where the first one settled.
 
 ```typescript
 import { defineReaction, getMapEntities } from "postretro";

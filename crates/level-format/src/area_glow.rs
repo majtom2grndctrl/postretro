@@ -186,11 +186,11 @@ impl AreaGlowSection {
                     "AreaGlow light {index} intensity {intensity} is negative or not finite"
                 )));
             }
-            // The glow entry stores 1 / intensity. Below `light 1` it
-            // can overflow to infinity (NaN in the shader); a huge intensity
-            // makes it subnormal, which a flush-to-zero GPU reads as 0, the
-            // `light 0` form, while the CPU mirror does not. Both bounds are
-            // the compiler's own range.
+            // The compiler's own range: an integer `light` from 1 to
+            // i32::MAX, over 300. The glow entry stores 1 / intensity, so
+            // far outside it that value overflows to infinity (NaN in the
+            // shader) or turns subnormal, which a flush-to-zero GPU reads as
+            // 0, the `light 0` form, while the CPU mirror does not.
             let lit_range = MIN_LIT_INTENSITY * (1.0 - INTENSITY_BOUND_SLACK)
                 ..=MAX_INTENSITY * (1.0 + INTENSITY_BOUND_SLACK);
             if intensity > 0.0 && !lit_range.contains(&intensity) {

@@ -66,3 +66,20 @@ Read at 956a929b.
 - The loadout lowering rewrites the authored array in place (`sdk/lib/data_script.ts`, `.luau`), so a shared or spread table seen by a second `defineEntity` holds names, not handles.
 - Load rules run on the incoming manifest, apart from the deferred active set (`runtime/core.rs` commit).
 - The writer is stateless and already holds `hit_zone_store`, whose warn-once set clears per level load (`hit_zones.rs`).
+
+## Bake workflow
+- The exported glTF stands in as the raw source, since the `.blend` is not in the repo; `tools/prop_to_gltf.py` imports glTF.
+- Bakes need Blender, which the cloud container lacks. The executor installs it, or the owner runs the commands `solve-weapon-mount` prints. `docs/weapon-mounts.md` has the workflow; `done/character-clip-library/plan.md` records the ar_4 bakes as precedent.
+- Write each bake's buffer as `<rig>.bin`. Check that the export leaves the viewmodel's textures byte-identical.
+
+## Weaker rivals
+- Baking `thirdPersonModel` for exo_red only: fixes one rig.
+- Keying mounts by rig: the engine has no rig identity. A shared script constant gives authors the same reuse.
+- Narrowing an entry to `{weapon, socket, model}`: drops multi-socket mounts and breaks parity with `mesh.attachments`.
+
+## Owner answers (2026-11-22)
+- Pre-stable rule: move fast, break things, fix consumers.
+- `weaponMounts` inside `mesh`; `thirdPersonModel` retired; a character without the table opts out silently.
+- Bakes live beside their source glTF, named for the character model's folder. `ar_4/model.gltf` becomes `limitator.gltf`.
+- Unknown `mesh` keys reject load. Weapon references are checked by the SDK, with Rust following the loadout precedent.
+- Scale and grip stay manual-only.

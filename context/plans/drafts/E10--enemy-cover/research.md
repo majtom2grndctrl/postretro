@@ -27,7 +27,7 @@
 
 ## Movers (E17)
 - Bake side exists: `nav_poses` (`navmesh_bake/mover_poses.rs`) poses every non-spinning mover's convex brushes at each waypoint; the mover light gate's `Pose::segment_touches` tests segments against posed brushes. Runtime dock state: `MoverDockTable::docked_waypoint`, watched only for movers named by gate or link records.
-- Runtime side missing: no combined static + mover `line_of_sight`; the combined queries land with `ready/E17--movers-block-shots-and-sight`. Owner chose static cover now and a mover-aware cover follow-up on Epic 17.
+- Runtime side missing: no combined static + mover `line_of_sight`; the combined queries land with `done/E17--movers-block-shots-and-sight`. Owner chose static cover now and a mover-aware cover follow-up on Epic 17.
 
 ## Co-op and naming
 - Player crouch states: `crouch_idle`, `crouch_forward`, `crouch_backward` (`entity_model.md`).

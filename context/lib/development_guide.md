@@ -62,6 +62,11 @@ Other profiles are deliberate exceptions. `--release` (thin LTO, no incremental:
 
 Runtime-only environment variables never trigger a rebuild: `RUST_LOG`, `WGPU_BACKEND`, and the `POSTRETRO_*` diagnostics (§6.4). Distribution builds: `cargo run -p xtask -- dist` and `sdk-dist` (`build_pipeline.md` §Distribution packaging).
 
+**Command-line flags.** Every shipped binary answers `-h`/`--help` with its usage and exits, so a flag can be looked up without launching anything.
+
+- **Engine.** Flags are declared once in a registry (`crates/postretro/src/startup/cli_flags.rs`), each with its value shape, feature gate and help text. `--help` is generated from the registry. An undeclared flag token exits 2 before telemetry or a window starts. A test fails on any flag literal in an argv-reading file the registry does not declare, so a new flag is declared or the build is red. A bare `--` is a separator and passes.
+- **Single-parser binaries.** `prl-build`, `scripts-build` and the texture tools keep hand-written help, and a test compares the help's flags with the flag literals in the parser, failing on any difference. `gen-script-types` and `mint-identity` take one flag each and reject anything else.
+
 ### Worktree builds
 
 Default: sequential tracks on the main checkout's warm `target/`. A worktree is for genuine parallelism or another commit's build. Each one builds the engine cold; the `rquickjs-sys` QuickJS C dependency dominates.

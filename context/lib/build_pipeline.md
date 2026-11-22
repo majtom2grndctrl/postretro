@@ -842,11 +842,11 @@ repository rather than inside an engine installation: such a repository has no
 `<map parent>/baked/materials` while the engine reads the install's tree, and
 the two never meet.
 
-> **Value-taking engine flags.** Every one must also join the skip list
-> in `resolve_map_path` (`crates/postretro/src/startup/session.rs`). That scan
-> treats the first non-flag argument as the map path, so a flag it does not know
-> about leaves its *value* exposed — `postretro --baked-root <dir>` with no map
-> silently loads `<dir>` as the level.
+> **Value-taking engine flags.** Every engine flag is declared once in the
+> registry (`crates/postretro/src/startup/cli_flags.rs`), with its value shape.
+> `resolve_map_path` steps over values by that shape, so an undeclared flag
+> cannot expose its value as the map path; the engine rejects it at launch
+> instead. See `development_guide.md` §Build and run (Command-line flags).
 
 **Wire format.** `.prm` v3 (`PRM\x02`) has a fixed 45-byte header, followed by
 present slot blocks in diffuse → specular → normal → emissive order. The header

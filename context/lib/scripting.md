@@ -320,9 +320,13 @@ The TypeScript declaration file declares both SDK module IDs:
 tree/state helpers, UI reactions, game-state refs used by UI, and theme token
 helpers. A third, `"postretro/audio"`, holds audio subsystem APIs:
 `setGhostAudio` first, then music layering. It is not re-exported from
-`"postretro"`. Moving `playSound` there is a later breaking change. Dev script
-`tsconfig.json` files resolve every module ID to the same generated
-declaration file. Luau exposes the same split through literal
+`"postretro"`. Moving `playSound` there is a later breaking change. A mod-root
+`tsconfig.json` covers `start-script.ts` and every script below it, and
+resolves every module ID to the same generated declaration file. The dev mod's
+config is a byte copy of `sdk/templates/tsconfig.json`; a script-compiler test
+fails when they differ or stop resolving the declarations. A config under
+`scripts/` alone leaves the start script in an inferred editor project with no
+SDK types. Luau exposes the same split through literal
 `require("postretro")`, `require("postretro/ui")` and
 `require("postretro/audio")` overloads in `postretro.d.luau`. Each new module
 ID also joins the script compiler's specifier allowlist and build-side Luau

@@ -230,7 +230,9 @@ fn assert_pistol_hit(
         7,
         &[0.0],
         &[],
-        &CollisionWorld::new(),
+        &postretro_physics::collision::moving::CombinedCollisionWorld::static_only(
+            &CollisionWorld::new(),
+        ),
         registry,
         store,
         0.0,

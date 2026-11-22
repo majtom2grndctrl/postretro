@@ -160,6 +160,14 @@ either.
 
 3. **Author scripts in TypeScript** against `sdk/types/` and `sdk/lib/`.
 
+   Your editor gets its completions, hover docs and type errors from the
+   `tsconfig.json` at `<mod-root>/`. It covers `start-script.ts` and every
+   script below it, so typing inside `defineMod({ ... })` — the `render` block,
+   say — offers each field and flags a value the engine does not accept. If your
+   mod root has no `tsconfig.json`, copy `sdk/templates/tsconfig.json` there.
+   If the editor still reports `Cannot find module 'postretro'` after you add
+   one, restart its TypeScript server.
+
 4. **Run it:**
 
    ```bash

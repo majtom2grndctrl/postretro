@@ -8,7 +8,9 @@ use postretro_entities::presentation_overrides::PresentationOverrides;
 use postretro_entities::{EntityId, EntityRegistry};
 
 use crate::impact_policy::{ClientOverlayConfig, DamagedEnemyOverlayDamage};
-use crate::netcode::{HostOverlayFactTracker, NetworkIdAllocator, ReplicableSet};
+use crate::netcode::{
+    HostOverlayFactTracker, NetworkIdAllocator, OpenAuthorizedShots, ReplicableSet,
+};
 
 struct IdentityState<'a> {
     allocator: &'a mut NetworkIdAllocator,
@@ -22,6 +24,16 @@ pub(crate) struct HostOverlayIdentities<'a> {
 
 #[cfg(test)]
 mod tests;
+
+/// Whether remote hits can land this tick, so registration must run before
+/// intake: a ready declaration, or an open march, which can release a blast on
+/// a tick that ingests no declaration.
+pub(crate) fn remote_hits_may_land(
+    declarations_ready: bool,
+    open_shots: &OpenAuthorizedShots,
+) -> bool {
+    declarations_ready || open_shots.has_marches()
+}
 
 impl<'a> HostOverlayIdentities<'a> {
     pub(crate) fn new(
@@ -44,7 +56,7 @@ impl<'a> HostOverlayIdentities<'a> {
 
     /// A remote splash can hit NPCs spawned by triggers earlier this tick.
     /// Register them before HIT intake holds its immutable allocator borrow.
-    /// Call only for a nonempty remote batch; ordinary damage registers one target.
+    /// Call only when [`remote_hits_may_land`]; ordinary damage registers one target.
     pub(crate) fn register_before_remote_hits(
         &self,
         registry: &EntityRegistry,

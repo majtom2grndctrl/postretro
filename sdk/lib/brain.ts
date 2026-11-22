@@ -71,7 +71,8 @@ export interface BrainInputs {
    * guard refresh (number). */
   readonly attacksFiredInActivity: RuntimeGuardNode;
   /** `true` when the selected target is clear on the enemy's shared,
-   * debounced static-world sightline; false with no target. This is the LOS
+   * debounced sightline, which static geometry and movers at their current
+   * pose block (a closed door hides the target); false with no target. This is the LOS
    * verdict the engine fire gate also reads, before its range, cooldown, and
    * facing requirements (boolean). */
   readonly targetVisible: RuntimeGuardNode;

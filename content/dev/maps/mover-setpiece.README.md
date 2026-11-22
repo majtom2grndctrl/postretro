@@ -7,8 +7,8 @@ map: two rooms, an L-shaped hallway and a lift chamber. Intended uses:
 1. A/B the GPU cost of the mover pass on the Mac target. Timing setup and
    the `kinematic_brush` pass are in `context/lib/rendering_pipeline.md` §12.
 2. Prove enemies on movers: the sliding wall stops the chaser until it opens,
-   and the rising room carries its riders (see Enemy checks). Movers do not yet
-   block shots and sight.
+   and the rising room carries its riders (see Enemy checks). Movers block shots,
+   blasts and sight where they stand.
 3. Prove mover lighting through the probe channel, at rest and in motion:
    baked lights reach across every mover at both ends of its travel, and the
    rising rooms' faces cross probe layers as they move. The big rising room is
@@ -154,8 +154,9 @@ wakes at spawn.
 336–400, y 1200–1264 in the back room; its centre is 4.1 m behind the closed wall. It
 lies on the line from station 1 through the closed wall's centre. A
 `reference_enemy` (the chaser) stands on it at (368, 1232, 16), facing south.
-It proves the door and lift routing in Enemy checks. Movers do not yet block
-shots and sight, so the closed wall does not hide it from the player.
+It proves the door and lift routing in Enemy checks. Movers block shots and
+sight, so the closed wall hides it from the player, and the player from it,
+until the wall opens.
 
 ## Enemies
 
@@ -163,8 +164,10 @@ Three `reference_enemy` instances, all tagged `enemy`. This map ships no
 combat script of its own, so they use the dev mod's shipped behavior. Until the
 player comes within 16 m (about 630 units) each walks a back-and-forth patrol
 through three points measured from its spawn: (0, 0), (6, 0) and (6, 6) m on the
-engine's floor axes. Once the player is within 16 m it chases and melees. Walls
-and movers do not hide the player from that check.
+engine's floor axes. Once the player is within 16 m it chases and melees. That
+wake is a distance-only check, so a closed wall does not stop it; sight and fire
+still stop at the wall, and an enemy that wakes behind one loses the player and
+goes to search within a second.
 
 The chaser's patrol runs through the sliding wall's opening. In map units its
 points are the enemy spot (368, 1232), (368, 996) just south of the wall in the

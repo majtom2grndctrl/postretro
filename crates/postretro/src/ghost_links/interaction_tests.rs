@@ -123,7 +123,9 @@ fn shot_through(
     };
     let contacts = postretro_sim::sim::advance(
         &registry,
-        &CollisionWorld::default(),
+        &postretro_physics::collision::moving::CombinedCollisionWorld::static_only(
+            &CollisionWorld::default(),
+        ),
         &HitZoneStore::default(),
         0.0,
         1.0 / 60.0,
@@ -185,7 +187,9 @@ fn a_splash_on_a_ghost_damages_nothing_while_one_on_the_real_member_does() {
         postretro_sim::sim::splash::emit_splash_damage(
             registry,
             &HitZoneStore::default(),
-            &CollisionWorld::default(),
+            &postretro_physics::collision::moving::CombinedCollisionWorld::static_only(
+                &CollisionWorld::default(),
+            ),
             center,
             center,
             &splash,

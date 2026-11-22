@@ -603,7 +603,7 @@ fn enemy_projectile_damages_connected_pawn_through_host_health_replication() {
     assert!(
         crate::sim::advance(
             &registry,
-            &world,
+            &postretro_physics::collision::moving::CombinedCollisionWorld::static_only(&world),
             &hit_zones,
             0.0,
             1.0 / 60.0,
@@ -614,7 +614,7 @@ fn enemy_projectile_damages_connected_pawn_through_host_health_replication() {
     );
     let contacts = crate::sim::advance(
         &registry,
-        &world,
+        &postretro_physics::collision::moving::CombinedCollisionWorld::static_only(&world),
         &hit_zones,
         0.0,
         1.0,
@@ -742,7 +742,7 @@ fn host_splash_damage_converges_to_connected_pawn_over_conditioned_health_replic
     let mut ignored_impact_effects = |_: &mut EntityRegistry| {};
     let _ = crate::sim::advance(
         &registry,
-        &world,
+        &postretro_physics::collision::moving::CombinedCollisionWorld::static_only(&world),
         &hit_zones,
         0.0,
         1.0 / 60.0,
@@ -750,7 +750,7 @@ fn host_splash_damage_converges_to_connected_pawn_over_conditioned_health_replic
     );
     let contacts = crate::sim::advance(
         &registry,
-        &world,
+        &postretro_physics::collision::moving::CombinedCollisionWorld::static_only(&world),
         &hit_zones,
         0.0,
         1.0,

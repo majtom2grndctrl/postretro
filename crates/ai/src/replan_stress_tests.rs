@@ -307,11 +307,14 @@ fn run_wave_with(scenario: &Scenario, wave_size: usize, report: Report) -> WaveR
         agents.push((chaser, 1));
     }
 
+    let doors = super::scale_support::ArenaDoors::from_env();
+
     let stage_world = World {
         nav: &nav,
         collision: &world,
         factions: &factions,
         sentiment: &faction_sentiment,
+        doors: &doors,
     };
     let mut open_wait: Vec<Option<u32>> = vec![None; agents.len()];
     let mut stats = [WaitStats::default(), WaitStats::default()];

@@ -118,7 +118,7 @@ fn simulate(world: &World, state: &mut AssistState, assist_held: bool) -> TickEv
         &edges,
         &edges,
         None,
-        |_, _| {},
+        |_, _, _| {},
         |_| {},
         crate::sim::TimingGate::OFF,
     )

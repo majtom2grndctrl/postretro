@@ -98,34 +98,8 @@ Not measured. One probe per coplanar glossy face group means a box room with a g
 - **Per-material forward pipeline variant** (`context/research/gi-rtx-lite/index.md` measurement item 9). It keeps the always-run shader clean but still needs a binding slot forward lacks. The overlay's own layout sidesteps it.
 - **Room-centre probes.** Fewer probes, but one elevated point per room leaves capture-shadow holes on faces it cannot see (behind pillars, alcoves), and the IP rules forbid filling them. Face-lifted probes also shadow behind pillars, but each face group gets the vantage closest to its own plane. Rejected by the owner.
 - **SSR or planar on world faces.** No-go by owner decision; SSR on world faces would be a second screen-space exception needing its own sign-off (`index.md` §1.1).
-- **Glow delta tiles** (rival for animated glow; §Glow delta tiles).
-
-## Glow delta tiles
-
-A rival to the deferred limit (§Volume glow share) for glow that changes at runtime: area-light glass, `emissive_volume` signs, neon tubes. It follows the delta-SH form: a base plus each animated source's baked contribution × its live value. IP reading: `ip-delta-tiles.md` (in progress).
-
-- **Shape.**
-  - The compiler bakes, per probe, one sparse delta tile per animated glow source: what that source's glow adds to the probe's view at unit strength. A source is an area light's glass or an `emissive_volume`'s faces. Tiles are stored as 8×8 blocks of the 128² colour tile, with prefiltered mips.
-  - At lookup, the overlay samples the base tile and each delta block present at that texel, and adds current_s × delta_s. Here current_s is the presented value: the volume table entry, or the area light's compose descriptor, both of which the overlay already binds.
-  - Cast light stays on the share ratio. Its deltas would be dense, at about 21 KiB per light per probe, or about 22 MB at 4 lights × 256 probes [E]. Light spreads softly enough that the ratio hides its error.
-- **Why it beats the alternatives.**
-  - Prefiltering is linear, so blurring each delta and summing equals blurring the sum: the result is exact at every colour mip. A per-texel glow id cannot mix sources under blur.
-  - It is exact off screen, where a screen-space layer has nothing.
-  - It is per texel, where the aggregate share dims a whole lobe.
-  - A switched-off tube goes fully dark in its reflection, and a recolour into a channel the reference lacks shows.
-- **Base variant.** The base either holds glow at reference, with deltas adding current − reference, or holds no animated glow, with deltas adding current. The second keeps a source at 0 exactly dark with no subtraction. Which reads closer to any claim is part of the IP question.
-- **Cost** [E].
-  - Bytes: a 2 m tube touches a handful of mip-0 blocks per probe, a few KB per source per probe with mips, plus a per-probe block index.
-  - Per glossy fragment: one block-index read and one sample per glow source present, times the mips the exponent selects. Cap it at about 4 glow sources per probe; glow past the cap holds its reference, as today.
-  - Compile: one more accumulation per glow hit in the capture trace, which `ShareSums::add` already visits.
-  - Id 54: rides this brief's version 3.
-- **IP.**
-  - A compose pass that writes base + Σ deltas into a live tile on a source change is out. It updates stored probe lighting on a light change, which is what Tencent WO2026113651A1 claims 10–14 and 19 describe (`plans/done/reflection-probes/ip-check.md` §4).
-  - Summing at sample time rewrites nothing, but it goes past the recorded fence, which allows only a post-sample scalar ratio. Counsel reads it before the design is chosen.
-- **Open.**
-  - Per-fragment cost on the 5300M near a large glossy floor with several glow sources.
-  - The sparse-block index format.
-  - Whether the overlay's binding budget holds the delta array beside the base.
+- **Composite (1 − W)·diffuse** (the first lock, reopened 2026-11-21 by `/validate-plan`). Diffuse includes Σ dynamic direct (`rendering_pipeline.md` §7.3 output), and dynamic lights draw no specular (§4), so W removed their light with nothing in its place. Fresnel drives W toward 1 at grazing: about 0.44 untinted for a floor 10 m ahead at eye height, and near 1 at any angle for a tint-1 metal. Replaced by forward + W·(R − D_static), which also spares the overlay forward's specular and emissive inputs.
+- **Animated glow in reflections** (glow delta tiles, selective glow SSR): moved with their IP checks to `drafts/dynamic-reflection-layer/`. v1 holds animated content at reference.
 
 ## IP fences carried over
 
@@ -140,7 +114,7 @@ Tencent WO2026113651A1 claim 1 reads on most parallax-corrected probe reflection
 
 ## Overlay hazards
 
-- **Coplanar mover.** A mover face exactly coplanar with a world face passes the colour pass's `Equal` and draws over the world (`rendering_pipeline.md` §7.3). An overlay `Equal` redraw of the glossy world face would then blend the world face's reflection over the mover there.
+- **Coplanar mover.** A mover face exactly coplanar with a world face passes the colour pass's `Equal` and draws over the world (`rendering_pipeline.md` §7.3). An overlay `Equal` redraw of the glossy world face would then blend the world face's reflection over the mover there. Answered: the overlay records before the mover pass (P15).
 - **Glossy faces in captures.** Capture shading has no specular, so a glossy face seen in another probe's capture shows its diffuse only. No recursion. Accepted.
 - **Planar mirror.** The mirror view reuses main pipelines for world draws. Whether it also records the overlay is open.
 
@@ -162,8 +136,15 @@ Orderings the Acceptance rows cite.
 | P10 | Very high, selected plane, glossy faces in the mirror's reach | planar group records world draws with main pipelines | Mirror glossy faces draw no overlay, or one tested against mirror depth from the mirror camera |
 | P11 | Surface Depth quality toggled live over a glossy Surface Depth material | toggle applies, then the next frame | The overlay's sampled texel follows the same quality as forward's on that frame |
 | P12 | A ghost, water, a billboard or fog drawn over a bound glossy face | world forward, overlay, then the Ghost Pass and every later colour pass | The overlay's destination is forward's output alone; nothing drawn after it is dimmed by the reflection weight |
+| P13 | A character under a promoted static light casts its pool shadow on a bound glossy floor, head-on and at grazing, untinted and tint-1 | forward subtracts the shadowmask union from static direct, then the overlay adds W·(R − D_static) | D_static carries the same union subtraction at the same promotion weight, so the shadow fades by (1 − W) with the rest of static diffuse; no channel of the overlay's output is below 0 |
+| P14 | On frame N an animated baked light pulses, a promoted light's w crossfades, an SH cluster becomes resident, and the lighting mask toggles one bit | mask snapshot and frame scales, compose, forward, then the overlay, all on N | The overlay's D_static reads N's values for every input forward read on N; with any all-terms bit off on N, the overlay draws no term on N |
+| P15 | A mover face coplanar with a bound glossy world face, and a mover in front of one | world forward, overlay, then the mover pass and the skinned-mesh pass | The mover's pixels show the mover pass's output alone; no overlay term lands on them |
+| P16 | Counsel refuses the precompute and the plan stop drops world-face live lighting at Low; a stored light forced off its reference; tier switched live low → medium → low | tier change applies on its commit frame | At Low, world-face reflections stay at reference while water's change on that frame; at medium they change on the commit frame |
+| P17 | A glossy level at low or above; the camera turns from a view with N glossy faces to one with 0, then to one with 1 | cull, then the overlay gate and the precompute's dispatch condition | A frame with no overlay draw records no overlay pass and, with no reflecting fluid draw, dispatches no precompute; the 1-face frame records one pass and dispatches the precompute once |
+| P18 | A water map one probe under the cap gains glossy faces needing two probes | authored, derived, then the cap | Every water probe survives; the smaller of the two world-face-only probes drops, and the warning names its faces |
+| P19 | A map at the cap whose derived water probes fill it, plus an authored `reflection_volume` over glossy walls making world-face-only probes | authored and derived probes placed, then the cap | Every water probe survives; the authored world-face-only probes drop, smallest bound area first, and the warning names the box and its faces |
 
-P11 holds only if the Surface Depth open question answers that the overlay reruns the march. No Acceptance row cites it until that answer lands.
+
 
 ## Not verified
 
@@ -172,12 +153,3 @@ P11 holds only if the Surface Depth open question answers that the overlay rerun
 - The exponent-to-blur estimates (above).
 - Source and Black Ops gloss-driven envmap precedent: from memory, not re-checked.
 - Compile-time cost of one probe per glossy face group at stress scale.
-
-## Volume glow share
-
-Estimate, 2026-11-21, against the code at `e9495f27`. [M] read from code; [E] estimated.
-
-- **Today** [M]: id 54 stores 4 lights × 5 lobes per probe (`REFLECTION_PROBE_LIGHTS_PER_PROBE`, `REFLECTION_PROBE_LOBE_COUNT`). The GPU `FluidProbeTable` is 240 B per probe, 61,456 B at 256 probes, under a 64 KiB `const_assert` (`render-cpu` `fluid_surface/reflection.rs`). A fifth light slot does not fit. `fluid_reflection_ratio` evaluates the shares per fragment.
-- **Cheapest design** [E]: one aggregated glow term per probe and lobe, Σ_v share_v × (current_v / ref_v − 1). This is exact because the ratio is linear. current_v is the post-clamp table entry; ref_v is max × colour. It joins the per-probe sums of `reflection-probe-fluid-pass-performance` (unlanded, blocked on counsel) at zero per-fragment cost. Before that lands it fits the table's spare words, but the table then stops being install-only.
-- **Cost** [E]: CPU is about 15 MADs per (probe, volume) pair, so a few µs typically and about 1 ms at 256 × 256, and nothing on a static frame. Id 54 gains about 64 B per volume per probe and needs a version bump shared with this brief's v3. Compile cost is negligible: `ShareSums::add` gains one lobe accumulation.
-- **Why it is deferred** [E]: a share spreads over a whole lobe. A sign is small and sharp, so pulsing one dims or tints a quadrant of the reflection while the sign's own image stays fixed. Ref-0 channels cannot show a recolour, and tiny refs amplify unorm10 share error.

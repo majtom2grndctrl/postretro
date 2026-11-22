@@ -91,6 +91,8 @@ mod replication;
 mod seat;
 pub mod session_players;
 mod snapshot_apply;
+mod splash_march;
+pub use splash_march::{MarchRelease, host_step_splash_marches};
 #[cfg(test)]
 mod teleport_tests;
 pub mod weapon_cues;
@@ -1999,12 +2001,9 @@ fn cleanup_remote_pawn_owned_state(
 struct HostHitIngestContext<'a> {
     registry: &'a mut EntityRegistry,
     collision_world: &'a CollisionWorld,
-    hit_zone_store: &'a crate::scripting_systems::hit_zones::HitZoneStore,
     allocator: &'a NetworkIdAllocator,
     owners: &'a MovementOwners,
     open_shots: &'a mut OpenAuthorizedShots,
-    current_tick: u32,
-    anim_time: f64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -2018,6 +2017,9 @@ struct HitDeclarationResult {
     contacts: Vec<emission::ImpactContact>,
     /// Canonical name of the shot's weapon, whose sounds the impact plays.
     weapon: Option<String>,
+    /// A splash declaration bound to its shot's march: the verdict and the
+    /// blast wait for the march's release (`splash_march`).
+    deferred: bool,
 }
 
 /// How far short of a declared world contact the line-of-sight probe stops, so
@@ -2065,14 +2067,12 @@ pub fn host_flush_pending_hit_declarations(
     server: &mut NetServer,
     registry: &mut EntityRegistry,
     collision_world: &CollisionWorld,
-    hit_zone_store: &crate::scripting_systems::hit_zones::HitZoneStore,
     allocator: &NetworkIdAllocator,
     owners: &MovementOwners,
     command_queues: &HostCommandQueues,
     open_shots: &mut OpenAuthorizedShots,
     pending_hit_declarations: &mut PendingHitDeclarations,
     current_tick: u32,
-    anim_time: f64,
     mut on_impact: impl FnMut(&mut EntityRegistry),
     mut on_projectile_contact: impl FnMut(ShotId, Vec3),
     mut on_remote_impact: impl FnMut(emission::WeaponEmission),
@@ -2087,17 +2087,72 @@ pub fn host_flush_pending_hit_declarations(
         server,
         registry,
         collision_world,
-        hit_zone_store,
         allocator,
         owners,
         open_shots,
-        current_tick,
-        anim_time,
         ready,
         &mut on_impact,
         &mut on_projectile_contact,
         &mut on_remote_impact,
     )
+}
+
+/// Send one settled declaration's verdict and present its contacts: the
+/// host's own bursts, the observer impact cue, and the `impact` emission.
+#[allow(clippy::too_many_arguments)]
+fn finish_hit_declaration(
+    server: &mut NetServer,
+    registry: &mut EntityRegistry,
+    allocator: &NetworkIdAllocator,
+    client_id: u64,
+    shot_id: ShotId,
+    fire_authorized: bool,
+    result: HitDeclarationResult,
+    on_projectile_contact: &mut impl FnMut(ShotId, Vec3),
+    on_remote_impact: &mut impl FnMut(emission::WeaponEmission),
+) -> bool {
+    let hit_accepted = result.hit_accepted;
+    send_shot_verdict(
+        server,
+        client_id,
+        shot_id,
+        fire_authorized || result.fire_accepted,
+        result.hit_accepted,
+    );
+    if let Some(point) = result.projectile_contact {
+        on_projectile_contact(shot_id, point);
+    }
+    // A remote shot's validated contacts are its one `impact`, as a local shot's are.
+    // The host's own screen bursts once per contact here, splash included; every
+    // other peer bursts from the cue below.
+    if !result.contacts.is_empty() {
+        weapon::spawn_impact_effects_for_contacts(registry, &result.contacts);
+        let emitter = emission::Emitter::Contacts(result.contacts);
+        if let Some(cue) = weapon_cues::freeze_observer_weapon_cue(
+            shot_id,
+            NetworkId(shot_id.pawn),
+            weapon_cues::WeaponCueKind::Impact,
+            result.action.as_deref(),
+            result
+                .sounds
+                .as_ref()
+                .and_then(|sounds| sounds.impact.as_deref()),
+            None,
+            &emitter,
+            allocator,
+        ) {
+            weapon_cues::send_observer_weapon_cue_to_server(server, Some(client_id), cue);
+        }
+        on_remote_impact(emission::WeaponEmission {
+            sounds: result.sounds,
+            action: result.action,
+            shot_id: Some(shot_id),
+            address: "impact",
+            emitter,
+            weapon: result.weapon,
+        });
+    }
+    hit_accepted
 }
 
 pub fn host_take_ready_hit_declarations(
@@ -2115,12 +2170,9 @@ pub fn host_ingest_ready_hit_declarations(
     server: &mut NetServer,
     registry: &mut EntityRegistry,
     collision_world: &CollisionWorld,
-    hit_zone_store: &crate::scripting_systems::hit_zones::HitZoneStore,
     allocator: &NetworkIdAllocator,
     owners: &MovementOwners,
     open_shots: &mut OpenAuthorizedShots,
-    current_tick: u32,
-    anim_time: f64,
     ready: Vec<PendingHitDeclaration>,
     mut on_impact: impl FnMut(&mut EntityRegistry),
     mut on_projectile_contact: impl FnMut(ShotId, Vec3),
@@ -2146,68 +2198,28 @@ pub fn host_ingest_ready_hit_declarations(
             HostHitIngestContext {
                 registry: &mut *registry,
                 collision_world,
-                hit_zone_store,
                 allocator,
                 owners,
                 open_shots: &mut *open_shots,
-                current_tick,
-                anim_time,
             },
             pending.client_id,
             &pending.declaration,
             &mut on_impact,
         );
-        send_shot_verdict(
+        if result.deferred {
+            continue;
+        }
+        accepted_any_hit |= finish_hit_declaration(
             server,
+            registry,
+            allocator,
             pending.client_id,
             crate::wire_convert::shot_id_from_wire(pending.declaration.shot_id),
-            pending.fire_authorized || result.fire_accepted,
-            result.hit_accepted,
+            pending.fire_authorized,
+            result,
+            &mut on_projectile_contact,
+            &mut on_remote_impact,
         );
-        if let Some(point) = result.projectile_contact {
-            on_projectile_contact(
-                crate::wire_convert::shot_id_from_wire(pending.declaration.shot_id),
-                point,
-            );
-        }
-        // A remote shot's validated contacts are its one `impact`, as a local shot's are.
-        // The host's own screen bursts once per contact here, splash included; every
-        // other peer bursts from the cue below.
-        if !result.contacts.is_empty() {
-            weapon::spawn_impact_effects_for_contacts(registry, &result.contacts);
-            let shot_id = crate::wire_convert::shot_id_from_wire(pending.declaration.shot_id);
-            let emitter = emission::Emitter::Contacts(result.contacts);
-            if let Some(cue) = weapon_cues::freeze_observer_weapon_cue(
-                shot_id,
-                NetworkId(shot_id.pawn),
-                weapon_cues::WeaponCueKind::Impact,
-                result.action.as_deref(),
-                result
-                    .sounds
-                    .as_ref()
-                    .and_then(|sounds| sounds.impact.as_deref()),
-                None,
-                &emitter,
-                allocator,
-            ) {
-                weapon_cues::send_observer_weapon_cue_to_server(
-                    server,
-                    Some(pending.client_id),
-                    cue,
-                );
-            }
-            on_remote_impact(emission::WeaponEmission {
-                sounds: result.sounds,
-                action: result.action,
-                shot_id: Some(crate::wire_convert::shot_id_from_wire(
-                    pending.declaration.shot_id,
-                )),
-                address: "impact",
-                emitter,
-                weapon: result.weapon,
-            });
-        }
-        accepted_any_hit |= result.hit_accepted;
     }
     accepted_any_hit
 }
@@ -2246,6 +2258,8 @@ fn ingest_hit_declaration(
     let sounds = open.shot.sounds.clone();
     let pellet_count = open.shot.pellet_count;
     if pellet_count == 0 {
+        // No record can count: the shot settles here, and its march with it.
+        context.open_shots.drop_march(shot_id);
         return HitDeclarationResult {
             sounds,
             action,
@@ -2254,104 +2268,29 @@ fn ingest_hit_declaration(
             projectile_contact: None,
             contacts: Vec::new(),
             weapon,
+            deferred: false,
         };
     }
 
-    if open.shot.is_projectile
-        && let Some(splash) = open.shot.splash.as_ref()
-    {
-        let declared_contact = declaration
-            .records
-            .iter()
-            .take(pellet_count)
-            .any(|record| valid_projectile_contact(&open.shot, record));
-        if !declared_contact {
-            return HitDeclarationResult {
-                sounds,
-                action,
-                fire_accepted: true,
-                hit_accepted: false,
-                projectile_contact: None,
-                contacts: Vec::new(),
-                weapon,
-            };
-        }
-        let Some(impact) = resolve_authorized_splash_projectile_impact(&context, &open.shot) else {
-            return HitDeclarationResult {
-                sounds,
-                action,
-                fire_accepted: true,
-                hit_accepted: false,
-                projectile_contact: None,
-                contacts: Vec::new(),
-                weapon,
-            };
-        };
-        // Splash replaces direct health damage, but its impulse may compose with
-        // the weapon's direct push. Both derive from frozen host launch facts.
-        if impact.target.is_some()
-            && let Some(knockback) = open.shot.knockback
-        {
-            let mut direct_push = impact.clone();
-            direct_push.outcome = ActivationOutcome::Hit(weapon::DamagePayload {
-                amount: 0.0,
-                impulse: postretro_foundation::knockback_impulse(
-                    knockback.speed,
-                    knockback.upward_bias,
-                    open.shot.projectile_direction.unwrap_or(Vec3::ZERO),
-                ),
-                damage_type: None,
-            });
-            crate::sim::apply_authorized_shot_impact_damage(
-                context.registry,
-                open.shot.weapon,
-                Some(open.shot.pawn),
-                Some(open.shot.pawn_life),
-                &direct_push,
-                open.shot.credit_source.clone(),
-                0.0,
-            );
-        }
-        let point = impact.point;
-        let hit_accepted = crate::sim::splash::emit_shot_splash_damage(
-            context.registry,
-            context.hit_zone_store,
-            context.collision_world,
-            point,
-            crate::sim::projectile_splash_occlusion_origin(
-                open.shot
-                    .projectile_radius
-                    .expect("resolved projectile impact has a frozen radius"),
-                &impact,
-            ),
-            splash,
-            open.shot.damage,
-            open.shot.weapon,
-            open.shot.pawn,
-            Some(open.shot.pawn_life),
-            true,
-            open.shot.credit_source.clone(),
-            open.shot.damage_type,
-            &mut on_impact,
-        );
+    // A splash declaration binds to its shot's march, which releases the
+    // blast and the verdict when it reaches its deciding point.
+    if open.shot.is_projectile && open.shot.splash.is_some() {
+        let bound = context
+            .open_shots
+            .bind_splash_declaration(shot_id, declaration);
         return HitDeclarationResult {
             sounds,
             action,
             fire_accepted: true,
-            hit_accepted,
-            projectile_contact: Some(point),
-            // The host resolved this impact itself, so its own normal stands.
-            contacts: vec![emission::ImpactContact::new(
-                impact.point,
-                impact.normal,
-                impact.target,
-            )],
+            hit_accepted: false,
+            projectile_contact: None,
+            contacts: Vec::new(),
             weapon,
+            deferred: bound,
         };
     }
 
-    // Non-splash projectile contact presentation keeps the existing declared
-    // endpoint contract. Splash is stricter because its point is a damage origin.
+    // A direct projectile presents its first valid declared contact.
     let projectile_record = if open.shot.is_projectile {
         declaration
             .records
@@ -2422,6 +2361,7 @@ fn ingest_hit_declaration(
         projectile_contact: projectile_record.map(|record| Vec3::from_array(record.point)),
         contacts,
         weapon,
+        deferred: false,
     }
 }
 
@@ -2432,54 +2372,6 @@ fn valid_projectile_contact(shot: &AuthorizedShot, record: &wire::HitRecord) -> 
     }
     let max_range = shot.range * HIT_RANGE_TOLERANCE;
     max_range.is_finite() && shot.fire_origin.distance(point) <= max_range
-}
-
-fn resolve_authorized_splash_projectile_impact(
-    context: &HostHitIngestContext<'_>,
-    shot: &AuthorizedShot,
-) -> Option<WeaponImpact> {
-    let direction = shot.projectile_direction?;
-    let speed = shot.projectile_speed?;
-    let lifetime_seconds = shot.projectile_lifetime_seconds?;
-    let tick_seconds = shot.projectile_tick_seconds?;
-    let radius = shot.projectile_radius?;
-    if !shot.fire_origin.is_finite()
-        || !direction.is_finite()
-        || (direction.length_squared() - 1.0).abs() > 1.0e-3
-        || !speed.is_finite()
-        || speed <= 0.0
-        || !lifetime_seconds.is_finite()
-        || lifetime_seconds < 0.0
-        || !tick_seconds.is_finite()
-        || tick_seconds <= 0.0
-        || !radius.is_finite()
-        || radius < 0.0
-        || !shot.range.is_finite()
-        || shot.range < 0.0
-    {
-        return None;
-    }
-    let elapsed_ticks = context.current_tick.wrapping_sub(shot.fire_tick);
-    let elapsed_seconds =
-        (f64::from(elapsed_ticks) * f64::from(tick_seconds)).min(f64::from(lifetime_seconds));
-    let travel_distance = (f64::from(speed) * elapsed_seconds).min(f64::from(shot.range)) as f32;
-    if !travel_distance.is_finite() || travel_distance <= 0.0 {
-        return None;
-    }
-
-    crate::sim::resolve_projectile_impact(
-        context.collision_world,
-        context.registry,
-        context.hit_zone_store,
-        context.anim_time,
-        shot.fire_origin,
-        direction,
-        travel_distance,
-        radius,
-        None,
-        shot.pawn,
-        shot.damage,
-    )
 }
 
 /// Test-only bridge for cross-stage projectile coverage. Production intake reaches the
@@ -2500,25 +2392,45 @@ pub(crate) fn ingest_hit_declaration_for_test(
     if !wire_convert::valid_wire_shot_id(declaration.shot_id) {
         return (false, false);
     }
-    let current_tick = open_shots
-        .get(crate::wire_convert::shot_id_from_wire(declaration.shot_id))
-        .map_or(0, |open| open.shot.fire_tick.wrapping_add(1));
+    let shot_id = crate::wire_convert::shot_id_from_wire(declaration.shot_id);
+    let budget = open_shots
+        .get(shot_id)
+        .map(|open| (open.shot.fire_tick, open.shot.timeout_budget_ticks));
     let result = ingest_hit_declaration(
         HostHitIngestContext {
-            registry,
+            registry: &mut *registry,
             collision_world,
-            hit_zone_store,
             allocator,
             owners,
-            open_shots,
-            current_tick,
-            anim_time: 0.0,
+            open_shots: &mut *open_shots,
         },
         client_id,
         declaration,
         |_| {},
     );
-    (result.fire_accepted, result.hit_accepted)
+    if !result.deferred {
+        return (result.fire_accepted, result.hit_accepted);
+    }
+    // A splash declaration releases when its march reaches its deciding point.
+    let world = collision::moving::CombinedCollisionWorld::static_only(collision_world);
+    let (fire_tick, timeout_budget_ticks) = budget.unwrap_or_default();
+    for tick in fire_tick.wrapping_add(1)..=fire_tick.wrapping_add(timeout_budget_ticks) {
+        if let Some(released) = crate::splash_march::step_and_release(
+            registry,
+            &world,
+            hit_zone_store,
+            allocator,
+            open_shots,
+            tick,
+            &mut |_| {},
+        )
+        .into_iter()
+        .find(|released| released.shot_id == shot_id)
+        {
+            return (released.result.fire_accepted, released.result.hit_accepted);
+        }
+    }
+    (true, false)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2543,10 +2455,10 @@ fn apply_valid_hit_record(
         return false;
     };
     // Every resolution rejects a target already committed to removal above.
-    // Deferred direct-impact projectiles additionally share the local
-    // projectile spatial eligibility contract, including declared player life
-    // capabilities. An ineligible impact is spent without damage. Hitscan/pellet declarations retain
-    // the common impact dispatch semantics used by authored zero-HP policies.
+    // A direct projectile also shares the local projectile's spatial
+    // eligibility, including declared player life capabilities: an ineligible
+    // impact is spent without damage. Hitscan and pellet declarations keep the
+    // common impact dispatch that authored zero-HP policies rely on.
     if shot.is_projectile
         && !crate::scripting_systems::health::is_damage_target_eligible(registry, target)
     {
@@ -2803,6 +2715,9 @@ pub fn remote_entity_positions(endpoint: &NetEndpoint, registry: &EntityRegistry
 #[cfg(test)]
 mod tests {
     mod life_state_projectile_tests;
+    mod mover_shot_tests;
+    mod splash_march_scale_tests;
+    mod splash_march_tests;
     use super::*;
     use glam::Vec3;
     use postretro_entities::components::health::Hitbox;
@@ -4170,7 +4085,7 @@ mod tests {
             projectile_speed: None,
             projectile_lifetime_seconds: None,
             projectile_tick_seconds: None,
-            projectile_static_contact_distance: None,
+            splash_on_path_tolerance: None,
             is_projectile: false,
             fire_origin: Vec3::ZERO,
             timeout_budget_ticks: MAX_OPEN_SHOT_AGE_TICKS,
@@ -4400,6 +4315,7 @@ mod tests {
         pending: &mut PendingHitDeclarations,
         tick: u32,
     ) -> HostIntake {
+        fixture.arm_march();
         let ready = host_take_ready_hit_declarations(
             &HostCommandQueues::new(),
             &mut fixture.open_shots,
@@ -4409,19 +4325,33 @@ mod tests {
         let (mut server, _client) = hit_refusal_link();
         let mut impacts = Vec::new();
         let mut projectile_contacts = Vec::new();
-        let hit_accepted = host_ingest_ready_hit_declarations(
+        let mut hit_accepted = host_ingest_ready_hit_declarations(
             &mut server,
             &mut fixture.registry,
             &fixture.collision_world,
-            &fixture.hit_zone_store,
             &fixture.allocator,
             &fixture.owners,
             &mut fixture.open_shots,
-            tick,
-            0.0,
             ready,
             |_| {},
             |_, point| projectile_contacts.push(point),
+            |emission| impacts.push(emission),
+        );
+        let world = crate::collision::moving::CombinedCollisionWorld::new(
+            &fixture.collision_world,
+            &fixture.movers,
+            &fixture.poses,
+        );
+        hit_accepted |= host_step_splash_marches(
+            &mut server,
+            &mut fixture.registry,
+            &world,
+            &fixture.hit_zone_store,
+            &fixture.allocator,
+            &mut fixture.open_shots,
+            tick,
+            |_| {},
+            |_, release| projectile_contacts.extend(release.blast),
             |emission| impacts.push(emission),
         );
         weapon::drain_impact_particle_requests(
@@ -4616,8 +4546,8 @@ mod tests {
 
     // Regression: a splash declaration was held only one tick past FIRE. A start
     // admitted late after a stall carries a late fire tick while the client's
-    // rocket had already struck a near wall, so the host's replay fell short:
-    // no damage, no burst, no observer cue.
+    // rocket had already struck a near wall; the march releases on the tick it
+    // reaches that wall, never sooner.
     #[test]
     fn late_admitted_splash_waits_for_host_travel_to_reach_its_declared_contact() {
         // `configure_projectile_splash` flies 1 m per host tick.
@@ -4641,7 +4571,7 @@ mod tests {
         let mut resolved = None;
         for tick in LATE_FIRE_TICK + 1..LATE_FIRE_TICK + 60 {
             let intake = host_intake_at(&mut fixture, &mut pending, tick);
-            if pending.len() == 0 {
+            if !intake.projectile_contacts.is_empty() {
                 resolved = Some((tick, intake));
                 break;
             }
@@ -4673,12 +4603,12 @@ mod tests {
         assert_eq!(observer_cue_contacts(&fixture, &intake).len(), 1);
     }
 
-    // Regression: a late start fires from the pawn's live eye along its captured
-    // aim. After a strafe, that ray meets a slanted wall farther out than the
-    // declared point lies from the new origin, so a hold sized by the declared
-    // point alone released before the host's flight reached the wall.
+    // P17: a late start fires from the pawn's live eye along its captured aim.
+    // After a strafe the client's declared point lies off the host's path, so
+    // the host's own march contact (a slanted wall beyond it) decides, never a
+    // point in open air.
     #[test]
-    fn late_splash_fired_after_a_strafe_waits_for_the_hosts_own_wall_contact() {
+    fn late_splash_fired_after_a_strafe_detonates_at_the_hosts_own_march_contact() {
         const LATE_FIRE_TICK: u32 = 200;
         // A 45-degree wall through the client's contact at (10, 0, 0).
         let slanted_wall = CollisionWorld::from_triangles_for_test(
@@ -4694,24 +4624,11 @@ mod tests {
         fixture.configure_projectile_splash(0.25);
         // The pawn strafed 2 m before the late FIRE; the captured aim stayed +X.
         let fire_origin = Vec3::new(0.0, 0.0, 2.0);
-        // FIRE freezes where the host's own flight meets the static world.
-        let host_wall = crate::sim::projectile_static_contact_distance(
-            &fixture.collision_world,
-            fire_origin,
-            Vec3::X,
-            0.25,
-            30.0,
-        );
         let declared = Vec3::new(10.0, 0.0, 0.0);
-        assert!(
-            host_wall.is_some_and(|wall| wall > fire_origin.distance(declared) + 1.0),
-            "the host's wall lies beyond the declared point: {host_wall:?}"
-        );
         let shot = fixture.shot_mut();
         shot.fire_origin = fire_origin;
         shot.range = 30.0;
         shot.projectile_speed = Some(30.0);
-        shot.projectile_static_contact_distance = host_wall;
         shot.fire_tick = LATE_FIRE_TICK;
         let mut pending = PendingHitDeclarations::new();
         assert!(pending.push_at(
@@ -4723,12 +4640,12 @@ mod tests {
         let mut resolved = None;
         for tick in LATE_FIRE_TICK + 1..LATE_FIRE_TICK + 120 {
             let intake = host_intake_at(&mut fixture, &mut pending, tick);
-            if pending.len() == 0 {
+            if !intake.projectile_contacts.is_empty() {
                 resolved = Some(intake);
                 break;
             }
         }
-        let intake = resolved.expect("the held declaration resolves within its lifetime");
+        let intake = resolved.expect("the march resolves within its reach");
 
         let [contact] = intake.projectile_contacts.as_slice() else {
             panic!(
@@ -4748,8 +4665,8 @@ mod tests {
         assert_eq!(observer_cue_contacts(&fixture, &intake).len(), 1);
     }
 
-    // An entity contact must not wait for the wall behind it: by then the replay
-    // would read a target that has moved off the ray.
+    // An entity contact must not wait for the wall behind it: the blast lands at
+    // the declared point once the march covers it.
     #[test]
     fn splash_entity_contact_is_not_held_for_the_wall_behind_it() {
         // `configure_projectile_splash` flies 1 m per host tick.
@@ -4760,7 +4677,6 @@ mod tests {
         fixture.configure_projectile_splash(0.0);
         let shot = fixture.shot_mut();
         shot.range = 30.0;
-        shot.projectile_static_contact_distance = Some(WALL_X);
         let fire_tick = shot.fire_tick;
         let mut pending = PendingHitDeclarations::new();
         assert!(pending.push_at(
@@ -4774,20 +4690,27 @@ mod tests {
             fire_tick,
         ));
 
-        let intake = host_intake_at(&mut fixture, &mut pending, fire_tick + 6);
+        // One metre a tick: the march covers the declared point on its fifth step.
+        for tick in fire_tick + 1..fire_tick + 5 {
+            let intake = host_intake_at(&mut fixture, &mut pending, tick);
+            assert!(intake.projectile_contacts.is_empty(), "tick {tick}");
+        }
+        let intake = host_intake_at(&mut fixture, &mut pending, fire_tick + 5);
 
-        assert_eq!(pending.len(), 0, "released once travel covers the entity");
         assert!(intake.hit_accepted);
         let [contact] = intake.projectile_contacts.as_slice() else {
             panic!("one projectile contact: {:?}", intake.projectile_contacts);
         };
-        assert!(contact.x < 5.0, "detonates on the entity: {contact}");
+        assert!(
+            contact.distance(Vec3::new(4.9, 0.0, 0.0)) <= 1.0e-4,
+            "detonates at the declared point on the entity: {contact}"
+        );
     }
 
-    // A direct projectile presents its declared endpoint and replays nothing, so
-    // its declaration still resolves one tick after FIRE however far it flew.
+    // A direct projectile has no march: its declared endpoint is taken on the
+    // tick after FIRE, however far the client's projectile flew.
     #[test]
-    fn direct_projectile_declaration_is_not_held_for_travel() {
+    fn direct_projectile_declaration_is_ready_on_the_tick_after_fire() {
         let mut fixture = HitIngestFixture::new(CollisionWorld::new());
         fixture.configure_projectile_splash(0.0);
         let shot = fixture.shot_mut();
@@ -4873,6 +4796,9 @@ mod tests {
         open_shots: OpenAuthorizedShots,
         collision_world: CollisionWorld,
         hit_zone_store: crate::scripting_systems::hit_zones::HitZoneStore,
+        /// Movers a splash march steps against, at `poses`.
+        movers: Vec<crate::collision::moving::MoverCollider>,
+        poses: crate::collision::test_movers::DoorPoses,
         pawn: EntityId,
         weapon: EntityId,
         target: EntityId,
@@ -4941,6 +4867,8 @@ mod tests {
                 open_shots,
                 collision_world,
                 hit_zone_store: crate::scripting_systems::hit_zones::HitZoneStore::new(),
+                movers: Vec::new(),
+                poses: Default::default(),
                 pawn,
                 weapon,
                 target,
@@ -4974,12 +4902,9 @@ mod tests {
                 HostHitIngestContext {
                     registry: &mut self.registry,
                     collision_world: &self.collision_world,
-                    hit_zone_store: &self.hit_zone_store,
                     allocator: &self.allocator,
                     owners: &self.owners,
                     open_shots: &mut self.open_shots,
-                    current_tick: 100,
-                    anim_time: 0.0,
                 },
                 client_id,
                 declaration,
@@ -5019,7 +4944,7 @@ mod tests {
                     projectile_speed: None,
                     projectile_lifetime_seconds: None,
                     projectile_tick_seconds: None,
-                    projectile_static_contact_distance: None,
+                    splash_on_path_tolerance: None,
                     is_projectile: false,
                     fire_origin: Vec3::ZERO,
                     timeout_budget_ticks: MAX_OPEN_SHOT_AGE_TICKS,
@@ -5071,6 +4996,63 @@ mod tests {
                 min_fraction: 0.0,
                 self_damage: true,
             });
+            shot.splash_on_path_tolerance = Some(radius + 0.25);
+        }
+
+        /// Open the march for the open splash shot as it now stands, as
+        /// recording its FIRE does. A march already running is kept.
+        fn arm_march(&mut self) {
+            if self.open_shots.march(self.shot_id).is_some() {
+                return;
+            }
+            if let Some(open) = self.open_shots.get(self.shot_id)
+                && open.shot.is_projectile
+                && open.shot.splash.is_some()
+            {
+                self.open_shots.record(open.shot, open.owner_client_id);
+            }
+        }
+
+        /// One host tick of every open march, against the fixture's world and
+        /// movers; what each release settled.
+        fn march_tick(&mut self, tick: u32) -> Vec<crate::splash_march::Released> {
+            let world = crate::collision::moving::CombinedCollisionWorld::new(
+                &self.collision_world,
+                &self.movers,
+                &self.poses,
+            );
+            crate::splash_march::step_and_release(
+                &mut self.registry,
+                &world,
+                &self.hit_zone_store,
+                &self.allocator,
+                &mut self.open_shots,
+                tick,
+                &mut |_| {},
+            )
+        }
+
+        /// Bind `declaration` and march the shot from the tick after FIRE
+        /// until it releases; the release tick and what it settled.
+        fn march_result(
+            &mut self,
+            client_id: u64,
+            declaration: &wire::HitDeclaration,
+        ) -> (u32, HitDeclarationResult) {
+            self.arm_march();
+            let (fire_tick, budget) = self
+                .open_shots
+                .march(self.shot_id)
+                .map(|march| (march.shot.fire_tick, march.shot.timeout_budget_ticks))
+                .expect("a splash shot marches");
+            let bound = self.ingest_result(client_id, declaration);
+            assert!(bound.deferred, "a splash declaration binds to its march");
+            for tick in fire_tick + 1..=fire_tick + budget {
+                if let Some(released) = self.march_tick(tick).pop() {
+                    return (tick, released.result);
+                }
+            }
+            panic!("the march releases within its reach");
         }
 
         fn spawn_splash_target(&mut self, position: Vec3) -> EntityId {
@@ -5294,12 +5276,9 @@ mod tests {
             &mut server,
             &mut fixture.registry,
             &fixture.collision_world,
-            &fixture.hit_zone_store,
             &fixture.allocator,
             &fixture.owners,
             &mut fixture.open_shots,
-            tick,
-            0.0,
             ready,
             |_| panic!("a retired HIT cannot apply damage again"),
             |_, _| panic!("a retired HIT cannot dispatch projectile contact"),
@@ -5689,12 +5668,9 @@ mod tests {
             &mut server,
             &mut fixture.registry,
             &fixture.collision_world,
-            &fixture.hit_zone_store,
             &fixture.allocator,
             &fixture.owners,
             &mut fixture.open_shots,
-            220,
-            0.0,
             ready,
             |_| panic!("expired undecided HIT cannot dispatch damage"),
             |_, _| panic!("expired undecided HIT cannot dispatch projectile contact"),
@@ -6292,12 +6268,9 @@ mod tests {
             HostHitIngestContext {
                 registry: &mut fixture.registry,
                 collision_world: &fixture.collision_world,
-                hit_zone_store: &fixture.hit_zone_store,
                 allocator: &fixture.allocator,
                 owners: &fixture.owners,
                 open_shots: &mut fixture.open_shots,
-                current_tick: 100,
-                anim_time: 0.0,
             },
             7,
             &declaration,
@@ -6342,12 +6315,9 @@ mod tests {
             HostHitIngestContext {
                 registry: &mut fixture.registry,
                 collision_world: &fixture.collision_world,
-                hit_zone_store: &fixture.hit_zone_store,
                 allocator: &fixture.allocator,
                 owners: &fixture.owners,
                 open_shots: &mut fixture.open_shots,
-                current_tick: 100,
-                anim_time: 0.0,
             },
             7,
             &declaration,
@@ -6631,7 +6601,7 @@ mod tests {
             zone: None,
         }]);
 
-        let result = fixture.ingest_result(7, &declaration);
+        let (_, result) = fixture.march_result(7, &declaration);
 
         assert!(result.fire_accepted);
         assert!(result.hit_accepted);
@@ -6655,13 +6625,16 @@ mod tests {
         );
     }
 
-    // Regression: a client could detonate splash at any finite in-range point,
-    // including before the frozen projectile had time to reach a collision.
+    // A declared world point on the host's path with no host contact before
+    // it detonates there once the march covers it; it never detonates before.
+    // (Before the march, this in-air point was refused.)
     #[test]
-    fn remote_splash_rejects_contact_before_host_travel_reaches_any_collision() {
+    fn remote_splash_detonates_at_an_on_path_world_point_once_the_march_covers_it() {
         let mut fixture = HitIngestFixture::new(CollisionWorld::new());
-        let future_target = fixture.spawn_splash_target(Vec3::new(4.0, 0.0, 0.0));
+        let earlier = fixture.spawn_splash_target(Vec3::new(4.0, 0.0, 0.0));
+        let at_point = fixture.spawn_splash_target(Vec3::new(9.0, 0.0, 0.75));
         fixture.configure_projectile_splash(0.0);
+        let fire_tick = fixture.shot_mut().fire_tick;
         let declaration = fixture.declaration(vec![wire::HitRecord {
             normal: [0.0, 1.0, 0.0],
             target: PRESENTATION_CONTACT_TARGET,
@@ -6669,20 +6642,24 @@ mod tests {
             zone: None,
         }]);
 
-        let result = fixture.ingest_result(7, &declaration);
+        let (tick, result) = fixture.march_result(7, &declaration);
 
-        assert!(result.fire_accepted);
-        assert!(!result.hit_accepted);
-        assert_eq!(result.projectile_contact, None);
-        assert!(fixture.open_shots.get(fixture.shot_id).is_none());
         assert_eq!(
+            tick,
+            fire_tick + 9,
+            "one metre a tick reaches 9 m on the ninth"
+        );
+        assert!(result.hit_accepted);
+        assert_eq!(result.projectile_contact, Some(Vec3::new(9.0, 0.0, 0.0)));
+        let health = |id| {
             fixture
                 .registry
-                .get_component::<HealthComponent>(future_target)
-                .expect("future target remains live")
-                .current,
-            100.0,
-        );
+                .get_component::<HealthComponent>(id)
+                .expect("target remains allocated")
+                .current
+        };
+        assert_eq!(health(earlier), 100.0, "nothing detonated early");
+        assert!(health(at_point) < 100.0);
     }
 
     // Regression: splash contact validation ignored the projectile lifetime.
@@ -6698,44 +6675,47 @@ mod tests {
             zone: None,
         }]);
 
-        let result = fixture.ingest_result(7, &declaration);
+        let (_, result) = fixture.march_result(7, &declaration);
 
         assert!(result.fire_accepted);
         assert!(!result.hit_accepted);
         assert_eq!(result.projectile_contact, None);
     }
 
-    // Regression: a declared point beyond an earlier entity collision selected
-    // the blast center instead of the host's first-contact ordering.
+    // Entities never cut the host's path short: the march tests world contacts
+    // only, so an entity standing on the path before the declared point is not
+    // where the blast lands. (Before the march, the host's first entity
+    // contact took the blast.)
     #[test]
-    fn remote_splash_uses_first_host_entity_contact_before_declared_point() {
+    fn remote_splash_march_passes_entities_on_its_path() {
         let mut fixture = HitIngestFixture::new(CollisionWorld::new());
-        let struck = fixture.spawn_splash_target(Vec3::new(0.5, 0.0, 0.0));
-        let struck_net = fixture.allocator.stamp(struck);
+        let on_path = fixture.spawn_splash_target(Vec3::new(0.5, 0.0, 0.0));
+        let on_path_net = fixture.allocator.stamp(on_path);
+        let declared = fixture.spawn_splash_target(Vec3::new(9.0, 0.0, 0.0));
+        let declared_net = fixture.allocator.stamp(declared);
         fixture.configure_projectile_splash(0.0);
+        assert_ne!(on_path_net, declared_net);
         let declaration = fixture.declaration(vec![wire::HitRecord {
-            normal: [0.0, 1.0, 0.0],
-            target: struck_net.0,
-            point: Vec3::new(9.0, 0.0, 0.0).to_array(),
+            normal: [-1.0, 0.0, 0.0],
+            target: declared_net.0,
+            point: Vec3::new(8.9, 0.0, 0.0).to_array(),
             zone: None,
         }]);
 
-        let result = fixture.ingest_result(7, &declaration);
+        let (_, result) = fixture.march_result(7, &declaration);
 
-        assert!(result.fire_accepted);
         assert!(result.hit_accepted);
         let point = result
             .projectile_contact
-            .expect("host resolves entity contact");
-        assert!((point.x - 0.4).abs() <= EPSILON);
-        assert!(point.distance(Vec3::new(9.0, 0.0, 0.0)) > 8.0);
+            .expect("blast at the declared point");
+        assert!(point.distance(Vec3::new(8.9, 0.0, 0.0)) <= EPSILON);
         assert_eq!(
             fixture
                 .registry
-                .get_component::<HealthComponent>(struck)
-                .expect("struck entity remains allocated")
+                .get_component::<HealthComponent>(on_path)
+                .expect("on-path entity remains allocated")
                 .current,
-            0.0,
+            100.0,
         );
     }
 
@@ -6754,7 +6734,7 @@ mod tests {
             zone: None,
         }]);
 
-        let result = fixture.ingest_result(7, &declaration);
+        let (_, result) = fixture.march_result(7, &declaration);
 
         assert!(result.fire_accepted);
         assert!(result.hit_accepted);
@@ -6780,14 +6760,16 @@ mod tests {
         );
     }
 
-    // Regression: remote splash replay must preserve the local authoritative
-    // projectile stage's swept-radius contact instead of trusting the client point.
+    // Regression: the host march must find the local authoritative projectile
+    // stage's swept-radius contact instead of trusting the client point.
     #[test]
     fn remote_splash_static_contact_preserves_projectile_radius_semantics() {
         let mut fixture = HitIngestFixture::new(wall_at_x(1.0));
         fixture.configure_projectile_splash(0.25);
         let local_impact = crate::sim::resolve_projectile_impact(
-            &fixture.collision_world,
+            &postretro_physics::collision::moving::CombinedCollisionWorld::static_only(
+                &fixture.collision_world,
+            ),
             &fixture.registry,
             &fixture.hit_zone_store,
             0.0,
@@ -6808,7 +6790,7 @@ mod tests {
             zone: None,
         }]);
 
-        let result = fixture.ingest_result(7, &declaration);
+        let (_, result) = fixture.march_result(7, &declaration);
 
         assert!(result.fire_accepted);
         let point = result
@@ -6816,7 +6798,7 @@ mod tests {
             .expect("host resolves swept sphere contact");
         assert!(
             point.distance(local_impact.point) <= EPSILON,
-            "remote replay must expose the same contact point as local authoritative flight",
+            "the march must reach the same contact point as local authoritative flight",
         );
         assert!(
             point.x < 0.9,

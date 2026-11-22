@@ -1,7 +1,7 @@
 # mover-channel-bounded-bake — plan of record
 
 mode: resumable
-status: approved (built; awaiting land the plane)
+status: approved (landed)
 read at: 1a66523a
 
 Source check: no file under `crates/level-compiler/src/mover_probe_channel/`,
@@ -115,7 +115,7 @@ test against the parent's `prl-build`, named by
 | 5 | Pricing: drop the accumulated-states term; price one mover's states, the blocks at the cap, the finish loop's buffers and the lazily built slot inputs in the mover-bake phase; the direct window after the SH delta and direct-SH stages with ids 27/41/45 at the dense bound; the carried term in the SH-delta projection. Rows 7, 12–16, 18–20 | integrating executor | 2, 3, 4 || done: `price_movers(cost, &DirectWindow)` prices one mover's states, `raw_mover_bytes`, `finish_bytes` and the blocks at the cap in the mover bake; the direct window beside ids 27/41/45 at the copy chain less its base-copy share, id 35 and its clone from the grid, the entity-shadow selection, id 34 and its clone, solids, 3× the cap and 2× the direct bound; `carried_bytes` joins the SH-delta projection. Every term at the mover's own `light_bounces`. Tests pass: `mover_window_tests::{every_priced_phase_covers_its_window_on_the_closet, the_direct_window_covers_every_section_alive, a_delta_cap_below_dense_still_prices_the_dense_window, one_byte_under_the_sh_base_peak_refuses_by_its_name_through_gate_order}`, `finish::{the_mover_bake_price_covers_a_held_door_beside_a_baking_one, a_slot_failure_after_blocks_join_is_priced}`, `cost_tests` edges; on demand `every_priced_phase_covers_its_window_on_every_mover_fixture`. Sweep: 398 passed after gating the `mover bake` mark on movers |
 | 6 | Layer cap: `resolve_layers` in batches of 16 (test seam), layer-phase price over finished layers plus the 16 largest in-flight scratches, hit payload included. Rows 8, 17, and row 1 re-run | integrating executor | 5 || code done: `LAYERS_IN_FLIGHT` = 16, `resolve_layers_capped` batches with `par_extend` (plan order kept); layer phase prices finished layers plus `in_flight_scratch` of the 16 largest. `layer_cap_tests::{layer_resolution_never_exceeds_its_cap, layer_resolution_completes_at_one_permit}` pass. Goldens still match (row 1 re-run); sweep 516 passed, 0 failed |
 | 7 | Context and modder docs: `build_pipeline.md` flag rows, *Memory* paragraph ("Decided, not yet built" retired), `docs/level_design.md`. Row 21 | integrating executor | 6 || done: `build_pipeline.md` *Memory* paragraph, `--mover-payload-max-size` and `--working-set-max-size` rows rewritten as built; `docs/level_design.md` flag and error rows landed in Task 3 |
-| 8 | Findings: stress-env-volumes stop-at-gate admission, findings harness on setpiece and stress-env-volumes, block bytes, stage times; on-demand parity over every mover fixture. Rows 22–25 | integrating executor | 6 | |
+| 8 | Findings: stress-env-volumes stop-at-gate admission, findings harness on setpiece and stress-env-volumes, block bytes, stage times; on-demand parity over every mover fixture. Rows 22–25 | integrating executor | 6 | done: rows 22–25 in Findings, stress full cold bake included; parity beyond the closet and setpiece, stress at `high` and the parent's stress time left outstanding (rows 1, 24, 25) |
 
 Delegation: none planned. Tasks 1–3 and 5 share `bake_mover_bounce`, the
 pose lookup and the price; task 4 rewires the file they all touch. Sequential
@@ -320,3 +320,14 @@ times: SH Bake 3,716.9 s (layers 6.9 s; the mover bake about 3,555 s, the
 two 140-pose lifts 371 and 359 s), Lightmap 884.7 s. The parent's cold bake
 was not timed here: at the default it is refused, and at a raised budget it
 would add another 80-minute run.
+
+### After merging feature/mover-smooth-specular-pipeline
+
+The owner asked to merge `feature/mover-smooth-specular-pipeline` (a4ab56e3)
+before landing. It merged with no conflict and touches no file this brief
+does: renderer, shader, `render-cpu` frame uniforms, measurement kit and
+`rendering_pipeline.md`. Gate re-run on the merge: `cargo fmt --check` ok;
+`cargo clippy --workspace --all-targets -- -D warnings` ok (the same two
+manifest warnings); `cargo test --workspace --no-fail-fast` 113 targets,
+17,545 passed, 0 failed, 157 ignored. `origin/main` at d50d1ba5 (context
+docs only since the claim) merges into the branch without conflict.

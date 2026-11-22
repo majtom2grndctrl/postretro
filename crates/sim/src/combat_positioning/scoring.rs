@@ -5,9 +5,7 @@
 use glam::Vec3;
 
 use super::{CombatCandidate, CombatQuery, path_length};
-use crate::collision::{
-    CapsulePlacement, SKIN_DISTANCE, capsule_static_placement_center, line_of_sight,
-};
+use crate::collision::{CapsulePlacement, SKIN_DISTANCE, capsule_static_placement_center};
 use crate::nav::{
     NavGraph, NavScratch, NavStart, distance_xz, find_path_from_in, find_path_gated_in,
 };
@@ -158,11 +156,7 @@ pub(super) fn score_candidate_with(
     // Slot visibility is a positioning heuristic only. The following tick's
     // actual-position fire gate remains authoritative for damage. It casts
     // from this enemy's own eye, so it is never shared.
-    if !line_of_sight(
-        position + query.enemy_eye_offset,
-        query.target_aim,
-        query.collision_world,
-    ) {
+    if !query.slot_sees_target(position + query.enemy_eye_offset) {
         return None;
     }
     let gate = query.mover_nav.gate;

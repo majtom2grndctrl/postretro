@@ -128,6 +128,8 @@ FORWARD COMPOSITION (per fragment) — direct terms disjoint by technique; they 
               + Σ dynamic direct    × shadow map (rationed pool)
 ```
 
+**SDF-shadowed lights are soft-deprecated (owner, 2026-11-21).** They keep working. A new feature need not support them; where supporting them would cost something only they use, the feature records a limit instead (first case, decided, not yet built: glossy world reflections count their diffuse twice). The static SDF atlas is baked only for maps with SDF-shadowed lights. Before retiring it, check reflections: visibility toward analytic emitters is a candidate use.
+
 Compiler tests pin the seams that keep direct and indirect disjoint: tier routing, the position-axis namespace filter, and indirect reachability for every baked light regardless of shadow type. The SDF runtime path remains performance-gated.
 
 **Ownership boundary.** Wgpu-free light packing, light spec packing, influence packing, and light-reachability CPU math may live in `postretro-lighting`. GPU pools/resources, uploads, bind groups, and wgpu-facing layout construction remain renderer-owned.

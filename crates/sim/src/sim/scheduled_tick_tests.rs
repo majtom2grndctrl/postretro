@@ -156,7 +156,7 @@ impl Host {
             &edges,
             &edges,
             None,
-            |registry, _| {
+            |registry, _, _| {
                 if let Some(npc) = before_ai {
                     hit(registry, npc);
                 }

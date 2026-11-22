@@ -11,7 +11,7 @@ use super::{
     CombatAssignment, CombatCandidate, CombatQuery, combat_candidates_with, dynamic_min_spacing,
     path_length, select_batch_with,
 };
-use crate::collision::{CapsulePlacement, capsule_static_placement_center, line_of_sight};
+use crate::collision::{CapsulePlacement, capsule_static_placement_center};
 use crate::nav::{NavScratch, NavStart, distance_xz, find_path_from_in, find_path_gated_in};
 
 /// The uncached batch.
@@ -52,11 +52,7 @@ pub(super) fn score_candidate_uncached(
     }
     // Slot visibility is a positioning heuristic only. The following tick's
     // actual-position fire gate remains authoritative for damage.
-    if !line_of_sight(
-        position + query.enemy_eye_offset,
-        query.target_aim,
-        query.collision_world,
-    ) {
+    if !query.slot_sees_target(position + query.enemy_eye_offset) {
         return None;
     }
     let gate = query.mover_nav.gate;

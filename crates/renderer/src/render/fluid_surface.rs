@@ -16,9 +16,9 @@ use postretro_render_cpu::fluid_surface::prepared::{
 };
 use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
 use postretro_render_cpu::fluid_surface::{
-    FLUID_DRIFT_RATE_STRIDE, FLUID_PARAMS_STRIDE, FLUID_PARAMS_WINDOW_BYTES,
-    FLUID_PROBE_INDEX_STRIDE, FLUID_SURFACE_VERTEX_STRIDE, FluidGridLattice, FluidShaderVariant,
-    FluidSurfaceDraw, slot_window,
+    FLUID_DRIFT_RATE_STRIDE, FLUID_PARAMS_WINDOW_BYTES, FLUID_PROBE_INDEX_STRIDE,
+    FLUID_SURFACE_VERTEX_STRIDE, FluidGridLattice, FluidShaderVariant, FluidSurfaceDraw,
+    slot_window,
 };
 use postretro_render_cpu::frame_uniforms::LightTermMask;
 
@@ -32,13 +32,13 @@ pub(crate) use super::fluid_scene_inputs::{FLUID_SCENE_INPUTS_GROUP, FluidSceneI
 
 use super::*;
 
-// The reflection pass and planar routing (the per-draw plane split and the
-// planar group 5) reach the installed level's buffers, so they live beneath
+// The submodules reach the installed level's buffers, so they live beneath
 // this module.
 mod install;
 mod planar_routing;
 pub(crate) mod probe_sums;
-// The build before's reflecting pipeline, for the sums pass's GPU gates.
+// The per-fragment oracle: the reflecting variant with the kept per-fragment
+// ratio, for the sums pass's GPU gates.
 #[cfg(test)]
 pub(crate) mod per_fragment_oracle;
 mod reflection_pass;
@@ -55,7 +55,8 @@ pub(crate) use reflection_pass::{
 };
 
 /// Pipeline group of the per-volume parameter window and the reflection probe
-/// resources (probe array, share table, distance array).
+/// resources (probe array, share table, distance array) and the live-lighting
+/// sums.
 pub(crate) const FLUID_PARAMS_GROUP: u32 = 4;
 /// Groups the pipeline layout composes, in order: 0 camera, 1 world material,
 /// 2 lighting, 3 SH volume, 4 per-volume parameters and reflection probes,
@@ -466,8 +467,9 @@ impl FluidSurfacePass {
     /// Whether this frame's fluid pass records a reflecting-variant draw under
     /// `light_term_mask` and `quality`, the frame's one mask snapshot and
     /// tier: the sums pass's dispatch condition. It reads this pass's own
-    /// draws, never the screen-space pass's gate, so Low and the planar
-    /// layer's plane dispatch too.
+    /// draws. Unlike `has_reflecting_draws`, it reads neither the tier's
+    /// screen-space gate nor the planar route, so Low and the selected plane
+    /// dispatch.
     pub fn has_probe_term_draws(
         &self,
         installed: Option<&InstalledFluidSurfaces>,

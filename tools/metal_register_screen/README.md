@@ -6,7 +6,8 @@ The mover shader sits near a register cliff on the RDNA1 Mac target
 (`context/lib/rendering_pipeline.md` §7.3): a small WGSL edit can push an
 entry's VGPR count into a slower occupancy tier. Screen both entries after
 every edit to `kinematic_brush.wgsl`, or to any snippet composed into it,
-before it lands.
+before it lands. The tool also screens the fluid surface entries (see the
+"Fluid surface entries" section).
 
 ## Requirements
 
@@ -90,6 +91,6 @@ mover's stream when present.
 
 | Build | Entry | VGPRs | SGPRs |
 |---|---|---|---|
-| reflection-probe-fluid-pass-performance: live lighting from per-probe sums | `fs_main_reflecting` | 72 | 98 |
-| same source, per-fragment ratio (the build before) | `fs_main_reflecting_per_fragment` | 72 | 102 |
+| live lighting from per-probe sums | `fs_main_reflecting` | 72 | 98 |
+| same source, per-fragment ratio (the per-fragment oracle) | `fs_main_reflecting_per_fragment` | 72 | 102 |
 | same | `fs_main` | 55 | 100 |

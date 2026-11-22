@@ -3,7 +3,9 @@
 
 use super::*;
 use postretro_render_cpu::fluid_surface::reflection::FLUID_PROBE_TABLE_BYTES;
-use postretro_render_cpu::fluid_surface::{FLUID_SLOTS_PER_WINDOW, FluidSurfaceVertex};
+use postretro_render_cpu::fluid_surface::{
+    FLUID_PARAMS_STRIDE, FLUID_SLOTS_PER_WINDOW, FluidSurfaceVertex,
+};
 
 /// The fluid shader's own text, split by responsibility, without the shared
 /// SH and light snippets `SHADER_SOURCE` appends.
@@ -2870,10 +2872,11 @@ fn fluid_reflection_light_evaluation_reads_no_promotion_weight_or_debug_override
 
 // The probe term takes no SH read: no reflection function, and no part of
 // `fs_main_reflecting`'s reflection tail, touches the SH atlases, grid, depth
-// moments or sampler chain, or the SH-lit surface lighting. Its only group-3 reads are
-// the descriptors and curve samples (and the SH atlas's linear-clamp sampler,
-// which reads no SH data), so a pool whose capture point's cells are not
-// resident still follows a switch (P5).
+// moments or sampler chain, or the SH-lit surface lighting. On the probe path
+// the fragment's only group-3 read is the SH atlas's linear-clamp sampler,
+// which reads no SH data; the descriptors and curve samples are read by the
+// sums pass. So a pool whose capture point's cells are not resident still
+// follows a switch (P5).
 #[test]
 fn fluid_reflection_term_takes_no_sh_read() {
     let mut scanned = fluid_reflection_functions();
@@ -2901,15 +2904,17 @@ fn fluid_reflection_term_takes_no_sh_read() {
             );
         }
     }
-    let ratio = code_only(wgsl_fn(FLUID_WGSL, "fluid_reflection_light_value"));
-    assert!(ratio.contains("anim_descriptors[roster_index]"));
-    assert!(ratio.contains("uniforms.time"));
+    let light_value = code_only(wgsl_fn(FLUID_WGSL, "fluid_reflection_light_value"));
+    assert!(light_value.contains("anim_descriptors[roster_index]"));
+    assert!(light_value.contains("uniforms.time"));
 }
 
-// The fluid shader reads the live descriptors through the shared group 3 it
-// already binds, at binding 11: a FRAGMENT-visible read-only storage entry of
-// the SH layout, so declaring it spends no budget, and its struct is the
-// 48-byte descriptor record the flush uploads, `is_active` at its offset.
+// The fluid module declares the live descriptors at the shared group 3's
+// binding 11 for the kept per-fragment oracle; no entry reads them (pinned
+// by `the_reflection_free_entry_declares_none_of_the_reflection_globals`).
+// The binding is a FRAGMENT-visible read-only storage entry of the SH
+// layout, so declaring it spends no budget, and its struct is the 48-byte
+// descriptor record the flush uploads, `is_active` at its offset.
 #[test]
 fn fluid_reflection_reads_descriptors_from_the_shared_group_3_binding_11() {
     use postretro_render_cpu::sh_volume::{
@@ -3094,15 +3099,35 @@ fn fluid_pass_block() -> String {
 
 /// `renderer_render_frame.rs` with the frame's fluid recorder
 /// (`renderer_fluid_frame.rs`) spliced in at its one call, so order gates
-/// read the frame's passes as one recorded sequence.
+/// read the frame's passes as one recorded sequence. The splice drops the
+/// call's arguments, so the call text and the recorder's parameters are
+/// pinned first: the body's names then read the caller's values.
 pub(crate) fn scene_source_with_fluid_passes() -> String {
     let frame = include_str!("renderer_render_frame.rs");
     let fluid = include_str!("renderer_fluid_frame.rs");
     let call = "self.record_fluid_surface_passes(";
     assert_eq!(frame.matches(call).count(), 1, "one fluid recorder call");
+    assert_eq!(
+        code_only(frame)
+            .matches(
+                "self.record_fluid_surface_passes(encoder,&scene_color,\
+                 frame_light_term_mask,frame_reflection_quality,);"
+            )
+            .count(),
+        1,
+        "the fluid recorder takes the frame's encoder, scene colour, mask and tier"
+    );
     let start = frame.find(call).expect("fluid recorder call");
     let end = start + frame[start..].find(");").expect("call end") + 2;
     let recorder = wgsl_fn(fluid, "record_fluid_surface_passes");
+    assert!(
+        code_only(recorder).starts_with(
+            "fnrecord_fluid_surface_passes(&mutself,encoder:&mutwgpu::CommandEncoder,\
+             scene_color:&wgpu::TextureView,frame_light_term_mask:LightTermMask,\
+             frame_reflection_quality:FluidReflectionQuality,){"
+        ),
+        "the recorder's parameters carry the call's argument names"
+    );
     let body_start = recorder.find(") {").expect("recorder body") + 3;
     let body = &recorder[body_start..recorder.rfind('}').expect("recorder end")];
     format!("{}{}{}", &frame[..start], body, &frame[end..])
@@ -5323,6 +5348,114 @@ fn production(source: &str) -> &str {
     &source[..end]
 }
 
+/// Test-only renderer modules outside the test file naming: the fluid
+/// pass's `#[cfg(test)]` per-fragment oracle and register-screen capture.
+const TEST_ONLY_RENDERER_MODULES: [&str; 2] = [
+    "render/fluid_surface/per_fragment_oracle.rs",
+    "render/fluid_surface/register_screen_capture.rs",
+];
+
+/// Every production renderer source: its path under `src`, components
+/// joined by `/` (testing_guide.md §Source-scanning tests), with its
+/// [`production`] part. Test files (`*_test.rs`, `*_tests.rs`,
+/// `*_test_fixtures.rs`, `tests.rs`, anything under a `tests` or `*_tests`
+/// directory) and [`TEST_ONLY_RENDERER_MODULES`] are left out.
+fn production_renderer_sources() -> Vec<(String, String)> {
+    fn walk(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("renderer source directory") {
+            let path = entry.expect("renderer source entry").path();
+            if path.is_dir() {
+                walk(&path, files);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                files.push(path);
+            }
+        }
+    }
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    walk(&src, &mut files);
+    let mut sources: Vec<(String, String)> = files
+        .into_iter()
+        .filter_map(|path| {
+            let components: Vec<String> = path
+                .strip_prefix(&src)
+                .expect("a source under src")
+                .components()
+                .map(|component| component.as_os_str().to_string_lossy().into_owned())
+                .collect();
+            let (file, dirs) = components.split_last()?;
+            let relative = components.join("/");
+            let test_dir = dirs
+                .iter()
+                .any(|dir| dir == "tests" || dir.ends_with("_tests"));
+            let test_file = file == "tests.rs"
+                || ["_test.rs", "_tests.rs", "_test_fixtures.rs"]
+                    .iter()
+                    .any(|suffix| file.ends_with(suffix));
+            if test_dir || test_file || TEST_ONLY_RENDERER_MODULES.contains(&relative.as_str()) {
+                return None;
+            }
+            let text = std::fs::read_to_string(&path).expect("a readable renderer source");
+            Some((relative, production(&text).to_owned()))
+        })
+        .collect();
+    sources.sort();
+    sources
+}
+
+/// Whether `code` (comments stripped, whitespace kept) uses `name` as a whole
+/// identifier anywhere but its own `fn`, `const` or `static` declaration.
+fn uses_name(code: &str, name: &str) -> bool {
+    let ident = |ch: char| ch.is_alphanumeric() || ch == '_';
+    code.match_indices(name).any(|(at, _)| {
+        let head = &code[..at];
+        let glued_before = head.chars().next_back().is_some_and(ident);
+        let glued_after = code[at + name.len()..].chars().next().is_some_and(ident);
+        let keyword = head
+            .trim_end()
+            .rsplit(|ch: char| !ident(ch))
+            .next()
+            .unwrap_or("");
+        !glued_before && !glued_after && !matches!(keyword, "fn" | "const" | "static")
+    })
+}
+
+/// Of all production renderer code, only the fluid surface install binds the
+/// sums into group 4, only the sums pass dispatches over them, and only the
+/// probe resources name their group-4 binding. Their definitions in
+/// `fluid_reflection_probes.rs` do not count as uses.
+fn assert_the_sums_are_reached_only_by_their_owners() {
+    let sources = production_renderer_sources();
+    assert!(
+        sources
+            .iter()
+            .any(|(file, _)| file == "render/fluid_reflection_probes.rs"),
+        "the scan reaches the renderer's sources"
+    );
+    for (name, owner) in [
+        ("sums_bind_group_entry", "render/fluid_surface/install.rs"),
+        ("sums_dispatch", "render/fluid_surface/probe_sums.rs"),
+        (
+            "FLUID_PROBE_SUMS_BINDING",
+            "render/fluid_reflection_probes.rs",
+        ),
+    ] {
+        let users: Vec<&str> = sources
+            .iter()
+            .filter(|(_, source)| {
+                let code: String = source
+                    .lines()
+                    .map(|line| line.split("//").next().unwrap_or(""))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                uses_name(&code, name)
+            })
+            .map(|(file, _)| file.as_str())
+            .collect();
+        assert_eq!(users, [owner], "`{name}` is used only by {owner}");
+    }
+}
+
 // Acceptance row 2, pin P1 by source order. In the game and in capture
 // alike: script light writes, the descriptor flush, the sums pass, then the
 // fluid pass. The frame's one flush and the app's write-flush-render order
@@ -5603,31 +5736,10 @@ fn the_sums_ip_fences_hold() {
         .map(|entry| entry.binding)
         .collect();
     assert_eq!(ssr_probe_group, [0, 2]);
-    for (file, source) in [
-        (
-            "fluid_surface/reflection_pass.rs",
-            include_str!("fluid_surface/reflection_pass.rs"),
-        ),
-        (
-            "fluid_surface/planar_routing.rs",
-            include_str!("fluid_surface/planar_routing.rs"),
-        ),
-        (
-            "planar_reflection/record.rs",
-            include_str!("planar_reflection/record.rs"),
-        ),
-        ("kinematic_brush.rs", include_str!("kinematic_brush.rs")),
-        ("mesh_pass.rs", include_str!("mesh_pass.rs")),
-    ] {
-        let code = code_only(production(source));
-        for name in [
-            "sums_bind_group_entry",
-            "FLUID_PROBE_SUMS_BINDING",
-            "sums_dispatch",
-        ] {
-            assert!(!code.contains(name), "{file} reaches the sums: `{name}`");
-        }
-    }
+    // No other renderer source reaches the sums: of all production code,
+    // only the fluid surface install binds them and only the sums pass
+    // dispatches over them.
+    assert_the_sums_are_reached_only_by_their_owners();
 
     // The fluid vertex streams: vertex-only, written once at install.
     let install = code_only(production(include_str!("fluid_surface/install.rs")));
@@ -5753,6 +5865,7 @@ fn the_sums_pass_and_blend_wgsl_match_the_cpu_references() {
     use postretro_level_format::reflection_probes::REFLECTION_PROBE_LOBE_COUNT;
     use postretro_render_cpu::fluid_surface::reflection::{
         FLUID_PROBE_SUM_STRIDE, FLUID_PROBE_SUMS_BYTES, FLUID_PROBE_SUMS_WORKGROUP_WIDTH,
+        FLUID_REFLECTION_CHANGE_CEILING,
     };
     let cpu = include_str!("../../../render-cpu/src/fluid_surface/reflection.rs");
     let pinned: [(&str, &str, &str, &str, &str); 2] = [
@@ -5764,8 +5877,9 @@ fn the_sums_pass_and_blend_wgsl_match_the_cpu_references() {
              for(vari:u32=0u;i<FLUID_REFLECTION_LIGHTS_PER_PROBE;i=i+1u){\
              letlight=fluid_probes.probes[probe].lights[i];\
              if!fluid_reflection_light_present(light.roster_index){continue;}\
-             letchange=fluid_reflection_light_change(\
-             fluid_reflection_light_value(light.roster_index),light.reference);\
+             letchange=min(fluid_reflection_light_change(\
+             fluid_reflection_light_value(light.roster_index),light.reference),\
+             vec3<f32>(FLUID_REFLECTION_CHANGE_CEILING));\
              sums[0]=sums[0]+fluid_reflection_unpack_unorm10x3(light.shares[0].x)*change;\
              sums[1]=sums[1]+fluid_reflection_unpack_unorm10x3(light.shares[0].y)*change;\
              sums[2]=sums[2]+fluid_reflection_unpack_unorm10x3(light.shares[0].z)*change;\
@@ -5780,7 +5894,8 @@ fn the_sums_pass_and_blend_wgsl_match_the_cpu_references() {
              forlightinprobe_lights{\
              if!reflection_light_present(lights,light.roster_index){continue;}\
              letchange=reflection_light_change(reflection_light_value(lights,light.roster_index),\
-             Vec3::from(light.reference),);\
+             Vec3::from(light.reference),)\
+             .min(Vec3::splat(FLUID_REFLECTION_CHANGE_CEILING));\
              for(sum,word)insums.iter_mut().zip(&light.shares){\
              *sum+=reflection_unpack_unorm10x3(*word)*change;}}sums}",
         ),
@@ -5825,6 +5940,10 @@ fn the_sums_pass_and_blend_wgsl_match_the_cpu_references() {
         main.contains("letprobe=id.x;ifprobe>=fluid_probes.tile.z{return;}"),
         "{main}"
     );
+    assert!(
+        main.contains("letbase=probe*FLUID_REFLECTION_LOBES;"),
+        "{main}"
+    );
     for lobe in 0..REFLECTION_PROBE_LOBE_COUNT {
         let index = if lobe == 0 {
             "base".to_owned()
@@ -5849,6 +5968,15 @@ fn the_sums_pass_and_blend_wgsl_match_the_cpu_references() {
         shader_const_in(SUMS_WGSL, "FLUID_REFLECTION_LOBES", "u32"),
         format!("{REFLECTION_PROBE_LOBE_COUNT}u")
     );
+    // The change ceiling: one value on both sides, declared by the sums pass
+    // alone.
+    assert_eq!(
+        shader_const_in(SUMS_WGSL, "FLUID_REFLECTION_CHANGE_CEILING", "f32")
+            .parse::<f32>()
+            .expect("the ceiling parses"),
+        FLUID_REFLECTION_CHANGE_CEILING
+    );
+    assert!(!code_only(FLUID_WGSL).contains("FLUID_REFLECTION_CHANGE_CEILING"));
     let lobes_len = FLUID_PROBE_SUMS_BYTES / FLUID_PROBE_SUM_STRIDE;
     for shader in [SUMS_WGSL, FLUID_WGSL] {
         assert!(code_only(shader).contains(&format!(
@@ -5976,4 +6104,8 @@ fn the_sums_live_with_the_level_and_their_pipeline_builds_at_full_init() {
     assert!(pass_struct.contains("sums:probe_sums::FluidProbeSumsPass,"));
     assert!(!pass_struct.contains("sums_bind_group"));
     assert!(!pass_struct.contains("sums_buffer"));
+
+    // Across the whole renderer tree, not a hand-picked list: only the
+    // install binds the sums and only the sums pass dispatches over them.
+    assert_the_sums_are_reached_only_by_their_owners();
 }

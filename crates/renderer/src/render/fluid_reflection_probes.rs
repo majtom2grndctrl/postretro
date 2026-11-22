@@ -11,7 +11,7 @@ use postretro_level_format::reflection_probes::ReflectionProbesSection;
 use postretro_render_cpu::fluid_surface::prepared::ProbeArrayFormat;
 pub(crate) use postretro_render_cpu::fluid_surface::prepared::installable_probe_section;
 use postretro_render_cpu::fluid_surface::reflection::{
-    FLUID_PROBE_SUMS_BYTES, FLUID_PROBE_TABLE_BYTES, pack_probe_table,
+    FLUID_PROBE_SUMS_BYTES, FLUID_PROBE_TABLE_BYTES, pack_probe_table, usable_probe_section,
 };
 
 /// Group 4 binding of the probe array: one capture tile per layer.
@@ -109,7 +109,7 @@ pub(crate) fn fluid_sums_pass_bind_group_layout_entries() -> [wgpu::BindGroupLay
 /// Tests also read it back and prefill it.
 fn sums_usage() -> wgpu::BufferUsages {
     let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::UNIFORM;
-    #[cfg(any(test, feature = "test-seams"))]
+    #[cfg(test)]
     let usage = usage | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;
     usage
 }
@@ -162,15 +162,20 @@ pub(crate) struct FluidProbeResources {
 impl FluidProbeResources {
     /// Upload `section` (already [`installable_probe_section`]); `None`
     /// builds the dummies group 4's fixed layout needs: a 1×1 one-layer
-    /// zero array, a zeroed table and a 1×1 one-layer zero distance array,
-    /// read by no fragment since every probe index is then the no-probe
-    /// value.
+    /// zero array, a zeroed table, a 1×1 one-layer zero distance array and
+    /// zeroed sums, with no sums group, so the sums pass never dispatches
+    /// over them. No fragment reads any of them, since every probe index is
+    /// then the no-probe value.
     pub(crate) fn new(
         device: &wgpu::Device,
         queue: &dyn crate::render::queue_writes::QueueWrites,
         section: Option<&ReflectionProbesSection>,
         sums_layout: &wgpu::BindGroupLayout,
     ) -> Self {
+        // The table packs this same answer, so the arrays' layers, the
+        // table's probe count (the sums shader's bound) and the dispatch's
+        // probe count share one source.
+        let section = usable_probe_section(section);
         let array = match section.and_then(|section| Some((section, probe_array_format(section)?)))
         {
             Some((section, format)) => {
@@ -222,7 +227,7 @@ impl FluidProbeResources {
         });
         // One distance tile per probe in the colour tiles' layers, uploaded
         // as stored (little-endian f16); 0 is no surface.
-        let distance = match section.filter(|section| probe_array_format(section).is_some()) {
+        let distance = match section {
             Some(section) => device.new_texture_with_data(
                 queue,
                 &array_descriptor(
@@ -259,9 +264,7 @@ impl FluidProbeResources {
             usage: sums_usage(),
             mapped_at_creation: false,
         });
-        let probe_count = section
-            .filter(|section| probe_array_format(section).is_some())
-            .map_or(0, |section| section.probes.len() as u32);
+        let probe_count = section.map_or(0, |section| section.probes.len() as u32);
         let sums_bind_group = (probe_count > 0).then(|| {
             device.new_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Fluid Reflection Sums Pass Bind Group"),
@@ -307,7 +310,7 @@ impl FluidProbeResources {
     }
 
     /// The sums buffer, for readback and prefill (tests).
-    #[cfg(any(test, feature = "test-seams"))]
+    #[cfg(test)]
     pub(crate) fn sums_buffer(&self) -> &wgpu::Buffer {
         &self.sums
     }

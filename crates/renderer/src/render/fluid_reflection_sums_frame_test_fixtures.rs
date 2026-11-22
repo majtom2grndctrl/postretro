@@ -1,7 +1,7 @@
 //! Fixtures for the live-lighting sums GPU gates: a world-less pool level
-//! whose probes store animated lights, the build before's per-fragment
-//! oracle pipeline, frames at a chosen clock, and the sums buffer read back
-//! beside its CPU reference.
+//! whose probes store animated lights, the per-fragment oracle pipeline
+//! (the reflecting variant with the kept per-fragment ratio), frames at a
+//! chosen clock, and the sums buffer read back beside its CPU reference.
 //! See: context/lib/rendering_pipeline.md §7.3a (Live lighting)
 
 use std::time::{Duration, Instant};
@@ -29,7 +29,7 @@ use postretro_render_data::geometry::BvhTree;
 use postretro_visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
 
 use super::fluid_baked_frame_test_fixtures::sh_section;
-use super::fluid_reflection_frame_test_fixtures::View;
+use super::fluid_reflection_frame_test_fixtures::{PROBE_TILE, View};
 use super::level_build::{GeometryExtras, GeometryRest, PendingLevelSet};
 use super::level_resource_set::LevelSetId;
 use super::renderer_render_frame::FrameScene;
@@ -48,9 +48,6 @@ const ALL: VisibleCells = VisibleCells::DrawAll;
 /// face.
 const SH_ORIGIN: [f32; 3] = [-10.0, -2.0, -10.0];
 const SH_CELL: [f32; 3] = [20.0, 8.0, 20.0];
-
-/// The probe tiles' edge, texels.
-const PROBE_TILE: u32 = 8;
 
 /// A flat light of `base_color`: no curve, so its value is `base_color`
 /// while on and 0 while off.
@@ -438,7 +435,8 @@ pub(super) fn dispatches(renderer: &Renderer) -> u32 {
     renderer.full().fluid_surface.probe_sums_dispatches()
 }
 
-/// The build before's reflecting pipeline, held while production draws.
+/// The per-fragment oracle: the reflecting variant with the kept
+/// per-fragment ratio, held while production draws.
 pub(super) struct Oracle(Option<wgpu::RenderPipeline>);
 
 impl Oracle {
@@ -451,8 +449,8 @@ impl Oracle {
         ))
     }
 
-    /// `frame` drawn with the build before's reflecting pipeline in the
-    /// production one's place, which is restored after.
+    /// `frame` drawn with the per-fragment oracle in the production
+    /// reflecting pipeline's place, which is restored after.
     pub fn before(
         &mut self,
         renderer: &mut Renderer,
@@ -474,7 +472,7 @@ impl Oracle {
     }
 
     /// `frame` drawn with the production pipeline, then drawn again, same
-    /// pose and clock, by the build before: `(production, build before)`.
+    /// pose and clock, by the per-fragment oracle: `(production, oracle)`.
     /// Production draws first, so a first-drawn case is first drawn there.
     pub fn pair(
         &mut self,

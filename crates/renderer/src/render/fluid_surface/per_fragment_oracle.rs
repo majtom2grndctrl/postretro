@@ -1,13 +1,14 @@
-// The build before's reflecting pipeline, for the live-lighting sums' GPU
-// gates: the reflecting variant rebuilt with its fragment evaluating every
-// stored light itself, swapped in for production's to draw the same frame.
+// The per-fragment oracle, for the live-lighting sums' GPU gates: the
+// reflecting variant with the kept per-fragment ratio, its fragment
+// evaluating every stored light itself, swapped in for production's to draw
+// the same frame.
 // See: context/lib/rendering_pipeline.md §7.3a (Live lighting)
 
 use super::*;
 
 /// The composed fluid source with the reflecting fragment's one call of
 /// `fluid_reflection_ratio_from_sums(` restored to the kept per-fragment
-/// `fluid_reflection_ratio(`: the build before's fragment exactly. Panics
+/// `fluid_reflection_ratio(`: the per-fragment oracle's fragment. Panics
 /// unless exactly one call site (the definition excluded) is substituted.
 pub(crate) fn per_fragment_ratio_oracle_source() -> String {
     const FROM_SUMS: &str = "fluid_reflection_ratio_from_sums(";
@@ -30,7 +31,7 @@ pub(crate) fn per_fragment_ratio_oracle_source() -> String {
 }
 
 impl FluidSurfacePass {
-    /// The build before's reflecting pipeline: the reflecting variant built
+    /// The per-fragment oracle's pipeline: the reflecting variant built
     /// from [`per_fragment_ratio_oracle_source`] over the production
     /// pipeline's own group layouts and the production constructor.
     pub(crate) fn build_per_fragment_oracle_pipeline(

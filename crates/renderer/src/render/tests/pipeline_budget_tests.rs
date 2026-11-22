@@ -529,8 +529,6 @@ fn fluid_reflection_pipeline_fragment_bindings_stay_within_limits() {
     assert!(total(3) <= limits.max_samplers_per_shader_stage);
 }
 
-/// Per-stage binding inventory of one BGL: (sampled textures, storage
-/// buffers, uniform buffers, samplers) visible to `stage`.
 // Acceptance row 9 (reflection-probe-fluid-pass-performance): the sums pass
 // owns a compute layout of 0 the shared camera group, 1 the shared SH group
 // and 2 its own (the sums it writes, the share table it reads). Its compute
@@ -567,7 +565,7 @@ fn fluid_sums_pipeline_compute_bindings_stay_within_limits() {
     assert!(total(3) <= limits.max_samplers_per_shader_stage);
     assert!(
         postretro_render_cpu::fluid_surface::reflection::FLUID_PROBE_SUMS_BYTES as u64
-            <= limits.max_storage_buffer_binding_size as u64
+            <= limits.max_storage_buffer_binding_size
     );
 
     // The shared entries the sums shader reads (group 0 binding 0, SH
@@ -600,6 +598,8 @@ fn fluid_sums_pipeline_compute_bindings_stay_within_limits() {
     assert_eq!(sums.visibility, wgpu::ShaderStages::FRAGMENT);
 }
 
+/// Per-stage binding inventory of one BGL: (sampled textures, storage
+/// buffers, uniform buffers, samplers) visible to `stage`.
 fn stage_inventory(entries: &[wgpu::BindGroupLayoutEntry], stage: wgpu::ShaderStages) -> [u32; 4] {
     let mut counts = [0; 4];
     for entry in entries

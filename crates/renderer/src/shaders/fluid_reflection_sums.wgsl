@@ -71,8 +71,15 @@ struct FluidProbeSums {
 @group(2) @binding(0) var<storage, read_write> fluid_probe_sums: FluidProbeSums;
 @group(2) @binding(1) var<uniform> fluid_probes: FluidProbeTable;
 
-// A probe's per-lobe sums over its stored lights. Mirrors render-cpu
-// `reflection_probe_sums`.
+// The largest change one light adds to the sums: f16's largest finite value,
+// the capture's and the target's format. A live value overflowing its
+// reference to +Inf would turn a zero share, then a zero lobe weight, into
+// NaN and blank the whole probe. Mirrors render-cpu
+// `FLUID_REFLECTION_CHANGE_CEILING`.
+const FLUID_REFLECTION_CHANGE_CEILING: f32 = 65504.0;
+
+// A probe's per-lobe sums over its stored lights, each light's change capped
+// at the ceiling. Mirrors render-cpu `reflection_probe_sums`.
 fn fluid_reflection_probe_sums(probe: u32) -> array<vec3<f32>, 5> {
     var sums = array<vec3<f32>, 5>();
     for (var i: u32 = 0u; i < FLUID_REFLECTION_LIGHTS_PER_PROBE; i = i + 1u) {
@@ -80,8 +87,10 @@ fn fluid_reflection_probe_sums(probe: u32) -> array<vec3<f32>, 5> {
         if !fluid_reflection_light_present(light.roster_index) {
             continue;
         }
-        let change = fluid_reflection_light_change(
-            fluid_reflection_light_value(light.roster_index), light.reference);
+        let change = min(
+            fluid_reflection_light_change(
+                fluid_reflection_light_value(light.roster_index), light.reference),
+            vec3<f32>(FLUID_REFLECTION_CHANGE_CEILING));
         sums[0] = sums[0] + fluid_reflection_unpack_unorm10x3(light.shares[0].x) * change;
         sums[1] = sums[1] + fluid_reflection_unpack_unorm10x3(light.shares[0].y) * change;
         sums[2] = sums[2] + fluid_reflection_unpack_unorm10x3(light.shares[0].z) * change;

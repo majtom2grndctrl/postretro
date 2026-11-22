@@ -82,6 +82,9 @@ fn fluid_reflection_layered_composite(surface: vec4<f32>, probe: vec3<f32>, shad
 // sums, which the sums pass (fluid_reflection_sums.wgsl) wrote this frame:
 // the lobe weights blend the per-lobe sums, clamped at 0. No fragment
 // evaluates a stored light. Mirrors `reflection_ratio_from_sums`.
+// IP rule (owner review to change, rendering_pipeline.md §7.3a): only
+// probe-bound faces of geometry with fixed position and orientation read the
+// sums; a probe bound to a moving surface keeps the per-fragment ratio.
 fn fluid_reflection_ratio_from_sums(probe: u32, direction: vec3<f32>) -> vec3<f32> {
     let lobes = fluid_reflection_lobe_weights(direction);
     let base = probe * FLUID_REFLECTION_LOBES;

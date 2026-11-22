@@ -2,7 +2,8 @@
 // lobe shares, shared by the sums pass (fluid_reflection_sums.wgsl) and the
 // fluid shader, which keeps the per-fragment ratio as the sums' oracle.
 // Binding-agnostic: the consumer declares `uniforms` (with `time`),
-// `anim_descriptors` and `anim_samples` before this text is concatenated.
+// `anim_descriptors` and `anim_samples` before this text is concatenated, and
+// concatenates curve_eval.wgsl.
 // See: context/lib/rendering_pipeline.md §7.3a
 
 const FLUID_REFLECTION_REFERENCE_FLOOR: f32 = 1.0e-30;
@@ -15,8 +16,8 @@ const FLUID_REFLECTION_LOBES: u32 = 5u;
 // Live lighting by light share. The capture holds every animated light at its
 // reference; each stored light scales it by its share toward the lookup
 // direction times its live-over-reference change. Reads no SH and no
-// promotion weight, so a switch reaches every reflection on the next frame at
-// any distance, and promotion never moves it.
+// promotion weight, so a switch reaches every reflection, at any distance, on
+// the frame it lands, and promotion never moves it.
 
 // The share lobes' blend weights for a lookup direction: up, +X, -X, +Z, -Z.
 // Mirrors level-format `reflection_probe_lobe_weights`, which the compiler

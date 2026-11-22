@@ -526,7 +526,10 @@ pub fn reflection_light_change(current: Vec3, reference: Vec3) -> Vec3 {
 /// direction, per RGB channel: `1 + Σ share(direction) × change`, clamped at
 /// 0, over the probe's stored lights. A light past the stored K has no entry,
 /// so it holds its reference. Reads no SH and no promotion weight: a function
-/// of the probe, the direction and the live descriptors alone.
+/// of the probe, the direction and the live descriptors alone. The
+/// per-fragment form the sums replace ([`reflection_probe_sums`],
+/// [`reflection_ratio_from_sums`]), kept as the sums' parity oracle and as
+/// the fallback for a reflector the IP rules return to per-fragment.
 pub fn reflection_ratio(
     probe_lights: &[FluidProbeLightGpu; REFLECTION_PROBE_LIGHTS_PER_PROBE],
     direction: Vec3,
@@ -553,6 +556,9 @@ pub const FLUID_PROBE_SUMS_BYTES: usize =
     MAX_REFLECTION_PROBES * REFLECTION_PROBE_LOBE_COUNT * FLUID_PROBE_SUM_STRIDE;
 /// Probes one workgroup of the sums pass evaluates, one per invocation.
 pub const FLUID_PROBE_SUMS_WORKGROUP_WIDTH: u32 = 64;
+/// The largest change one light adds to the sums ([`reflection_probe_sums`]):
+/// f16's largest finite value, the capture's and the target's format.
+pub const FLUID_REFLECTION_CHANGE_CEILING: f32 = 65504.0;
 
 const _: () = assert!(FLUID_PROBE_SUMS_BYTES <= 64 * 1024);
 // D3D binds a uniform as a constant buffer in whole 256-byte rows.
@@ -566,9 +572,14 @@ pub fn reflection_probe_sums_workgroups(probe_count: u32) -> u32 {
 /// A probe's live-lighting sums: per lobe k, `Σ share_k × change` over its
 /// stored lights, the part of [`reflection_ratio`] that does not depend on
 /// the lookup direction. The sums pass writes these for every installed
-/// probe once per dispatching frame. IP rule (owner review to change,
-/// rendering_pipeline.md §7.3a): the coefficient stays `current / ref − 1`
-/// per light, with no SH basis, transform or virtual-light projection.
+/// probe once per dispatching frame. Each change is capped at
+/// [`FLUID_REFLECTION_CHANGE_CEILING`]: a live value overflowing its
+/// reference to +Inf would turn a zero share, and then a zero lobe weight,
+/// into NaN and blank the whole probe, where the per-fragment ratio blows
+/// out only the directions the light reaches. IP rule (owner review to
+/// change, rendering_pipeline.md §7.3a): the coefficient stays
+/// `current / ref − 1` per light, with no SH basis, transform or
+/// virtual-light projection.
 pub fn reflection_probe_sums(
     probe_lights: &[FluidProbeLightGpu; REFLECTION_PROBE_LIGHTS_PER_PROBE],
     lights: &FluidReflectionLights<'_>,
@@ -581,7 +592,8 @@ pub fn reflection_probe_sums(
         let change = reflection_light_change(
             reflection_light_value(lights, light.roster_index),
             Vec3::from(light.reference),
-        );
+        )
+        .min(Vec3::splat(FLUID_REFLECTION_CHANGE_CEILING));
         for (sum, word) in sums.iter_mut().zip(&light.shares) {
             *sum += reflection_unpack_unorm10x3(*word) * change;
         }

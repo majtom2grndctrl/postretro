@@ -98,8 +98,10 @@ struct AnimationDescriptor {
     direction_count: u32,
 };
 // Per animated-baked light compose descriptors, roster-indexed (the loader
-// refuses section 54 unless the roster-to-descriptor table is identity): the
-// reflection's live lighting reads them as SH compose does.
+// refuses section 54 unless the roster-to-descriptor table is identity). No
+// fluid entry reads it; it stays declared for the shared group-3 layout and
+// the kept per-fragment oracle (`fluid_reflection_ratio`). The sums pass reads
+// the same buffer.
 @group(3) @binding(11) var<storage, read> anim_descriptors: array<AnimationDescriptor>;
 // Curve samples and per-dynamic-light descriptors, as the forward pass reads
 // them, so a scripted light pulses on the water as it does on the walls.
@@ -163,6 +165,9 @@ struct FluidProbeTable {
 // written this frame by the sums pass before the fluid pass, read only by
 // fs_main_reflecting. Laid out at the probe cap; mirrors render-cpu
 // `FLUID_PROBE_SUMS_BYTES`.
+// IP rule (owner review to change, rendering_pipeline.md §7.3a): only
+// probe-bound faces of geometry with fixed position and orientation read the
+// sums; a probe bound to a moving surface keeps the per-fragment ratio.
 struct FluidProbeSums {
     lobes: array<vec4<f32>, 1280>,
 };

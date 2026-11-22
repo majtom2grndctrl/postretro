@@ -1,4 +1,6 @@
-//! GPU gates for the live-lighting sums pass: its dispatch, its sums, and frames against the build before.
+//! GPU gates for the live-lighting sums pass: its dispatch, its sums, and
+//! frames against the per-fragment oracle (the reflecting variant with the
+//! kept per-fragment ratio).
 //! See: context/lib/rendering_pipeline.md §7.3a (Live lighting)
 
 use glam::Vec3;
@@ -24,6 +26,9 @@ use super::renderer_render_frame::FrameScene;
 
 /// The frames' animation clock, where a case does not set its own.
 const T: f32 = 1.0;
+
+/// The sums prefill standing in for stale or uninitialised contents.
+const POISON: f32 = 1.0e6;
 
 /// Each roster light's reference: the value its probes stored it at.
 const REFS: [[f32; 3]; 4] = [
@@ -110,12 +115,13 @@ fn ssr_records(renderer: &Renderer) -> u32 {
     renderer.full().fluid_surface.reflection_pass_records()
 }
 
-/// Assert the frame matches the build before's within 1/255 per channel.
+/// Assert the frame matches the per-fragment oracle's within 1/255 per
+/// channel.
 fn assert_matches_before(production: &[u8], before: &[u8], case: &str) -> u8 {
     let (gap, pixel) = worst_gap(production, before);
     assert!(
         gap <= 1,
-        "{case}: off the build before by {gap}/255 at pixel {pixel}"
+        "{case}: off the per-fragment oracle by {gap}/255 at pixel {pixel}"
     );
     gap
 }
@@ -159,9 +165,10 @@ fn select_pool_plane(renderer: &mut Renderer, view: View) {
     renderer.set_planar_reflection_view(Some(camera), &VisibleCells::DrawAll);
 }
 
-/// The oracle is the build before by construction: its source differs from
-/// production's only in the reflecting fragment's one ratio call, restored to
-/// the kept per-fragment ratio, so it can never silently equal production.
+/// The per-fragment oracle is the reflecting variant with the kept
+/// per-fragment ratio by construction: its source differs from production's
+/// only in the reflecting fragment's one ratio call, restored to the kept
+/// per-fragment ratio, so it can never silently equal production.
 #[test]
 fn the_build_before_oracle_restores_exactly_the_one_per_fragment_ratio_call() {
     let production = super::fluid_surface::composed_shader_source();
@@ -289,8 +296,10 @@ fn sums_pass_dispatches_once_per_reflecting_frame_and_never_without_a_reflecting
 // AC row 13 (P6). The dispatch follows the fluid pass's reflecting draws, not
 // the screen-space pass's: at Low (no SSR pass) and at very high with every
 // reflecting draw on the selected plane (no SSR pass), one dispatch, and the
-// frame matches the build before with a stored light forced off its
-// reference; a compose-only frame with the level held dispatches none.
+// frame matches the build before (the per-fragment oracle) with a stored
+// light forced off its reference, and shows that light against the same
+// tier's frame at reference; a compose-only frame with the level held
+// dispatches none.
 #[test]
 fn sums_pass_follows_the_fluid_pass_reflecting_draws_at_low_and_on_the_selected_plane() {
     let test = "sums_pass_follows_the_fluid_pass_reflecting_draws_at_low_and_on_the_selected_plane";
@@ -303,19 +312,6 @@ fn sums_pass_follows_the_fluid_pass_reflecting_draws_at_low_and_on_the_selected_
     draw_both(&mut renderer);
     let mut oracle = Oracle::new(&renderer);
     let mut roster = level.roster.clone();
-    let at_reference = frame_at(&mut renderer, view, T);
-    force(
-        &mut renderer,
-        &mut roster,
-        0,
-        flat_light([0.2, 0.5, 1.4], true),
-    );
-    force(
-        &mut renderer,
-        &mut roster,
-        2,
-        flat_light([1.1, 0.2, 0.6], true),
-    );
 
     let mut report = Vec::new();
     for (case, quality) in [
@@ -334,6 +330,24 @@ fn sums_pass_follows_the_fluid_pass_reflecting_draws_at_low_and_on_the_selected_
             })));
             select_pool_plane(&mut renderer, view);
         }
+        // At reference on this tier and route, so the light, not the tier,
+        // is what the forced frame shows.
+        for slot in [0, 2] {
+            force(&mut renderer, &mut roster, slot, level.roster[slot].clone());
+        }
+        let at_reference = frame_at(&mut renderer, view, T);
+        force(
+            &mut renderer,
+            &mut roster,
+            0,
+            flat_light([0.2, 0.5, 1.4], true),
+        );
+        force(
+            &mut renderer,
+            &mut roster,
+            2,
+            flat_light([1.1, 0.2, 0.6], true),
+        );
         let (sums, ssr, mirrors) = (
             dispatches(&renderer),
             ssr_records(&renderer),
@@ -464,7 +478,8 @@ fn a_mask_set_after_the_uniform_upload_moves_neither_variants_nor_dispatch_until
 
 // AC row 14 (P1). A script switches a stored light off on frame N, through
 // the light bridge's snapshot and the frame's one descriptor flush: frame N's
-// reflection drops it, as the build before's does, and N's sums carry it off.
+// reflection drops it, as the per-fragment oracle's does, and N's sums carry
+// it off.
 #[test]
 fn a_script_switching_a_stored_light_off_drops_it_from_the_reflection_on_that_frame() {
     let test = "a_script_switching_a_stored_light_off_drops_it_from_the_reflection_on_that_frame";
@@ -508,15 +523,16 @@ fn a_script_switching_a_stored_light_off_drops_it_from_the_reflection_on_that_fr
     );
     eprintln!(
         "[FluidSumsProof] row 14 script switch-off: frame N differs from N-1 on {dropped} pixels, \
-         worst gap to the build before {gap}/255, worst sums deviation {worst_sums}"
+         worst gap to the per-fragment oracle {gap}/255, worst sums deviation {worst_sums}"
     );
 }
 
 // AC row 15 (P3). A reflecting face first drawn this frame (after a camera
 // turn, or out from behind a wall: absent from last frame's draws), with a
 // stored light of its probe forced off its reference since, shows that light
-// on that frame, as the build before does. On a frame whose drawn faces all
-// bind one probe, the undrawn probes' sums carry their forced lights.
+// on that frame, as the per-fragment oracle does. On a frame whose drawn
+// faces all bind one probe, the undrawn probes' sums carry their forced
+// lights.
 #[test]
 fn a_reflecting_face_first_drawn_this_frame_shows_its_forced_light_and_undrawn_sums_are_current() {
     let test = "a_reflecting_face_first_drawn_this_frame_shows_its_forced_light_and_undrawn_sums_are_current";
@@ -736,10 +752,11 @@ fn a_reflecting_frame_creates_no_gpu_object_beyond_a_reflection_free_frame() {
     );
 }
 
-// AC row 18 (P4). Against the build before within 1/255 where a stored light
-// differs from its reference, in pixel and smooth style; and for a stored
-// light on an animated curve at time 0, then at a later time reached after a
-// prior frame at a different time, its sums at that frame's time.
+// AC row 18 (P4). Against the build before (the per-fragment oracle) within
+// 1/255 where a stored light differs from its reference, in pixel and smooth
+// style, the sums current in each; and for a stored light on an animated
+// curve at time 0, then at a later time reached after a prior frame at a
+// different time, its sums at that frame's time.
 #[test]
 fn the_reflection_matches_the_build_before_in_both_styles_and_on_an_animated_curve() {
     let test = "the_reflection_matches_the_build_before_in_both_styles_and_on_an_animated_curve";
@@ -791,8 +808,9 @@ fn the_reflection_matches_the_build_before_in_both_styles_and_on_an_animated_cur
         renderer.set_fluid_reflection_style(style);
         let (production, before) =
             oracle.pair(&mut renderer, |renderer| frame_at(renderer, view, T));
+        let sums = assert_sums_current(&renderer, &level, &roster, T, case);
         let gap = assert_matches_before(&production, &before, case);
-        report.push((case.to_string(), gap, f32::NAN));
+        report.push((case.to_string(), gap, sums));
     }
 
     for (case, prior, time) in [
@@ -832,7 +850,6 @@ fn sums_prefilled_with_poison_render_like_cleared_sums_on_the_first_published_fr
     let view = base_view();
     let mut level = basic_level();
     level.roster[0] = flat_light([0.2, 0.5, 1.4], true);
-    const POISON: f32 = 1.0e6;
 
     let first_frame = |renderer: &mut Renderer, off_main: bool, fill: f32| {
         if off_main {
@@ -921,8 +938,8 @@ fn draw_three(renderer: &mut Renderer) {
 // AC row 20 (P5). Level B, with a different probe count and different stored
 // lights, built off the main thread while A draws and then published in A's
 // place: the first frame after the publish reads B's probes and matches the
-// build before; a frame drawn between B's build and its publish still
-// matches A's.
+// build before (the per-fragment oracle); a frame drawn between B's build and
+// its publish still matches A's.
 #[test]
 fn a_level_built_beside_the_drawing_one_reads_its_own_probes_on_its_first_published_frame() {
     let test =
@@ -981,8 +998,10 @@ fn a_level_built_beside_the_drawing_one_reads_its_own_probes_on_its_first_publis
 
 // AC row 21 (P7). Level A kept resident while B is published, a stored light
 // of A forced off its reference while A is unpublished, then A published
-// again: the publish creates no buffer, pipeline or bind group, and A's first
-// frame shows that light and matches the build before.
+// again: the publish creates no buffer, pipeline or bind group, the publish
+// through A's first frame creates no more than a steady reflecting frame of
+// A, and A's first frame shows that light and matches the build before (the
+// per-fragment oracle).
 #[test]
 fn a_level_published_again_reads_its_lights_changed_while_resident_and_builds_nothing() {
     let test = "a_level_published_again_reads_its_lights_changed_while_resident_and_builds_nothing";
@@ -996,6 +1015,14 @@ fn a_level_published_again_reads_its_lights_changed_while_resident_and_builds_no
     draw_both(&mut renderer);
     let mut oracle = Oracle::new(&renderer);
     let a_at_reference = frame_at(&mut renderer, view, T);
+    // A steady reflecting frame of A: the draws set, then the frame.
+    let steady_frame = |renderer: &mut Renderer| {
+        draw_both(renderer);
+        frame_at(renderer, view, T)
+    };
+    let creations_before = gpu_creation_counts();
+    steady_frame(&mut renderer);
+    let steady = gpu_creation_counts().since(creations_before);
 
     let b = level_b();
     let b_id = b.build_off_main(&mut renderer);
@@ -1026,24 +1053,38 @@ fn a_level_published_again_reads_its_lights_changed_while_resident_and_builds_no
         (0, 0, 0),
         "publishing A again creates nothing: {created:?}"
     );
-    draw_both(&mut renderer);
     let sums = dispatches(&renderer);
-    let production = frame_at(&mut renderer, view, T);
+    let production = steady_frame(&mut renderer);
     assert_eq!(dispatches(&renderer), sums + 1);
+    let through_first_frame = gpu_creation_counts().since(before);
+    assert_eq!(
+        (
+            through_first_frame.buffers,
+            through_first_frame.bind_groups,
+            through_first_frame.pipelines
+        ),
+        (steady.buffers, steady.bind_groups, steady.pipelines),
+        "publishing A again through its first frame creates {through_first_frame:?} against \
+         a steady reflecting frame's {steady:?}"
+    );
     let a_sums = assert_sums_current(&renderer, &a, &a_roster, T, "A's first frame");
     let a_before = oracle.before(&mut renderer, |renderer| frame_at(renderer, view, T));
     let gap = assert_matches_before(&production, &a_before, "A's first frame");
     let shown = assert_shows_light(&production, &a_at_reference, 100, "A's first frame");
     eprintln!(
-        "[FluidSumsProof] row 21 re-publish: creations {created:?}, A's first frame gap {gap}, \
+        "[FluidSumsProof] row 21 re-publish: creations {created:?}, through the first frame \
+         {through_first_frame:?} against a steady frame's {steady:?}, A's first frame gap {gap}, \
          sums deviation {a_sums}, {shown} pixels show the light forced while resident"
     );
 }
 
 // AC row 22. The reflection-free variant and every §7.3a Off case (a face
 // seen from its down side, a face bound to no probe, reflectivity 0, a mask
-// with a term off, the Off tier) draw exactly as the build before, with
-// stored lights forced off their references.
+// with a term off, the Off tier) draw exactly as the build before (the
+// per-fragment oracle), with stored lights forced off their references. The
+// four cases that draw no reflecting variant never draw the oracle either,
+// so each also draws byte-identically with its lights forced and at
+// reference, and with its sums poisoned and cleared.
 #[test]
 fn the_reflection_free_variant_and_every_off_case_draw_exactly_as_the_build_before() {
     let test = "the_reflection_free_variant_and_every_off_case_draw_exactly_as_the_build_before";
@@ -1148,6 +1189,7 @@ fn the_reflection_free_variant_and_every_off_case_draw_exactly_as_the_build_befo
             .map(|volume| look_draw(volume, case.look))
             .collect();
         renderer.set_fluid_surface_draws(&draws);
+        let at_reference = frame_at(&mut renderer, case.view, T);
         let mut roster = case.level.roster.clone();
         force(
             &mut renderer,
@@ -1175,9 +1217,28 @@ fn the_reflection_free_variant_and_every_off_case_draw_exactly_as_the_build_befo
         let (gap, pixel) = worst_gap(&production, &before);
         assert_eq!(
             production, before,
-            "{}: off the build before by {gap}/255 at pixel {pixel}",
+            "{}: off the per-fragment oracle by {gap}/255 at pixel {pixel}",
             case.name
         );
+        if !case.reflecting {
+            let (gap, pixel) = worst_gap(&production, &at_reference);
+            assert_eq!(
+                production, at_reference,
+                "{}: the forced lights move the frame by {gap}/255 at pixel {pixel}",
+                case.name
+            );
+            prefill_active_sums(&renderer, POISON);
+            let poisoned = frame_at(&mut renderer, case.view, T);
+            prefill_active_sums(&renderer, 0.0);
+            let cleared = frame_at(&mut renderer, case.view, T);
+            let (gap, pixel) = worst_gap(&poisoned, &cleared);
+            assert_eq!(
+                poisoned, cleared,
+                "{}: poisoned sums differ from cleared by {gap}/255 at pixel {pixel}",
+                case.name
+            );
+            assert_eq!(cleared, production, "{}: cleared sums", case.name);
+        }
         renderer.set_fluid_surface_draws(&[]);
         let no_fluid = frame_at(&mut renderer, case.view, T);
         let drawn = pixels_differing(&production, &no_fluid, 0);
@@ -1190,7 +1251,9 @@ fn the_reflection_free_variant_and_every_off_case_draw_exactly_as_the_build_befo
     }
     renderer.set_light_term_mask(LightTermMask::ALL);
     eprintln!(
-        "[FluidSumsProof] row 22 identical to the build before (case, dispatches, pixels drawn): \
+        "[FluidSumsProof] row 22 identical to the per-fragment oracle, and for the four \
+         non-reflecting cases to the frame at reference and with poisoned sums \
+         (case, dispatches, pixels drawn): \
          {report:?}"
     );
 }

@@ -1721,12 +1721,14 @@ impl Cases {
     }
 }
 
+/// The area light's colour curve.
+const AREA_COLOR_CURVE: [[f32; 3]; 3] = [[1.0, 0.9, 0.8], [0.2, 0.3, 1.4], [0.7, 0.7, 0.7]];
+/// The area light's brightness curve.
+const AREA_BRIGHTNESS: [f32; 3] = [1.0, 0.25, 3.0];
+
 /// An area light's compose descriptor: its base colour carries colour ×
 /// intensity, and a colour curve over a long period, as the compiler
 /// stores a `light_area` whose glass glow lies in its share.
-const AREA_COLOR_CURVE: [[f32; 3]; 3] = [[1.0, 0.9, 0.8], [0.2, 0.3, 1.4], [0.7, 0.7, 0.7]];
-const AREA_BRIGHTNESS: [f32; 3] = [1.0, 0.25, 3.0];
-
 fn area_light(intensity: f32) -> AnimatedLightScaleDescriptor<'static> {
     AnimatedLightScaleDescriptor {
         period: 3.0,
@@ -1781,7 +1783,8 @@ fn assert_sums_match_ratio(
     );
 }
 
-// Acceptance row 1: the ratio blended from a probe's per-lobe sums matches
+// Acceptance row 1 (reflection-probe-fluid-pass-performance): the ratio
+// blended from a probe's per-lobe sums matches
 // the per-fragment ratio within 1e-4 of the larger of 1 and the summed
 // terms' magnitude, across random probes, lights, lobes and directions, and
 // in the named edge cases: an area light among the stored lights, a slot
@@ -1872,6 +1875,80 @@ fn ratio_blended_from_probe_sums_matches_the_per_fragment_ratio() {
                 direction
             ),
             Vec3::ZERO
+        );
+    }
+}
+
+// A light whose live value overflows its reference to +Inf: the sums cap its
+// change at the ceiling, so they and the blended ratio stay finite and the
+// light blows out the directions it reaches instead of blanking the whole
+// probe. Every channel the per-fragment ratio keeps finite still matches.
+// The random cases above stay below the ceiling (their largest change is
+// about 3.4e4 at that seed), so it never engages there.
+#[test]
+fn a_live_value_overflowing_its_reference_caps_the_sums_and_blanks_nothing() {
+    // Red is shared on every lobe, so the per-fragment red is +Inf toward
+    // every direction. Uncapped, every red sum would be +Inf, and each
+    // direction's zero lobe weights would turn its blend into NaN.
+    const OVERFLOW_SHARES: [[f32; 3]; REFLECTION_PROBE_LOBE_COUNT] = [
+        [0.6, 0.0, 0.4],
+        [0.1, 0.2, 0.0],
+        [0.9, 0.0, 0.5],
+        [0.3, 0.7, 0.2],
+        [0.5, 0.4, 0.8],
+    ];
+    let overflow_reference = [0.5, 1.0, 1.0];
+    let descriptors = [
+        flat_light([f32::MAX, 2.0, 1.0], true),
+        flat_light([2.0, 3.0, 0.5], true),
+    ];
+    let frame = lights(&descriptors, 0.0);
+    let mut stored = unused_entries();
+    stored[0] = entry(0, overflow_reference, OVERFLOW_SHARES);
+    stored[1] = entry(1, [1.0; 3], LOBED_SHARES);
+    let change = reflection_light_change(
+        reflection_light_value(&frame, 0),
+        Vec3::from(overflow_reference),
+    );
+    assert_eq!(
+        change.x,
+        f32::INFINITY,
+        "the live value overflows its reference"
+    );
+
+    let sums = reflection_probe_sums(&stored, &frame);
+    assert!(sums.iter().all(|sum| sum.is_finite()), "{sums:?}");
+    // The capped light adds at most the ceiling, the other light at most 1.
+    assert!(
+        sums.iter()
+            .all(|sum| sum.x <= FLUID_REFLECTION_CHANGE_CEILING + 1.0),
+        "{sums:?}"
+    );
+    for direction in sphere_directions() {
+        let blended = reflection_ratio_from_sums(&sums, direction);
+        let per_fragment = reflection_ratio(&stored, direction, &frame);
+        assert!(
+            blended.is_finite(),
+            "blended ratio {blended} toward {direction}"
+        );
+        assert!(
+            blended.x > 1.0,
+            "the light blows out {direction} rather than blanking it: {blended}"
+        );
+        assert_eq!(per_fragment.x, f32::INFINITY, "toward {direction}");
+        let tolerance = ratio_term_scale(&stored, direction, &frame) * 1.0e-4;
+        for channel in 0..3 {
+            if per_fragment[channel].is_finite() {
+                assert!(
+                    (blended[channel] - per_fragment[channel]).abs() <= tolerance[channel],
+                    "channel {channel}: sums blend {blended} vs per-fragment {per_fragment} \
+                     toward {direction} (tolerance {tolerance})"
+                );
+            }
+        }
+        assert!(
+            per_fragment.y.is_finite() && per_fragment.z.is_finite(),
+            "green and blue stay finite toward {direction}: {per_fragment}"
         );
     }
 }

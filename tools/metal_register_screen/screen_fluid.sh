@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Register screen for the fluid surface pipelines: capture wgpu's MSL for the
-# production fluid pipelines and the reflecting entry built from the
-# per-fragment live-lighting ratio (the build before the sums pass), compile
+# production fluid pipelines and the reflecting entry rebuilt with the kept
+# per-fragment live-lighting ratio (the sums' oracle), compile
 # each named fragment entry for the discrete GPU, print its registers.
 #
 # usage: tools/metal_register_screen/screen_fluid.sh <out dir> [fragment entry...]

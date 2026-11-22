@@ -10,6 +10,7 @@ read at: e761fb131
 - `fluid_reflection_light_value` and its helpers move from `fluid_reflection.wgsl` into a new `fluid_reflection_lights.wgsl`, concatenated into both the fluid module and the sums module, so the sums pass reuses them by text. The kept per-fragment `fluid_reflection_ratio` stays in `fluid_reflection.wgsl`, unreachable. Existing pins retarget to the file each function now lives in; bodies unchanged.
 
 ## Delegated answers
+- Non-finite live values (review finding) — the sums pass caps each light's change at 65504 (f16 max, the capture and target format). An infinite change would otherwise turn a zero share or lobe weight into NaN and blank the probe, where the per-fragment form blew out only shared directions. The coefficient stays `current / ref − 1`; the per-fragment oracle is unchanged.
 - "Behind a wall" (row 15) — the face is absent from the previous frame's draw list, which is what the collector hands the renderer for a hidden face; no wall geometry is needed for the renderer-side contract.
 - "Forced while unpublished" (row 21) — written into A's resident descriptor mirror directly; scripts reach only the active level, so no bridge path exists for an unpublished one.
 - Dispatch placement — inside the fluid block, after the scene-input upload and before the SSR pass, gated by the fluid pass's own reflecting draws under the frame's mask snapshot and tier. The condition is the fluid pass's own (P6), and the span to the fluid pass then holds only the SSR pass, which writes no descriptor or sample buffer.
@@ -56,4 +57,4 @@ read at: e761fb131
 | 3 | Source gates and pins (AC 2–11) | integrating executor | 2 | done |
 | 4 | GPU gates (AC 12–22) | worker (delegated), integrated by executor | 2 | done: 13 GPU tests pass on Metal; a negative control (sums dispatch disabled) failed 8 of them |
 | 5 | Register screen of `fs_main_reflecting` before/after; 5300M A/B at probes 4K first, then near/mid and Auto | integrating executor + owner | 2 | register screen done: 72 VGPRs before and after (SGPRs 102 → 98); A/B after review |
-| 6 | Preflight, review panel, fixes | integrating executor | 3, 4 | |
+| 6 | Preflight, review panel, fixes | integrating executor | 3, 4 | review panel (7 lenses, no 🔴) and fixes done; focused gate and clippy clean; owner preflight outstanding |

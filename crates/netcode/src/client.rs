@@ -87,10 +87,12 @@ mod mover_history;
 mod presentation_tests;
 mod remote_presentation;
 mod replay_poses;
-use mover_history::{
-    MOVER_HISTORY_LIMIT, prepare_mover_apply, seed_kinematic_mover_phase, tick_le, ticks_between,
-};
-pub(crate) use mover_history::{MoverHistoryBuffer, MoverHistorySample};
+pub(crate) use mover_history::MoverHistoryBuffer;
+#[cfg(test)]
+pub(crate) use mover_history::MoverHistorySample;
+#[cfg(test)]
+use mover_history::{MOVER_HISTORY_LIMIT, seed_kinematic_mover_phase};
+use mover_history::{prepare_mover_apply, tick_le, ticks_between};
 #[cfg(test)]
 mod rider_history_tests;
 #[cfg(test)]

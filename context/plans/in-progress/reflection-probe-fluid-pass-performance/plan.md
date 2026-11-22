@@ -10,6 +10,8 @@ read at: e761fb131
 - `fluid_reflection_light_value` and its helpers move from `fluid_reflection.wgsl` into a new `fluid_reflection_lights.wgsl`, concatenated into both the fluid module and the sums module, so the sums pass reuses them by text. The kept per-fragment `fluid_reflection_ratio` stays in `fluid_reflection.wgsl`, unreachable. Existing pins retarget to the file each function now lives in; bodies unchanged.
 
 ## Delegated answers
+- "Behind a wall" (row 15) — the face is absent from the previous frame's draw list, which is what the collector hands the renderer for a hidden face; no wall geometry is needed for the renderer-side contract.
+- "Forced while unpublished" (row 21) — written into A's resident descriptor mirror directly; scripts reach only the active level, so no bridge path exists for an unpublished one.
 - Dispatch placement — inside the fluid block, after the scene-input upload and before the SSR pass, gated by the fluid pass's own reflecting draws under the frame's mask snapshot and tier. The condition is the fluid pass's own (P6), and the span to the fluid pass then holds only the SSR pass, which writes no descriptor or sample buffer.
 - One buffer or a copy — one buffer, `STORAGE | UNIFORM`, written `read_write` by the sums pass and bound as a uniform in fluid group 4. WebGPU allows the combined usage; wgpu tracks the storage-write → uniform-read transition between passes on every backend. DX12 binds uniforms as CBVs at 256-byte granularity: 20 480 B = 80 × 256. Metal proven by this machine's GPU gates; Vulkan by the 1660 run; DX12 by the FXC compile plus the Windows GPU gates (outstanding here).
 - Workgroup width — 64; one invocation per probe, `ceil(probe_count / 64)` workgroups. Test probe counts: 1, 65, 256.
@@ -30,17 +32,17 @@ read at: e761fb131
 | 9 budget pins incl. compute | `fluid_sums_pipeline_compute_bindings_stay_within_limits`, `fluid_pipeline_fragment_uniforms_and_samplers_stay_within_limits` | achievable as stated |
 | 10 labelled timing pair | `the_sums_pass_owns_a_labelled_timing_pair` | achievable as stated |
 | 11 lifetime/creation source gates | `the_sums_live_with_the_level_and_their_pipeline_builds_at_full_init` | achievable as stated |
-| 12 dispatch counts (P2) | GPU gate, dispatch counter | achievable as stated |
-| 13 P6 low tier / planar plane / compose-only | GPU gate | achievable as stated |
-| 14 script switch on N (P1) | GPU gate | achievable as stated |
-| 15 face first drawn / undrawn probe readback (P3) | GPU gate | achievable as stated |
-| 16 all probes readback × 2 frames, counts 1/65/256 | GPU gate | achievable as stated |
-| 17 no creations on reflecting frames | GPU gate, `gpu_creation_counts` | achievable as stated |
-| 18 vs build before, pixel/smooth, animated curve (P4) | GPU gate, per-fragment oracle pipeline (Corrections) | achievable as stated |
-| 19 poison prefill | GPU gate | achievable as stated |
-| 20 level B publish (P5) | GPU gate | achievable as stated |
-| 21 level A re-publish (P7) | GPU gate | achievable as stated |
-| 22 reflection-free and Off unchanged | GPU gate | achievable as stated |
+| 12 dispatch counts (P2) | `sums_pass_dispatches_once_per_reflecting_frame_and_never_without_a_reflecting_draw` | achievable as stated |
+| 13 P6 low tier / planar plane / compose-only | `sums_pass_follows_the_fluid_pass_reflecting_draws_at_low_and_on_the_selected_plane`, `a_mask_set_after_the_uniform_upload_moves_neither_variants_nor_dispatch_until_the_next` | achievable as stated |
+| 14 script switch on N (P1) | `a_script_switching_a_stored_light_off_drops_it_from_the_reflection_on_that_frame` | achievable as stated |
+| 15 face first drawn / undrawn probe readback (P3) | `a_reflecting_face_first_drawn_this_frame_shows_its_forced_light_and_undrawn_sums_are_current` | achievable as stated |
+| 16 all probes readback × 2 frames, counts 1/65/256 | `every_installed_probes_sums_match_the_cpu_reference_on_consecutive_frames` | achievable as stated |
+| 17 no creations on reflecting frames | `a_reflecting_frame_creates_no_gpu_object_beyond_a_reflection_free_frame` | achievable as stated |
+| 18 vs build before, pixel/smooth, animated curve (P4) | `the_reflection_matches_the_build_before_in_both_styles_and_on_an_animated_curve` | achievable as stated |
+| 19 poison prefill | `sums_prefilled_with_poison_render_like_cleared_sums_on_the_first_published_frame` | achievable as stated |
+| 20 level B publish (P5) | `a_level_built_beside_the_drawing_one_reads_its_own_probes_on_its_first_published_frame` | achievable as stated |
+| 21 level A re-publish (P7) | `a_level_published_again_reads_its_lights_changed_while_resident_and_builds_nothing` | achievable as stated |
+| 22 reflection-free and Off unchanged | `the_reflection_free_variant_and_every_off_case_draw_exactly_as_the_build_before` | achievable as stated |
 | 23 DX12 FXC | `dx12_fxc_compiles_every_full_init_pipeline` on a Windows DX12 adapter | Windows machine; outstanding here |
 | 24 5300M A/B | owner machine, Metal System Trace kit | manual |
 | 25 GTX 1660 A/B | owner, Windows | manual |
@@ -52,6 +54,6 @@ read at: e761fb131
 | 1 | Behaviour-preserving splits: the frame's fluid block out of `renderer_render_frame.rs`; the level-install half out of `fluid_surface.rs`; retarget source gates | integrating executor | — | done: `renderer_fluid_frame.rs`, `fluid_surface/install.rs`; renderer lib 1440 pass |
 | 2 | Thin slice: CPU refs (sums, blend) + parity test; shaders; sums buffer, layouts, pipeline at full init; dispatch in the fluid block; existing GPU live-lighting case passes | integrating executor | 1 | done: parity test (12k cases), fluid suite 105 pass on Metal incl. `a_probe_reads_darker_by_its_lights_share_when_its_descriptor_switches_off` |
 | 3 | Source gates and pins (AC 2–11) | integrating executor | 2 | done |
-| 4 | GPU gates (AC 12–22) | worker (delegated), integrated by executor | 2 | in progress |
-| 5 | Register screen of `fs_main_reflecting` before/after; 5300M A/B at probes 4K first, then near/mid and Auto | integrating executor + owner | 2 | |
+| 4 | GPU gates (AC 12–22) | worker (delegated), integrated by executor | 2 | done: 13 GPU tests pass on Metal; a negative control (sums dispatch disabled) failed 8 of them |
+| 5 | Register screen of `fs_main_reflecting` before/after; 5300M A/B at probes 4K first, then near/mid and Auto | integrating executor + owner | 2 | register screen done: 72 VGPRs before and after (SGPRs 102 → 98); A/B after review |
 | 6 | Preflight, review panel, fixes | integrating executor | 3, 4 | |

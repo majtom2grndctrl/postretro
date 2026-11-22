@@ -5311,9 +5311,16 @@ const SUMS_WGSL: &str = concat!(
     include_str!("../shaders/fluid_reflection_lights.wgsl"),
 );
 
-/// Production code of a source file: everything before its test module.
+/// Production code of a source file: everything before its `tests` module,
+/// inline or by path. Test-only submodule declarations earlier in the file
+/// stay in.
 fn production(source: &str) -> &str {
-    source.split("#[cfg(test)]\nmod ").next().unwrap_or(source)
+    let end = ["#[cfg(test)]\nmod tests", "#[cfg(test)]\n#[path"]
+        .iter()
+        .filter_map(|marker| source.find(marker))
+        .min()
+        .unwrap_or(source.len());
+    &source[..end]
 }
 
 // Acceptance row 2, pin P1 by source order. In the game and in capture

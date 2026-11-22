@@ -2,16 +2,8 @@
 // (tools/metal_register_screen/screen_fluid.sh).
 // See: context/lib/rendering_pipeline.md §7.3 (Mover register cliff), §7.3a
 
+use super::per_fragment_oracle::per_fragment_ratio_oracle_source;
 use super::*;
-
-/// The composed fluid source with the reflecting entry reading the
-/// per-fragment ratio again: the build before the live-lighting sums, for a
-/// before/after register screen of `fs_main_reflecting`.
-fn per_fragment_ratio_source() -> String {
-    let from = "fluid_reflection_ratio_from_sums(probe, search.lookup)";
-    assert_eq!(SHADER_SOURCE.matches(from).count(), 1, "one sums blend call");
-    SHADER_SOURCE.replace(from, "fluid_reflection_ratio(probe, search.lookup)")
-}
 
 /// Captures the MSL wgpu-hal generates for the fluid pipelines' entries into
 /// `$POSTRETRO_REGISTER_SCREEN_OUT`: `vs_main`, `fs_main`,
@@ -82,7 +74,7 @@ fn fluid_pipeline_msl_capture_for_the_register_screen() {
         written.push(entry);
     }
     let seen = capture.records().len();
-    let before = module(&per_fragment_ratio_source());
+    let before = module(&per_fragment_ratio_oracle_source());
     let _ = create_fluid_pipeline(
         device,
         &layout,

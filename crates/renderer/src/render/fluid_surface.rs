@@ -38,6 +38,9 @@ use super::*;
 mod install;
 mod planar_routing;
 pub(crate) mod probe_sums;
+// The build before's reflecting pipeline, for the sums pass's GPU gates.
+#[cfg(test)]
+pub(crate) mod per_fragment_oracle;
 mod reflection_pass;
 #[cfg(test)]
 mod register_screen_capture;

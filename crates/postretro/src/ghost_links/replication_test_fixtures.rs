@@ -1240,12 +1240,18 @@ impl Loopback {
         self.client_ctx.presentation_script_time.set(script_time);
         self.client_ghosts.set_look_time(script_time);
         let mut registry = self.client_ctx.registry.borrow_mut();
+        // Production advances mover correction glides once per frame, before
+        // any reader of a mover's presented pose.
+        netcode::advance_mover_correction_glides(
+            &mut registry,
+            TICK_SECONDS / FRAMES_PER_TICK as f32,
+        );
         let _ = netcode::client_sample_interpolation_at(
             &mut registry,
             &mut self.client_replication,
             render_tick,
             0.0,
-            1.0,
+            alpha,
         );
         let clocks = PresentationClocks::compute(
             ClockSource::Client {

@@ -78,8 +78,16 @@ impl crate::App {
                 &mut self.mover_yaw_carry_ground,
             );
         } else {
-            self.frame_timing
-                .push_state(InterpolableState::new(self.camera.position));
+            let endpoint = match self.session.as_ref() {
+                Some(session) => crate::local_eye::eye_endpoint(
+                    self.camera.position,
+                    &session.scripting.script_ctx.registry.borrow(),
+                    &self.kinematic_mover_tick_states,
+                    presentation_offset,
+                ),
+                None => InterpolableState::new(self.camera.position),
+            };
+            self.frame_timing.push_state(endpoint);
         }
         prediction_tick
     }

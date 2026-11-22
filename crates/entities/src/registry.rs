@@ -914,6 +914,8 @@ struct PresentationCorrectionEntry {
     correction: PoseCorrection,
     /// Seeded since the last advance.
     fresh: bool,
+    /// Set whole each frame by its owner and never advanced.
+    pinned: bool,
 }
 
 pub struct EntityRegistry {
@@ -2120,6 +2122,7 @@ impl EntityRegistry {
                     entity: id,
                     correction: residual,
                     fresh: true,
+                    pinned: false,
                 });
         }
         Ok(correction)
@@ -2137,6 +2140,9 @@ impl EntityRegistry {
     /// once, so the frame it lands on draws all of it. Allocates nothing.
     pub fn advance_presentation_corrections(&mut self, remaining: f32, settled: f32) {
         self.presentation_corrections.retain_mut(|entry| {
+            if entry.pinned {
+                return true;
+            }
             if entry.fresh {
                 entry.fresh = false;
                 return true;
@@ -2144,6 +2150,37 @@ impl EntityRegistry {
             entry.correction = entry.correction.scaled(remaining);
             entry.correction.is_finite() && !entry.correction.is_within(settled)
         });
+    }
+
+    /// Pin `id`'s presented pose `offset` from its blend, render-only, until
+    /// the next call: the owner sets it whole each frame (`None` clears it) and
+    /// [`advance_presentation_corrections`](Self::advance_presentation_corrections)
+    /// never touches it. Used to draw the local pawn where its eye places it.
+    pub fn set_pinned_presentation_offset(&mut self, id: EntityId, offset: Option<Vec3>) {
+        self.presentation_corrections
+            .retain(|entry| entry.entity != id);
+        let Some(offset) = offset.filter(|offset| offset.is_finite()) else {
+            return;
+        };
+        if self.validate(id).is_err() {
+            return;
+        }
+        self.presentation_corrections
+            .push(PresentationCorrectionEntry {
+                entity: id,
+                correction: PoseCorrection {
+                    translation: offset,
+                    rotation: Quat::IDENTITY,
+                },
+                fresh: false,
+                pinned: true,
+            });
+    }
+
+    /// Drop every pinned offset; see
+    /// [`set_pinned_presentation_offset`](Self::set_pinned_presentation_offset).
+    pub fn clear_pinned_presentation_offsets(&mut self) {
+        self.presentation_corrections.retain(|entry| !entry.pinned);
     }
 
     pub fn has_presentation_corrections(&self) -> bool {

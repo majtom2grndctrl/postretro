@@ -1,7 +1,8 @@
 // Fixed-timestep accumulator and interpolable game state.
 // See: context/lib/rendering_pipeline.md §1
 
-use glam::Vec3;
+use glam::{Affine3A, Vec3};
+use postretro_entities::{EntityId, Transform};
 use std::time::{Duration, Instant};
 
 /// Fixed tick duration: 60 Hz (16.667ms per tick).
@@ -15,20 +16,136 @@ pub const MAX_ACCUMULATOR: Duration = Duration::from_millis(250);
 /// Snapshot of game state that the renderer interpolates between frames.
 /// Plain struct — no traits, generics, or macros.
 pub struct InterpolableState {
+    /// The presented eye.
     pub position: Vec3,
+    /// The pawn the eye was pushed from, when it follows one. Holds and cuts
+    /// carry none, so an interval they open never rides a mover.
+    pub body: Option<EyeBody>,
+}
+
+/// The local pawn behind an eye endpoint (`movement.md` §6, Moving bases).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EyeBody {
+    /// The pawn's capsule centre, its registry position at the push.
+    pub centre: Vec3,
+    /// The world-space presentation offset baked into the eye at the push.
+    pub offset: Vec3,
+    /// The mover the pawn stands on, with that mover's pose at the push.
+    pub mover: Option<EyeMover>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EyeMover {
+    pub mover_id: u32,
+    pub entity: EntityId,
+    pub pose: Transform,
+}
+
+/// The eye and pawn body one frame presents.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PresentedEye {
+    pub eye: Vec3,
+    /// Where the local pawn's capsule centre draws, world offset included,
+    /// when the eye follows a pawn at both endpoints.
+    pub body: Option<Vec3>,
+    /// The world-space presentation offset blended into `eye` and `body`.
+    pub offset: Vec3,
+    /// The mover whose presented pose placed the eye this frame.
+    pub riding: Option<EyeMover>,
 }
 
 impl InterpolableState {
     pub fn new(position: Vec3) -> Self {
-        Self { position }
+        Self {
+            position,
+            body: None,
+        }
+    }
+
+    /// An eye pushed from a pawn.
+    pub fn following(position: Vec3, body: EyeBody) -> Self {
+        Self {
+            position,
+            body: Some(body),
+        }
     }
 
     /// Linearly interpolate position between two tick-state snapshots.
     pub fn lerp(&self, other: &InterpolableState, alpha: f32) -> InterpolableState {
-        InterpolableState {
-            position: self.position.lerp(other.position, alpha),
-        }
+        InterpolableState::new(self.position.lerp(other.position, alpha))
     }
+}
+
+/// Present the eye between `previous` and `current` at `alpha`. When both
+/// endpoints stand on one mover, the capsule centre blends in that mover's
+/// frame and is placed through `presented(entity)`, the pose the mover draws
+/// at; the offset and eye height then add along world axes, so mover pitch and
+/// roll never tilt the eye. Any other interval, or a missing or degenerate
+/// mover pose, blends in world space exactly as before.
+pub fn present_eye(
+    previous: &InterpolableState,
+    current: &InterpolableState,
+    alpha: f32,
+    presented: impl Fn(EntityId) -> Option<Transform>,
+) -> PresentedEye {
+    let offset = previous
+        .body
+        .zip(current.body)
+        .map_or(Vec3::ZERO, |(from, to)| from.offset.lerp(to.offset, alpha));
+    let world = PresentedEye {
+        eye: previous.position.lerp(current.position, alpha),
+        body: previous
+            .body
+            .zip(current.body)
+            .map(|(from, to)| from.centre.lerp(to.centre, alpha) + offset),
+        offset,
+        riding: None,
+    };
+    let (Some(from), Some(to)) = (previous.body, current.body) else {
+        return world;
+    };
+    let (Some(from_mover), Some(to_mover)) = (from.mover, to.mover) else {
+        return world;
+    };
+    if from_mover.mover_id != to_mover.mover_id || from_mover.entity != to_mover.entity {
+        return world;
+    }
+    let placed = (|| {
+        let local_from = frame(&from_mover.pose)?
+            .inverse()
+            .transform_point3(from.centre);
+        let local_to = frame(&to_mover.pose)?.inverse().transform_point3(to.centre);
+        let now = frame(&presented(to_mover.entity)?)?;
+        Some(now.transform_point3(local_from.lerp(local_to, alpha)))
+    })()
+    .filter(|placed| placed.is_finite());
+    let Some(placed) = placed else {
+        return world;
+    };
+    let above = (previous.position - from.centre).lerp(current.position - to.centre, alpha);
+    PresentedEye {
+        eye: placed + above,
+        body: Some(placed + offset),
+        offset,
+        riding: Some(to_mover),
+    }
+}
+
+fn frame(transform: &Transform) -> Option<Affine3A> {
+    let finite = transform.position.is_finite()
+        && transform.rotation.is_finite()
+        && transform.scale.is_finite();
+    if !finite
+        || transform.scale.abs().min_element() < 1.0e-6
+        || transform.rotation.length_squared() < f32::EPSILON
+    {
+        return None;
+    }
+    Some(Affine3A::from_scale_rotation_translation(
+        transform.scale,
+        transform.rotation.normalize(),
+        transform.position,
+    ))
 }
 
 /// Fixed-timestep accumulator. Tracks wall-clock time and ticks game logic
@@ -113,8 +230,7 @@ impl FrameTiming {
     /// Swap current state into previous, write new current state.
     /// Called once per tick from the game logic.
     pub fn push_state(&mut self, new_state: InterpolableState) {
-        self.previous_state = InterpolableState::new(self.current_state.position);
-        self.current_state = new_state;
+        self.previous_state = std::mem::replace(&mut self.current_state, new_state);
         self.first_tick_done = true;
     }
 
@@ -124,6 +240,16 @@ impl FrameTiming {
         self.previous_state = InterpolableState::new(state.position);
         self.current_state = state;
         self.first_tick_done = true;
+    }
+
+    /// The eye and pawn body to present this frame; see [`present_eye`].
+    pub fn presented_eye(&self, presented: impl Fn(EntityId) -> Option<Transform>) -> PresentedEye {
+        present_eye(
+            &self.previous_state,
+            &self.current_state,
+            self.current_alpha(),
+            presented,
+        )
     }
 
     /// Compute the interpolated state for rendering.
@@ -273,6 +399,10 @@ impl Default for FrameRateMeter {
 }
 
 // --- Tests ---
+
+#[cfg(test)]
+#[path = "frame_timing_eye_tests.rs"]
+mod eye_tests;
 
 #[cfg(test)]
 mod tests {

@@ -15,7 +15,6 @@ use postretro_scripting_core::reaction_dispatch::dispatch_deferred_named_events_
 use postretro_visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
 use winit::event_loop::ActiveEventLoop;
 
-use crate::frame_timing::InterpolableState;
 use crate::input::{Action, ButtonState};
 use crate::netcode::frame_order;
 use crate::startup::BootState;
@@ -1253,8 +1252,13 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                     &mut app.mover_yaw_carry_ground,
                 );
             } else {
-                app.frame_timing
-                    .push_state(InterpolableState::new(app.camera.position));
+                let endpoint = crate::local_eye::eye_endpoint(
+                    app.camera.position,
+                    &script_ctx.registry.borrow(),
+                    &app.kinematic_mover_tick_states,
+                    Vec3::ZERO,
+                );
+                app.frame_timing.push_state(endpoint);
             }
             // Fix B: capture each connected-client pawn's authoritative pose
             // for this tick before the tick stamp advances, so the buffered
@@ -1294,6 +1298,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // Before the first reader of a mover's presented pose: the aim's yaw
     // residual, remote riders, foot probes, audio and the render collectors.
     app.advance_mover_correction_glides(frame_dt);
+    app.place_local_pawn_body(frame_result.alpha);
     app.present_rider_feet(frame_result.alpha, frame_anim_time);
 
     // Regression: a turntable's transform slerps through this tick while

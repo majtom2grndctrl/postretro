@@ -107,18 +107,91 @@ impl PresentedAimPose {
 
 impl App {
     pub(crate) fn presented_aim_pose(&self, alpha: f32) -> PresentedAimPose {
+        let registry = self
+            .session
+            .as_ref()
+            .and_then(|session| session.scripting.script_ctx.registry.try_borrow().ok());
+        let eye = registry.as_deref().map_or_else(
+            || self.frame_timing.interpolated_state().position,
+            |registry| self.presented_local_eye(registry, alpha).eye,
+        );
+        // A carry_yaw mover gliding onto a correction turns the drawn deck
+        // only as the glide runs; the settled yaw took the whole correction at
+        // apply, so the view adds the glide's yaw to stay on the drawn deck.
+        let glide_yaw = registry
+            .as_deref()
+            .map_or(0.0, |registry| self.carried_glide_yaw(registry));
         PresentedAimPose {
             // Timing already carries the connected owner's presentation correction.
-            position: self.frame_timing.interpolated_state().position,
+            position: eye,
             yaw: effective_render_yaw(
                 self.camera.yaw,
                 self.mover_yaw_carry_ground,
                 &self.kinematic_mover_tick_states,
                 alpha,
-            ),
+            ) + glide_yaw,
             // Look is render-rate, including frames with no fixed tick.
             pitch: self.camera.pitch,
         }
+    }
+
+    /// The local eye and pawn body this frame presents at `alpha`: placed on
+    /// the drawn deck while both tick endpoints stand on one mover, otherwise
+    /// the world-space blend (`movement.md` §6, Moving bases).
+    pub(crate) fn presented_local_eye(
+        &self,
+        registry: &postretro_entities::EntityRegistry,
+        alpha: f32,
+    ) -> frame_timing::PresentedEye {
+        frame_timing::present_eye(
+            &self.frame_timing.previous_state,
+            &self.frame_timing.current_state,
+            alpha,
+            |mover| registry.interpolated_transform(mover, alpha).ok(),
+        )
+    }
+
+    /// The world-up yaw still to glide on the carry_yaw mover the view rides.
+    fn carried_glide_yaw(&self, registry: &postretro_entities::EntityRegistry) -> f32 {
+        let postretro_foundation::GroundRef::Mover(mover_id) = self.mover_yaw_carry_ground else {
+            return 0.0;
+        };
+        let Some(state) = self.kinematic_mover_tick_states.get(mover_id) else {
+            return 0.0;
+        };
+        if !state.carry_yaw {
+            return 0.0;
+        }
+        registry
+            .presentation_correction(state.entity)
+            .map_or(0.0, |glide| world_up_yaw_delta(glide.rotation))
+    }
+
+    /// Draw the local pawn's mesh, shadow and mirror included, where this
+    /// frame's eye places its body: on the drawn deck while riding, and on a
+    /// connected client with the eye's world offset (option A of the rider
+    /// brief). Anywhere else the mesh keeps its plain blend, bit for bit. Runs
+    /// once per frame before any reader of the pawn's presented pose.
+    pub(crate) fn place_local_pawn_body(&mut self, alpha: f32) {
+        let connected_client = self.is_connected_client();
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let mut registry = session.scripting.script_ctx.registry.borrow_mut();
+        registry.clear_pinned_presentation_offsets();
+        let Some(pawn) = followed_player_pawn(&registry) else {
+            return;
+        };
+        let presented = self.presented_local_eye(&registry, alpha);
+        let pin = match presented.body {
+            Some(body) if presented.riding.is_some() => registry
+                .interpolated_transform(pawn, alpha)
+                .ok()
+                .map(|blend| body - blend.position),
+            Some(_) if connected_client && presented.offset != Vec3::ZERO => Some(presented.offset),
+            _ => None,
+        };
+        registry.set_pinned_presentation_offset(pawn, pin);
     }
 
     pub(crate) fn render_aim_pose(&self, gameplay_aim: PresentedAimPose) -> PresentedAimPose {
@@ -202,6 +275,52 @@ pub(crate) fn follow_camera_to_local_pawn(
     if let Some(eye) = local_pawn_eye_position(registry, presentation_offset) {
         camera.position = eye;
     }
+}
+
+/// The eye endpoint a fixed tick pushes: the camera's position, and, when the
+/// camera follows the local pawn's eye, that pawn's capsule centre, the world
+/// offset baked into the eye, and the mover it stands on with the mover's pose
+/// this tick, so the frame can place the eye on the drawn deck
+/// (`movement.md` §6, Moving bases). A camera off the pawn's eye (fly camera,
+/// no pawn) pushes its position alone.
+pub(crate) fn eye_endpoint(
+    camera_position: Vec3,
+    registry: &postretro_entities::EntityRegistry,
+    mover_states: &kinematic_mover::MoverTickStateTable,
+    presentation_offset: Vec3,
+) -> frame_timing::InterpolableState {
+    use frame_timing::{EyeBody, EyeMover, InterpolableState};
+    let plain = InterpolableState::new(camera_position);
+    let Some(pawn) = followed_player_pawn(registry) else {
+        return plain;
+    };
+    if pawn_eye_position(registry, pawn, presentation_offset) != Some(camera_position) {
+        return plain;
+    }
+    let (Ok(movement), Ok(transform)) = (
+        registry.get_component::<postretro_foundation::PlayerMovementComponent>(pawn),
+        registry.get_component::<postretro_entities::Transform>(pawn),
+    ) else {
+        return plain;
+    };
+    let mover = match movement.ground {
+        postretro_foundation::GroundRef::Mover(mover_id) => {
+            mover_states.get(mover_id).map(|state| EyeMover {
+                mover_id,
+                entity: state.entity,
+                pose: state.transform,
+            })
+        }
+        _ => None,
+    };
+    InterpolableState::following(
+        camera_position,
+        EyeBody {
+            centre: transform.position,
+            offset: presentation_offset,
+            mover,
+        },
+    )
 }
 
 /// The followed local pawn's eye; see [`pawn_eye_position`].

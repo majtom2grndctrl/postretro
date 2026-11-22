@@ -1,6 +1,6 @@
 # reflection-probe-fluid-pass-performance — research
 
-Derivation behind the brief's decisions. Read at `c0dfd54b`; re-checked at `e36ea2d92` after `area-lights` merged, which changes no fluid shader, frame order, budget or share layout. The cell path's derivation, early-out and spike tables live in `../reflection-probe-cell-path/research.md`. IP: `ip-check.md` here, §Lever A.
+Derivation behind the brief's decisions. Read at `c0dfd54b`; re-checked at `e36ea2d92` after `area-lights` merged, which changes no fluid shader, frame order, budget or share layout. The cell path's derivation, early-out and spike tables live in `../../drafts/reflection-probe-cell-path/research.md`. IP: `ip-check.md` here, §Lever A.
 
 ## Evidence
 

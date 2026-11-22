@@ -275,9 +275,9 @@ Row 11 now reads, in the brief and here:
 | 60 no area → no entries; cap fails; loader rejects (O5) | compiler + loader tests | achievable | pass |
 | M1 hallway cold/warm bake vs 4 × 4 grid | owner run, recorded here | manual | outstanding: owner manual check |
 | M2 penumbra RMS at 32/64 vs 256 | measurement run + owner A/B | manual | outstanding: owner manual check |
-| M3 skylight vs template grid A/B | owner, in-engine | manual | outstanding: owner manual check |
-| M4 scripted flicker in step | owner, in-engine | manual | outstanding: owner manual check |
-| M5 entities under skylight | owner, in-engine | manual | outstanding: owner manual check |
+| M3 skylight vs template grid A/B | owner, in-engine | manual | pass (owner, 2026-11-22, `area-lights-ab-panel` vs `-grid`): the 16-point grid floods the ceiling around the panel and reads over-exposed; the panel reads as light leaving the glass, away from the ceiling. Reach edge in the corridor not yet reported |
+| M4 scripted flicker in step | owner, in-engine | manual | pass (owner, 2026-11-22, `area-lights-demo`): panes and room light pulse together |
+| M5 entities under skylight | owner, in-engine | manual | pass (owner, 2026-11-22, `area-lights-ab-panel`): dummies and enemy lit and shaded as expected; no entity shadow, as the v1 refusal intends |
 
 Gate (`a5fadf4e9`, workspace): fmt, clippy `-D warnings`, `cargo check --release`, crate-graph and both reducers pass; `cargo test --workspace --no-fail-fast` passes 16260 tests. Failures, none from this branch: `smooth_specular_matches_the_frozen_pre_change_function` (6 ulp, identical shaders on `main`); xtask `mover_shot_gates` ×2 (Windows path separators in files this branch never touches); `telemetry_run` ×2 (windowed run stalled on a sleeping display; passed the run before).
 

@@ -43,7 +43,8 @@ Owner-requested capability (2026-11-13 roadmap item "Weapon-gated enemy attacks"
   `equipment` on a descriptor without `behavior` warns, and the block drops. A set weapon that is not a projectile weapon is disabled with the existing enemy-attack warning. A set weapon with no mount entry loads and mounts nothing.
 - **Non-goals.**
   - Single-weapon give, take, drop on death, NPC pickup and scavenging: later Epic 10 work, additive on carried state; each weapon brings its own mount.
-  - Fixing the player avatar weapon mount: a separate defect.
+  - Player weapon mounts. The player avatar's `thirdPersonModel` mount has the same per-rig defect: on exo_red it mounts the unfitted viewmodel asset. A follow-up puts this brief's `weaponMounts` on the player descriptor, so players and NPCs share one mount vocabulary.
+  - Off-hand IK onto a weapon grip socket. Mounts anchor at one socket, and two-handed clips place the off hand. A weapon model may already carry a `grip_l` socket, so nothing here blocks later IK.
   - Converting other string weapon references (player-side, map keys) to handles.
   - Hitscan enemy weapons: the projectile-only enemy rule stands.
   - Two of one weapon (dual wield): weapon state is keyed by weapon.

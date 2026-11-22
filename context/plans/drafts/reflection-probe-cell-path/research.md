@@ -127,6 +127,18 @@ It grows quadratically with texture density, so a fine-scale lake would force a 
 
 Hysteresis keeps a draw on the cell path down to the cutoff minus its margin, so even visible water can exceed pixels ÷ c; overflow absorbs it, or the executor sizes from c minus the margin. Repacking every frame costs CPU shelf packing over the drawn faces only.
 
+## Screen-space rival
+
+Raised by `/validate-plan` (2026-11-22), unmeasured.
+- **Shape:** a pass after the depth pre-pass redraws the cell-path draws into a probe-term target at a fraction of the scene extent. Every target pixel of a cell evaluates that cell's ray, as the SSR pass does in pixel style (§7.3a Rays). The fluid fragment reads the target nearest at its cell centre's projection.
+- **Exactness:** a cell covering several target pixels reads its own value. A cell smaller than about one target pixel can read a neighbour's, so the per-draw path choice must send such draws per fragment. At ½ that is under about 4 screen pixels per cell; at ¼, under about 16.
+- **Cost model:** at least one evaluation per target pixel, not per cell. Near views (127–225 px per cell at 4K, about 23 at Auto) evaluate a few times per cell rather than once. Hidden water costs nothing, because raster depth rejects it.
+- **IP:** the reduced-resolution screen target is the class the shipped SSR layer already sits in (Killzone Shadow Fall, 2014, half-resolution reflection; `plans/done/fluid-ssr-reflections/ip-check.md`). The texture-space filings that gate the cell pool (Qualcomm '166, EP4409531B1, '715; Intel '475) need a texel-space atlas or mask it lacks. It still needs its own claims check before it ships.
+
+## Shape measurements
+
+Not yet run. The brief's Open questions list the rows and the decision rule.
+
 ## Measurement fixture
 
 | Item | Setting |

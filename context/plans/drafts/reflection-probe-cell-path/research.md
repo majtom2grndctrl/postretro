@@ -1,10 +1,10 @@
-# reflection-probe-fluid-pass-performance — research
+# reflection-probe-cell-path — research
 
-Derivation behind the brief's decisions. Read at `a8c6e3300`; `origin/main` `b0a5c0f58` adds only netcode.
+Derivation behind the brief's decisions. Written at `a8c6e3300` before the split from `reflection-probe-fluid-pass-performance`; re-read at `c0dfd54b`. Post-landing costs and live lighting: `../../ready/reflection-probe-fluid-pass-performance/research.md`. IP: `../../ready/reflection-probe-fluid-pass-performance/ip-check.md` §Lever C.
 
 ## Evidence
 
-**Cell-rate spike.** Branch `claude/cell-rate-spike` (debug only):
+**Cell-rate spike.** Branch `claude/cell-rate-spike` (debug only). **Deleted from origin by 2026-11-22**, with its findings, data and the 5300M implementation; the figures below survive only here. `claude/cell-rate-spike-1660` survives, with `findings-1660.md` and the 1660 implementation:
 - Consolidated findings: `context/plans/drafts/reflection-probe-fluid-pass-performance--cell-rate-spike/findings.md`, with per-GPU notes `findings-5300m.md` and `findings-1660.md` beside it.
 - Data: `measurements/cell-rate-spike/`.
 - Two independent implementations: the 5300M branch (`3f4cabed5`) and `claude/cell-rate-spike-1660`.
@@ -48,24 +48,7 @@ Break-even is about 1 px per dispatched cell by pass cost, about 0.8 by whole-fr
 
 ### Live lighting
 
-Per-fragment live lighting is a sample's largest cost when probes store animated lights.
-- **Blend spike, precompute in the CPU-side mode:** a single sample 17% cheaper on the 5300M at the typical pose, 21% on the 1660. A forced three-sample blend drops from +70% to +14% on the 5300M.
-- **Cell-rate spike, ratio forced to 1 as the precompute's floor:**
-  - The ratio costs 1.2 ms per fragment at e24 near 4K and 5.2 ms on probes 4K.
-  - The cell path keeps 88% (e24 near) and 62% (probes) of its gain with the ratio at 1.
-
-## Precompute: why on the GPU
-
-The ratio is `max(1 + Σ_k w_k(d) · S_k, 0)` with `S_k = Σ_l share_{l,k} · (current_l / ref_l − 1)`. `S_k` depends on the probe and the frame only, so five RGB sums per probe reproduce the per-fragment ratio. The blend spike measured agreement within 1e-4 over more than 10k cases; uploaded from the CPU it is 80 B per probe.
-
-`fluid_reflection_light_value` reads `anim_descriptors` and `anim_samples`. Script-driven samples reach `anim_samples` through the light bridge's whole-snapshot upload (`upload_light_bridge_snapshot`, a `queue.write_buffer` before the frame's submit), and an activity flag through `AnimatedLightBuffers::set_active`.
-
-A CPU precompute needs the inputs on the CPU. The renderer already mirrors descriptors and activity (`AnimatedLightBuffers`' descriptor mirror, kept by `set_active` and `write_descriptor`). Bridge samples have no renderer copy: the light bridge stages them CPU-side and the renderer uploads them without keeping one, so the CPU rival needs a samples mirror. The blend spike's mirror skipped bridge writes, so scripted lights read stale there. A compute dispatch over every resident probe reads the same buffers and the same `animation_curve_t` / curve sampling the fragment and SH compose use. That gives parity by construction, adds no CPU work on the Mac, which is CPU-bound on the hallway map, and the cell pass reads the same output. Evaluating every resident probe rather than the drawn set drops a CPU set build and makes freshness hold by construction; the cost is one dispatch over at most the cap, unmeasured and expected small.
-
-Delivery to the fragment:
-- The fluid fragment stage spends all 8 storage buffers (`rendering_pipeline.md` §10), so the fragment reads a uniform.
-- At the 256-probe cap the uniform is 256 × 5 × 16 B = 20 480 B, inside the 64 KiB constant-buffer ceiling.
-- The blend spike bound such a uniform at group 5.
+Moved to `../../ready/reflection-probe-fluid-pass-performance/research.md` §Evidence. The cell path's gain with the ratio forced to 1, the sums' floor: 88% kept at e24 near 4K, 62% on probes 4K.
 
 ## Early-out
 
@@ -144,6 +127,21 @@ It grows quadratically with texture density, so a fine-scale lake would force a 
 
 Hysteresis keeps a draw on the cell path down to the cutoff minus its margin, so even visible water can exceed pixels ÷ c; overflow absorbs it, or the executor sizes from c minus the margin. Repacking every frame costs CPU shelf packing over the drawn faces only.
 
+## Screen-space rival
+
+Raised by `/validate-plan` (2026-11-22), unmeasured.
+- **Shape:** a pass after the depth pre-pass redraws the cell-path draws into a probe-term target at a fraction of the scene extent. Every target pixel of a cell evaluates that cell's ray, as the SSR pass does in pixel style (§7.3a Rays). The fluid fragment reads the target nearest at its cell centre's projection.
+- **Exactness:** a cell covering several target pixels reads its own value. A cell smaller than about one target pixel can read a neighbour's, so the per-draw path choice must send such draws per fragment. At ½ that is under about 4 screen pixels per cell; at ¼, under about 16.
+- **Cost model:** at least one evaluation per target pixel, not per cell. Near views (127–225 px per cell at 4K, about 23 at Auto) evaluate a few times per cell rather than once. Hidden water costs nothing, because raster depth rejects it.
+- **IP:** the reduced-resolution screen target is the class the shipped SSR layer already sits in (Killzone Shadow Fall, 2014, half-resolution reflection; `plans/done/fluid-ssr-reflections/ip-check.md`). The texture-space filings that gate the cell pool (Qualcomm '166, EP4409531B1, '715; Intel '475) need a texel-space atlas or mask it lacks. It still needs its own claims check before it ships.
+  - **Claims check (2026-11-22):** `../../ready/reflection-probe-fluid-pass-performance/ip-check.md` §Shape B. No filing found reads on this shape as Qualcomm '166 reads on the cell pool. Each reduced-resolution family found needs something the shape lacks: lobe-weighted upsampling (Square Enix US9342926B2), coarse quads in the rasterizer (AMD US10510185B2), per-region resolution metadata (Sony US9710881B2), execution-control buffers (Microsoft US10235799B2), or a direction test (Microsoft US10360720B1). Its raster depth test is ordinary depth testing in screen space, not a texture-domain mask (Intel '475). Fences if chosen: the target's fraction comes from the tier, never a per-draw or per-region estimate; one nearest load at the cell centre, no weighted upsampling; fallback per draw only; the probe term and SSR stay separate stored quantities, with s never in SSR's share (Tencent WO claim 15); the probe lookup keeps its own search (NetEase CN114748874B). Intel's stencil-set coarse-pixel patent (US12243125B2) appears absent; the rest of Intel's coarse-pixel family is unread at claim level. Counsel still reviews before ship.
+
+**Second texel-rate consumer, for the shape choice.** `mover-smooth-specular-pipeline` (landed) measured the mover pass at 4K at 18.7–19.2 ms in smooth and 21.0–23.1 ms in pixel. Pixel's extra is evaluating lights at each texel's point per fragment (`rendering_pipeline.md` §12, Mover specular cost). That is the same per-pixel evaluation of a per-texel value as this brief's. A texel pool could someday serve it; a screen-space probe target could not. The texel pool's IP class is the same either way. Weigh it only if a brief proposes that consumer.
+
+## Shape measurements
+
+Not yet run. The brief's Open questions list the rows and the decision rule.
+
 ## Measurement fixture
 
 | Item | Setting |
@@ -152,14 +150,14 @@ Hysteresis keeps a draw on the cell path down to the cutoff minus its margin, so
 | Maps | `e24-environment-test`, `reflection-probes-test`, baked with `--no-cache` |
 | Poses | near, probes, mid, far: engine coordinates in `findings-5300m.md` §Views |
 | Capture | `--capture` at 3840×2160 (and 1920×1080 for mid and far), 240 warmup + 240 sampled frames, `POSTRETRO_SH_STREAMING=sync-proof` |
-| Kit | `measurements/cell-rate-spike/metal/` on `claude/cell-rate-spike`: Metal System Trace, complete-frame reduction |
-| Metric | Fluid Surface Pass + any cell or precompute pass per frame, with whole-frame GPU time beside it |
-| Baseline | The reflection-free arm of the same binary |
+| Kit | `measurements/fluid-base-pass-cost/metal/` on main, whose `run.py` and `gpu_time.py` copy the deleted cell-rate kit: Metal System Trace, complete-frame reduction, two-binary A/B. Arms under mask `0x17F` select the reflecting variant |
+| Metric | Fluid Surface Pass + any cell or live-lighting sums pass per frame, with whole-frame GPU time beside it |
+| Baseline | The reflection-free arm of the same binary, and the build before with the live-lighting sums landed |
 | Runs | 2 interleaved per arm |
 | Cleanup | Traces and `$TMPDIR` ktrace files deleted after export |
 | Auto rows | `--capture` at 1536×960; report each run's mean core clock beside its cost, since Auto clocks float (about ±0.5 ms) |
-| Stress rows | `stress-env-volumes` baked with its README's flags; cover and a hidden-face pose added to `measurements/cell-rate-spike/stress/poses.json`; the 256-probe cap leaves most pools probe-free |
-| 1660 rows | GTX 1660 Super, Windows, Vulkan, engine timestamps via `measurements/cell-rate-spike/1660/`; baseline the reflection-free arm of the same binary; 2 interleaved runs |
+| Stress rows | `stress-env-volumes` baked with its README's flags. The steep, cover, long and graze poses (§Early-out) went with the deleted branch's `stress/poses.json`; re-record them, plus a hidden-face pose. The 256-probe cap leaves most pools probe-free |
+| 1660 rows | GTX 1660 Super, Windows, Vulkan, engine timestamps via `measurements/cell-rate-spike/run_timestamps.py` on `claude/cell-rate-spike-1660`; baseline the reflection-free arm of the same binary; 2 interleaved runs |
 | Pilot | One run per pose × resolution before a batch, reduced at once; halt on an unclassified invalid run |
 
 The engine binary must be named `postretro`, because the reduction filters trace rows by process name.
@@ -170,17 +168,17 @@ Orderings the Acceptance rows cite.
 
 | Id | Scenario | Ordering | Expected |
 |---|---|---|---|
-| P1 | A script switches a stored light off on frame N | bridge write, descriptor flush, precompute, fluid pass, all on N | The reflection dims on N |
-| P2 | Any frame with a reflecting draw | the frame's pack and face records written; depth pre-pass and precompute, either order; then the cell pass and anything feeding the fragment's sums; fluid pass; one submission | The cell pass sees this frame's depth; both consumers see one precompute |
-| P3 | Zero reflecting-variant draws (including reflection-free only, or a mask shutting every reflecting draw); all per-fragment, all overflowed or smooth; N cell-path draws | — | No dispatch; one precompute and no cells; one precompute and one cell dispatch with disjoint rects |
-| P4 | A face first drawn on N | the precompute evaluates every resident probe on N | Its probe's sums are N's; no fragment reads a stale or unwritten sum |
+| P1 | Moved: the sibling's P1 | — | — |
+| P2 | Any frame with a cell-path draw | the frame's pack and face records written; depth pre-pass and the live-lighting sums pass, either order; then the cell pass; fluid pass; one submission | The cell pass sees this frame's depth and sums; both consumers see one sums pass |
+| P3 | All per-fragment, all overflowed or smooth; N cell-path draws | — | No cell dispatch; one cell dispatch with disjoint rects |
+| P4 | Moved: the sibling's P3 | — | — |
 | P5 | A cell skipped or overflowed on N; a face hidden on N−1 and visible on N; a camera jump | the skip reads N's depth | No fragment reads a record N's cell pass did not write; N matches a fresh capture |
 | P6 | Extent change on N, with or without overflow | pool rebuilt before N's pack | N packs, clips and judges overflow against the new extent |
 | P7 | Install and extent change, either order on one frame; extent change with no fluid level | — | One pool at the current extent; none without fluid |
 | P8 | Overflow; unload with the pool live | pack nearest first; clear, then the next frame | The same draws fall back at a fixed view; pool released, fluid pass still bindable |
 | P9 | Estimate oscillating across the cutoff | hysteresis margin | Stable path at a fixed view; one switch each way on a slow sweep |
-| P10 | Stored light on an animated curve at time t | precompute uses N's animation time | Matches per-fragment at t |
+| P10 | Moved: the sibling's P4 | — | — |
 | P11 | Style switched by reload between N−1 and N | path choice and shading read one style on N | A smooth frame dispatches no cells; a pixel frame takes the cell path where chosen |
 | P12 | Two draws swap far-to-near order on N at fixed estimates | path state keyed to the volume, not the frame's draw order | Each keeps its path |
 | P13 | Style switched to pixel on N on a level installed under smooth, including the boot style commit; or switched to smooth with the pool live | pool allocated or released at the style commit, before N's pack | N takes the cell path where chosen; no pool while smooth |
-| P14 | Level A unloaded, level B installed, frame N | the precompute's probe inputs rebound at install, before N; path state dropped at unload | N's sums are B's; every B volume takes the cutoff's side |
+| P14 | Level A unloaded, level B installed, frame N | path state dropped at unload | Every B volume takes the cutoff's side |

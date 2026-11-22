@@ -4,6 +4,7 @@
 > **Method:** web research on 2026-10-17. Claim text was read through Google Patents page text, mostly by a summarizing fetch, so claim wording here is paraphrase. Counsel should work from certified claims.
 > **Coverage gaps:** no PACER, Docket Navigator, PTAB or Patent Center access. "No litigation or PTAB found" means only that public web search surfaced none.
 > **Spot-check:** the avoid-list attributions below were verified against the predecessor's files on 2026-10-17.
+> **Claim charts:** `ip-check.md` (2026-11-21) charts the verbatim claims for Levers A and C, adds filings this scan missed (Qualcomm US12136166B2's claims, Intel US10699475B1), and supersedes the paraphrases and "claims not read" notes below.
 
 ## Avoid-list sources
 - `plans/done/reflection-probes/ip-check.md` lists Tencent WO2026113651A1 / CN122115679A and NVIDIA US20210012562A1.
@@ -31,12 +32,12 @@ The resemblance is limited to per-frame, per-probe state derived from light chan
 | Ambient cube, six directional weights | Mitchell, McTaggart, Green, SIGGRAPH 2006 ([PDF](https://advances.realtimerendering.com/s2006/Chapter7-Shading_in_Valve's_Source_Engine.pdf)) | Prior art for fixed-lobe directional weights (background knowledge; PDF unread) |
 | Ratio-rescaled probes | Lazarov, Black Ops (2011), Black Ops II notes (2013) ([PDF](https://blog.selfshadow.com/publications/s2013-shading-course/lazarov/s2013_pbs_black_ops_2_notes.pdf)) | Relight detail unverified |
 | Relit radiance-transfer probes, time of day, local lights | Far Cry 3, GDC 2012 ([GDC Vault](https://www.gdcvault.com/play/1015326/Deferred-Radiance-Transfer-Volumes-Global)); The Division, GDC 2016 ([PDF](http://mrakobes.com/Nikolay.Stefanov.GDC.2016.pdf)) | Per-frame probe relighting (GI/SH probes, not reflection tiles) |
-| Relight stored cubemap G-buffers a few per frame | Forum description, unverified | Rewrites stored data: closer to Tencent 11–14 than the brief |
+| Relight stored cubemap G-buffers at runtime | McAuley, Far Cry 4, GDC 2015, as described in Elcott et al., FFXV, SIGGRAPH 2016 (`ip-check.md`) | Rewrites stored data: closer to Tencent 11–14 than the brief |
 | Every-frame or on-demand probe re-render | [Godot ReflectionProbe](https://docs.godotengine.org/en/4.1/classes/class_reflectionprobe.html) | Rewrites the probe; far costlier |
 | CPU precompute of the same sums | The brief's rival | Same math, same resemblance; changes only where it runs |
 
 **Related patents to read before relying on the "scalar ratio" framing:**
-- **Tencent US12293451B2.** Priority 2021-04-02, granted 2025-05-06, active, expires 2043-01-19. It computes a per-light "projection coefficient" on light change and combines it with a precomputed radiance-transfer parameter per pixel. Claims not read; confidence low–medium.
+- **Tencent US12293451B2.** Priority 2021-04-02, granted 2025-05-06, active, expires 2043-01-19. It computes a per-light "projection coefficient" on light change and combines it with a precomputed radiance-transfer parameter per pixel. Claims read verbatim and charted in `ip-check.md` §Lever A.
 - **Baobab US11605198B2.** Priority 2018-06-29, granted 2023-03-14, active, expires 2039-06-28. It blends two precomputed GI datasets by weight. Low resemblance; confidence medium.
 
 **Closest to the predecessor's Keep row:** keep the per-fragment ratio and cut its cost without a per-probe state pass, for example with fewer stored lights. No technique was found that avoids per-probe light evaluation entirely.
@@ -83,7 +84,7 @@ A Fresnel-keyed skip chooses skip-or-evaluate on weight magnitude, not between t
 | Texel Shading | Hillesland and Yang, AMD, Eurographics 2016 ([PDF](https://diglib7.eg.org/bitstream/handle/10.2312/egsh20161018/073-076.pdf)) |
 | Turing texture-space shading | NVIDIA, 2018 ([article](https://www.nvidia.com/en-us/geforce/news/nvidia-adaptive-shading-a-deep-dive)) |
 
-**Texture-space shading patents:** none were read in full.
+**Texture-space shading patents:** independent claims read and charted in `ip-check.md` §Lever C. The table below is the original scan.
 
 | Patent | Assignee | Priority | Status, expiry | Resemblance |
 |---|---|---|---|---|
@@ -112,6 +113,9 @@ Details and links: [Google Patents](https://patents.google.com/) entries for eac
 - **Low:** absence of litigation or PTAB records, and the readings of unread claims.
 
 ## For counsel
+
+Narrowed by `ip-check.md` §For counsel, which supersedes this list where they differ.
+
 - Is a per-frame, per-probe sum of light changes, written to a buffer and never to the probe tile, "updating stored lighting" under Tencent 10/19 and 11–14? Read Tencent US12293451B2's "projection coefficient" claims as well.
 - Does a Fresnel-keyed skip (view and normal, not ray direction) fall outside US10586375B2 claims 1, 7 and 10, and its parent US10360720B1?
 - Does same-frame, history-free texel storage stay outside AMD US9728002B2 (temporal texel cache), Qualcomm US12136166B2 and Meta US11721064B1? Also identify Intel's asynchronous texel shading filing.

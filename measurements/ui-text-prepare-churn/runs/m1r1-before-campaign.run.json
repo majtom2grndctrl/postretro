@@ -1,0 +1,277 @@
+{
+  "label": "m1-before-campaign",
+  "bin_dir": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/1bab2b4d-369b-4f98-8d86-0cc105e5108d/scratchpad/bin-before",
+  "worktree": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/1bab2b4d-369b-4f98-8d86-0cc105e5108d/scratchpad/wt-before",
+  "map": "campaign-test.prl",
+  "sample": false,
+  "elapsed": 20.94,
+  "exit": -15,
+  "timing_windows": 8,
+  "invalid": null,
+  "map_mentions": [],
+  "foreground_all_true_after_activate": true,
+  "cpu_speed_limit_before": 100,
+  "gpu_idle_before": {
+    "Temperature(C)": 78,
+    "Core Clock(MHz)": 292,
+    "Device Utilization %": 7,
+    "inUseVidMemoryBytes": 1076908032,
+    "vramFreeBytes": 3059847168
+  },
+  "gpu_polls": [
+    {
+      "elapsed": 0.0,
+      "Temperature(C)": 79,
+      "Core Clock(MHz)": 209,
+      "Device Utilization %": 7,
+      "inUseVidMemoryBytes": 1083625472,
+      "vramFreeBytes": 3058405376,
+      "cpu_speed_limit": 100
+    },
+    {
+      "elapsed": 1.23,
+      "Temperature(C)": 84,
+      "Core Clock(MHz)": 123,
+      "Device Utilization %": 8,
+      "inUseVidMemoryBytes": 1329336320,
+      "vramFreeBytes": 2798452736,
+      "cpu_speed_limit": 100
+    },
+    {
+      "elapsed": 2.75,
+      "Temperature(C)": 86,
+      "Core Clock(MHz)": 339,
+      "Device Utilization %": 46,
+      "inUseVidMemoryBytes": 2355298304,
+      "vramFreeBytes": 1774301184,
+      "cpu_speed_limit": 100
+    },
+    {
+      "elapsed": 3.95,
+      "Temperature(C)": 88,
+      "Core Clock(MHz)": 1188,
+      "Device Utilization %": 68,
+      "inUseVidMemoryBytes": 2350190592,
+      "vramFreeBytes": 1774104576,
+      "cpu_speed_limit": 100
+    },
+    {
+      "elapsed": 5.14,
+      "Temperature(C)": 88,
+      "Core Clock(MHz)": 1120,
+      "Device Utilization %": 66,
+      "inUseVidMemoryBytes": 2351628288,
+      "vramFreeBytes": 1774039040,
+      "cpu_speed_limit": 100
+    },
+    {
+      "elapsed": 6.33,
+      "Temperature(C)": 88,
+      "Core Clock(MHz)": 450,
+      "Device Utilization %": 63,
+      "inUseVidMemoryBytes": 2348613632,
+      "vramFreeBytes": 1773907968,
+      "cpu_speed_limit": 100
+    },
+    {
+      "elapsed": 7.51,
+      "Temperature(C)": 89,
+      "Core Clock(MHz)": 438,
+      "Device Utilization %": 66,
+      "inUseVidMemoryBytes": 2353233920,
+      "vramFreeBytes": 1773907968,
+      "cpu_speed_limit": 100
+    },
+    {
+      "elapsed": 8.68,
+      "Temperature(C)": 90,
+      "Core Clock(MHz)": 1166,
+      "Device Utilization %": 66,
+      "inUseVidMemoryBytes": 2355601408,
+      "vramFreeBytes": 1773907968,
+      "cpu_speed_limit": 100
+    },
+    {
+      "elapsed": 9.9,
+      "Temperature(C)": 90,
+      "Core Clock(MHz)": 1174,
+      "Device Utilization %": 65,
+      "inUseVidMemoryBytes": 2352594944,
+      "vramFreeBytes": 1773907968,
+      "cpu_speed_limit": 100
+    },
+    {
+      "elapsed": 11.1,
+      "Temperature(C)": 91,
+      "Core Clock(MHz)": 437,
+      "Device Utilization %": 58,
+      "inUseVidMemoryBytes": 2496663552,
+      "vramFreeBytes": 1674719232,
+      "cpu_speed_limit": 100
+    },
+    {
+      "elapsed": 12.32,
+      "Temperature(C)": 92,
+      "Core Clock(MHz)": 388,
+      "Device Utilization %": 60,
+      "inUseVidMemoryBytes": 2504044544,
+      "vramFreeBytes": 1674719232,
+      "cpu_speed_limit": 100
+    },
+    {
+      "elapsed": 13.51,
+      "Temperature(C)": 92,
+      "Core Clock(MHz)": 545,
+      "Device Utilization %": 66,
+      "inUseVidMemoryBytes": 2357583872,
+      "vramFreeBytes": 1673211904,
+      "cpu_speed_limit": 100
+    },
+    {
+      "elapsed": 14.7,
+      "Temperature(C)": 92,
+      "Core Clock(MHz)": 388,
+      "Device Utilization %": 67,
+      "inUseVidMemoryBytes": 2357583872,
+      "vramFreeBytes": 1673211904,
+      "cpu_speed_limit": 100
+    },
+    {
+      "elapsed": 15.89,
+      "Temperature(C)": 93,
+      "Core Clock(MHz)": 463,
+      "Device Utilization %": 66,
+      "inUseVidMemoryBytes": 2354204672,
+      "vramFreeBytes": 1673211904,
+      "cpu_speed_limit": 100
+    },
+    {
+      "elapsed": 17.07,
+      "Temperature(C)": 93,
+      "Core Clock(MHz)": 1003,
+      "Device Utilization %": 64,
+      "inUseVidMemoryBytes": 2354827264,
+      "vramFreeBytes": 1673211904,
+      "cpu_speed_limit": 100
+    },
+    {
+      "elapsed": 18.27,
+      "Temperature(C)": 93,
+      "Core Clock(MHz)": 1080,
+      "Device Utilization %": 66,
+      "inUseVidMemoryBytes": 2355699712,
+      "vramFreeBytes": 1673211904,
+      "cpu_speed_limit": 100
+    },
+    {
+      "elapsed": 19.44,
+      "Temperature(C)": 93,
+      "Core Clock(MHz)": 912,
+      "Device Utilization %": 67,
+      "inUseVidMemoryBytes": 2356391936,
+      "vramFreeBytes": 1673211904,
+      "cpu_speed_limit": 100
+    },
+    {
+      "elapsed": 20.63,
+      "Temperature(C)": 93,
+      "Core Clock(MHz)": 371,
+      "Device Utilization %": 65,
+      "inUseVidMemoryBytes": 2352947200,
+      "vramFreeBytes": 1674653696,
+      "cpu_speed_limit": 100
+    }
+  ],
+  "foreground_checks": [
+    {
+      "elapsed": 0.0,
+      "windows": 0,
+      "foreground": false
+    },
+    {
+      "elapsed": 1.23,
+      "windows": 0,
+      "foreground": true
+    },
+    {
+      "elapsed": 2.75,
+      "windows": 0,
+      "foreground": true
+    },
+    {
+      "elapsed": 3.95,
+      "windows": 0,
+      "foreground": true
+    },
+    {
+      "elapsed": 5.14,
+      "windows": 1,
+      "foreground": true
+    },
+    {
+      "elapsed": 6.33,
+      "windows": 1,
+      "foreground": true
+    },
+    {
+      "elapsed": 7.51,
+      "windows": 2,
+      "foreground": true
+    },
+    {
+      "elapsed": 8.68,
+      "windows": 2,
+      "foreground": true
+    },
+    {
+      "elapsed": 9.9,
+      "windows": 3,
+      "foreground": true
+    },
+    {
+      "elapsed": 11.1,
+      "windows": 4,
+      "foreground": true
+    },
+    {
+      "elapsed": 12.32,
+      "windows": 4,
+      "foreground": true
+    },
+    {
+      "elapsed": 13.51,
+      "windows": 5,
+      "foreground": true
+    },
+    {
+      "elapsed": 14.7,
+      "windows": 5,
+      "foreground": true
+    },
+    {
+      "elapsed": 15.89,
+      "windows": 6,
+      "foreground": true
+    },
+    {
+      "elapsed": 17.07,
+      "windows": 6,
+      "foreground": true
+    },
+    {
+      "elapsed": 18.27,
+      "windows": 7,
+      "foreground": true
+    },
+    {
+      "elapsed": 19.44,
+      "windows": 7,
+      "foreground": true
+    },
+    {
+      "elapsed": 20.63,
+      "windows": 8,
+      "foreground": true
+    }
+  ]
+}

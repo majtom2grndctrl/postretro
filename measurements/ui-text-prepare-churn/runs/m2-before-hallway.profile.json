@@ -1,0 +1,13 @@
+{
+  "label": "m2-before-hallway",
+  "main_thread_samples": 6978,
+  "render_submit_frame": "_RNvMs_NtNtCsg8CI1sGq4AB_18postretro_renderer6render21renderer_render_frameNtNtB6_14renderer_types8Renderer21render_frame_indirect  (in postretro) + 787  [0x106798b43]",
+  "render_submit": 1384,
+  "triage_submissions": 420,
+  "queue_write_buffer": 0,
+  "queue_write_buffer_anywhere": 140,
+  "glyphon_qwb_anywhere": 140,
+  "glyphon_anywhere": 143,
+  "triage_submissions_share": 0.3035,
+  "queue_write_buffer_share": 0.0
+}

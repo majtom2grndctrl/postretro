@@ -801,19 +801,28 @@ fn warren_zero_budget_projects_current_membership_before_base_sh_bake() {
         .split_once(" bytes exceeds budget 0 bytes (")
         .and_then(|(peak, tail)| peak.parse::<u64>().ok().map(|peak| (peak, tail)))
         .expect("projection refusal must expose the zero-budget estimated peak");
-    assert_eq!(peak, 4_914_224_640);
-    let (cumulative, copy_chain_factor) = refusal
+    let (cumulative, copy_chain_factor, carried) = refusal
         .split_once(" cumulative dense bytes × copy-chain factor ")
         .and_then(|(cumulative, factor)| {
-            cumulative.parse::<u64>().ok().zip(
-                factor
-                    .split_once(')')
-                    .and_then(|(factor, _)| factor.parse::<u64>().ok()),
-            )
+            let (factor, carried) = factor.split_once(") plus ")?;
+            let carried = carried
+                .split_once(" bytes the mover probe channel carries")?
+                .0;
+            Some((
+                cumulative.parse::<u64>().ok()?,
+                factor.parse::<u64>().ok()?,
+                carried.parse::<u64>().ok()?,
+            ))
         })
-        .expect("projection refusal must expose cumulative dense bytes and copy-chain factor");
+        .expect(
+            "projection refusal must expose cumulative dense bytes, copy-chain factor and the \
+             bytes the mover probe channel carries",
+        );
     assert_eq!(cumulative, 1_638_074_880);
     assert_eq!(copy_chain_factor, 3);
+    // The copy chain, 4,914,224,640 bytes, plus what the map's movers carry
+    // through the delta stages.
+    assert_eq!(peak, cumulative * copy_chain_factor + carried);
     assert!(
         !diagnostic.contains("SH volume bake..."),
         "zero-budget projection must refuse before the base-SH ray stage:\n{diagnostic}",

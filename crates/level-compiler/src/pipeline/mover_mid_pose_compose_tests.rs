@@ -18,18 +18,16 @@ use postretro_level_format::mover_probe_channel::{
 use postretro_level_format::octahedral::{
     DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
 };
-use postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES;
 use postretro_level_format::sh_volume::OctahedralAtlasTexel;
 
-use super::super::skip_mid_poses;
 use super::{CONFIG, bake_base, plan_half, with_ctx};
 use crate::bc6h::f16_bits_to_f32;
 use crate::fixture_pipeline::{fixture_path, load_map};
 use crate::mover_probe_channel::fixture_scene::Scene;
 use crate::mover_probe_channel::reference_maps::{quake_offset, staticize_at};
 use crate::mover_probe_channel::{
-    BounceBlocks, MoverBounceRequest, MoverPayloadBars, MoverRecords, ProbeCells, channel_section,
-    compact_slots, compact_tile, direct_display_levels, display_levels,
+    MoverBounceRequest, MoverPayloadBars, MoverRecords, ProbeCells, channel_section, compact_slots,
+    compact_tile, direct_display_levels, display_levels,
 };
 use crate::sh_bake::pack_octahedral_irradiance_tile;
 use crate::surface_radiance::{DEFAULT_BOUNCE_FILL, ShBase};
@@ -96,18 +94,9 @@ impl Build {
             let mut plan = plan_half(&scene.fixture, ctx, poses, DEFAULT_BOUNCE_FILL);
             let mut request = std::mem::take(&mut plan.request);
             request.jobs.retain(|job| job.mover_id == mover_id);
-            let (_, base, mut outcome) = bake_base(ctx, &plan, &request, DEFAULT_BOUNCE_FILL, None);
-            skip_mid_poses(
-                &mut outcome,
-                &scene.fixture.kinematic_movers,
-                poses,
-                &base.section,
-                &base.depth_tiles,
-                request.uncompressed,
-                MAX_PROBE_DEPTH_TILES,
-            )
-            .expect("within the tile range");
-            let blocks = BounceBlocks::new(&outcome.movers, &cells);
+            let (_, base, outcome) = bake_base(ctx, &plan, &request, DEFAULT_BOUNCE_FILL, None);
+            assert!(outcome.refused.is_none(), "within the tile range");
+            let blocks = outcome.blocks;
             let section = channel_section(
                 &direct,
                 &blocks,

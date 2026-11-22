@@ -22,6 +22,7 @@ use super::posed_scene::PosedScene;
 use super::states::{ChangedProbe, PoseState, PoseStates, compact_rgb};
 use crate::bake_control::BakeControl;
 use crate::sh_bake::{RaytracingCtx, ShBakeCtx};
+use crate::surface_radiance::PatchRadiance;
 
 /// One pose's bounce and depth state, before its mover's poses reduce.
 pub(crate) struct PosedBounce {
@@ -80,6 +81,12 @@ pub(super) struct PoseBaker<'b, 'a> {
     pub(super) sh_ctx: &'b ShBakeCtx<'a>,
     pub(super) ctx: RaytracingCtx<'a>,
     pub(super) inputs: &'b StaticBounce<'b>,
+    /// The patches' static bounce one, before later bounces; empty for a
+    /// job at `light_bounces` 0.
+    pub(super) bounce_one: &'b PatchRadiance,
+    /// Id 34's own later bounces, when the job reads them
+    /// ([`AbsentLaterBounces::needed_by`]).
+    pub(super) absent: Option<&'b AbsentLaterBounces>,
     pub(super) shared: &'b PoseShared<'b>,
     pub(super) job: &'b MoverBounceJob,
     pub(super) request: &'b MoverBounceRequest,
@@ -101,6 +108,28 @@ pub(super) struct ResolvedPoses {
     pub(super) poses: Vec<PoseState>,
     /// Per pose, whether this bake baked it: only those are written back.
     pub(super) baked: Vec<bool>,
+    /// The poses' raw states in the test ledger, while they live.
+    #[cfg(test)]
+    pub(super) held: Vec<crate::live_bytes::Held>,
+}
+
+impl ResolvedPoses {
+    /// Every pose read back from its memo: none baked.
+    pub(super) fn read_back(held: Vec<Option<PoseState>>) -> Self {
+        let poses: Vec<PoseState> = held
+            .into_iter()
+            .map(|state| state.expect("every pose read back"))
+            .collect();
+        Self {
+            baked: vec![false; poses.len()],
+            #[cfg(test)]
+            held: poses
+                .iter()
+                .map(|state| crate::live_bytes::hold("mover posed probes", state.heap_bytes()))
+                .collect(),
+            poses,
+        }
+    }
 }
 
 /// What every baked mid pose of one job shares: the domain's static patches
@@ -127,6 +156,8 @@ impl PoseBaker<'_, '_> {
         let mut resolved = ResolvedPoses {
             poses: Vec::with_capacity(held.len()),
             baked: Vec::with_capacity(held.len()),
+            #[cfg(test)]
+            held: Vec::new(),
         };
         let mut near_field: Option<NearField> = None;
         #[cfg(test)]
@@ -164,7 +195,7 @@ impl PoseBaker<'_, '_> {
                 }
             };
             #[cfg(test)]
-            _held.push(crate::live_bytes::hold(
+            resolved.held.push(crate::live_bytes::hold(
                 "mover posed probes",
                 state.heap_bytes(),
             ));
@@ -282,9 +313,9 @@ impl PoseBaker<'_, '_> {
         bounces: u32,
     ) {
         let empty = AbsentLaterBounces::default();
-        let absent = self.inputs.absent.unwrap_or(&empty);
+        let absent = self.absent.unwrap_or(&empty);
         debug_assert!(
-            self.inputs.absent.is_some()
+            self.absent.is_some()
                 || !AbsentLaterBounces::needed_by([self.job], self.inputs.bounce_fill),
             "a job reading id 34's later bounces has them"
         );
@@ -312,7 +343,7 @@ impl PoseBaker<'_, '_> {
             &self.ctx,
             inputs.patches,
             &self.shared.reach,
-            inputs.bounce_one,
+            self.bounce_one,
             &self.shared.terms,
             scene,
             self.control,
@@ -353,7 +384,7 @@ impl PoseBaker<'_, '_> {
             &self.ctx,
             inputs.patches,
             &self.shared.reach,
-            inputs.bounce_one,
+            self.bounce_one,
             &self.shared.terms,
             scene,
             self.control,

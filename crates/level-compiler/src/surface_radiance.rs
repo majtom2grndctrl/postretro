@@ -33,6 +33,7 @@ pub(crate) use patches::{Patch, PatchCountExceeded, PatchSet, Side};
 pub(crate) use reach::PatchReachIndex;
 #[cfg(test)]
 pub(crate) use reach::REACH_INDEX_BYTES_PER_PATCH;
+#[cfg(test)]
 pub(crate) use stage::MoverBounceOutcome;
 #[cfg(test)]
 pub(crate) use stage::bake_sh_base;
@@ -42,7 +43,7 @@ pub(crate) use stage::{ShBase, bake_sh_base_with_movers, warn_bounce_only_emitte
 pub(crate) use sum::PatchRadiance;
 #[cfg(test)]
 pub(crate) use volume::{SH_BASE_VOLUME_STAGE_ID, SH_BASE_VOLUME_STAGE_VERSION, volume_key};
-pub(crate) use working_set::{ShBaseWorkingSetProjection, plan_sh_base};
+pub(crate) use working_set::{DirectWindow, ShBaseWorkingSetProjection, plan_sh_base};
 
 #[cfg(test)]
 mod bounce_tests;
@@ -52,6 +53,8 @@ mod cost_tests;
 mod determinism_tests;
 #[cfg(test)]
 mod layer_cache_tests;
+#[cfg(test)]
+mod layer_cap_tests;
 #[cfg(test)]
 mod pipeline_tests;
 #[cfg(test)]

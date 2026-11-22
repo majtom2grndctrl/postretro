@@ -109,17 +109,27 @@ impl MoverProbeChannelSection {
             direct_offsets: csr(&listed, direct.iter().map(|part| part.cell)),
             bounce_offsets: csr(&listed, bounce.iter().map(|part| part.cell)),
             cells,
+            // Every vector sized exactly up front: the section holds no
+            // more than its parts did, which the compiler's working-set
+            // gate relies on.
             direct_records: Vec::with_capacity(direct.len()),
-            mover_offsets: vec![0],
-            direct_movers: Vec::new(),
-            visibility: Vec::new(),
-            own_tiles: Vec::new(),
+            mover_offsets: Vec::with_capacity(1 + direct.len()),
+            direct_movers: Vec::with_capacity(direct.iter().map(|part| part.movers.len()).sum()),
+            visibility: Vec::with_capacity(
+                direct
+                    .iter()
+                    .flat_map(|part| &part.movers)
+                    .map(|(_, visibility)| visibility.len())
+                    .sum(),
+            ),
+            own_tiles: Vec::with_capacity(direct.iter().map(|part| part.own_tiles.len()).sum()),
             bounce_entries: Vec::with_capacity(bounce.len()),
-            bounce_tiles: Vec::new(),
+            bounce_tiles: Vec::with_capacity(bounce.iter().map(|part| part.tiles.len()).sum()),
             depth_records: Vec::with_capacity(depth.len()),
-            depth_tiles: Vec::new(),
+            depth_tiles: Vec::with_capacity(depth.iter().map(|part| part.tiles.len()).sum()),
             mover_records: Vec::new(),
         };
+        section.mover_offsets.push(0);
         let mut mover_ids: Vec<u32> = direct
             .iter()
             .flat_map(|part| part.movers.iter().map(|(mover_id, _)| *mover_id))

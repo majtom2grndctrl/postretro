@@ -240,12 +240,70 @@ impl ArgParser {
     }
 }
 
+const USAGE: &str = "\
+Usage:
+  imgproc process --src <png> --stem <name> --out-dir <dir> [--size <N|WxH>] [--tileable] [--spec-profile <name>] [--spec-scale <f32>] [--spec-base <0..1>] [--spec-gamma <f32>] [--spec-edge-damping <0..1>] [--normal-strength <f32>] [--quantize-levels <u8>] [--height-strength <f32>] [--height-quantize-levels <u8>]
+  imgproc batch --manifest <path> --out-dir <dir>
+  imgproc help | -h | --help";
+
 fn print_usage() {
-    eprintln!(
-        "Usage:\n  imgproc process --src <png> --stem <name> --out-dir <dir> [--size <N|WxH>] [--tileable] [--spec-profile <name>] [--spec-scale <f32>] [--spec-base <0..1>] [--spec-gamma <f32>] [--spec-edge-damping <0..1>] [--normal-strength <f32>] [--quantize-levels <u8>] [--height-strength <f32>] [--height-quantize-levels <u8>]\n  imgproc batch --manifest <path> --out-dir <dir>"
-    );
+    eprintln!("{USAGE}");
 }
 
 fn invalid_input(message: impl Into<String>) -> Box<dyn Error> {
     Box::new(io::Error::new(io::ErrorKind::InvalidInput, message.into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::USAGE;
+
+    /// Flag-shaped names: `-x` or `--name`.
+    fn is_flag_name(token: &str) -> bool {
+        let bytes = token.as_bytes();
+        match bytes {
+            [b'-', c] => c.is_ascii_alphabetic(),
+            [b'-', b'-', first, rest @ ..] => {
+                first.is_ascii_lowercase()
+                    && rest
+                        .iter()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
+            }
+            _ => false,
+        }
+    }
+
+    /// Every flag-shaped string literal (`"--name"`) in the top-level item of
+    /// `source` that begins at `marker`, read up to that item's closing brace.
+    fn parser_flags(source: &str, marker: &str) -> std::collections::BTreeSet<String> {
+        let start = source.find(marker).expect("parser item is present");
+        let item = &source[start..];
+        let item = &item[..item.find("\n}\n").expect("parser item closes")];
+        item.split('"')
+            .filter(|piece| is_flag_name(piece))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// Every flag-shaped word the help text names.
+    fn help_flags(help: &str) -> std::collections::BTreeSet<String> {
+        help.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+            .filter(|word| is_flag_name(word))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn help_lists_every_flag_the_process_and_batch_parsers_accept() {
+        let source = include_str!("main.rs");
+        let mut parsed = parser_flags(source, "impl ProcessCommand");
+        parsed.extend(parser_flags(source, "impl BatchCommand"));
+        let listed = help_flags(USAGE);
+        let listed: std::collections::BTreeSet<_> = listed
+            .into_iter()
+            .filter(|flag| flag != "-h" && flag != "--help")
+            .collect();
+        assert!(!parsed.is_empty());
+        assert_eq!(parsed, listed, "help and parser disagree");
+    }
 }

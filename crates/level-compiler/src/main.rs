@@ -1869,6 +1869,9 @@ fn compile_worldspawn_data_script(
 }
 
 #[cfg(test)]
+mod help_sync_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

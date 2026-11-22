@@ -15,6 +15,9 @@ pub(crate) mod camera_route_flags;
 mod camera_route_gate_tests;
 #[cfg(test)]
 mod character_file_slice_tests;
+pub(crate) mod cli_flags;
+#[cfg(test)]
+mod cli_flags_tests;
 #[cfg(test)]
 mod closet_reveal_surface_tests;
 #[cfg(test)]

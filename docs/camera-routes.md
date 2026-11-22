@@ -75,6 +75,8 @@ The engine loads the level, waits until what the first pose sees is ready, holds
 | `--camera-route-stall-timeout <seconds>` | 300 | Give up if no frame of the run (a hold or route frame) has shown in time, even while the window shows a menu or a loading screen; at most 86400 (a day) |
 | `--present-mode vsync\|no-vsync` | `vsync` | `vsync` shows the stutter a player sees. `no-vsync` shows how long each frame takes to make. |
 
+`./postretro --help`, run from the bundle root, lists these options with every other engine launch flag. It opens no window.
+
 The engine refuses to start, and names the file and the reason, when:
 - the route is empty, malformed or unreadable
 - its field of view is outside 60–130°, or a pose's pitch is past ±89° (the error names the pose's line)

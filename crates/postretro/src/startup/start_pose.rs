@@ -23,7 +23,7 @@ pub(crate) fn start_pose_arg(args: &[String]) -> Option<StartPose> {
         let value = if arg == START_POSE_FLAG {
             iter.next_if(|value| !value.starts_with("--"))
                 .map(String::as_str)
-        } else if let Some(value) = arg.strip_prefix("--start-pose=") {
+        } else if let Some(value) = super::cli_flags::equals_value(arg, START_POSE_FLAG) {
             Some(value)
         } else {
             continue;

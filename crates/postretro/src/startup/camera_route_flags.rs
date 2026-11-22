@@ -1,5 +1,5 @@
-// Camera-route launch flags every build knows: their names, so the map scan
-// steps over their values, and the warning a build without playback gives.
+// Camera-route launch flags every build knows: their names, which the flag
+// registry (`cli_flags`) declares, and the warning a build without playback gives.
 // See: context/lib/rendering_pipeline.md §12 · context/lib/development_guide.md §6.4
 
 pub(crate) const CAMERA_ROUTE_FLAG: &str = "--camera-route";
@@ -11,17 +11,6 @@ pub(crate) const RECORD_CAMERA_ROUTE_FLAG: &str = "--record-camera-route";
 /// `vsync` or `no-vsync`: the swapchain's present mode from the first frame,
 /// for any session of a build with playback's feature, a route or not.
 pub(crate) const PRESENT_MODE_FLAG: &str = "--present-mode";
-
-/// Every camera-route flag that takes a value.
-pub(crate) const CAMERA_ROUTE_VALUE_FLAGS: [&str; 7] = [
-    CAMERA_ROUTE_FLAG,
-    CAMERA_ROUTE_HOLD_FLAG,
-    CAMERA_ROUTE_REPORT_FLAG,
-    CAMERA_ROUTE_PACING_FLAG,
-    CAMERA_ROUTE_STALL_TIMEOUT_FLAG,
-    RECORD_CAMERA_ROUTE_FLAG,
-    PRESENT_MODE_FLAG,
-];
 
 /// The feature playback and recording build behind. It must match the
 /// feature gating `mod playback;` in `main.rs` and the feature the SDK's

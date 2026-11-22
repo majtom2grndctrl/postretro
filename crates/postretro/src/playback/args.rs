@@ -11,6 +11,7 @@ use crate::startup::camera_route_flags::{
     CAMERA_ROUTE_FLAG, CAMERA_ROUTE_HOLD_FLAG, CAMERA_ROUTE_PACING_FLAG, CAMERA_ROUTE_REPORT_FLAG,
     CAMERA_ROUTE_STALL_TIMEOUT_FLAG, PRESENT_MODE_FLAG, RECORD_CAMERA_ROUTE_FLAG,
 };
+use crate::startup::cli_flags::CONNECT_FLAG;
 
 use super::record::SCHEMA;
 
@@ -97,7 +98,7 @@ pub(crate) fn playback_args(args: &[String]) -> Result<Option<PlaybackArgs>, Str
     }
     // The netcode parses `--connect` later; a client's camera follows its
     // host's world, which a route cannot measure.
-    if names_flag(args, "--connect") {
+    if names_flag(args, CONNECT_FLAG) {
         return Err(format!(
             "{CAMERA_ROUTE_FLAG} refuses a session launched with --connect: playback measures a local level, not a connected client's"
         ));
@@ -1142,5 +1143,23 @@ mod tests {
                 "{list:?}: {error}"
             );
         }
+    }
+
+    /// `--help` states these defaults and limits in prose.
+    #[test]
+    fn registry_help_states_playback_defaults_and_limits() {
+        use crate::startup::cli_flags::lookup;
+        let hold = lookup(CAMERA_ROUTE_HOLD_FLAG).unwrap().help;
+        assert!(hold.contains(&DEFAULT_HOLD_FRAMES.to_string()), "{hold}");
+        assert!(hold.contains(&MAX_HOLD_FRAMES.to_string()), "{hold}");
+        let stall = lookup(CAMERA_ROUTE_STALL_TIMEOUT_FLAG).unwrap().help;
+        assert!(
+            stall.contains(&DEFAULT_STALL_TIMEOUT.as_secs().to_string()),
+            "{stall}"
+        );
+        assert!(
+            stall.contains(&MAX_STALL_TIMEOUT.as_secs().to_string()),
+            "{stall}"
+        );
     }
 }

@@ -674,10 +674,13 @@ fn reload_summary_requires_mod_init(summary: ReloadSummary) -> bool {
 }
 
 fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    // Help and unknown flags exit before anything else: no telemetry run, no
+    // logger, no capture or headless branch, no window.
+    startup::cli_flags::exit_on_help_or_unknown_flag(&args);
     // Telemetry's `run_start` precedes every log record, so the hub starts
     // before the logger. Every exit main returns through writes `run_end`;
     // a panic unwinding out of the body writes it from the guard.
-    let args: Vec<String> = std::env::args().collect();
     let consumer = telemetry::start_engine_run(&args);
     telemetry::install_engine_logger(consumer);
     let result = postretro_telemetry::run_guarded(run_engine);

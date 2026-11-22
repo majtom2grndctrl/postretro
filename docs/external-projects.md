@@ -117,6 +117,7 @@ If you launch the engine by hand rather than through the tool, pass
 or relative to wherever you launch from. Without it the engine still boots, but
 the pause menu, the frontend menu, the on-screen keyboard and the boot splash
 are simply absent, each announced by a warning in the log and nothing else.
+`<install>/postretro --help` lists every flag the engine takes.
 
 ## The authoring loop
 

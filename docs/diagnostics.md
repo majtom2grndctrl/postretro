@@ -120,6 +120,10 @@ must run the same mod as the host, though. `postretro-tool run` already passes
 the project's mod. When you start the engine yourself, add `--mod <folder>`,
 naming the folder under `content/` that holds the host's mod.
 
+For every flag the engine takes, run `./postretro --help` from the bundle root
+(`postretro.exe --help` on Windows). It prints the list and exits without
+opening a window.
+
 A joining client settles at the spawn its host picked for it, facing the way
 that spawn faces. One case moves the view once: both peers launched with the
 same map file, as above, and the client finished loading before its connection

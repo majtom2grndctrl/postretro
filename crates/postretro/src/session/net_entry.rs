@@ -177,7 +177,7 @@ pub(crate) fn publish_boot_facts(
         parse_error.and_then(netcode::NetArgError::failed_role_flag),
         net_role,
     ) {
-        (Some("--connect"), _) => Some(EndCause::BadAddress),
+        (Some(crate::startup::cli_flags::CONNECT_FLAG), _) => Some(EndCause::BadAddress),
         (Some(_), _) => Some(EndCause::HostFailed),
         (None, netcode::NetRole::Host { .. }) if entry.failure.is_some() => {
             Some(EndCause::HostFailed)

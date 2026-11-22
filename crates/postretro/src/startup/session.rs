@@ -18,6 +18,10 @@ use crate::camera::Camera;
 use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
 use crate::input;
 use crate::startup::app_dirs::{APP_NAME_FLAG, AppDirs, validate_app_name};
+use crate::startup::cli_flags::{
+    BAKED_ROOT_FLAG, CAPTURE_FLAG, CONTENT_ROOT_FLAG, CORE_ROOT_FLAG, HEADLESS_FLAG, MOD_FLAG,
+    POOL_SEED_FLAG, WINDOWED_FLAG, equals_value,
+};
 use crate::startup::{LevelSource, StartupTimings};
 use crate::trigger_pools::{TriggerPoolSeedPolicy, entropy_seed};
 use crate::{App, collision, kinematic_mover, runtime_movers, view_feel};
@@ -252,7 +256,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
     let map_path = boot_map_path(&args, map_arg.as_deref(), &content_root)?;
     let app_dirs = resolve_app_dirs(&args)?;
     let boot_options = crate::options::boot::BootOptions::load(app_dirs.settings_path());
-    let windowed = args.iter().any(|arg| arg == "--windowed");
+    let windowed = args.iter().any(|arg| arg == WINDOWED_FLAG);
     // Logged because a mismatch between this and the directory `prl-build` wrote
     // into surfaces only as per-texture placeholder warnings; the two paths in
     // the log are what makes that diagnosable.
@@ -449,22 +453,18 @@ pub(crate) fn build_session() -> Result<BootSession> {
     Ok(BootSession { event_loop, app })
 }
 
-/// Every flag naming a directory, in one list, read by the scanners that extract
-/// a value and by the positional-map scan that must step over one. `--mod` names
-/// a directory under `content/` and `--app-name` the per-user config and data
-/// directories, each by name.
-///
-/// Keeping it in one place is what holds the invariant. A flag added to only
-/// half of them leaves its *value* exposed to `resolve_map_path`, which then
-/// loads a directory as the level — the defect `--baked-root` hit and
-/// `--core-root` would hit next.
-const PATH_FLAGS: [&str; 4] = ["--mod", "--baked-root", "--core-root", APP_NAME_FLAG];
+/// Every flag naming a directory, in one list, read by the scanner that
+/// extracts a value and steps over another path flag's. `--mod` names a
+/// directory under `content/` and `--app-name` the per-user config and data
+/// directories, each by name. The positional-map scan steps over every
+/// registered flag's value instead (`cli_flags::FLAGS`).
+const PATH_FLAGS: [&str; 4] = [MOD_FLAG, BAKED_ROOT_FLAG, CORE_ROOT_FLAG, APP_NAME_FLAG];
 
-/// Recover the positional map-path argument (the raw-path dev bypass), skipping
-/// the values consumed by [`PATH_FLAGS`], `--pool-seed`, `--observe-live`, the
-/// netcode role flags `--host`/`--connect`, and `--password`. A value-taking flag missing
-/// from this scan has its value mistaken for the map path, so every such flag
-/// belongs here.
+/// Recover the positional map-path argument (the raw-path dev bypass): the
+/// first token that is neither a flag nor a value some registered flag
+/// consumed. Value consumption comes from the flag registry, the same rule the
+/// unknown-flag check uses, so a value — a `--password` above all, which would
+/// name the level in load logs — is never taken as the map.
 ///
 /// `--host`/`--connect` step over a following token under the same predicate
 /// `postretro_netcode::parse_net_config` uses (non-empty, not `--`-prefixed),
@@ -474,39 +474,13 @@ const PATH_FLAGS: [&str; 4] = ["--mod", "--baked-root", "--core-root", APP_NAME_
 pub(crate) fn resolve_map_path(args: &[String]) -> Option<String> {
     let mut iter = args.iter().skip(1).peekable();
     while let Some(arg) = iter.next() {
-        if PATH_FLAGS.contains(&arg.as_str())
-            || arg == "--pool-seed"
-            || arg == "--observe-live"
-            || arg == super::start_pose::START_POSE_FLAG
-            // Outside playback's feature gate, so every build steps over
-            // their values when it finds the map.
-            || super::camera_route_flags::CAMERA_ROUTE_VALUE_FLAGS.contains(&arg.as_str())
-        {
-            if iter.peek().is_some_and(|value| !value.starts_with("--")) {
+        if let Some(spec) = super::cli_flags::lookup(arg) {
+            if spec.takes_next(iter.peek().map(|value| value.as_str())) {
                 let _ = iter.next();
             }
             continue;
         }
-        if arg == "--host" || arg == "--connect" {
-            if iter
-                .peek()
-                .is_some_and(|value| !value.is_empty() && !value.starts_with("--"))
-            {
-                let _ = iter.next();
-            }
-            continue;
-        }
-        // `--password` takes the next token unless it is a flag, an empty one
-        // included, as `parse_net_config` reads it. Its value must never be
-        // taken as the map: it would name the level in load logs.
-        if arg == "--password" {
-            if iter.peek().is_some_and(|value| !value.starts_with("--")) {
-                let _ = iter.next();
-            }
-            continue;
-        }
-        // A `--flag=value` form carries its value inside one token, so no
-        // separate per-flag list is needed: the general flag test covers them.
+        // A `--flag=value` form carries its value inside one token.
         if arg.starts_with("--") {
             continue;
         }
@@ -556,12 +530,13 @@ fn path_flag_value(args: &[String], flag: &str) -> Option<PathBuf> {
 /// Parse the live-channel port without ever accepting a bindable address.
 #[cfg(feature = "observe-live")]
 pub(crate) fn observe_live_port_arg(args: &[String]) -> Option<u16> {
+    use crate::startup::cli_flags::OBSERVE_LIVE_FLAG;
     let mut iter = args.iter().skip(1).peekable();
     while let Some(arg) = iter.next() {
-        let value = if arg == "--observe-live" {
+        let value = if arg == OBSERVE_LIVE_FLAG {
             iter.next_if(|value| !value.starts_with("--"))
                 .map(String::as_str)
-        } else if let Some(value) = arg.strip_prefix("--observe-live=") {
+        } else if let Some(value) = equals_value(arg, OBSERVE_LIVE_FLAG) {
             Some(value)
         } else {
             continue;
@@ -592,12 +567,12 @@ pub(crate) fn observe_live_port_arg(args: &[String]) -> Option<u16> {
 fn pool_seed_arg(args: &[String]) -> PoolSeedArg {
     let mut iter = args.iter().skip(1).peekable();
     while let Some(arg) = iter.next() {
-        let value = if arg == "--pool-seed" {
+        let value = if arg == POOL_SEED_FLAG {
             match iter.next_if(|value| !value.starts_with("--")) {
                 Some(value) => value.as_str(),
                 None => return PoolSeedArg::Invalid("<missing>".to_string()),
             }
-        } else if let Some(value) = arg.strip_prefix("--pool-seed=") {
+        } else if let Some(value) = equals_value(arg, POOL_SEED_FLAG) {
             value
         } else {
             continue;
@@ -620,14 +595,14 @@ fn pool_seed_arg(args: &[String]) -> PoolSeedArg {
 pub(crate) fn headless_arg(args: &[String]) -> Option<Option<&str>> {
     let mut iter = args.iter().skip(1).peekable();
     while let Some(arg) = iter.next() {
-        if arg == "--headless" {
+        if arg == HEADLESS_FLAG {
             // A following token that is not itself a flag is the runspec path.
             let value = iter
                 .next_if(|value| !value.starts_with("--"))
                 .map(String::as_str);
             return Some(value);
         }
-        if let Some(value) = arg.strip_prefix("--headless=") {
+        if let Some(value) = equals_value(arg, HEADLESS_FLAG) {
             return Some((!value.is_empty()).then_some(value));
         }
     }
@@ -640,13 +615,13 @@ pub(crate) fn headless_arg(args: &[String]) -> Option<Option<&str>> {
 pub(crate) fn capture_arg(args: &[String]) -> Option<Option<&str>> {
     let mut iter = args.iter().skip(1).peekable();
     while let Some(arg) = iter.next() {
-        if arg == "--capture" {
+        if arg == CAPTURE_FLAG {
             let value = iter
                 .next_if(|value| !value.starts_with("--"))
                 .map(String::as_str);
             return Some(value);
         }
-        if let Some(value) = arg.strip_prefix("--capture=") {
+        if let Some(value) = equals_value(arg, CAPTURE_FLAG) {
             return Some((!value.is_empty()).then_some(value));
         }
     }
@@ -656,7 +631,7 @@ pub(crate) fn capture_arg(args: &[String]) -> Option<Option<&str>> {
 /// The raw `--mod <name>` / `--mod=<name>` value, before it is checked to be a
 /// name. [`resolve_content_root`] turns it into `content/<name>`.
 fn mod_arg(args: &[String]) -> Option<PathBuf> {
-    path_flag_value(args, "--mod")
+    path_flag_value(args, MOD_FLAG)
 }
 
 /// Detect `--baked-root <dir>` / `--baked-root=<dir>`: the directory that
@@ -670,7 +645,7 @@ fn mod_arg(args: &[String]) -> Option<PathBuf> {
 /// root exactly where `derive_prm_root_dev_layout` puts it. An empty value is
 /// treated as absent rather than as the current directory.
 fn baked_root_arg(args: &[String]) -> Option<PathBuf> {
-    path_flag_value(args, "--baked-root")
+    path_flag_value(args, BAKED_ROOT_FLAG)
 }
 
 /// Detect `--core-root <dir>` / `--core-root=<dir>`: the directory that *holds*
@@ -689,7 +664,7 @@ fn baked_root_arg(args: &[String]) -> Option<PathBuf> {
 /// Absent (the normal case, including every dev run and test) resolves `core/`
 /// against the working directory exactly as before the flag existed.
 fn core_root_arg(args: &[String]) -> Option<PathBuf> {
-    path_flag_value(args, "--core-root")
+    path_flag_value(args, CORE_ROOT_FLAG)
 }
 
 /// Resolve the per-user config and data directories from `--app-name`, once.
@@ -717,16 +692,16 @@ fn resolve_app_dirs(args: &[String]) -> Result<AppDirs> {
 /// Select the content root: `content/<name>` for `--mod <name>`, otherwise the
 /// root derived from the map path (or the dev default).
 ///
-/// The retired `--content-root <path>` is refused by name rather than ignored:
-/// it is no longer in [`PATH_FLAGS`], so its value would otherwise be read as
-/// the boot map and the directory loaded as a level.
+/// The retired `--content-root <path>` is refused by name, with a pointer to
+/// `--mod`, rather than ignored: the launch named a content directory and would
+/// otherwise boot a different mod without an error.
 ///
 /// A `--mod` with no name — bare, `--mod=`, or followed by another flag — is
 /// refused too. Treating it as absent would boot the map-derived or default
 /// mod, and a caller such as `postretro-tool run --mod "$MOD"` with `MOD`
 /// unset would get the wrong mod with no error.
 fn resolve_content_root(args: &[String], map_path: Option<&str>) -> Result<PathBuf> {
-    if names_flag(args, "--content-root") {
+    if names_flag(args, CONTENT_ROOT_FLAG) {
         anyhow::bail!(
             "--content-root was removed; select a mod by name with --mod <name> \
              (for `{CONTENT_DIR}/dev`, pass `--mod dev`)"
@@ -734,7 +709,7 @@ fn resolve_content_root(args: &[String], map_path: Option<&str>) -> Result<PathB
     }
     match mod_arg(args) {
         Some(name) => mod_content_root(&name),
-        None if names_flag(args, "--mod") => anyhow::bail!(
+        None if names_flag(args, MOD_FLAG) => anyhow::bail!(
             "--mod needs a mod name — a directory directly under `{CONTENT_DIR}/` \
              (for `{CONTENT_DIR}/dev`, pass `--mod dev`)"
         ),

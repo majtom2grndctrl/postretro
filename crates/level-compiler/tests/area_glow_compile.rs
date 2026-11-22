@@ -13,8 +13,10 @@ use coloured_bounce_support::fixtures::{box_brush, write_texture};
 use coloured_bounce_support::{Bake, FOUR_SHADOW_SAMPLES, Fixture, cache_tally, current_compiler};
 use postretro_level_format::SectionId;
 use postretro_level_format::area_glow::{AREA_GLOW_FIRST_ENTRY, AreaGlowSection};
+use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_level_format::emissive::EmissiveSection;
-use postretro_level_format::lightmap::LightmapSection;
+use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_RGBA16F, LightmapSection};
+use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
 const TALLY_LOG: &str = "info,prl_build::delta_sh_cache=debug";
 const GLASS: &str = "bounce/glass";
@@ -339,15 +341,55 @@ fn irradiance(bake: &Bake) -> Vec<f32> {
     values
 }
 
+/// Every RGB channel of an uncompressed SH atlas.
+fn rgba16f(atlas: &[u8]) -> Vec<f32> {
+    atlas
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| i % 4 != 3)
+        .map(|(_, bytes)| f16_to_f32(u16::from_le_bytes(*bytes)))
+        .collect()
+}
+
+/// `after` is twice `before`, value for value, within `tolerance` relative
+/// (plus f16's subnormal floor); returns how many values are lit.
+fn assert_doubles(before: &[f32], after: &[f32], tolerance: f32, what: &str) -> usize {
+    assert_eq!(before.len(), after.len(), "{what}: same layout");
+    let mut lit = 0;
+    let mut worst = 0.0f32;
+    for (x, y) in before.iter().zip(after) {
+        let error = (y - 2.0 * x).abs();
+        assert!(
+            error <= tolerance * (2.0 * x).abs() + 1e-6,
+            "{what}: {x} doubles to {y}"
+        );
+        if *x > 1e-3 {
+            lit += 1;
+            worst = worst.max(error / (2.0 * x).abs());
+        }
+    }
+    println!("{what}: {lit} lit values, worst relative error {worst:e}");
+    lit
+}
+
 // Acceptance row 50 (research.md O2): with `_falloff_range` set, doubling an
-// area light's `light` doubles its lightmap and leaves its faces' glow
-// entry, the emissive term, unchanged.
+// area light's `light` doubles its lightmap and its probe output, direct SH
+// (id 35) and bounce (id 34), and leaves its faces' glow entry, the emissive
+// term, unchanged.
 #[test]
 fn doubling_light_doubles_the_lightmap_and_leaves_the_glow() {
     let one = fixture(&area_map(GLASS, ""));
     let two = fixture(&area_map(GLASS, "").replace("\"light\" \"300\"", "\"light\" \"600\""));
-    let a = bake(&one, "one", false);
-    let b = bake(&two, "two", false);
+    // The probe atlases ship only in a whole-load bake.
+    let whole = |fixture: &Fixture, label: &str| {
+        let mut flags = vec!["--jobs", "2", "--no-cache", "--whole-load-sh"];
+        flags.extend(FOUR_SHADOW_SAMPLES);
+        fixture.bake(&current_compiler(), label, TALLY_LOG, &flags)
+    };
+    let a = whole(&one, "one");
+    let b = whole(&two, "two");
     let (glow_a, glow_b) = (area_glow(&a), area_glow(&b));
     assert_eq!(glow_b.lights[0].intensity, 2.0 * glow_a.lights[0].intensity);
     assert_eq!(glow_a.lights[0].faces, glow_b.lights[0].faces);
@@ -356,17 +398,29 @@ fn doubling_light_doubles_the_lightmap_and_leaves_the_glow() {
         postretro_render_cpu::emissive_volume::area_glow_entry(&glow_b.lights[0]),
         "the faces' emissive term ignores `light`"
     );
-    let (lit_a, lit_b) = (irradiance(&a), irradiance(&b));
-    assert_eq!(lit_a.len(), lit_b.len());
-    let mut lit = 0;
-    for (x, y) in lit_a.iter().zip(&lit_b) {
-        assert!(
-            (y - 2.0 * x).abs() <= 2e-3 * (2.0 * x).abs() + 1e-6,
-            "{x} doubles to {y}"
-        );
-        lit += usize::from(*x > 1e-3);
-    }
+    let lit = assert_doubles(&irradiance(&a), &irradiance(&b), 2e-3, "lightmap");
     assert!(lit > 100, "the room is lit: {lit} channels");
+
+    let direct = |bake: &Bake| {
+        let section = DirectShVolumeSection::from_bytes(bake.section(SectionId::DirectShVolume))
+            .expect("id 35 decodes");
+        assert_eq!(section.irradiance_format, IRRADIANCE_FORMAT_RGBA16F);
+        rgba16f(&section.atlas)
+    };
+    let lit = assert_doubles(&direct(&a), &direct(&b), 2e-3, "direct SH (id 35)");
+    assert!(lit > 100, "the probes are lit directly: {lit} channels");
+    let bounce = |bake: &Bake| {
+        let section =
+            OctahedralShVolumeSection::from_bytes(bake.section(SectionId::OctahedralShVolume))
+                .expect("id 34 decodes");
+        assert_eq!(section.irradiance_format, IRRADIANCE_FORMAT_RGBA16F);
+        rgba16f(&section.compact_atlas)
+    };
+    // Patch visibility seeds on the light's content, `light` included, so the
+    // frame's penumbra on the patches takes fresh noise at 2L: within 1%
+    // (0.4% measured), where direct SH and the lightmap double exactly.
+    let lit = assert_doubles(&bounce(&a), &bounce(&b), 1e-2, "SH bounce (id 34)");
+    assert!(lit > 100, "the probes take bounce: {lit} channels");
 }
 
 // Acceptance row 60 (research.md O5): a map with no area light writes no

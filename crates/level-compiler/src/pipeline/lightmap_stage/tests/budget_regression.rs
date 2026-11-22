@@ -39,6 +39,13 @@ fn expected_sections(name: &str) -> (&'static str, &'static str) {
             "fe87dcb8396cfeee8452cce791c76eb38bec190c3741746950c7fb629c8a114d",
             "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
         ),
+        // Captured cold on the area-lights branch when the fixture joined
+        // `GATE_FIXTURES`. An area light owns no shadowmask channel, so its
+        // id 42 matches the animated fixtures', which have no owner either.
+        "area-light-panel" => (
+            "1bb40221e4b08a979107ff622724382bb004e83eae947d7b98cd0c97b0d93633",
+            "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+        ),
         "four-layer-cut" => (
             "a6faca302b8c39846d56eddc3924eadbc5fc082b55fbddb976ddd25d9c510b12",
             "ec9dc8314d83445d9d2426b5476a72061c4b4da0f57887d214642da0cb4dadb1",

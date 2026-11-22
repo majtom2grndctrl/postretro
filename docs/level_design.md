@@ -168,6 +168,49 @@ All shared `light` keys (`light`, `_color`, `_falloff_range`, `delay`, `style`, 
 
 ---
 
+### `light_area` — Area Light
+
+A glowing surface that lights the room as one soft panel: a ceiling skylight, a light table, a strip light. A grid of point lights leaves hot spots on nearby walls and costs bake time per copy; an area light lights evenly, and its shadows soften the way a large panel's do.
+
+**Building one:**
+
+1. Build the fixture from brushes, for example a concrete frame and a glass pane.
+2. Paint the faces that should give off light with a texture that has an `_e` map (see [Emissive Maps](#emissive-maps)). Paint the rest with ordinary textures.
+3. Select every brush of the fixture and tie them to `light_area` (**Entity > Tie to Entity**, or `T`).
+
+**How it behaves:**
+
+- **Only the glowing faces emit.** A side emits when its texture has an `_e` map and it is visible. A face half buried in a wall, or covered by another brush, emits from its visible part only. Overlapping glowing brushes emit their shared area once, and a panel built from four brushes lights the room exactly as one brush would.
+- **One-sided.** Each glowing face emits from its front only. A surface level with the face or behind it gets no light from it, including the fixture's own faces.
+- **The brushes are solid world.** They block movement and cast shadows like worldspawn brushes, so a frame shades the room as a real frame would, and one glowing face can shade another of the same light.
+- **At least one glowing face.** A `light_area` with no visible `_e` face stops the compile, naming the entity. Slivers too thin to matter do not count.
+- **Brightness is per area.** A bigger panel gives more light. Far from a 1 m² panel (about 40 × 40 units), on its axis, `light 300` matches a `light 300` point light with `delay 2`; close in, the panel is dimmer and softer, which is the point.
+- **Reach is worked out for you.** The light fades smoothly to nothing at a distance set by its brightness and size, with no visible edge: a 1 m² panel at `light 300` reaches about 16 m (630 units). Double `light` and it reaches about 1.4 times as far. Set `_falloff_range` to choose the reach yourself, measured from the panel.
+- **Always baked.** It lights the lightmap, the indirect lighting, characters and movers, and its light bounces like any static light's (see Bounce fill above). There is no dynamic area light.
+- **Diffuse only.** An area light draws no specular highlight and casts no real-time shadow from characters or movers; they are lit by its baked light.
+
+**The glow.** Every glowing face draws its `_e` colour × `_glow` × `_color`. A white pane on a red light glows red. `_glow` is separate from `light`, so a dim glow can pair with strong light, or the reverse. The texture's `materials.toml` strength does not apply to these faces, and the glow shows even on a texture whose strength is `0`. No [`emissive_volume`](#emissive-volumes) reaches them: they glow with their light. When a script animates the light, the faces brighten, dim and change colour with the room, on the same frame.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `light` | integer | `300` | Brightness per square metre of glowing face. |
+| `_color` | RGB | `255 255 255` | Colour of its light and of its faces' glow. |
+| `_falloff_range` | integer | worked out | Reach in map units, measured from the panel. Leave blank to have the compiler work it out from brightness and size. |
+| `_glow` | float | `4` | How brightly the faces glow, independent of `light`. Above `64` reads `64` and warns; a negative value stops the compile. |
+| `brightness_curve`, `color_curve`, `period_ms`, `_curve_phase` | curve | — | Custom animation, as on `light` (see Custom animation curves below). |
+| `_animated` | 0/1 | `0` | `1` reserves the animated bake so a mod-wide script can animate the light. A light the map's own script animates is reserved for you. |
+| `_start_inactive` | 0/1 | `0` | `1` = the light starts dark, faces and room together, until a script lights it. On an area light this reserves the animated bake by itself. |
+| `_bake_only` | 0/1 | `0` | `1` = baked only; no runtime presence, and scripts cannot find it. |
+| `_tags` | string | `""` | Space-delimited tags. Scripts find lights by tag. |
+
+**Keys from other lights.** Changing a `light` or `light_spot` to `light_area` in TrenchBroom keeps its keys. These do nothing on an area light, and each warns once, naming the entity and the key: `delay`, `_light_size`, `_cone`, `_cone2`, `angle`, `angles`, `mangle`, `target`. These ask for something an area light cannot do, and stop the compile, naming the entity and the key: `_shadow_type sdf`, `direction_curve`, and any `style` other than `0` (use `brightness_curve` instead).
+
+**Scripts** see an area light as a light of type `"Area"`, at the centre of its glowing faces. `pulse`, `fade`, `flicker` and `colorShift` work; `sweep` has no direction to turn and is refused. See [LightComponent](scripting-reference.md#lightcomponent).
+
+**Examples.** The engine's sample content has two: `content/dev/maps/area-light-panel.map`, a room lit by one ceiling panel, and `content/dev/maps/area-lights-demo.map`, two skylights pulsed by the map's script (`content/dev/scripts/area-lights-demo.ts`). Each panel is a frame brush and a glass brush whose underside alone carries a glowing texture.
+
+---
+
 ### Animated Lights
 
 #### Preset styles
@@ -345,6 +388,7 @@ Membership is decided per final face: each piece of world surface the compiler p
 - **At most 256 volumes per map.** The 257th stops the compile, naming the count.
 - **Every world face needs a triangle once a volume holds a face.** A degenerate brush anywhere in the map, one with a face the compiler cannot draw, then stops the compile, naming a volume, the face's texture and its brush. Remove or rebuild that brush; with no volume holding faces, the map compiles as before.
 - **Static world faces only.** Movers and fluids glow at their texture strength alone; a volume never reaches them, nor models.
+- **Not area-light faces.** A [`light_area`](#light_area--area-light)'s glowing faces glow with their light, so a volume never claims them, even a smaller one nested around them. A volume holding only area-light faces warns as empty.
 
 ### Keys
 
@@ -1082,7 +1126,7 @@ A `{diffuse}_e.png` beside a texture makes it glow: the forward pass adds the ma
 - **Format:** RGB colour PNG, authored as ordinary sRGB colour. Black means no glow. Keep alpha opaque; it is reserved.
 - **Where:** world brushes, movers and fluids glow. Models do not; they load only their diffuse.
 - **Per placement:** an [`emissive_volume`](#emissive-volumes) scales and tints the glow of the world faces inside it, and lets scripts animate it.
-- **Effect:** self-illumination only. Glow lights nothing around it — place a light entity for that — but bright glow blooms. A glowing pixel blooms once its linear luminance (`_e` colour × strength) passes `1.0`.
+- **Effect:** self-illumination only. Glow lights nothing around it — place a light entity for that, or tie the glowing brushes to a [`light_area`](#light_area--area-light), which lights the room from them — but bright glow blooms. A glowing pixel blooms once its linear luminance (`_e` colour × strength) passes `1.0`.
 
 Example: `sign.png` → diffuse; `sign_e.png` → glow colour.
 

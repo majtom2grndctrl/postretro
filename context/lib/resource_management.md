@@ -151,8 +151,8 @@ mean's glow test is whether the texture has an `_e` map, whatever its strength
 (0 included); a `light_area` face's `_glow` never enters it. To light a scene, an
 author places a light entity. A `light_area` is such an entity: its `_e` faces
 form its emitter and glow with it, and its cast light takes the entity's `light`
-and `_color`, never the emissive map or its strength (decided, not yet built;
-`build_pipeline.md` §Custom FGD).
+and `_color`, never the emissive map or its strength (`build_pipeline.md`
+§Custom FGD).
 
 - **Naming:** `{name}_e.png` beside the diffuse texture.
 - **Format:** `Rgba8UnormSrgb`, sampled as linear color by hardware. Dimensions

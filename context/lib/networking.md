@@ -621,7 +621,10 @@ two vantages legitimately diverge — the shooter's authored FP placement versus
 observers' socket pose — and the TP mount carries no placement offset. Art owns its
 placement in the prop or socket. Placement is the base position; render-rate view-feel
 sway/bob is a separate overlay composed on top (owned by movement), excluded from
-authority.
+authority. Decided, not yet built: each peer resolves the third-person mount from the
+replicated active weapon and the pawn's class against its own descriptors, so no mount
+data crosses the wire. Today the weapon's own third-person model mounts at a fixed hand
+socket.
 
 **Fire origin composes on placement.** When a projectile weapon supplies a
 model-local `muzzleOffset`, its authoritative origin is the weapon's muzzle

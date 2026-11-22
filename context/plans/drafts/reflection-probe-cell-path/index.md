@@ -116,6 +116,12 @@ Orderings cite `research.md` §Pins.
   - **Decision rule (proposed; owner confirms):**
     - Park the work if (1) finds no view over the owner's 1 ms bar at Auto or 1440p.
     - Otherwise take the screen-space target, unless the cell path beats it by more than 1 ms at Auto or 1440p on some view, or counsel has cleared questions 3 and 5.
+  - **IP basis for that default (2026-11-22).** The claims pass recorded in `../reflection-probe-fluid-pass-performance/ip-check.md` found no filing that reads on the screen-space target as Qualcomm '166 reads on the cell pool:
+    - Every reduced-resolution family charted needs an element the target lacks.
+    - Dated art covers it (§Shape B).
+    - Its constraints are the shipped screen-space layer's IP rules, plus keeping the probe term and SSR separate quantities if they share a target.
+    - The pass was a keyword sweep, not a classification search, and read Intel's coarse-pixel family only in part.
+  - **Fences by shape.** If the target wins, ip-check §Shape B's fences join the Decisions. If the cell pool wins, §Lever C's Oxide fences join the IP fences above: no fallback buffer for overflowed draws, and no GPU hashed allocation or work queue.
 - IP line for the cell pool's sizing and allocation, needed only if the cell pool wins: `../reflection-probe-fluid-pass-performance/ip-check.md` §For counsel 3 (Qualcomm '166 and EP4409531B1) and 5 (Qualcomm '715). Owner: Dan, with counsel — **blocks build**
 - Cutoff and margin values — **delegated**.
 - Hidden-cell footprint test form — **delegated**: the executor picks it and reports the measured saving.

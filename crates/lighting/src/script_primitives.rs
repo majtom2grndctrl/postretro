@@ -4,7 +4,7 @@
 // `WorldQueryComponent`, `WorldQueryFilter`, `Entity`, and `EmitterEntity`.
 // See: context/lib/scripting.md
 
-use postretro_entities::components::light::{LightAnimation, LightComponent};
+use postretro_entities::components::light::{LightAnimation, LightComponent, LightKind};
 use postretro_entities::{
     Component, ComponentKind, EntityId, EntityRegistry, ScriptCtx, ScriptError,
 };
@@ -91,7 +91,7 @@ pub fn handles_to_json(handles: Vec<LightQueryHandle>) -> serde_json::Value {
 
 fn validate_and_normalize(
     mut anim: LightAnimation,
-    _target_is_dynamic: bool,
+    target: &LightComponent,
 ) -> Result<LightAnimation, ScriptError> {
     if !anim.period_ms.is_finite() || anim.period_ms <= 0.0 {
         return Err(ScriptError::InvalidArgument {
@@ -121,6 +121,15 @@ fn validate_and_normalize(
     {
         return Err(ScriptError::InvalidArgument {
             reason: "color channel present but empty (use null to omit)".into(),
+        });
+    }
+    // An area light has no direction to sweep: its emitter is the polygons
+    // its brushes fix at build time. The build-time membership pass
+    // (`script-compiler` `light_membership.rs`) gives a refused step no start
+    // state, so both hosts agree the step never ran.
+    if target.light_type == LightKind::Area && anim.direction.is_some() {
+        return Err(ScriptError::InvalidArgument {
+            reason: "a direction channel (sweep) is not supported on an area light".into(),
         });
     }
     if let Some(ref mut dirs) = anim.direction {
@@ -178,7 +187,7 @@ pub(crate) fn apply_light_animation_inner(
         .clone();
 
     let validated = match animation {
-        Some(a) => Some(validate_and_normalize(a, current.is_dynamic)?),
+        Some(a) => Some(validate_and_normalize(a, &current)?),
         None => None,
     };
 
@@ -225,18 +234,43 @@ pub fn register_light_reaction_primitives(registry: &mut ReactionPrimitiveRegist
                     reason: format!("setLightAnimation: failed to deserialize args: {error}"),
                 }
             })?;
+        // Validate every target before writing any: a refusal partway
+        // through (a `sweep` reaching an area light among spots) must leave
+        // every target as it was, on the host and, since nothing is captured
+        // for replication, on every client (research.md O14).
+        let mut writes = Vec::with_capacity(targets.len());
         for &id in targets {
-            if registry.get_component::<LightComponent>(id).is_err() {
+            let Ok(current) = registry.get_component::<LightComponent>(id) else {
                 log::warn!(
                     "[Scripting] setLightAnimation: entity {id} has no LightComponent; skipping"
                 );
                 continue;
-            }
-            apply_light_animation_inner(registry, id, animation.clone()).map_err(|error| {
-                ReactionError::InvalidArgument {
-                    reason: error.to_string(),
+            };
+            let validated = match animation.clone() {
+                Some(animation) => {
+                    Some(validate_and_normalize(animation, current).map_err(|error| {
+                        ReactionError::InvalidArgument {
+                            reason: format!("setLightAnimation: target {id}: {error}"),
+                        }
+                    })?)
                 }
-            })?;
+                None => None,
+            };
+            writes.push((id, validated));
+        }
+        for (id, validated) in writes {
+            let mut next = registry
+                .get_component::<LightComponent>(id)
+                .map_err(|error| ReactionError::InvalidArgument {
+                    reason: format!("setLightAnimation: target {id}: {error}"),
+                })?
+                .clone();
+            next.animation = validated;
+            registry
+                .set_component(id, next)
+                .map_err(|error| ReactionError::InvalidArgument {
+                    reason: format!("setLightAnimation: target {id}: {error}"),
+                })?;
         }
         Ok(())
     });
@@ -272,6 +306,10 @@ pub fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .variant("Point", "")
         .variant("Spot", "")
         .variant("Directional", "")
+        .variant(
+            "Area",
+            "A `light_area` polygon light. `position` is its emitting faces' area-weighted centroid and `falloffRange` its resolved reach. Brightness and colour animate; `sweep` fails with InvalidArgument.",
+        )
         .finish();
     registry
         .register_enum("FalloffKind")
@@ -945,6 +983,151 @@ mod tests {
             matches!(err, SequenceError::InvalidArgument { .. }),
             "got: {err:?}"
         );
+    }
+
+    /// A static map light of `kind` with a running brightness pulse, tagged
+    /// `sweep_target`, as the bridge installs an animated light.
+    fn spawn_kind(ctx: &ScriptCtx, kind: LightKind) -> EntityId {
+        let mut reg = ctx.registry.borrow_mut();
+        let id = reg.spawn(Transform::default());
+        let is_spot = kind == LightKind::Spot;
+        reg.set_component(
+            id,
+            LightComponent {
+                origin: [0.0, 3.0, 0.0],
+                light_type: kind,
+                intensity: 1.0,
+                color: [1.0, 1.0, 1.0],
+                falloff_model: FalloffKind::InverseSquared,
+                falloff_range: 10.0,
+                cone_angle_inner: is_spot.then_some(0.2),
+                cone_angle_outer: is_spot.then_some(0.5),
+                cone_direction: is_spot.then_some([0.0, -1.0, 0.0]),
+                is_dynamic: false,
+                animated_slot: Some(0),
+                follow_transform: false,
+                carrier: None,
+                animation: Some(LightAnimation {
+                    period_ms: 900.0,
+                    phase: None,
+                    play_count: None,
+                    start_active: None,
+                    brightness: Some(vec![0.3, 1.0]),
+                    color: None,
+                    direction: None,
+                    radius: None,
+                }),
+            },
+        )
+        .unwrap();
+        reg.set_tags(id, vec!["sweep_target".into()]).unwrap();
+        id
+    }
+
+    fn animation_of(ctx: &ScriptCtx, id: EntityId) -> Option<LightAnimation> {
+        ctx.registry
+            .borrow()
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .animation
+            .clone()
+    }
+
+    /// The wire a `sweep` member step carries.
+    fn sweep_args() -> serde_json::Value {
+        serde_json::json!({
+            "periodMs": 1000.0,
+            "direction": [{ "x": 0.0, "y": -1.0, "z": 0.0 }, { "x": 1.0, "y": -1.0, "z": 0.0 }],
+        })
+    }
+
+    // Acceptance row 42: `sweep` on an area light returns InvalidArgument and
+    // leaves the light's animation unchanged, through the member primitive and
+    // the sequenced step; `sweep` on a spot light still applies. Brightness and
+    // colour still animate an area light.
+    #[test]
+    fn sweep_on_an_area_light_is_refused_and_a_spot_still_sweeps() {
+        let ctx = ScriptCtx::new();
+        let area = spawn_kind(&ctx, LightKind::Area);
+        let spot = spawn_kind(&ctx, LightKind::Spot);
+        let before = animation_of(&ctx, area);
+        let sweep: LightAnimation = serde_json::from_value(sweep_args()).unwrap();
+
+        let err = apply_light_animation(&ctx, area, Some(sweep.clone())).unwrap_err();
+        assert!(
+            matches!(&err, ScriptError::InvalidArgument { reason } if reason.contains("area light")),
+            "got: {err:?}"
+        );
+        assert_eq!(animation_of(&ctx, area), before);
+
+        let mut seq_reg = SequencedPrimitiveRegistry::new();
+        register_sequenced_light_primitives(&mut seq_reg, ctx.clone());
+        let handler = seq_reg.get("setLightAnimation").unwrap();
+        let err = handler(area, &sweep_args()).unwrap_err();
+        assert!(
+            matches!(err, SequenceError::InvalidArgument { .. }),
+            "got: {err:?}"
+        );
+        assert_eq!(animation_of(&ctx, area), before);
+
+        handler(spot, &sweep_args()).expect("a spot light still sweeps");
+        let swept = animation_of(&ctx, spot).unwrap();
+        assert_eq!(swept.direction.as_ref().map(Vec::len), Some(2));
+
+        let fade =
+            serde_json::json!({ "periodMs": 1000.0, "playCount": 1, "brightness": [1.0, 0.25] });
+        handler(area, &fade).expect("an area light fades");
+        let colour =
+            serde_json::json!({ "periodMs": 1000.0, "color": [{ "x": 1.0, "y": 0.6, "z": 0.1 }] });
+        handler(area, &colour).expect("an area light shifts colour");
+        assert!(animation_of(&ctx, area).unwrap().color.is_some());
+    }
+
+    // Acceptance row 43, handler half (research.md O14): a tagged sweep whose
+    // targets are spot S1, area light A and spot S2, in that order, fails
+    // naming A and writes none of them; the same sweep over the two spots
+    // alone applies to both.
+    #[test]
+    fn a_tagged_sweep_reaching_an_area_light_writes_no_target() {
+        let mut reactions = ReactionPrimitiveRegistry::new();
+        register_light_reaction_primitives(&mut reactions);
+
+        let ctx = ScriptCtx::new();
+        let s1 = spawn_kind(&ctx, LightKind::Spot);
+        let a = spawn_kind(&ctx, LightKind::Area);
+        let s2 = spawn_kind(&ctx, LightKind::Spot);
+        let before: Vec<_> = [s1, a, s2].map(|id| animation_of(&ctx, id)).into();
+        let err = reactions
+            .dispatch_tagged(
+                "setLightAnimation",
+                &mut ctx.registry.borrow_mut(),
+                "sweep_target",
+                &[s1, a, s2],
+                &sweep_args(),
+            )
+            .unwrap_err();
+        let ReactionError::InvalidArgument { reason } = &err;
+        assert!(
+            reason.contains(&a.to_string()) && reason.contains("area light"),
+            "the refusal names the area light: {reason}"
+        );
+        let after: Vec<_> = [s1, a, s2].map(|id| animation_of(&ctx, id)).into();
+        assert_eq!(after, before, "no target changed");
+
+        let applied = reactions
+            .dispatch_tagged(
+                "setLightAnimation",
+                &mut ctx.registry.borrow_mut(),
+                "sweep_target",
+                &[s1, s2],
+                &sweep_args(),
+            )
+            .expect("a spot-only sweep applies");
+        assert!(applied);
+        for id in [s1, s2] {
+            assert!(animation_of(&ctx, id).unwrap().direction.is_some());
+        }
+        assert_eq!(animation_of(&ctx, a), before[1]);
     }
 
     #[test]

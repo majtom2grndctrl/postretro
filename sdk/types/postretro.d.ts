@@ -1810,8 +1810,13 @@ declare module "postretro" {
     stores?: ReadonlyArray<StoreDeclaration>;
   };
 
-  /** Valid values: `Point`, `Spot`, `Directional`. */
-  export type LightKind = "Point" | "Spot" | "Directional";
+  /** Valid values: `Point`, `Spot`, `Directional`, `Area`. */
+  export type LightKind =
+    | "Point"
+    | "Spot"
+    | "Directional"
+    /** A `light_area` polygon light. `position` is its emitting faces' area-weighted centroid and `falloffRange` its resolved reach. Brightness and colour animate; `sweep` fails with InvalidArgument. */
+    | "Area";
 
   /** Valid values: `Linear`, `InverseDistance`, `InverseSquared`. */
   export type FalloffKind = "Linear" | "InverseDistance" | "InverseSquared";
@@ -2079,7 +2084,7 @@ declare module "postretro" {
   export interface LightEntityHandle extends LightEntity, AnimatableScalar<"brightness"> {
     /** Cycle through RGB colors over `periodMs`. Works on dynamic and authored static lights. */
     colorShift(opts: { values: Vec3[]; periodMs: number }): SequenceStep[];
-    /** Sweep the `direction` channel through unit vectors over `periodMs`. */
+    /** Sweep the `direction` channel through unit vectors over `periodMs`. Refused with InvalidArgument on an area light (`lightType` `"Area"`), which has no direction. */
     sweep(opts: { values: Vec3[]; periodMs: number }): SequenceStep[];
   }
 

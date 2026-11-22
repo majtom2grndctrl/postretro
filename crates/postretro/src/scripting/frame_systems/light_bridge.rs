@@ -1120,10 +1120,7 @@ fn map_light_to_component(
         LightType::Point => LightKind::Point,
         LightType::Spot => LightKind::Spot,
         LightType::Directional => LightKind::Directional,
-        // Placeholder until the script surface gains `"Area"` (area-lights
-        // task 8). The light is baked and never promoted, so the record the
-        // bridge packs back from this component is weighted to zero.
-        LightType::Area => LightKind::Point,
+        LightType::Area => LightKind::Area,
     };
     let falloff_model = match light.falloff_model {
         FalloffModel::Linear => FalloffKind::Linear,
@@ -1187,6 +1184,9 @@ fn component_to_map_light(
         LightKind::Point => LightType::Point,
         LightKind::Spot => LightType::Spot,
         LightKind::Directional => LightType::Directional,
+        // An area light's light is baked and it is never dynamic or promoted;
+        // the record packed from it carries zero colour (`pack_light_with_slot`).
+        LightKind::Area => LightType::Area,
     };
     let falloff_model = match component.falloff_model {
         FalloffKind::Linear => FalloffModel::Linear,

@@ -1809,8 +1809,13 @@ export type ModManifest = {
   stores: {StoreDeclaration}?,
 }
 
---- Valid values: `Point`, `Spot`, `Directional`.
-export type LightKind = "Point" | "Spot" | "Directional"
+--- Valid values: `Point`, `Spot`, `Directional`, `Area`.
+export type LightKind =
+  "Point"
+  | "Spot"
+  | "Directional"
+  --- A `light_area` polygon light. `position` is its emitting faces' area-weighted centroid and `falloffRange` its resolved reach. Brightness and colour animate; `sweep` fails with InvalidArgument.
+  | "Area"
 
 --- Valid values: `Linear`, `InverseDistance`, `InverseSquared`.
 export type FalloffKind = "Linear" | "InverseDistance" | "InverseSquared"
@@ -2093,6 +2098,7 @@ export type LightEntityHandle = {
   fade: (self: LightEntityHandle, opts: { from: number, to: number, periodMs: number }) -> {SetLightAnimationStep},
   flicker: (self: LightEntityHandle, opts: { min: number, max: number, rate: number }) -> {SetLightAnimationStep},
   colorShift: (self: LightEntityHandle, opts: { values: {Vec3}, periodMs: number }) -> {SetLightAnimationStep},
+  --- Sweep the `direction` channel through unit vectors over `periodMs`. Refused with InvalidArgument on an area light (`lightType` `"Area"`), which has no direction.
   sweep: (self: LightEntityHandle, opts: { values: {Vec3}, periodMs: number }) -> {SetLightAnimationStep},
 }
 

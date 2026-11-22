@@ -1953,3 +1953,6 @@ mod parity;
 
 #[path = "presentation_emissive_coop_tests.rs"]
 mod emissive_coop;
+
+#[path = "presentation_area_light_coop_tests.rs"]
+mod area_light_coop;

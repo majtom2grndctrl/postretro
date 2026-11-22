@@ -142,9 +142,21 @@ cited symbol exists. No Decision premise is false. The Path is stale or incomple
     descriptor.
   - **Table sizes.** `EMISSIVE_TABLE_ENTRIES` stays 257 for the volume packer. The
     4096-entry table has its own constants, and area entries are written once at install.
-  - **Docs.** Context docs were updated in this task: `build_pipeline.md` (id 62, the
+  - **Docs (task 7).** Context docs were updated in this task: `build_pipeline.md` (id 62, the
     membership skip), `rendering_pipeline.md` §7.3, and `resource_management.md` §4.5
     and §5.2.
+- As built (task 8):
+  - **Row 44 in two halves.** The bake-time snapshot can't be read back from a compiled
+    PRL, so row 44 is proved in two exact halves through the AlphaLights record: bake-time
+    snapshot = record (compiler), and runtime snapshot = record (engine).
+  - **O15: a refused step is skipped entirely.** Membership skips a refused step whole, so
+    it also reserves no slot, matching the runtime, which never applies it. A
+    `_start_inactive` light still reserves its slot.
+  - **Row 43 harness.** Row 43's host/client test uses the conditioned harness with
+    synthetic spot/area/spot lights, not a compiled map.
+  - **Example.** The dev example is `content/dev/maps/area-lights-demo.map` with
+    `content/dev/scripts/area-lights-demo.{ts,luau}`. `context/lib/scripting.md` §2 and
+    §12 are updated.
   Faces carry `brush_index` only (no side index): glow ids stamp on every render face
   whose brush belongs to the light and whose texture has an `_e` map, which is the
   Decision's definition of an emitting face.
@@ -299,5 +311,12 @@ Suites:
 <li>check, fmt and clippy on six crates clean</li>
 </ul>
 The capture shows the panel glowing over the lit room |
-| 8 | Script surface: `"Area"` kind + generated types + drift fixtures, snapshots, validate-all `sweep` refusal (O14), start-state rule (O15), `content/dev` example. Rows 41–44, 55, 56 | worker | 6 | |
+| 8 | Script surface: `"Area"` kind + generated types + drift fixtures, snapshots, validate-all `sweep` refusal (O14), start-state rule (O15), `content/dev` example. Rows 41–44, 55, 56 | worker | 6 | done. Proofs:
+<ul>
+<li>row 41: `startup::area_lights_surface_tests` (real compile of the demo; TS and Luau twins emit identical wire) and the `LightKind` typedef drift guard</li>
+<li>rows 42, 43: lighting `script_primitives::tests` (sweep refused; tagged S1/A/S2 writes nothing), plus the host/client coop test</li>
+<li>row 44: `inert_keyed_area_light_snapshot_matches_its_alpha_lights_record` and the runtime twin</li>
+<li>rows 55, 56: prl-build `a_level_load_pulse_lights_a_start_inactive_area_light_and_a_sweep_does_not`, plus script-compiler `a_sweep_step_contributes_no_start_state_to_an_area_light_in_both_hosts`</li>
+</ul>
+Suites (all pass, `--no-fail-fast`): entities 347, lighting 100, script-compiler 63, scripting-core 1148, sim 2234, compiler bin 2758 plus all integration tests (goldens unchanged), postretro 3044. Check, fmt and clippy clean. Outstanding: `tsc` and `luau-analyze` are not installed, so `sdk/type-tests/area-lights.ts`, the demo `.ts` and the generated Luau alias are not type-checked |
 | 9 | Fixtures, gates, docs: profiled area fixture in `GATE_FIXTURES`, no-area byte identity vs `main`, `docs/level_design.md` and `docs/scripting-reference.md`. Rows 39, 40 | integrator | 1–8 | |

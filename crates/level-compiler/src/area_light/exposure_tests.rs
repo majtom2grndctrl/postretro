@@ -698,3 +698,75 @@ fn a_pillar_wrapped_light_floods_its_cells_from_its_faces() {
     let room = find_leaf_for_point(&fixture.tree, engine(32.0, 32.0, 64.0));
     assert!(reached.contains(&room), "the room's cell is reached");
 }
+
+// Acceptance row 44, build half (research.md O18): on the shipped
+// `area-lights-demo`, the east panel carries `delay 0`, `_light_size`, `_cone`
+// and `mangle` from a converted spot light. The snapshot a level script reads
+// at bake time (`light_table_from_lights`) reads lightType "Area",
+// falloffModel "InverseSquared", the resolved reach and the area-weighted
+// centroid with no cone fields, the same as the clean west panel's apart from
+// position, and equals field for field the AlphaLights record the runtime
+// builds its snapshot from (`postretro` `area_lights_surface_tests` holds the
+// runtime half to that record).
+#[test]
+fn inert_keyed_area_light_snapshot_matches_its_alpha_lights_record() {
+    use crate::script_light_membership::light_table_from_lights;
+
+    let fixture = load_fixture("area-lights-demo");
+    let buried = BuriedLights::classify(&fixture.full_tree, &fixture.lights);
+    let table = light_table_from_lights(&fixture.lights, &buried).unwrap();
+    assert_eq!(table.lights.len(), 2, "two skylights");
+    let section = crate::pack::encode_alpha_lights(
+        &AlphaLightsNs::from_lights_excluding(&fixture.lights, &buried),
+        &fixture.full_tree,
+    );
+    assert_eq!(section.lights.len(), 2);
+
+    // 64 × 64-unit glass undersides at z 120, centred at x 128 and 384.
+    let area_m2 = square_metres(64.0 * 64.0);
+    let reach = crate::area_light::derived_reach(1.0, area_m2);
+    for ((snapshot, record), centre_x) in
+        table.lights.iter().zip(&section.lights).zip([128.0, 384.0])
+    {
+        let component = &snapshot.component;
+        assert_eq!(component.light_type, "Area");
+        assert_eq!(component.falloff_model, "InverseSquared");
+        assert_eq!(
+            (
+                component.cone_angle_inner,
+                component.cone_angle_outer,
+                component.cone_direction
+            ),
+            (None, None, None)
+        );
+        let centroid = engine(centre_x, 128.0, 120.0).as_vec3().to_array();
+        for (got, want) in component.origin.iter().zip(centroid) {
+            assert!((got - want).abs() < 1.0e-5, "centroid: {got} vs {want}");
+        }
+        assert_close(f64::from(component.falloff_range), reach, 1.0e-6, "reach");
+        assert_eq!(snapshot.position, component.origin);
+
+        // Field for field, the record the loader turns into the runtime light.
+        assert_eq!(record.light_type, AlphaLightType::Area);
+        assert_eq!(record.falloff_model, AlphaFalloffModel::InverseSquared);
+        assert_eq!(record.origin.map(|v| v as f32), component.origin);
+        assert_eq!(record.falloff_range, component.falloff_range);
+        assert_eq!(record.intensity, component.intensity);
+        assert_eq!(record.color, component.color);
+        assert_eq!(
+            (
+                record.cone_angle_inner,
+                record.cone_angle_outer,
+                record.cone_direction
+            ),
+            (0.0, 0.0, [0.0; 3])
+        );
+    }
+    let (west, east) = (&table.lights[0].component, &table.lights[1].component);
+    let mut east_at_west = east.clone();
+    east_at_west.origin = west.origin;
+    assert_eq!(
+        &east_at_west, west,
+        "the inert keys change nothing but position"
+    );
+}

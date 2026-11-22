@@ -79,13 +79,6 @@ fn presented(mover_id: u32) -> Option<PresentedMover> {
     })
 }
 
-fn carrying(mover_id: u32) -> Option<PresentedMover> {
-    presented(mover_id).map(|mover| PresentedMover {
-        carry_yaw: true,
-        ..mover
-    })
-}
-
 fn as_presented(transform: Transform) -> impl Fn(u32) -> Option<PresentedMover> {
     move |_| {
         Some(PresentedMover {

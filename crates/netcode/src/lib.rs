@@ -1683,7 +1683,6 @@ pub fn client_shift_local_presentation_offset(
 /// is pushed to frame timing. The render stage interpolates those presented poses
 /// directly, so the offset enters the frame-timing endpoints exactly once. A no-op
 /// for single-player, the host, or a client with no correction in flight.
-
 pub fn client_decay_local_correction(endpoint: Option<&mut NetEndpoint>) {
     if let Some(NetEndpoint::Client { prediction, .. }) = endpoint {
         prediction.decay_presentation_offset();

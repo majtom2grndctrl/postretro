@@ -387,7 +387,7 @@ fn rebase_on_presented_mover(
     pose: &mut PresentedPose,
     alpha: f32,
 ) -> Option<u32> {
-    let Some(rebased) = pose.rider_bracket.and_then(|bracket| {
+    let rebased = pose.rider_bracket.and_then(|bracket| {
         crate::rider_rebase::rebase_rider(
             &bracket,
             &pose.transform,
@@ -397,9 +397,7 @@ fn rebase_on_presented_mover(
                 crate::rider_rebase::presented_entity_mover(registry, mover, alpha)
             },
         )
-    }) else {
-        return None;
-    };
+    })?;
     pose.transform = rebased.transform;
     pose.intrinsic_velocity = pose
         .intrinsic_velocity

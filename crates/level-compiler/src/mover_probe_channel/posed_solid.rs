@@ -352,13 +352,26 @@ impl PosedMovers {
         self.0.is_empty()
     }
 
-    /// Heap bytes every posed solid holds.
+    /// Heap bytes every posed mover holds: each solid with its `Arc`, its
+    /// own copy of the pose and its geometry, and the mover's slots and
+    /// read knots.
     pub(crate) fn heap_bytes(&self) -> u64 {
-        self.0
-            .iter()
-            .flat_map(|mover| &mover.solids)
-            .map(|solid| solid.heap_bytes())
-            .sum()
+        let solid = |solid: &Arc<PosedSolid>| {
+            (size_of::<PosedSolid>() + 2 * size_of::<usize>()) as u64
+                + solid.pose().brush_heap_bytes()
+                + solid.heap_bytes()
+        };
+        (self.0.capacity() * size_of::<PosedMover>()) as u64
+            + self
+                .0
+                .iter()
+                .map(|mover| {
+                    (mover.solids.capacity() * size_of::<Arc<PosedSolid>>()
+                        + mover.read_knots.capacity() * size_of::<Knot>())
+                        as u64
+                        + mover.solids.iter().map(solid).sum::<u64>()
+                })
+                .sum::<u64>()
     }
 }
 

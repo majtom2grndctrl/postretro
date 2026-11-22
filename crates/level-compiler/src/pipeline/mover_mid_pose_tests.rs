@@ -89,7 +89,7 @@ fn a_mid_pose_gathers_its_domain_alone_and_direct_reaches_past_it() {
         assert!(!just_outside.is_empty(), "the domain has a valid rim");
 
         let (_, _, outcome) = bake_base(ctx, &plan, &request, DEFAULT_BOUNCE_FILL, None);
-        let [states] = outcome.movers.as_slice() else {
+        let [states] = outcome.reduced.as_slice() else {
             panic!("one door");
         };
         let mid = 1..pose_count - 1;

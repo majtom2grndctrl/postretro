@@ -49,6 +49,10 @@ FLUID_LABEL = "Fluid Surface Pass"
 # The cell-rate spike's compute pass, recorded before the fluid pass in arms
 # with the cell buffer on.
 CELL_LABEL = "Fluid Reflection Cell Pass"
+# The live-lighting sums pass (reflection-probe-fluid-pass-performance), recorded
+# before the fluid pass on frames with a reflecting fluid draw, and the SSR pass.
+SUMS_LABEL = "Fluid Reflection Sums Pass"
+SSR_LABEL = "Fluid Reflection Pass"
 # Frame marker for the complete-frame reduction: a compute pass whose rows the
 # trace never drops. Mac run (owner's 5300M): e24 and reflection-blend-spike
 # record no BVH Cull Pass; Candidate Cull Pass is once per frame on both. The
@@ -59,7 +63,7 @@ COMPLETE_REQUIRED = ("Depth Pre-Pass", "Textured Pass", "Fluid Surface Pass")
 MIN_COMPLETE_FRAMES = 30
 FORWARD_LABEL = "Textured Pass"
 # Passes reported beside the fluid pass.
-REPORTED = (FLUID_LABEL, CELL_LABEL, FORWARD_LABEL, "Depth Pre-Pass", "Streamed SH Compose",
+REPORTED = (FLUID_LABEL, CELL_LABEL, SUMS_LABEL, SSR_LABEL, FORWARD_LABEL, "Depth Pre-Pass", "Streamed SH Compose",
             "Fog Raymarch Pass", "Fog Composite Pass", "Skinned Mesh Pass",
             "Kinematic Brush Pass", "Screen Effects Capture Tonemap Pass")
 

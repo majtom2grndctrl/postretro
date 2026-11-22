@@ -142,6 +142,10 @@ mod fluid_reflection_frame_test;
 #[cfg(test)]
 mod fluid_reflection_frame_test_fixtures;
 #[cfg(test)]
+mod fluid_reflection_sums_frame_test;
+#[cfg(test)]
+mod fluid_reflection_sums_frame_test_fixtures;
+#[cfg(test)]
 mod fluid_surface_frame_test;
 mod geometry_install_marks;
 mod geometry_ranges;
@@ -161,6 +165,7 @@ mod renderer_debug_ui;
 mod renderer_diagnostics;
 mod renderer_dynamic_shadow_passes;
 mod renderer_extent;
+mod renderer_fluid_frame;
 mod renderer_frame;
 mod renderer_full_init;
 mod renderer_geometry;

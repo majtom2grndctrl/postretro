@@ -45,7 +45,8 @@ import tempfile, threading, time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from gpu_time import reduce_export, FLUID_LABEL, CELL_LABEL, FORWARD_LABEL  # noqa: E402
+from gpu_time import (reduce_export, FLUID_LABEL, CELL_LABEL, FORWARD_LABEL,  # noqa: E402
+                      SUMS_LABEL, SSR_LABEL)
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
@@ -439,6 +440,10 @@ def run_one(label, arm, round_i, args, trace_dir, flags):
             record["forward_ms"] = complete["passes"][FORWARD_LABEL]["per_frame_ms"]
             cell = complete["passes"].get(CELL_LABEL)
             record["cell_ms"] = cell["per_frame_ms"] if cell else 0.0
+            sums = complete["passes"].get(SUMS_LABEL)
+            record["sums_ms"] = sums["per_frame_ms"] if sums else 0.0
+            ssr = complete["passes"].get(SSR_LABEL)
+            record["ssr_ms"] = ssr["per_frame_ms"] if ssr else 0.0
             record["cost_ms"] = complete["cost"]["per_frame_ms"]
             record["cost_ms_p10_p90"] = [complete["cost"]["p10_ms"], complete["cost"]["p90_ms"]]
             if steady.get("available"):

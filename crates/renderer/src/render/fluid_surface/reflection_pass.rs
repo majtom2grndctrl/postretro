@@ -109,8 +109,13 @@ pub(crate) fn fluid_reflection_inputs_bind_group_layout_entries() -> [wgpu::Bind
 /// colour and distance arrays stay out: the pass reads no capture.
 pub(crate) fn fluid_reflection_probe_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 2]
 {
-    let [window, _probe_array, probe_table, _probe_distance] =
-        fluid_params_bind_group_layout_entries();
+    let [
+        window,
+        _probe_array,
+        probe_table,
+        _probe_distance,
+        _probe_sums,
+    ] = fluid_params_bind_group_layout_entries();
     [window, probe_table]
 }
 
@@ -767,6 +772,7 @@ impl FluidSurfacePass {
         super::FluidLevelLayout {
             params_bind_group_layout: self.params_bind_group_layout.clone(),
             reflection_probe_layout: self.reflection.probe_layout().clone(),
+            sums_layout: self.sums.layout().clone(),
             scene_group: self.scene_inputs.group_layout(),
         }
     }

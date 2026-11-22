@@ -6,7 +6,8 @@ The mover shader sits near a register cliff on the RDNA1 Mac target
 (`context/lib/rendering_pipeline.md` §7.3): a small WGSL edit can push an
 entry's VGPR count into a slower occupancy tier. Screen both entries after
 every edit to `kinematic_brush.wgsl`, or to any snippet composed into it,
-before it lands.
+before it lands. The tool also screens the fluid surface entries (see the
+"Fluid surface entries" section).
 
 ## Requirements
 
@@ -71,3 +72,25 @@ One beauty pipeline per style (mover-smooth-specular-pipeline):
 | shared per-record helpers, smooth one specular sum, albedo after the loop | `fs_pixel` | 127 | 104 |
 | same | `fs_smooth` | 119 | 104 |
 | same, `fs_smooth` reading albedo before the loop (screen only) | `fs_smooth` | 119 | 104 |
+
+## Fluid surface entries
+
+```bash
+tools/metal_register_screen/screen_fluid.sh <out dir> [fragment entry...]
+```
+
+Screens the fluid pipelines' fragment entries: `fs_main_reflecting`,
+`fs_main_reflecting_per_fragment` and `fs_main` by default. The capture test
+`fluid_pipeline_msl_capture_for_the_register_screen` builds the production
+fluid pipelines over their production layouts, then the reflecting entry once
+more from the same source with the live-lighting sums blend replaced by the
+per-fragment ratio it replaced, renamed `fs_main_reflecting_per_fragment`, so
+one run screens before and after side by side. It also writes `vertex_layout`,
+the fluid's three vertex streams, which `screen.swift` reads in place of the
+mover's stream when present.
+
+| Build | Entry | VGPRs | SGPRs |
+|---|---|---|---|
+| live lighting from per-probe sums | `fs_main_reflecting` | 72 | 98 |
+| same source, per-fragment ratio (the per-fragment oracle) | `fs_main_reflecting_per_fragment` | 72 | 102 |
+| same | `fs_main` | 55 | 100 |

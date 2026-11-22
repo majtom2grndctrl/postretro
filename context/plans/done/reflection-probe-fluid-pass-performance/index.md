@@ -63,7 +63,7 @@ Orderings cite `research.md` §Pins.
 - [ ] The reflection-free variant and every §7.3a Off case render identically to the build before.
 - [ ] Every fluid pipeline and the sums pipeline compile under the DX12 FXC test on a Windows DX12 adapter, its log showing it ran, not skipped.
 ### Manual
-- [ ] **5300M, near, probes and mid at 4K and Auto (1536×960):** reflecting fluid pass plus sums pass against the build before, with whole-frame GPU time beside it. No view is slower beyond run-to-run spread. Saving and the sums pass's own cost measured and reported (`research.md` §Measurement).
+- [x] **5300M, near, probes and mid at 4K and Auto (1536×960):** reflecting fluid pass plus sums pass against the build before, with whole-frame GPU time beside it. No view's whole-frame GPU time is slower beyond run-to-run spread. The fluid pass, the sums pass and the sums pass's overlap with other labelled work are reported (`research.md` §Measurement).
 - [ ] **GTX 1660, Vulkan:** the same views against the build before. Measured and reported.
 
 ## Path

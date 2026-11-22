@@ -154,7 +154,7 @@ fn ghost_pass_seeds_inside_the_gate_and_attaches_ghost_depth_and_never_scene_dep
         ghost_pass,
         record,
         gate_end,
-        at("label:Some(\"FluidSurfacePass\"),"),
+        at("self.record_fluid_surface_passes("),
     ];
     assert!(order.is_sorted(), "ghost pass order {order:?}");
     assert_eq!(scene.matches(".seed_from_scene_depth(").count(), 1);

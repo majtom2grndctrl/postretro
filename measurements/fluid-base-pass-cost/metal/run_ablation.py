@@ -32,10 +32,16 @@ kit.RUNS = HERE / "runs"
 kit.RAW = HERE / "raw"
 UHD, FHD = kit.UHD, kit.FHD
 AUTO = [1536, 960]
+QHD = [2560, 1440]
 CONFIGS = {"near-4k": ("near", UHD), "near-1080": ("near", FHD), "test-4k": ("test", UHD),
            "mid-4k": ("mid", UHD), "far-4k": ("far", UHD),
            # The 5300M's Auto resolution (landing row M2).
-           "near-auto": ("near", AUTO), "test-auto": ("test", AUTO), "mid-auto": ("mid", AUTO)}
+           "near-auto": ("near", AUTO), "test-auto": ("test", AUTO), "mid-auto": ("mid", AUTO),
+           # reflection-probe-cell-path's remaining-cost table (shape measurement 1):
+           # every view at Auto, 1440p and 4K.
+           "low-4k": ("low", UHD), "low-auto": ("low", AUTO), "far-auto": ("far", AUTO),
+           "near-1440": ("near", QHD), "test-1440": ("test", QHD), "mid-1440": ("mid", QHD),
+           "low-1440": ("low", QHD), "far-1440": ("far", QHD)}
 FREE_MASK = 0x13F
 # Two-binary A/B: these variants run their own binary's shader, no override.
 BINARY_VARIANTS = {"before": "CELL_BIN_BEFORE", "after": "CELL_BIN_AFTER"}
@@ -160,19 +166,24 @@ def summarize(records, tag):
     md = [f"# Fluid base-pass ablation ({tag})", "",
           "Fluid = Fluid Surface Pass per complete frame; frame = union of every labelled interval per "
           "complete frame; clock = median busy core clock (min-max) per run.", "",
-          "| arm | runs valid | fluid ms | spread | forward ms | GPU frame ms | clocks |",
-          "|---|---|---|---|---|---|---|"]
+          "| arm | runs valid | fluid ms | spread | sums ms | fluid + sums ms | SSR ms | forward ms | GPU frame ms | clocks |",
+          "|---|---|---|---|---|---|---|---|---|---|"]
     for name, rs in by.items():
         good = [r for r in rs if r["valid"] and r.get("fluid_ms") is not None]
         f = [r["fluid_ms"] for r in good]
         row = {"arm": name, "valid": len(good), "runs": len(rs), "fluid_ms": mean(f),
                "spread": (max(f) - min(f)) if len(f) > 1 else None,
+               "sums_ms": mean([r.get("sums_ms", 0.0) for r in good]),
+               "fluid_plus_sums_ms": mean([r["fluid_ms"] + r.get("sums_ms", 0.0) for r in good]),
+               "ssr_ms": mean([r.get("ssr_ms", 0.0) for r in good]),
                "forward_ms": mean([r["forward_ms"] for r in good]),
                "gpu_frame_ms": mean([r["gpu_frame_ms_complete"] for r in good]),
                "clocks": [kit.clock_text(r) for r in rs]}
         rows.append(row)
         md.append(f"| {name} | {len(good)}/{len(rs)} | {kit.fmt(row['fluid_ms'], 3)} | "
-                  f"{kit.fmt(row['spread'], 3)} | {kit.fmt(row['forward_ms'], 3)} | "
+                  f"{kit.fmt(row['spread'], 3)} | {kit.fmt(row['sums_ms'], 3)} | "
+                  f"{kit.fmt(row['fluid_plus_sums_ms'], 3)} | {kit.fmt(row['ssr_ms'], 3)} | "
+                  f"{kit.fmt(row['forward_ms'], 3)} | "
                   f"{kit.fmt(row['gpu_frame_ms'], 3)} | {'; '.join(row['clocks'])} |")
     bad = [r for r in records if not r["valid"]]
     if bad:

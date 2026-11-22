@@ -544,10 +544,12 @@ impl LoopbackHarness {
         let pawn_inputs = resolved_commands
             .iter()
             .map(|resolved| (resolved.pawn, resolved.command.movement.clone()))
-            .chain(
-                self.host_second_rider
-                    .map(|rider| (rider, super::predict_reconcile_harness_test_fixtures::idle_command().movement)),
-            )
+            .chain(self.host_second_rider.map(|rider| {
+                (
+                    rider,
+                    super::predict_reconcile_harness_test_fixtures::idle_command().movement,
+                )
+            }))
             .collect::<Vec<_>>();
         let trigger_use_edges: HashMap<_, _> = resolved_commands
             .iter()

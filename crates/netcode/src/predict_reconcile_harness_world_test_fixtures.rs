@@ -340,7 +340,10 @@ impl LoopbackHarness {
     /// carrying two riders on opposite sides of its pivot: the client's own pawn,
     /// and an unowned host pawn the client presents as a remote. The host
     /// presents the client's pawn from its delay buffer.
-    pub(crate) fn with_spinning_travelling_platform(link: LinkConfig, spin_rate_rad_s: f32) -> Self {
+    pub(crate) fn with_spinning_travelling_platform(
+        link: LinkConfig,
+        spin_rate_rad_s: f32,
+    ) -> Self {
         let mut h = Self::new(link);
         h.world = CollisionWorld::new();
         h.host_registry
@@ -357,7 +360,10 @@ impl LoopbackHarness {
             ..Transform::default()
         });
         h.host_registry
-            .set_component(second, super::predict_reconcile_harness_test_fixtures::component())
+            .set_component(
+                second,
+                super::predict_reconcile_harness_test_fixtures::component(),
+            )
             .expect("second rider movement");
         h.host_registry
             .set_component(

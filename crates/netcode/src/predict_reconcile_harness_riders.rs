@@ -48,13 +48,15 @@ fn client_view(h: &mut LoopbackHarness) -> Option<ClientView> {
 /// mover. Also returns the host's own drift of that point, which bounds how
 /// well the truth itself holds.
 fn ride_ten_revolutions(world_space_riders: bool) -> (f32, f32) {
-    let mut h = LoopbackHarness::with_spinning_travelling_platform(mandated_link(), SPIN_RATE_RAD_S);
-    h.client_replication.set_world_space_riders(world_space_riders);
+    let mut h =
+        LoopbackHarness::with_spinning_travelling_platform(mandated_link(), SPIN_RATE_RAD_S);
+    h.client_replication
+        .set_world_space_riders(world_space_riders);
     let mut delay = InterpolationDelayState::new();
     let host_rider = h.host_second_rider.expect("second rider");
     let host_mover = h.host_mover.expect("host mover");
-    let frames = WARMUP_FRAMES
-        + (REVOLUTIONS * std::f32::consts::TAU / SPIN_RATE_RAD_S / DT).ceil() as u32;
+    let frames =
+        WARMUP_FRAMES + (REVOLUTIONS * std::f32::consts::TAU / SPIN_RATE_RAD_S / DT).ceil() as u32;
     let mut truth: Option<Vec3> = None;
     let mut host_drift = 0.0_f32;
     let mut worst = 0.0_f32;
@@ -79,7 +81,9 @@ fn ride_ten_revolutions(world_space_riders: bool) -> (f32, f32) {
             continue;
         };
         let host_local = local_point(
-            h.host_registry.get_component::<Transform>(host_mover).unwrap(),
+            h.host_registry
+                .get_component::<Transform>(host_mover)
+                .unwrap(),
             h.host_registry
                 .get_component::<Transform>(host_rider)
                 .unwrap()

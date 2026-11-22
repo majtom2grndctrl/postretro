@@ -86,9 +86,9 @@ mod presentation;
 pub mod presentation_commands;
 mod projectile_presentation;
 mod reconcile;
-mod rider_rebase;
 mod remote_materialize;
 mod replication;
+mod rider_rebase;
 mod seat;
 pub mod session_players;
 mod snapshot_apply;
@@ -155,9 +155,9 @@ mod predict_reconcile_harness_fluid_tables;
 mod predict_reconcile_harness_swim;
 // Co-op vault parity: a predicted mantle replayed from acked baselines.
 #[cfg(test)]
-mod predict_reconcile_harness_vault;
-#[cfg(test)]
 mod predict_reconcile_harness_riders;
+#[cfg(test)]
+mod predict_reconcile_harness_vault;
 // E24 swim slots: the output-only immersion component is never read by prediction,
 // replay or the wire merge.
 #[cfg(test)]

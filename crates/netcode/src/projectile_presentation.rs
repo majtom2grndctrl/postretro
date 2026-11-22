@@ -1971,7 +1971,8 @@ mod tests {
             &advanced_ack.despawn_tombstones,
         );
 
-        let stats = observer_replication.sample_into_registry(&mut observer_registry, 42.0, 0.0, 1.0);
+        let stats =
+            observer_replication.sample_into_registry(&mut observer_registry, 42.0, 0.0, 1.0);
         assert_eq!(stats.presented, 2);
         for (index, class) in ["enemy_plasma_blue", "enemy_plasma_orange"]
             .into_iter()

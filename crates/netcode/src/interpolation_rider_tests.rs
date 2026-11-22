@@ -36,7 +36,10 @@ fn movement(ground: GroundRef) -> MovementOnlySample {
     }
 }
 
-fn bracket_grounds(buffer: &RemoteInterpolationBuffer, tick: f64) -> (Option<GroundRef>, Option<GroundRef>) {
+fn bracket_grounds(
+    buffer: &RemoteInterpolationBuffer,
+    tick: f64,
+) -> (Option<GroundRef>, Option<GroundRef>) {
     let bracket = buffer
         .presented_pose(NET, tick)
         .and_then(|pose| pose.rider_bracket)

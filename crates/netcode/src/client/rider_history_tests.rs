@@ -7,7 +7,7 @@ use postretro_entities::{
     KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode, Transform,
 };
 
-use super::{MoverHistoryBuffer, MoverHistorySample, MOVER_HISTORY_LIMIT};
+use super::{MOVER_HISTORY_LIMIT, MoverHistoryBuffer, MoverHistorySample};
 use crate::collision::moving::MoverPose;
 
 const MOVER: u32 = 4;

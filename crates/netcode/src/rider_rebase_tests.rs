@@ -106,7 +106,10 @@ fn rebase_keeps_blended_orientation_and_scale() {
 #[test]
 fn rebase_attaches_only_when_both_samples_name_one_mover() {
     let cases = [
-        (Some(GroundRef::Mover(MOVER)), Some(GroundRef::Mover(MOVER + 1))),
+        (
+            Some(GroundRef::Mover(MOVER)),
+            Some(GroundRef::Mover(MOVER + 1)),
+        ),
         (Some(GroundRef::World), Some(GroundRef::Mover(MOVER))),
         (Some(GroundRef::Mover(MOVER)), Some(GroundRef::Airborne)),
         (Some(GroundRef::Mover(MOVER)), None),
@@ -130,9 +133,15 @@ fn rebase_falls_back_without_a_mover_pose_for_either_sample_or_the_frame() {
     let world = blended(&bracket);
     let missing_from = |id, tick| (tick != 10).then(|| authoritative(id, tick)).flatten();
     let missing_to = |id, tick| (tick != 12).then(|| authoritative(id, tick)).flatten();
-    assert_eq!(rebase_rider(&bracket, &world, missing_from, presented), None);
+    assert_eq!(
+        rebase_rider(&bracket, &world, missing_from, presented),
+        None
+    );
     assert_eq!(rebase_rider(&bracket, &world, missing_to, presented), None);
-    assert_eq!(rebase_rider(&bracket, &world, authoritative, |_| None), None);
+    assert_eq!(
+        rebase_rider(&bracket, &world, authoritative, |_| None),
+        None
+    );
 }
 
 #[test]

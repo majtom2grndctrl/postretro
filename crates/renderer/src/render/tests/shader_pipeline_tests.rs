@@ -32,7 +32,7 @@ fn zero_strength_materials_skip_emissive_texture_sampling() {
             "kinematic",
             kinematic,
             "emissive = sample_post_retro(emissive_texture",
-            "+ emissive * material.emissive_strength",
+            "return emissive * material.emissive_strength;",
         ),
     ] {
         let derivatives = shader

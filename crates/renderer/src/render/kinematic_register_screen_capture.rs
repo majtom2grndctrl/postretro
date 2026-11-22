@@ -3,7 +3,8 @@
 // See: context/lib/rendering_pipeline.md §7.3 (the mover register cliff)
 
 /// Builds `KinematicBrushPass::new` on a Metal device and writes the MSL
-/// wgpu-hal logs for each entry point to `$POSTRETRO_REGISTER_SCREEN_OUT/<entry>.metal`.
+/// wgpu-hal logs for each entry point, both beauty fragment entries included,
+/// to `$POSTRETRO_REGISTER_SCREEN_OUT/<entry>.metal`.
 /// It drives the production constructor, so the MSL is exactly what the engine
 /// hands the Metal compiler. A measurement, not a check: run it through
 /// `tools/metal_register_screen/screen_mover.sh`.
@@ -62,8 +63,13 @@ fn kinematic_pipeline_msl_capture_for_the_register_screen() {
         std::fs::write(format!("{out}/{entry}.metal"), body).expect("write MSL");
         written.push(entry.to_owned());
     }
-    assert!(
-        written.iter().any(|e| e == "vs_main") && written.iter().any(|e| e == "fs_main"),
-        "captured {written:?}; wgpu-hal must log the mover's vs_main and fs_main (Metal only)"
-    );
+    // Both beauty pipelines' fragment entries, one per specular style.
+    let expected = postretro_render_cpu::frame_uniforms::SpecularStyle::ALL
+        .map(super::kinematic_brush::beauty_fragment_entry);
+    for entry in std::iter::once("vs_main").chain(expected) {
+        assert!(
+            written.iter().any(|e| e == entry),
+            "captured {written:?}; wgpu-hal must log the mover's {entry} (Metal only)"
+        );
+    }
 }

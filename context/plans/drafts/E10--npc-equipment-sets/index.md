@@ -13,10 +13,10 @@ Owner-requested capability (2026-11-13 roadmap item "Weapon-gated enemy attacks"
 - **Carried equipment is the runtime state; a set is how it is chosen.** An instance's state is its carried weapons, its mounted attachments and its layer stack. The set it was equipped from does not survive spawn or `equip`. The gate, the guard and the wire read carried equipment only. So later single-weapon give, take, drop and pickup are additive: no change to the gate, guard or wire. "Carried" is named apart from held ownership (`entity_model.md` §3) and held enemies (§7c).
 - **Weapons are referenced by identity.** Every weapon reference this brief adds or touches takes the weapon archetype's `defineEntity` value, as `inventory.loadout` does: set weapons, mount keys, the guard, and `defineAttack`'s `weapon`. The string form of `defineAttack`'s `weapon` is retired, and `content/` call sites migrate in this brief (pre-stable, `index.md`). Map keys stay strings, as the projectile trap's `weapon` key does.
 - **Equipment set is a descriptor-owned authoring bundle.** `defineEquipment` returns a handle named by its binding, as defense layers are (`scripting.md` §1, Handles over strings). It names weapons, optional non-weapon gear (socket → prop model), and capacity overrides for the archetype's defense layers. Sets are rig-independent and shareable across archetypes. An archetype lists its sets; the list needs no `defineMod` registration. A placement selects a declared set and never tunes one (`entity_model.md` §4).
-- **Weapon mounts come from `E21--character-weapon-mounts`.** That brief introduces the archetype-owned `weaponMounts` table: each weapon a character may wield, mapped to the mount baked for its rig. Its first consumer is the player avatar. This brief consumes the table with the shape that brief settles, and adds only the NPC parts:
+- **Weapon mounts come from `E21--character-weapon-mounts`.** That brief introduces the character-owned `mesh.weaponMounts` table: each weapon a character may wield, mapped to the mount baked for its rig. Its first consumer is the player avatar. This brief consumes the table with the shape that brief settles, and adds only the NPC parts:
   - A carried weapon mounts; one that is not carried does not.
   - The mounted list composes in order, later entries winning per socket: base `mesh.attachments`, then mounts of carried weapons, then set gear. Set gear carries the rig caveat, and the docs say so.
-  - The dev rifle squads move from `mesh.attachments` to `weaponMounts`, unless that brief already moved them.
+  - The dev rifle squads move from `mesh.attachments` to `mesh.weaponMounts`; that brief has already moved their bakes into `models/ar_4/`.
 - **Equipment is not Inventory.** No held ownership, switching lane, reserve ammo or pickup.
   - Weapon state stays in the AI weapon controllers, keyed by carried weapon.
   - `done/E16--enemy-ranged-projectile/` rejected `Inventory` because enemies needed no switching. This brief gives them equipment that changes, and the decision still holds for two reasons.
@@ -84,13 +84,16 @@ export const grunt = defineEntity({
   canonicalName: "grunt",
   components: {
     // faction as for any NPC
-    mesh: { model: "models/grunt/model.gltf" /* animations… */ },
+    mesh: {
+      model: "models/grunt/model.gltf",
+      // Shape owned by E21--character-weapon-mounts. Baked against this rig; mounted only while carried.
+      weaponMounts: [
+        { weapon: burstRifle, attachments: { hand_r: "models/ar_4/grunt.gltf" } },
+        { weapon: longRifle, attachments: { hand_r: "models/ar_4_long/grunt.gltf" } },
+      ],
+      // animations…
+    },
     health: { max: 100, layers: [{ layer: armor, capacity: 0 }] }, // present, skipped until a set raises it
-    // Shape owned by E21--character-weapon-mounts. Baked against this rig; mounted only while carried.
-    weaponMounts: [
-      { weapon: burstRifle, attachments: { hand_r: "models/ar_4_grunt/model.gltf" } },
-      { weapon: longRifle, attachments: { hand_r: "models/ar_4_long_grunt/model.gltf" } },
-    ],
     equipment: [
       { set: burstKit, weight: 3 },
       { set: marksmanKit }, // weight defaults to 1

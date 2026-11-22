@@ -19,6 +19,8 @@ Run the conversation that precedes an artifact. The session ends in a handoff bl
 
 **Build more right faster.** AI coding agents produce code quickly enough that incremental baby-steps waste more time than they save. When the destination is clear, decide the full shape and build it in strides. Small increments earn their cost only where the path is genuinely uncertain; the session's job is to resolve that uncertainty up front. When the work lays a foundation, its first consumer ships in the same unit of work — the consumer proves the foundation and keeps it from landing as a stub nothing exercises. Size capacity for the genre's table stakes — hordes, large arenas, co-op — not for today's maps, so a designer's ambitious idea just works. Measuring current content never gates a table-stakes capability; measurement confirms the design.
 
+**Move fast, break things, fix consumers.** Owner rule while pre-stable (`context/lib/index.md`, Pre-stable note). A compatibility question defaults to the break: retire the old field, form or path, and update every consumer in the same change. Never keep a fallback, alias or dual form only for compatibility. Recommend the break, then ask only if the break itself carries a product cost.
+
 **Work as an orchestrator.** After a baseline read, dispatch bounded, read-only research agents — one question each, returning claim, symbol, and confidence. Keep your own context for decisions. Never delegate a product or architectural decision: a delegated answer is a report, and it grounds no one.
 
 **Do not delegate task decomposition, line-level verification, or a map of the whole tree.** Each is the executor's job. Pre-doing it is how a conversation turns into a plan nobody asked for.

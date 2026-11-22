@@ -97,10 +97,10 @@ test against the parent's `prl-build`, named by
 | 19 Same SH base projection at `low` and `high` | `the_sh_base_projection_ignores_fidelity` over every mover fixture (plan only, no ray; routine closet, on demand the rest) | achievable as stated | pass: closet routine; four fixtures on demand; stress-env-volumes gate figures identical at `low`, `high`, `--release` |
 | 20 One byte under SH base peak refuses by its name (G1) | `one_byte_under_the_sh_base_peak_refuses_by_its_name_through_gate_order` (fixture with delta projection below the base peak, through `run`) | achievable as stated | pass (both SH gates admit at the peak; the lightmap gate may refuse later: clarification) |
 | 21 `build_pipeline.md` rows; `docs/level_design.md` flag | doc edit, reviewed against this table; a grep test that `--mover-payload-max-size` appears in `main.rs` help and `docs/level_design.md` | achievable as stated | pass |
-| 22 stress-env-volumes admitted at 16 GiB, `low`, every gate | stop-at-gate release run of `prl-build` (all gates, no bounce ray); a refusal moved to another gate stops the build for the owner | achievable as stated | pass for both SH gates (SH base 11,426,906,815 B, SH-delta 9,536,186,384 B at 16 GiB, `low`, `high`, `--release`). **Outstanding:** the lightmap gate, which runs after every SH bake (full cold bake) |
-| 23 Estimate ÷ largest cold window per phase; `--release` admission | `#[ignore]` findings harness on setpiece and stress-env-volumes at `low` and `high`; stress cold may need the owner's machine (this container: 4 cores, 15 GB) | achievable as stated | setpiece: estimate ÷ largest cold window 1.59× (`low`), 1.58× (`high`), per phase in Findings. **Outstanding:** stress-env-volumes (full cold bake) |
-| 24 Block bytes against 256 MiB | the same harness's block counts, both maps, `low`/`high` | achievable as stated | setpiece: 21.7 MB (`low`), 22.2 MB (`high`) of 256 MiB. **Outstanding:** stress-env-volumes |
-| 25 SH base time before and after | parent and branch binaries, cold, same two maps, layer resolution apart; warm full hit on setpiece at `low` | achievable as stated | setpiece: no regression cold (33.81→33.00 s `low`, 135.97→137.26 s `high`), full hit +0.18 s; layers apart. **Outstanding:** stress-env-volumes |
+| 22 stress-env-volumes admitted at 16 GiB, `low`, every gate | stop-at-gate release run of `prl-build` (all gates, no bounce ray); a refusal moved to another gate stops the build for the owner | achievable as stated | **pass**: full cold bake at 16 GiB, `low`: SH base, SH-delta and lightmap gates all admit (11.43, 9.54, 5.90 GB) and the build completes in 4,903 s |
+| 23 Estimate ÷ largest cold window per phase; `--release` admission | `#[ignore]` findings harness on setpiece and stress-env-volumes at `low` and `high`; stress cold may need the owner's machine (this container: 4 cores, 15 GB) | achievable as stated | setpiece 1.59× / 1.58×; **stress-env-volumes 1.42×** (11.43 GB estimate ÷ 8.06 GB cold peak), per window in Findings |
+| 24 Block bytes against 256 MiB | the same harness's block counts, both maps, `low`/`high` | achievable as stated | setpiece 21.7 / 22.2 MB; **stress-env-volumes 55.5 MB at `low`** (21% of 256 MiB). **Outstanding:** stress at `high` (another full bake) |
+| 25 SH base time before and after | parent and branch binaries, cold, same two maps, layer resolution apart; warm full hit on setpiece at `low` | achievable as stated | setpiece: no regression cold, full hit +0.18 s; stress branch cold SH Bake 3,716.9 s, layers 6.9 s apart. **Outstanding:** parent stress cold time (refused at the default; raised budget would be another full bake) |
 | 26 Owner's 16 GB desktop sampling | owner, cold `--no-cache`, private bytes every 30 s | manual | **outstanding: owner, manual** |
 
 ## Tasks
@@ -291,3 +291,32 @@ telemetry and playback-trace reducer unittests ok. The workspace build
 needed `libasound2-dev` and `libudev-dev` installed in this container.
 On-demand suites not run here: the parity harness beyond the closet and
 setpiece, the setpiece M1 variant, and any stress-env-volumes full bake.
+
+### stress-env-volumes, full cold bake (release, this container)
+
+`prl-build stress-env-volumes.map --no-cache --bake-fidelity low` at the
+default 16 GiB budget, branch at `bba6b755`, 4 workers, 15 GB host. Resident
+memory sampled every 10 s beside the kernel's high-water mark (VmHWM),
+against the stage log. Every gate admitted and the build completed: exit 0,
+4,903 s, an 818 MB PRL.
+
+| Window | Measured | Priced | Ratio |
+|---|---|---|---|
+| SH base stage (layers to mover bake), 3,717 s | 3.09 GB high-water | mover bake 8.84 GB, the stage's largest phase | 2.86× |
+| SH delta and direct-SH stages (22.4 + 11.2 + 0.8 + 4.9 s) | ≤ 6.05 GB high-water at their end | SH-delta gate 9.54 GB | ≥ 1.58× |
+| Mover direct window (direct half, delta compaction, id 57) | 8.06 GB high-water: the whole bake's peak | mover direct 11.43 GB | 1.42× |
+| Lightmap bake, 885 s | 3.97 GB sampled | lightmap gate 5.90 GB | 1.49× |
+
+The gate's estimated peak, 11.43 GB, ÷ the largest cold window, 8.06 GB, is
+1.42×. The parent's estimate was 21.81 GB, 2.71× this peak. The cold peak
+sits above the owner's warm 5.64 GB (direct-SH delta) because a cold build
+holds what a warm one reads back. Per-phase figures inside the SH base
+stage need the in-process ledger, which a run this size does not fit here;
+the stage as a whole peaked at 3.09 GB.
+
+Blocks: 55,525,390 B of the 256 MiB cap (21%), 11 movers (bounce payload
+22.7 MB, 8,847 depth records, 8,846 live tiles of the 32,768 range). Stage
+times: SH Bake 3,716.9 s (layers 6.9 s; the mover bake about 3,555 s, the
+two 140-pose lifts 371 and 359 s), Lightmap 884.7 s. The parent's cold bake
+was not timed here: at the default it is refused, and at a raised budget it
+would add another 80-minute run.

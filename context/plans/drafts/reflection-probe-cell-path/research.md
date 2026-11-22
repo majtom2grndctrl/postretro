@@ -135,6 +135,8 @@ Raised by `/validate-plan` (2026-11-22), unmeasured.
 - **Cost model:** at least one evaluation per target pixel, not per cell. Near views (127–225 px per cell at 4K, about 23 at Auto) evaluate a few times per cell rather than once. Hidden water costs nothing, because raster depth rejects it.
 - **IP:** the reduced-resolution screen target is the class the shipped SSR layer already sits in (Killzone Shadow Fall, 2014, half-resolution reflection; `plans/done/fluid-ssr-reflections/ip-check.md`). The texture-space filings that gate the cell pool (Qualcomm '166, EP4409531B1, '715; Intel '475) need a texel-space atlas or mask it lacks. It still needs its own claims check before it ships.
 
+**Second texel-rate consumer, for the shape choice.** `mover-smooth-specular-pipeline` (landed) measured the mover pass at 4K at 18.7–19.2 ms in smooth and 21.0–23.1 ms in pixel. Pixel's extra is evaluating lights at each texel's point per fragment (`rendering_pipeline.md` §12, Mover specular cost). That is the same per-pixel evaluation of a per-texel value as this brief's. A texel pool could someday serve it; a screen-space probe target could not. The texel pool's IP class is the same either way. Weigh it only if a brief proposes that consumer.
+
 ## Shape measurements
 
 Not yet run. The brief's Open questions list the rows and the decision rule.

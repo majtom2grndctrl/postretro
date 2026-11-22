@@ -69,6 +69,7 @@ Orderings cite `research.md` §Pins.
 - **Buffer usage:** one buffer bound as storage to the sums pass and as a uniform to the fluid fragment, or a copy into a uniform. Delegated. Check the usage combination on Metal, Vulkan and DX12.
 - **Compute group:** the share table is fragment-visible today. The sums pass needs it with compute visibility, through its own layout over the same buffer, or a widened one.
 - **First slice:** the sums pass and blend behind the parity test, then one 5300M A/B at probes 4K. The ratio cost there was largest pre-landing.
+- **Register screen:** the reflecting entry loses its light loop, which may move it to a different VGPR tier on the 5300M (§7.3, Mover register cliff). Screen `fs_main_reflecting` before and after with `tools/metal_register_screen/`'s method, retargeted from the mover pipelines, so a timing change has a named cause.
 - **Large files:** `fluid_surface.rs` and `renderer_render_frame.rs` are past §2.1's split line. Split the touched responsibility out first, in its own behaviour-preserving commit.
 
 ## Open questions

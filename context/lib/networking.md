@@ -631,10 +631,12 @@ hit zone, replicated beside placement in the tuning payload; a connected client
 predicts from that host value, never from the client-local viewmodel mesh (the
 host holds no remote viewmodel). Within each peer's path, the spawned projectile
 origin equals its validated fire origin. If the projectile's exact radius contacts
-static world along the eye-to-muzzle sweep, or the eye ray contacts world at or before
+the world along the eye-to-muzzle sweep, or the eye ray contacts world at or before
 the muzzle's forward plane, that peer uses the eye origin so the projectile cannot
-spawn through nearby geometry. The eye-ray query reaches through the muzzle plane
-even when projectile range is shorter. Otherwise its direction converges on the
+spawn through nearby geometry. That world holds movers at the peer's tick poses: the
+host tick's on the host, the prediction table's on a client, never a presented pose.
+The eye-ray query reaches through the muzzle plane even when projectile range is
+shorter. Otherwise its direction converges on the
 crosshair target. An omitted offset preserves the historical camera-eye origin. The
 observer's third-person muzzle, posed by the avatar socket rather than placement,
 is a separate presentation vantage, deferred.
@@ -649,10 +651,9 @@ lag-compensation history window (see *Non-goals*).
 admits activations, resolves charge and shot statistics, debits each shot's resource,
 owns timed reload progression and reserve transfer, and mints authorized shots. It
 never applies a client's target or damage from this path. Projectile FIRE resolves
-the eye ray against static world and live targetable entities to reconstruct an
-obstruction-safe origin and crosshair-converged direction. Decided, not yet built: that
-world includes movers at the host tick's pose. Every authorized shot
-retains its resolved combat and presentation tuning through later switching or
+the eye ray against the world, with movers at the host tick's pose, and live targetable
+entities to reconstruct an obstruction-safe origin and crosshair-converged direction.
+Every authorized shot retains its resolved combat and presentation tuning through later switching or
 descriptor replacement. Hit declarations cannot select those statistics.
 
 Each execution, including a hold restart, requires a client-named initiation on an
@@ -1009,43 +1010,35 @@ tradeoff. Exact launch-pose reconciliation requires a separate protocol design.
 **HIT is client-authoritative declaration.** The client casts its own ray against the
 world it renders and declares the result; the host validates cheaply and applies damage.
 This is sound only because co-op PvE is a trust-with-cheap-validation model — PvP is a
-non-goal. Splash projectile detonation is stricter: the declaration binds the authorized
-shot, but the host derives the first contact from frozen fire origin, direction, speed,
-radius, range, lifetime, and elapsed host ticks. The client never selects a splash center.
-A splash declaration waits until host travel since FIRE, at the frozen speed, covers its
-farthest valid declared contact plus one tick, capped by frozen range and lifetime, so a
-start admitted late after a stall still replays far enough to reach the contact the
-client saw. A late start fires from the pawn's live eye along its captured aim, so after
-the pawn moves the host's ray can meet the world beyond the declared point. FIRE
-therefore freezes the host's own first static-world contact along the frozen ray, swept
-at the frozen radius within frozen reach, and a declared world contact waits for the
-larger of that distance and its own. A declared entity contact waits only for its own
-point: a longer wait would replay against a target that has since moved. If the host's
-ray misses that entity, nothing detonates; a known gap. The declaration only delays the
-replay and never selects the detonation.
-
-**Decided, not yet built: the host marches client splash shots and credits on-path
-impacts.** This replaces the replay, the hold and the frozen static contact above. It
-reverses "the client never selects a splash center", so the shooter gets credit for
-the impact it saw.
+non-goal. Splash projectile detonation is stricter: the host marches each client splash
+shot and accepts a declared impact only on its own path, so the shooter gets credit for
+the impact it saw without choosing where the blast lands off that path.
 
 - **March.** Each host tick, where host projectiles advance, the host steps each open
   client splash shot's frozen path one tick against that tick's world, with movers at
-  that tick's pose. It tests world contacts only and never steps on the FIRE tick.
+  that tick's pose. It tests world contacts only and never steps on the FIRE tick. A
+  march whose centre is inside a mover's hull is struck where it is.
 - **Credit.** The first valid declared contact counts when it lies within an on-path
-  tolerance of the host's frozen path. A late start's contact usually does not.
+  tolerance of the host's frozen path. FIRE fixes the tolerance: projectile radius, plus
+  the launched muzzle's offset from the eye ray, plus slack for eye prediction. A late
+  start's contact usually does not.
 - **Deciding point.** A host world contact nearer than the declared point wins, with its
-  own surface. So does a host contact at a declared world point. Otherwise the blast
-  lands at the declared point. A declared enemy still live there is the impact target,
-  so the weapon's direct push composes with splash. Otherwise the declared normal
-  orients the blast.
+  own surface. So does one within a small fixed slack past a declared world point: before
+  a world point lands in open air, the host casts that slack ahead, so a client cannot
+  stop a blast just short of a wall. Otherwise the blast lands at the declared point. A
+  declared enemy still live there is the impact target, so the weapon's direct push
+  composes with splash. Otherwise the declared normal orients the blast.
 - **Fallbacks.** With an off-path first contact, the host's own march contact decides.
-  A declaration with no valid contact sets off nothing.
+  A declaration with no valid contact sets off nothing. A march that runs out of range
+  or lifetime first still lands a declared point inside the path it covered; one beyond
+  it is refused and FIRE stands.
 - **Release.** With the declaration in hand, the blast lands before AI on the first tick
   the march reaches its deciding point.
 - **Observers.** A client splash rocket's display flight steps with the march and
-  vanishes at the deciding point without a contact flash. The burst shows with the
-  blast.
+  vanishes at the deciding point without a contact flash. It never moves backward: a
+  declared point behind it leaves it where it stands, and a refusal ends it where the
+  march stopped. Like every observed projectile, its end pose stays published until
+  peers acknowledge it, about one round trip. The burst shows with the blast.
 
 Entities never cut the host path short, so a direct hit the host's flight passes by
 still detonates. The client selects only which point on the host's path counts. One
@@ -1099,10 +1092,10 @@ this design avoids outright by not needing rewind at all. The attacker eye origi
 validation is the live, crouch-aware eye height, never the standing reference — a
 standing-eye ray would false-reject a legitimate crouched shot near cover.
 
-Movers are dynamic occluders, so validation ignores them too. Decided, not yet built: the
-shooter's own cast sees movers at its predicted poses, so an honest client never declares
-through a closed door. A host mover check would reject honest hits near a moving edge,
-where host and predicted poses differ by up to a round trip of travel.
+Movers are dynamic occluders, so validation ignores them too. The shooter's own cast
+sees movers at its predicted poses, so an honest client never declares through a closed
+door. A host mover check would reject honest hits near a moving edge, where host and
+predicted poses differ by up to a round trip of travel.
 
 ### Ownership and identity maps
 

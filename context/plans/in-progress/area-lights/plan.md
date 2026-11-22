@@ -273,8 +273,8 @@ Row 11 now reads, in the brief and here:
 | 58 compose slot per area light (O4) | glow table vs namespaces test | achievable | pass |
 | 59 static before animated keeps steady glow (O16) | glow evaluation test | achievable | pass |
 | 60 no area → no entries; cap fails; loader rejects (O5) | compiler + loader tests | achievable | pass |
-| M1 hallway cold/warm bake vs 4 × 4 grid | owner run, recorded here | manual | outstanding: owner manual check |
-| M2 penumbra RMS at 32/64 vs 256 | measurement run + owner A/B | manual | outstanding: owner manual check |
+| M1 hallway cold/warm bake vs 4 × 4 grid | owner run, recorded here | manual | pass, restated by the owner (2026-11-22): measured on the `area-lights-ab-panel`/`-grid` room pair instead of hallway copies, debug `prl-build --no-cache`: panel 4 s total (lightmap 3.7 s), 16-point grid 9–10 s, 31 s with the points 2 units under the glass. A low-quality hallway preview (`-j 2`, `--lightmap-density 0.1`, `--sh-probe-spacing 2`) showed the skylight in place; its 20.6 min was 17 min SH bake from the map's 678 spot lights, so hallway totals would mostly measure those. Owner judged hallway copies overkill |
+| M2 penumbra RMS at 32/64 vs 256 | measurement run + owner A/B | manual | waived by the owner (2026-11-22): needs full-density hallway bakes; no visible penumbra noise in the M3 A/B |
 | M3 skylight vs template grid A/B | owner, in-engine | manual | pass (owner, 2026-11-22, `area-lights-ab-panel` vs `-grid`): the 16-point grid floods the ceiling around the panel and reads over-exposed; the panel reads as light leaving the glass, away from the ceiling. The corridor panel fades out with no visible edge at its reach |
 | M4 scripted flicker in step | owner, in-engine | manual | pass (owner, 2026-11-22, `area-lights-demo`): panes and room light pulse together |
 | M5 entities under skylight | owner, in-engine | manual | pass (owner, 2026-11-22, `area-lights-ab-panel`): dummies and enemy lit and shaded as expected; no entity shadow, as the v1 refusal intends |

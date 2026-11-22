@@ -38,13 +38,20 @@ fn a_help_token_consumed_as_a_value_is_not_a_help_request() {
 }
 
 #[test]
+fn a_bare_separator_is_stepped_over_not_rejected() {
+    // `xtask run <map> -- --host` forwards the second `--` to the engine.
+    assert_eq!(check(&argv(&["maps/x.prl", "--", "--host"])), Verdict::Run);
+    assert_eq!(check(&argv(&["--", "--hepl"])), Verdict::Unknown("--hepl".into()));
+    assert_eq!(check(&argv(&["--", "--help"])), Verdict::Help);
+}
+
+#[test]
 fn unregistered_flag_tokens_are_rejected_by_their_first_token() {
     for (launch, token) in [
         (&["--hepl"][..], "--hepl"),
         (&["--version"][..], "--version"),
         (&["maps/x.prl", "-x"][..], "-x"),
         (&["--mod", "dev", "--modd", "x", "--nope"][..], "--modd"),
-        (&["--"][..], "--"),
         (&["-"][..], "-"),
         // A switch's parser compares the whole token: the `=` form is dropped.
         (&["--windowed=1"][..], "--windowed=1"),

@@ -307,12 +307,14 @@ pub(crate) enum Verdict {
 
 /// Classify argv (including `argv[0]`). A flag token is any `-`-prefixed token
 /// not consumed as a preceding flag's value. Help wins wherever it appears.
+/// A bare `--` is a separator, not a flag: launchers forward it (`xtask run
+/// <map> -- --host`), and the engine has always stepped over it.
 pub(crate) fn check(args: &[String]) -> Verdict {
     let mut help = false;
     let mut unknown = None;
     let mut iter = args.iter().skip(1).peekable();
     while let Some(arg) = iter.next() {
-        if !arg.starts_with('-') {
+        if !arg.starts_with('-') || arg == "--" {
             continue;
         }
         if let Some(spec) = lookup(arg) {

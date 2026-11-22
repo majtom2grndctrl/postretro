@@ -1,6 +1,6 @@
 # E10--npc-equipment-sets
 
-Brief · resumable · draft, third reshape applied; owner API review pending · Epic 10 · reads: `context/lib/entity_model.md` §2 (Weapon vocabulary, Defense layers and damage types), §4, §7c · `context/lib/scripting.md` §1 (Authoring API style), §2, §11, §12 · `context/lib/networking.md` §Version gates, engine-randomness posture · `context/lib/resource_management.md` §7 (Sockets) · read at e761fb13
+Brief · resumable · draft, third reshape applied; owner API review pending · Epic 10 · reads: `context/lib/entity_model.md` §2 (Weapon vocabulary, Defense layers and damage types), §4, §7c · `context/lib/scripting.md` §1 (Authoring API style), §2, §11, §12 · `context/lib/networking.md` §Version gates, engine-randomness posture · `context/lib/resource_management.md` §7 (Sockets) · depends on `drafts/E21--character-weapon-mounts` (builds after it lands) · read at e761fb13
 
 ## Problem
 Owner-requested capability (2026-11-13 roadmap item "Weapon-gated enemy attacks"; confirmed 2026-11-22): a modder or level designer equips individual NPCs of one archetype differently, and equipment can change during play. One grunt carries a burst rifle, the next a marksman rifle and armor. Today an enemy's weapons are fixed in its archetype's attack rows, its armor in its `health` block, its visible gun in `mesh.attachments`. No placement key, spawner key or script step varies any of them, so each combination needs its own archetype and map classname, a spawner releases only one, and nothing can change what an NPC carries at runtime. When done:
@@ -13,7 +13,10 @@ Owner-requested capability (2026-11-13 roadmap item "Weapon-gated enemy attacks"
 - **Carried equipment is the runtime state; a set is how it is chosen.** An instance's state is its carried weapons, its mounted attachments and its layer stack. The set it was equipped from does not survive spawn or `equip`. The gate, the guard and the wire read carried equipment only. So later single-weapon give, take, drop and pickup are additive: no change to the gate, guard or wire. "Carried" is named apart from held ownership (`entity_model.md` §3) and held enemies (§7c).
 - **Weapons are referenced by identity.** Every weapon reference this brief adds or touches takes the weapon archetype's `defineEntity` value, as `inventory.loadout` does: set weapons, mount keys, the guard, and `defineAttack`'s `weapon`. The string form of `defineAttack`'s `weapon` is retired, and `content/` call sites migrate in this brief (pre-stable, `index.md`). Map keys stay strings, as the projectile trap's `weapon` key does.
 - **Equipment set is a descriptor-owned authoring bundle.** `defineEquipment` returns a handle named by its binding, as defense layers are (`scripting.md` §1, Handles over strings). It names weapons, optional non-weapon gear (socket → prop model), and capacity overrides for the archetype's defense layers. Sets are rig-independent and shareable across archetypes. An archetype lists its sets; the list needs no `defineMod` registration. A placement selects a declared set and never tunes one (`entity_model.md` §4).
-- **Weapon mounts belong to the archetype.** Mounts are baked per rig (`resource_management.md` §7; `rifle-squads.ts` ships one AR_4 bake per rig). So the archetype maps each weapon it may carry to its mount (socket → prop model), beside `mesh.attachments`. A carried weapon mounts; a weapon that is not carried does not. This is a new NPC path. It does not reuse the weapon's `thirdPersonModel` or the player avatar mount, which does not seat weapons correctly on player models today. The mounted list composes in order, later entries winning per socket: base `mesh.attachments`, then mounts of carried weapons, then set gear. Set gear carries the rig caveat, and the docs say so.
+- **Weapon mounts come from `E21--character-weapon-mounts`.** That brief introduces the archetype-owned `weaponMounts` table: each weapon a character may wield, mapped to the mount baked for its rig. Its first consumer is the player avatar. This brief consumes the table with the shape that brief settles, and adds only the NPC parts:
+  - A carried weapon mounts; one that is not carried does not.
+  - The mounted list composes in order, later entries winning per socket: base `mesh.attachments`, then mounts of carried weapons, then set gear. Set gear carries the rig caveat, and the docs say so.
+  - The dev rifle squads move from `mesh.attachments` to `weaponMounts`, unless that brief already moved them.
 - **Equipment is not Inventory.** No held ownership, switching lane, reserve ammo or pickup.
   - Weapon state stays in the AI weapon controllers, keyed by carried weapon.
   - `done/E16--enemy-ranged-projectile/` rejected `Inventory` because enemies needed no switching. This brief gives them equipment that changes, and the decision still holds for two reasons.
@@ -43,7 +46,6 @@ Owner-requested capability (2026-11-13 roadmap item "Weapon-gated enemy attacks"
   `equipment` on a descriptor without `behavior` warns, and the block drops. A set weapon that is not a projectile weapon is disabled with the existing enemy-attack warning. A set weapon with no mount entry loads and mounts nothing.
 - **Non-goals.**
   - Single-weapon give, take, drop on death, NPC pickup and scavenging: later Epic 10 work, additive on carried state; each weapon brings its own mount.
-  - Player weapon mounts. The player avatar's `thirdPersonModel` mount has the same per-rig defect: on exo_red it mounts the unfitted viewmodel asset. A follow-up puts this brief's `weaponMounts` on the player descriptor, so players and NPCs share one mount vocabulary.
   - Off-hand IK onto a weapon grip socket. Mounts anchor at one socket, and two-handed clips place the off hand. A weapon model may already carry a `grip_l` socket, so nothing here blocks later IK.
   - Converting other string weapon references (player-side, map keys) to handles.
   - Hitscan enemy weapons: the projectile-only enemy rule stands.
@@ -53,10 +55,9 @@ Owner-requested capability (2026-11-13 roadmap item "Weapon-gated enemy attacks"
   - Player use: player pawns keep `inventory.loadout`.
   - Replicating NPC weapon resource state.
 - **Docs amended at promotion:**
-  - `entity_model.md`: Components, Weapon vocabulary (identity references, NPC weapon mounts), Defense layers (set capacity overrides), §4 equipment selection, §7c gate and per-set check.
+  - `entity_model.md`: Components, Weapon vocabulary (identity references, mounts follow carried weapons), Defense layers (set capacity overrides), §4 equipment selection, §7c gate and per-set check.
   - `scripting.md`: §2, §11, §12 group steps.
   - `networking.md`: NPC mount list, §Version gates history, and the randomness posture (set draws ride the enemy behavior-draw exception and run at spawn).
-  - `resource_management.md`: §7, NPC weapon mounts per archetype.
   - `build_pipeline.md`: §Custom FGD.
   - Human-facing: `docs/scripting-reference.md`, `docs/level_design.md`, `sdk/TrenchBroom/postretro.fgd`.
 
@@ -85,7 +86,7 @@ export const grunt = defineEntity({
     // faction as for any NPC
     mesh: { model: "models/grunt/model.gltf" /* animations… */ },
     health: { max: 100, layers: [{ layer: armor, capacity: 0 }] }, // present, skipped until a set raises it
-    // Baked against this rig; mounted only while carried.
+    // Shape owned by E21--character-weapon-mounts. Baked against this rig; mounted only while carried.
     weaponMounts: [
       { weapon: burstRifle, attachments: { hand_r: "models/ar_4_grunt/model.gltf" } },
       { weapon: longRifle, attachments: { hand_r: "models/ar_4_long_grunt/model.gltf" } },
@@ -124,7 +125,7 @@ Both runtimes ship.
 | set declaration | descriptor equipment table | `"equipment"` (list of `{set, weight}`) | `defineEquipment`, `components.equipment` | `defineEquipment`, `components.equipment` | n/a |
 | set name | binding name | string | binding name | binding name | `equipment` on `AiEnemy` and `entity_spawner` |
 | weapon reference | canonical name | canonical name string | weapon `defineEntity` value | weapon `defineEntity` value | n/a |
-| weapon mounts | descriptor mount table | `"weaponMounts"` (list of `{weapon, attachments}`) | `components.weaponMounts` | `components.weaponMounts` | n/a |
+| weapon mounts | defined by `E21--character-weapon-mounts` | as defined there | as defined there | as defined there | n/a |
 | set gear | set attachment map | `"gear"` | `gear` | `gear` | n/a |
 | guard read | brain scope, name-keyed leaf | `@carries.<weapon>` | `carries(weapon)` | `carries(weapon)` | n/a |
 | group step | typed command | n/a | `npcs(…).equip(set)` | `npcs(…).equip(set)` | n/a |
@@ -203,6 +204,7 @@ NPC mount list on the snapshot entity record, bitcode like the record's other fi
   - Per-set graph lowering with graph swap. Rejected: graph identity becomes the state, which forecloses single-weapon changes further. Its reachability check is borrowed.
   - Per-instance archetype selection: a placement or spawner draws from a weighted list of factory-built archetypes (the `rifleEnemy` precedent). Rejected: runtime equip still needs carried state, which leaves two mechanisms where this brief has one.
   - Weapon mounts inside sets. Rejected: mounts are per rig, so sets would multiply per rig, a mixed-rig `equip` would fail, and a dropped weapon would have no mount rule.
+  - A separate NPC mount table. Rejected: players and NPCs would declare the same mount two ways, against the one-weapon-vocabulary rule.
   - Slot attacks, where one row fires whatever is carried. Rejected: weapons differ in reach and cadence, so behavior differs by weapon.
 - First slice: carried-weapon filtering plus the row skip, on two placements in single player, before wire or equip work. It falsifies the riskiest assumption: that a skipped attack row leaves turns, tokens and clip moments clean.
 - Files past ~800 lines this extends: `data_archetype.rs`, `net_descriptor.rs`, `wire.rs`, `graph_eval.rs`, `spawner.rs`, `replication.rs`, `brain_programs.rs`, `compute.rs`. Split a cohesive block out first where this adds one, in its own behavior-preserving commit.

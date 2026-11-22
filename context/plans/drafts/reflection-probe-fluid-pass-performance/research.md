@@ -58,9 +58,9 @@ Kit: `measurements/fluid-base-pass-cost/metal/` (two-binary A/B, `CELL_BIN_BEFOR
 
 | Id | Scenario | Ordering | Expected |
 |---|---|---|---|
-| P1 | A script switches a stored light off on frame N | bridge write, descriptor flush, sums pass, fluid pass, all on N | The reflection drops that light on N |
+| P1 | A script switches a stored light off on frame N | bridge write, descriptor flush, sums pass, fluid pass, all on N; queue writes copy ahead of the frame's whole submission, so only an encoder command between the two passes can break it | The reflection drops that light on N |
 | P2 | Zero reflecting-variant draws (no fluid level, reflection-free only, or a mask shutting every reflecting draw); N reflecting draws | — | No dispatch; exactly one |
-| P3 | A face first drawn on N; an undrawn probe; the first frame after install | the sums pass evaluates every installed probe on N | No fragment reads a stale or unwritten sum |
+| P3 | A face first drawn on N; an undrawn probe; the first frame after a newly built level set is published | the sums pass evaluates every installed probe on N, before the fluid pass | No fragment reads a stale or unwritten sum |
 | P4 | Stored light on an animated curve at time t, after a prior frame at another time | the sums pass reads N's animation time | Matches per-fragment at t |
 | P5 | Level B built off the main thread while A draws, then published in A's place; frame N is the first after the publish | B's sums buffer and the sums pass's bind group are built in B's set, touch no pass state, and become the ones the dispatch binds at the publish, before N; frames before the publish dispatch into A's | N's sums are B's; no frame before N reads or writes B's |
 | P6 | A reflecting frame at the low tier; a very-high or ultra frame whose reflecting draws all lie on the selected plane; a compose-only frame; a mask set after the frame's uniform upload | the dispatch condition is the fluid pass's own: its draw gate, the frame's one mask snapshot and one tier value, every reflecting draw on or off the selected plane, never the screen-space pass's gate | A dispatch exactly when the fluid pass records a reflecting draw this frame; no fragment reads sums written on an earlier frame |

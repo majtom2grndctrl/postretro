@@ -117,7 +117,13 @@ fn plan_half_at(
         direct_lights: &direct_lights,
         uncompressed: false,
         tile_cap: MAX_PROBE_DEPTH_TILES,
+        payload_cap: crate::mover_probe_channel::DEFAULT_PAYLOAD_MAX_BYTES,
         mode,
+    })
+    .map(|mut plan| {
+        // Tests read each mover's reduced states, detached from the ledger.
+        plan.request.keep_states = true;
+        plan
     })
     .expect("the bounce half plans")
 }
@@ -140,7 +146,12 @@ fn bake_base(
         u64::MAX,
     )
     .expect("priced");
-    projection.price_movers(&plan.cost);
+    projection
+        .price_movers(
+            &plan.cost,
+            &crate::surface_radiance::DirectWindow::default(),
+        )
+        .expect("priced");
     let (base, outcome) = bake_sh_base_with_movers(
         ctx,
         &CONFIG,
@@ -393,7 +404,12 @@ fn a_budget_the_mover_channel_exceeds_refuses_with_the_sh_base_gates_error() {
         };
         let mut priced = gate(u64::MAX);
         let static_peak = priced.estimated_peak_bytes;
-        priced.price_movers(&plan.cost);
+        priced
+            .price_movers(
+                &plan.cost,
+                &crate::surface_radiance::DirectWindow::default(),
+            )
+            .expect("priced");
         let mover_peak = priced.estimated_peak_bytes;
         assert!(mover_peak > static_peak, "{static_peak} → {mover_peak}");
 
@@ -402,7 +418,12 @@ fn a_budget_the_mover_channel_exceeds_refuses_with_the_sh_base_gates_error() {
         projection
             .admit()
             .expect("without the mover, the budget admits");
-        projection.price_movers(&plan.cost);
+        projection
+            .price_movers(
+                &plan.cost,
+                &crate::surface_radiance::DirectWindow::default(),
+            )
+            .expect("priced");
         let error = projection
             .admit()
             .expect_err("the mover channel exceeds the budget");
@@ -467,7 +488,12 @@ fn the_sh_base_gate_prices_every_geometry_knot_and_refuses_by_name_below_it() {
             )
             .expect("priced")
             .1;
-            projection.price_movers(&plan.cost);
+            projection
+                .price_movers(
+                    &plan.cost,
+                    &crate::surface_radiance::DirectWindow::default(),
+                )
+                .expect("priced");
             projection
         };
         let knotted_peak = gate(&with_knots, u64::MAX).estimated_peak_bytes;
@@ -595,7 +621,7 @@ fn dark(text: String) -> String {
 /// A second door, `closet_door_b`, the first's copy on its path: two
 /// mover jobs, so a tile range the first fills stops the bake before the
 /// second.
-fn two_doors(text: String) -> String {
+pub(crate) fn two_doors(text: String) -> String {
     let start = text
         .find("{\n\"classname\" \"kinematic_mover\"")
         .expect("the door");
@@ -672,7 +698,7 @@ fn closet_states(
         let plan = plan_half(&fixture, ctx, poses, DEFAULT_BOUNCE_FILL);
         let job_bounces = plan.request.jobs[0].bounces;
         let (_, _, outcome) = bake_base(ctx, &plan, &plan.request, DEFAULT_BOUNCE_FILL, None);
-        (job_bounces, outcome.movers)
+        (job_bounces, outcome.reduced)
     })
 }
 
@@ -754,7 +780,7 @@ fn an_enclosing_terminus_reads_the_base_and_an_enclosing_mid_pose_stores_its_dar
     with_ctx(&fixture, |ctx, poses| {
         let plan = plan_half(&fixture, ctx, poses, DEFAULT_BOUNCE_FILL);
         let (_, _, outcome) = bake_base(ctx, &plan, &plan.request, DEFAULT_BOUNCE_FILL, None);
-        let [states] = outcome.movers.as_slice() else {
+        let [states] = outcome.reduced.as_slice() else {
             panic!("one door");
         };
         let pose_count = states.pose_count;
@@ -973,32 +999,26 @@ fn a_mover_past_the_tile_range_keeps_one_record_past_it_and_fails_by_name() {
             DEFAULT_BOUNCE_FILL,
             Some(&open(full_cache.path())),
         );
-        let carried = full.movers[0].depth.len();
+        let carried = full.reduced[0].depth.len();
         assert!(carried >= 4, "the door carries depth: {carried}");
         let cap = (carried / 2) as u32;
         let mut narrow = plan_half(&fixture, ctx, poses, DEFAULT_BOUNCE_FILL);
         narrow.request.depth_cap = cap;
 
         let check = |mode: &str, cache: Option<&StageCache>| {
-            let (_, base, mut outcome) =
+            let (_, _, outcome) =
                 bake_base(ctx, &narrow, &narrow.request, DEFAULT_BOUNCE_FILL, cache);
             assert_eq!(
-                outcome.movers[0].depth[..],
-                full.movers[0].depth[..cap as usize + 1],
+                outcome.reduced[0].depth[..],
+                full.reduced[0].depth[..cap as usize + 1],
                 "{mode}: one record past the range, the full bake's first"
             );
-            assert_eq!(outcome.movers[0].depth_carried, carried, "{mode}");
-            let error = super::skip_mid_poses(
-                &mut outcome,
-                &fixture.kinematic_movers,
-                poses,
-                &base.section,
-                &base.depth_tiles,
-                false,
-                cap,
-            )
-            .expect_err("the door alone passes the range")
-            .to_string();
+            assert_eq!(outcome.reduced[0].depth_carried, carried, "{mode}");
+            let error = outcome
+                .refused
+                .as_ref()
+                .expect("the door alone passes the range")
+                .to_string();
             assert!(
                 error.contains(&format!(
                     "MoverProbeChannel (id 57): {carried} probes carry closed-pose depth"
@@ -1019,7 +1039,7 @@ fn a_mover_past_the_tile_range_keeps_one_record_past_it_and_fails_by_name() {
             Some(&open(narrow_cache.path())),
         );
         assert_eq!(
-            rebuilt.movers, full.movers,
+            rebuilt.reduced, full.reduced,
             "the cut states were never memoized"
         );
     });
@@ -1045,28 +1065,23 @@ fn warm_and_cold_stop_at_the_same_mover_past_the_tile_range() {
             DEFAULT_BOUNCE_FILL,
             Some(&open(primed.path())),
         );
-        assert!(!full.stopped && full.movers.len() == 2);
-        let carried = full.movers[0].depth_carried;
+        assert!(full.refused.is_none() && full.reduced.len() == 2);
+        let carried = full.reduced[0].depth_carried;
         assert!(carried >= 4, "the door carries depth: {carried}");
         let cap = (carried / 2) as u32;
         let mut narrow = plan_half(&fixture, ctx, poses, DEFAULT_BOUNCE_FILL);
         narrow.request.depth_cap = cap;
 
         let run = |cache: Option<&StageCache>| {
-            let (_, base, mut outcome) =
+            let (_, _, outcome) =
                 bake_base(ctx, &narrow, &narrow.request, DEFAULT_BOUNCE_FILL, cache);
-            let error = super::skip_mid_poses(
-                &mut outcome,
-                &fixture.kinematic_movers,
-                poses,
-                &base.section,
-                &base.depth_tiles,
-                false,
-                cap,
-            )
-            .expect_err("the first door alone passes the range")
-            .to_string();
-            (outcome.movers, outcome.stopped, error)
+            let error = outcome
+                .refused
+                .as_ref()
+                .expect("the first door alone passes the range")
+                .to_string();
+            let stopped = outcome.reduced.len() < narrow.request.jobs.len();
+            (outcome.reduced, stopped, error)
         };
         let (cold_movers, cold_stopped, cold_error) = run(None);
         assert!(cold_stopped && cold_movers.len() == 1, "cold stops");
@@ -1165,17 +1180,20 @@ fn squeezed_door(text: String) -> String {
 // mid-pose-only depth records, came back within the range and built, the
 // movers past the stop and the cut records silently losing their states.
 // Every depth record here stores at the door's mid poses alone, which its
-// ramp squeezes out: skipping drops them all. Past a range of 3, a bake that
-// stopped before a later mover fails by name with a lower bound; one whose
-// range cut the door's records, and the last job keeping exactly one record
-// past the range, fail with the door's whole count, exact; all before any
-// record skips.
+// ramp squeezes out: skipping drops them all. Past a range of 3, the verdict
+// over the door's unskipped states, as it joins the union, fails a bake that
+// stopped before a later mover by name with a lower bound; one whose range
+// cut the door's records, and the last job keeping exactly one record past
+// the range, fail with the door's whole count, exact.
 #[test]
 fn a_bake_cut_short_past_the_tile_range_fails_by_name_before_its_skips() {
     use postretro_level_format::mover_probe_channel::PoseMark;
     use postretro_level_format::probe_depth_tiles::PROBE_DEPTH_TILE_TEXELS;
 
-    use crate::mover_probe_channel::{DepthProbe, MoverBounceStates};
+    use crate::mover_probe_channel::{
+        DepthProbe, DepthUnion, MoverAbsentDepth, MoverBounceStates, SkipBars,
+        skip_redundant_mid_poses,
+    };
 
     let maps = tempfile::tempdir().expect("maps dir");
     let fixture = load_map(&closet_edited(
@@ -1209,7 +1227,7 @@ fn a_bake_cut_short_past_the_tile_range_fails_by_name_before_its_skips() {
         assert_eq!(probes.len(), cap as usize + 1, "the closet's valid probes");
         // One record past the range, as the bake keeps it, each stored at
         // both mid poses and neither terminus.
-        let outcome = |stopped: bool, carried: usize| {
+        let states = |carried: usize| {
             let depth: Vec<DepthProbe> = probes
                 .iter()
                 .map(|&probe| DepthProbe {
@@ -1225,36 +1243,32 @@ fn a_bake_cut_short_past_the_tile_range_fails_by_name_before_its_skips() {
                 .collect();
             let mut states = MoverBounceStates::new(job.mover_id, 4, Vec::new(), depth);
             states.depth_carried = carried;
-            MoverBounceOutcome {
-                movers: vec![states],
-                stopped,
-                ..MoverBounceOutcome::default()
-            }
+            states
         };
-        let skip = |bake: &mut MoverBounceOutcome, tile_cap: u32| {
-            super::skip_mid_poses(
-                bake,
-                &fixture.kinematic_movers,
-                poses,
-                &base.section,
-                &base.depth_tiles,
-                false,
-                tile_cap,
-            )
+        // The verdict reads a mover's states as it joins, before it skips.
+        let verdict = |states: &MoverBounceStates, stopped: bool, tile_cap: u32| {
+            let mut union = DepthUnion::default();
+            union.join(states);
+            union.verdict(stopped, tile_cap)
         };
+        let bars = SkipBars::new(
+            &base.section,
+            MoverAbsentDepth::new(&base.section, &base.depth_tiles),
+            false,
+        );
 
-        let mut whole = outcome(false, cap as usize + 1);
-        skip(&mut whole, MAX_PROBE_DEPTH_TILES).expect("within the full range");
+        let mut whole = states(cap as usize + 1);
+        verdict(&whole, false, MAX_PROBE_DEPTH_TILES).expect("within the full range");
+        skip_redundant_mid_poses(&mut whole, &job.read_knots, &bars);
         assert!(
-            whole.movers[0].depth.is_empty() && whole.movers[0].depth_carried == 0,
+            whole.depth.is_empty() && whole.depth_carried == 0,
             "skipping alone drops every record the squeezed poses store"
         );
 
         // Exactly one record past the range, the last job: neither stopped
         // nor cut, and its skips would bring it under, yet it fails with its
         // whole count, exact, as any earlier job would have.
-        let mut one_past = outcome(false, cap as usize + 1);
-        let error = skip(&mut one_past, cap)
+        let error = verdict(&states(cap as usize + 1), false, cap)
             .expect_err("one record past the range fails")
             .to_string();
         assert!(
@@ -1264,14 +1278,8 @@ fn a_bake_cut_short_past_the_tile_range_fails_by_name_before_its_skips() {
             )),
             "the door's whole count, exact: {error}"
         );
-        assert_eq!(
-            one_past.movers[0].depth.len(),
-            cap as usize + 1,
-            "no record skips before the refusal"
-        );
 
-        let mut stopped = outcome(true, cap as usize + 1);
-        let error = skip(&mut stopped, cap)
+        let error = verdict(&states(cap as usize + 1), true, cap)
             .expect_err("a bake that stopped fails")
             .to_string();
         assert!(
@@ -1281,14 +1289,8 @@ fn a_bake_cut_short_past_the_tile_range_fails_by_name_before_its_skips() {
             )),
             "a lower bound: {error}"
         );
-        assert_eq!(
-            stopped.movers[0].depth.len(),
-            cap as usize + 1,
-            "no record skips before the refusal"
-        );
 
-        let mut cut = outcome(false, cap as usize + 5);
-        let error = skip(&mut cut, cap)
+        let error = verdict(&states(cap as usize + 5), false, cap)
             .expect_err("a cut mover fails")
             .to_string();
         assert!(
@@ -1297,11 +1299,6 @@ fn a_bake_cut_short_past_the_tile_range_fails_by_name_before_its_skips() {
                 cap + 5
             )),
             "the door's whole count, exact: {error}"
-        );
-        assert_eq!(
-            cut.movers[0].depth.len(),
-            cap as usize + 1,
-            "no record skips before the refusal"
         );
     });
 }
@@ -1418,12 +1415,12 @@ fn a_full_re_bake_differs_from_id_34_beyond_the_bar_only_where_the_domain_admits
                 }
             }
             eprintln!("{name}: {enclosed_pairs} enclosed (probe, terminus) pair(s) skipped");
-            assert_eq!(stored.movers.len(), request.jobs.len());
+            assert_eq!(stored.reduced.len(), request.jobs.len());
             let at_terminus = |probe: &crate::mover_probe_channel::BounceProbe| {
                 let last = probe.marks.len() - 1;
                 [0, last].map(|pose| probe.marks[pose] == PoseMark::Stored)
             };
-            for states in &stored.movers {
+            for states in &stored.reduced {
                 // Probes a terminus stores: the termini decide them alone;
                 // a probe only a mid pose stores is the near-field bake's.
                 let stored: BTreeSet<u32> = states
@@ -1482,3 +1479,6 @@ mod mid_pose;
 
 #[path = "mover_mid_pose_compose_tests.rs"]
 mod mid_pose_compose;
+
+#[path = "mover_finish_tests.rs"]
+mod finish;

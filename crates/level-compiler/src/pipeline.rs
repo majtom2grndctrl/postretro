@@ -26,6 +26,7 @@ mod animated_atlas_stage;
 mod atlas_stage;
 mod cell_partition;
 mod coverage_proof_stage;
+mod delta_plan;
 mod delta_working_set;
 #[cfg(test)]
 pub(crate) mod face_removal_seam;
@@ -37,11 +38,17 @@ mod mover_bounce_stage;
 mod mover_fidelity_summary;
 mod mover_light_stage;
 mod mover_probe_stage;
+#[cfg(test)]
+#[path = "pipeline/mover_window_tests.rs"]
+mod mover_window_tests;
 pub(crate) mod runtime_cells;
 mod sdf_stage;
+mod sh_analysis_stage;
 mod sh_working_set_gates;
 mod stage_registry;
 mod texture_stage;
+#[cfg(test)]
+mod window_ledger;
 use crate::buried_lights::BuriedLights;
 use crate::{
     animated_direct_sh_bake, animated_light_chunks, animated_light_weight_maps,
@@ -52,10 +59,14 @@ use crate::{
     reflection_probes, sdf_bake, sh_analyze, sh_bake, sh_coarsen, sh_density, surface_radiance,
     texture_mips, texture_validation, trigger_volumes, visibility,
 };
+use delta_plan::*;
 use finalized_publication::{
     FinalizedClusterMetadataInputs, FinalizedPrlPackInputs, build_finalized_cluster_metadata,
     write_finalized_prl,
 };
+#[cfg(test)]
+pub(crate) use sh_analysis_stage::log_direct_sh_delta_stats_for_test;
+use sh_analysis_stage::*;
 pub(crate) use stage_registry::ORDERED_STAGES;
 #[cfg(test)]
 use stage_registry::planned_stages_for_sdf;
@@ -119,232 +130,13 @@ pub(crate) fn prepare(args: &Args) -> anyhow::Result<PreparedMap> {
     })
 }
 
-/// Cheap plan-phase CSR data. Its dense f16 payload remains intentionally absent.
-struct DeltaCsrPlan {
-    affinity_offsets: Vec<u32>,
-    affinity_lights: Vec<u32>,
-}
-
-struct PlannedDeltaBakes {
-    entity_shadow_lights:
-        Option<postretro_level_format::entity_shadow_lights::EntityShadowLightsSection>,
-    entity_shadow_lights_elapsed: Duration,
-    indirect: DeltaCsrPlan,
-    direct: DeltaCsrPlan,
-    direct_static_indices: Vec<u64>,
-    animated_direct: DeltaCsrPlan,
-}
-
-/// Inputs shared by the pre-base-SH delta CSR planning pass.
-struct DeltaBakePlanInputs<'a, 'lights> {
-    bvh: &'a bvh::bvh::Bvh<f32, 3>,
-    bvh_primitives: &'a [bvh_build::BvhPrimitive],
-    geometry: &'a geometry::GeometryResult,
-    tree: &'a partition::BspTree,
-    exterior_leaves: &'a std::collections::HashSet<usize>,
-    portals: &'a [portals::Portal],
-    static_baked_lights: &'a light_namespaces::StaticBakedLights<'lights>,
-    animated_baked_lights: &'a light_namespaces::AnimatedBakedLights<'lights>,
-    alpha_lights: &'a light_namespaces::AlphaLightsNs<'lights>,
-    entity_shadow_params: map_data::EntityShadowParams,
-    probe_spacing: f32,
-    mutable_descriptors: &'a crate::delta_drop_policy::ScriptMutableDescriptorSlots,
-}
-
-impl DeltaCsrPlan {
-    fn empty() -> Self {
-        Self {
-            affinity_offsets: vec![0],
-            affinity_lights: Vec::new(),
-        }
-    }
-
-    fn from_csr(affinity_offsets: Vec<u32>, affinity_lights: Vec<u32>) -> Self {
-        debug_assert_eq!(
-            affinity_offsets.last().copied().unwrap_or_default() as usize,
-            affinity_lights.len(),
-            "plan-phase CSR offsets must end at the flat light-list length"
-        );
-        Self {
-            affinity_offsets,
-            affinity_lights,
-        }
-    }
-
-    fn affinity_lights(&self) -> &[u32] {
-        debug_assert_eq!(
-            self.affinity_offsets.last().copied().unwrap_or_default() as usize,
-            self.affinity_lights.len(),
-            "plan-phase CSR offsets must remain aligned with the flat light list"
-        );
-        &self.affinity_lights
-    }
-}
-
-/// Build the production delta CSR plans without materializing base or delta SH
-/// payloads. The working-set gate calls this before the base-SH ray bake so a
-/// zero-budget diagnostic remains a cheap, current-policy projection.
-fn plan_delta_bakes(inputs: DeltaBakePlanInputs<'_, '_>) -> PlannedDeltaBakes {
-    let entity_shadow_lights_started = Instant::now();
-    let entity_shadow_lights = if inputs.static_baked_lights.is_empty() {
-        None
-    } else {
-        let selection_inputs = entity_shadow_select::EntityShadowSelectionInputs {
-            bvh: inputs.bvh,
-            primitives: inputs.bvh_primitives,
-            geometry: inputs.geometry,
-            static_lights: inputs.static_baked_lights,
-            alpha_lights: inputs.alpha_lights,
-            params: inputs.entity_shadow_params,
-        };
-        let section = entity_shadow_select::select_entity_shadow_lights(&selection_inputs);
-        (!section.light_indices.is_empty()).then_some(section)
-    };
-    let entity_shadow_lights_elapsed = entity_shadow_lights_started.elapsed();
-
-    let geometry_vertices: Vec<[f32; 3]> = inputs
-        .geometry
-        .geometry
-        .vertices
-        .iter()
-        .map(|vertex| vertex.position)
-        .collect();
-    let indirect = if inputs.animated_baked_lights.is_empty() || geometry_vertices.is_empty() {
-        DeltaCsrPlan::empty()
-    } else {
-        let decomposition = decompose_affinity(&AffinityInputs {
-            geometry_vertices: &geometry_vertices,
-            tree: inputs.tree,
-            exterior_leaves: inputs.exterior_leaves,
-            portals: inputs.portals,
-            animated_lights: inputs.animated_baked_lights,
-            probe_spacing: inputs.probe_spacing,
-        });
-        let (affinity_offsets, affinity_lights) = build_csr(
-            &decomposition.per_light_cells,
-            decomposition.affinity_cell_count(),
-        );
-        DeltaCsrPlan::from_csr(affinity_offsets, affinity_lights)
-    };
-
-    let animated_direct = if inputs.animated_baked_lights.is_empty() || geometry_vertices.is_empty()
-    {
-        DeltaCsrPlan::empty()
-    } else {
-        let animated_lights: Vec<_> = inputs
-            .animated_baked_lights
-            .entries()
-            .iter()
-            .map(|entry| entry.light)
-            .collect();
-        let reach = AffinityReachInputs {
-            geometry_vertices: &geometry_vertices,
-            tree: inputs.tree,
-            exterior_leaves: inputs.exterior_leaves,
-            portals: inputs.portals,
-            probe_spacing: inputs.probe_spacing,
-        };
-        let policies = animated_direct_sh_bake::animated_direct_reach_policies(
-            animated_lights.len(),
-            inputs.mutable_descriptors,
-        );
-        let decomposition = crate::affinity_grid::decompose_affinity_for_lights_with_policies(
-            &reach,
-            &animated_lights,
-            &policies,
-        );
-        let (affinity_offsets, affinity_lights) = build_csr(
-            &decomposition.per_light_cells,
-            decomposition.affinity_cell_count(),
-        );
-        DeltaCsrPlan::from_csr(affinity_offsets, affinity_lights)
-    };
-
-    let (direct, direct_static_indices) = if geometry_vertices.is_empty() {
-        (DeltaCsrPlan::empty(), Vec::new())
-    } else if let Some(selection) = entity_shadow_lights.as_ref() {
-        // Id 41's CSR uses selection-slot indices. Preserve the parallel static
-        // indices only for the pre-bake diagnostic histogram.
-        let source_by_alpha = inputs
-            .alpha_lights
-            .entries()
-            .iter()
-            .enumerate()
-            .map(|(alpha_index, entry)| (alpha_index as u32, entry.source_index))
-            .collect::<HashMap<_, _>>();
-        let direct_by_source = inputs
-            .static_baked_lights
-            .entries()
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| entry.light.shadow_type == map_data::ShadowType::StaticLightMap)
-            .map(|(static_index, entry)| (entry.source_index, (entry.light, static_index as u64)))
-            .collect::<HashMap<_, _>>();
-        let selected: Vec<_> = selection
-            .light_indices
-            .iter()
-            .filter_map(|alpha_index| {
-                source_by_alpha
-                    .get(alpha_index)
-                    .and_then(|source_index| direct_by_source.get(source_index))
-                    .copied()
-            })
-            .collect();
-        let selected_lights: Vec<_> = selected.iter().map(|(light, _)| *light).collect();
-        let selected_static_indices = selected
-            .iter()
-            .map(|(_, static_index)| *static_index)
-            .collect();
-        let reach = AffinityReachInputs {
-            geometry_vertices: &geometry_vertices,
-            tree: inputs.tree,
-            exterior_leaves: inputs.exterior_leaves,
-            portals: inputs.portals,
-            probe_spacing: inputs.probe_spacing,
-        };
-        let decomposition = decompose_affinity_for_lights(
-            &reach,
-            &selected_lights,
-            AffinityReachPolicy::SELECTED_DIRECT,
-        );
-        let (affinity_offsets, affinity_lights) = build_csr(
-            &decomposition.per_light_cells,
-            decomposition.affinity_cell_count(),
-        );
-        (
-            DeltaCsrPlan::from_csr(affinity_offsets, affinity_lights),
-            selected_static_indices,
-        )
-    } else {
-        (DeltaCsrPlan::empty(), Vec::new())
-    };
-
-    PlannedDeltaBakes {
-        entity_shadow_lights,
-        entity_shadow_lights_elapsed,
-        indirect,
-        direct,
-        direct_static_indices,
-        animated_direct,
-    }
-}
-
-fn ensure_bake_csr_matches_plan(
-    label: &'static str,
-    plan: &DeltaCsrPlan,
-    bake_offsets: &[u32],
-    bake_lights: &[u32],
-) -> anyhow::Result<()> {
-    if plan.affinity_offsets != bake_offsets || plan.affinity_lights != bake_lights {
-        anyhow::bail!(
-            "{label} plan/bake CSR divergence: plan has {} offsets and {} entries; bake has {} offsets and {} entries",
-            plan.affinity_offsets.len(),
-            plan.affinity_lights.len(),
-            bake_offsets.len(),
-            bake_lights.len(),
-        );
-    }
-    Ok(())
+/// The entity-shadow selection's heap, by capacity.
+fn planned_entity_shadow_bytes(
+    selection: &Option<postretro_level_format::entity_shadow_lights::EntityShadowLightsSection>,
+) -> u64 {
+    selection.as_ref().map_or(0, |section| {
+        (section.light_indices.capacity() * size_of::<u32>()) as u64
+    })
 }
 
 /// Execute the compiler stages in their stable order and print the Build Summary.
@@ -732,7 +524,7 @@ fn run_after_parsing(
     let subblock_f16_len = PROBES_PER_CELL
         .checked_mul(delta_probe_f16_stride(DEFAULT_IRRADIANCE_TILE_DIMENSION))
         .ok_or_else(|| anyhow::anyhow!("delta sub-block f16 length overflow"))?;
-    let delta_working_set_projection = project_delta_working_set(
+    let mut delta_working_set_projection = project_delta_working_set(
         [
             DeltaCsrProjectionInput {
                 label: "DeltaShVolumes (id 27)",
@@ -802,8 +594,9 @@ fn run_after_parsing(
         &geo_result.texture_names,
     )?;
     // The probe channel's bounce half poses every analysed mover at each of
-    // its poses, so the SH base gate prices its scenes, its states and
-    // the direct half's entries before any SH ray.
+    // its poses, so the SH base gate prices its scenes, one mover's states
+    // at a time, the blocks at the payload cap and the direct half's
+    // entries before any SH ray.
     let probe_depth_tile_cap = args.probe_depth_tile_cap;
     let bounce_plan = {
         let direct_lights: Vec<&crate::map_data::MapLight> = static_baked_lights
@@ -827,6 +620,7 @@ fn run_after_parsing(
             direct_lights: &direct_lights,
             uncompressed: args.uncompressed_irradiance,
             tile_cap: probe_depth_tile_cap,
+            payload_cap: args.mover_payload_max_bytes,
             mode: args.bake_mode(),
         })?
     };
@@ -850,7 +644,38 @@ fn run_after_parsing(
         map_data.bounce_fill,
         args.working_set_max_bytes,
     )?;
-    sh_base_projection.price_movers(&bounce_plan.cost);
+    // The mover channel's direct half runs after the delta and direct-SH
+    // stages, beside every SH section alive there: the dense deltas at the
+    // SH-delta gate's bound, id 35 and its analysis clone from the probe
+    // grid, and the entity-shadow selection.
+    let direct_window = surface_radiance::DirectWindow {
+        // Dense and compaction residency, and the analysis clone when kept:
+        // the copy chain less its base-copy share, priced apart below.
+        dense_delta_bytes: delta_working_set_projection
+            .cumulative_dense_bytes
+            .saturating_mul(delta_working_set_projection.copy_chain_factor - 1),
+        direct_volume_bytes: if static_baked_lights.is_empty() {
+            0
+        } else {
+            2 * sh_bake::sh_volume_bytes(sh_bake::probe_grid_dims(
+                &geo_result,
+                sh_config.probe_spacing,
+            ))
+            .map_or(0, |bytes| bytes.section)
+        },
+        entity_shadow_bytes: planned_entity_shadow_bytes(&planned_deltas.entity_shadow_lights),
+        delta_metadata_bytes: [
+            &planned_deltas.indirect,
+            &planned_deltas.direct,
+            &planned_deltas.animated_direct,
+        ]
+        .into_iter()
+        .map(|plan| plan.metadata_bytes())
+        .sum::<u64>()
+        .saturating_mul(delta_working_set_projection.copy_chain_factor - 1),
+    };
+    sh_base_projection.price_movers(&bounce_plan.cost, &direct_window)?;
+    delta_working_set_projection.carry(sh_base_projection.carried_bytes(&bounce_plan.cost)?);
     sh_working_set_gates::admit_sh_working_sets(
         delta_working_set_projection,
         &sh_base_projection,
@@ -980,27 +805,43 @@ fn run_after_parsing(
         probe_depth_tile_cap,
         &bounce_plan.request,
     );
-    // Every mover's states have resolved, from its memo or its bake; the
-    // redundant mid-pose skips read each mover's ramp, which no memo keys. A
-    // bake the tile range cut short fails by name before any state skips.
-    let mover_skips = mover_bounce_stage::skip_mid_poses(
-        &mut mover_bounce,
-        &map_data.kinematic_movers,
-        &mover_poses,
-        &sh_volume_section,
-        &probe_depth_tiles,
-        bounce_plan.request.uncompressed,
-        probe_depth_tile_cap,
-    )?;
-    let (mover_bounce_blocks, mover_depth_reservation) = mover_bounce_stage::finish_bounce_half(
-        &mover_bounce.movers,
+    // Every mover finished into its blocks inside the bake, judged against
+    // the tile range before it skipped and the payload cap before its
+    // blocks joined: a bake past either fails here by name.
+    if let Some(refused) = mover_bounce.refused.take() {
+        return Err(refused.into());
+    }
+    let mover_bounce_blocks = std::mem::take(&mut mover_bounce.blocks);
+    let mover_skips = std::mem::take(&mut mover_bounce.skips);
+    let mover_depth_reservation = mover_bounce_stage::finish_bounce_half(
+        &mover_bounce_blocks,
+        !bounce_plan.request.jobs.is_empty(),
         &sh_volume_section,
         &mut probe_depth_tiles,
         probe_depth_tile_cap,
     )?;
+    // What the mover channel's windows hold, for the test ledger: the SH
+    // delta and direct-SH stages, then the direct half.
+    #[cfg(test)]
+    let mut windows = window_ledger::Windows::default();
+    #[cfg(test)]
+    {
+        windows.hold(
+            "id-34 section",
+            sh_bake::section_heap_bytes(&sh_volume_section),
+        );
+        windows.hold("probe depth tiles", probe_depth_tiles.heap_bytes());
+        windows.hold("posed solids", posed_movers.heap_bytes());
+    }
     let mut mover_bounce_summary: Vec<String> = (mover_bounce_blocks
         != crate::mover_probe_channel::BounceBlocks::default())
-    .then(|| mover_bounce_stage::summary_line(&mover_bounce_blocks, &mover_depth_reservation))
+    .then(|| {
+        mover_bounce_stage::summary_line(
+            &mover_bounce_blocks,
+            &mover_depth_reservation,
+            args.mover_payload_max_bytes,
+        )
+    })
     .into_iter()
     .collect();
     let mover_knots: Vec<_> = mover_poses
@@ -1034,6 +875,11 @@ fn run_after_parsing(
     let mut sh_analyze_base_indirect: Option<
         postretro_level_format::sh_volume::OctahedralShVolumeSection,
     > = Some(sh_volume_section.clone());
+    #[cfg(test)]
+    windows.hold(
+        "id-34 analysis clone",
+        sh_bake::section_heap_bytes(&sh_volume_section),
+    );
     let total_probes = sh_volume_section.total_probes();
     let valid_probes = sh_volume_section
         .probes
@@ -1077,6 +923,8 @@ fn run_after_parsing(
             &delta_sh_control,
         )
     };
+    #[cfg(test)]
+    windows.delta("id-27 section", delta_sh_volumes_section.as_ref());
     match delta_sh_volumes_section.as_ref() {
         Some(section) => ensure_bake_csr_matches_plan(
             "DeltaShVolumes (id 27)",
@@ -1154,6 +1002,7 @@ fn run_after_parsing(
         sh_analyze_base_direct = Some(raw.clone());
         Some(raw)
     };
+
     finish_stage(
         &mut timings,
         reporter.as_ref(),
@@ -1195,6 +1044,11 @@ fn run_after_parsing(
             &animated_direct_sh_control,
         )
     };
+    #[cfg(test)]
+    windows.animated_delta(
+        "id-45 section",
+        animated_direct_sh_delta_volumes_section.as_ref(),
+    );
     match animated_direct_sh_delta_volumes_section.as_ref() {
         Some(section) => ensure_bake_csr_matches_plan(
             "AnimatedDirectShDeltaVolumes (id 45)",
@@ -1315,6 +1169,8 @@ fn run_after_parsing(
     } else {
         reporter.skip_stage(StageId::EntityShadowLights);
     }
+    #[cfg(test)]
+    windows.direct_delta("id-41 section", direct_sh_delta_volumes_section.as_ref());
     timings.push((StageId::DirectShDeltaBake.label(), direct_sh_delta_elapsed));
     if direct_sh_delta_volumes_section.is_some() {
         reporter.finish_stage(StageId::DirectShDeltaBake);
@@ -1322,6 +1178,18 @@ fn run_after_parsing(
         reporter.skip_stage(StageId::DirectShDeltaBake);
     }
     log_direct_sh_delta_stats(direct_sh_delta_stats.as_ref(), args.verbose);
+    // The SH delta and direct-SH stages end: what the SH-delta gate's
+    // projection prices, with what the mover channel carries through them.
+    #[cfg(test)]
+    crate::live_bytes::phase("sh delta stages");
+    // The direct window prices the other SH sections alive beside it, which
+    // the SH-delta gate's base-copy share covers before it.
+    #[cfg(test)]
+    {
+        windows.direct_volume("id-35 section", direct_sh_volume_section.as_ref());
+        windows.direct_volume("id-35 analysis clone", sh_analyze_base_direct.as_ref());
+        windows.entity_shadow(entity_shadow_lights_section.as_ref());
+    }
 
     // The mover probe channel's direct half bakes before any storage
     // classifier, so its cells cap id 41's levels and the shared base levels
@@ -1346,7 +1214,13 @@ fn run_after_parsing(
                 args.mover_payload_resident_bar,
             ),
         })?;
+    #[cfg(test)]
+    if let Some(half) = mover_direct_half.as_ref() {
+        windows.hold("mover direct entries", half.heap_bytes());
+    }
     drop(posed_movers);
+    #[cfg(test)]
+    windows.release("posed solids");
     // The gate's report counts these beside its per-terminus rows, once
     // every tier's rows are in.
     let mover_mid_pose_only = mover_direct_half
@@ -1370,6 +1244,8 @@ fn run_after_parsing(
         animated_direct_sh_delta_volumes_section,
     );
     delta_sections.mover_channel = provisional_mover_channel;
+    #[cfg(test)]
+    windows.mover_channel("id-57 section", delta_sections.mover_channel.as_ref());
     debug_assert_eq!(
         delta_sections.config, args.delta_section_config,
         "the post-bake delta handoff must retain the resolved compiler configuration"
@@ -1386,6 +1262,12 @@ fn run_after_parsing(
             delta_sections.animated_direct.clone(),
         )
     });
+    #[cfg(test)]
+    if let Some((indirect, direct, animated)) = sh_analyze_dense_deltas.as_ref() {
+        windows.delta("id-27 analysis clone", indirect.as_ref());
+        windows.direct_delta("id-41 analysis clone", direct.as_ref());
+        windows.animated_delta("id-45 analysis clone", animated.as_ref());
+    }
     // Production id-41 coarsening classifies each 4×4×4 brick while payloads
     // are still dense, before the single valid-probe compaction. The map-level
     // opt-out is checked here, before classification, so its untouched all-L0
@@ -1500,6 +1382,12 @@ fn run_after_parsing(
         classification
     };
     delta_sections.apply_valid_probe_compaction(&sh_volume_section)?;
+    #[cfg(test)]
+    {
+        windows.delta("id-27 section", delta_sections.indirect.as_ref());
+        windows.direct_delta("id-41 section", delta_sections.direct.as_ref());
+        windows.animated_delta("id-45 section", delta_sections.animated_direct.as_ref());
+    }
     delta_sections.enforce_payload_cap()?;
     if let (Some(selection), Some(deltas)) = (
         delta_sections.entity_shadow_lights.as_ref(),
@@ -1513,12 +1401,21 @@ fn run_after_parsing(
     let mut mover_placement_summary = None;
     if let Some(half) = mover_direct_half.as_ref() {
         half.finish_section(&mut delta_sections)?;
+        #[cfg(test)]
+        windows.mover_channel("id-57 section", delta_sections.mover_channel.as_ref());
         mover_placement_summary = delta_sections
             .mover_channel
             .as_ref()
             .map(|section| half.summary_line(section));
     }
     drop(mover_direct_half);
+    // The direct half ends: what the SH base gate's direct phase prices.
+    #[cfg(test)]
+    {
+        windows.release("mover direct entries");
+        crate::live_bytes::phase("mover direct");
+        drop(windows);
+    }
 
     // Output-preserving SH coarsenability analysis (`--sh-analyze`). Runs AFTER
     // the delta sections are finalized — post EntityShadowLights static-light
@@ -2421,252 +2318,6 @@ fn run_after_parsing(
     });
 
     Ok(())
-}
-
-/// Concatenate the CLI (`--sh-protect-aabb`) and mapper-authored
-/// (`sh_protect_volume`) protection AABBs into the single list the coarsening
-/// classifier reads. Both sources are world-space `[minx,miny,minz,maxx,maxy,maxz]`
-/// boxes in engine meters, so the union is a plain concatenation — a brick is
-/// protected if it intersects any box from either source.
-fn combined_protect_aabbs(cli: &[[f32; 6]], map: &[[f32; 6]]) -> Vec<[f32; 6]> {
-    let mut combined = Vec::with_capacity(cli.len() + map.len());
-    combined.extend_from_slice(cli);
-    combined.extend_from_slice(map);
-    combined
-}
-
-/// Invoke the production classifier only when the map has not selected the
-/// uniform-grid fallback. Keeping the predicate outside the closure makes the
-/// opt-out a true pre-classification short-circuit.
-fn run_sh_coarsening_if_enabled(
-    enabled: bool,
-    classify: impl FnOnce() -> anyhow::Result<()>,
-) -> anyhow::Result<()> {
-    if enabled {
-        classify()?;
-    }
-    Ok(())
-}
-
-/// Classify id 41 coarsening levels and stamp them in place before valid-probe
-/// compaction consumes the dense payload. Ids 27 and 45 stay uniform L0 because
-/// their runtime animation/script amplitudes have no finite bake-known bound.
-/// Reads the pre-BC6H base indirect (RGBA16F) for composed magnitude + the sole
-/// probe-validity authority. No-op when the base grid is absent/degenerate.
-fn apply_coarsen_classification(
-    args: &Args,
-    map_protect_aabbs: &[[f32; 6]],
-    base_indirect: Option<&postretro_level_format::sh_volume::OctahedralShVolumeSection>,
-    base_direct: Option<&postretro_level_format::direct_sh_volume::DirectShVolumeSection>,
-    delta_sections: &mut delta_sections::PostBakeDeltaSections,
-    mutable_descriptors: &crate::delta_drop_policy::ScriptMutableDescriptorSlots,
-) -> anyhow::Result<()> {
-    // Enforce the owner-approved section scope even on degenerate/absent-base
-    // exits. The bake producers currently initialize these arrays to L0, but
-    // this boundary owns the policy rather than relying on that detail.
-    delta_sections.enforce_id41_only_coarsening_policy();
-
-    let Some(base) = base_indirect else {
-        log::warn!("[sh-coarsen] no base SH volume produced; coarsening skipped (uniform L0)");
-        return Ok(());
-    };
-    if base.grid_dimensions == [0, 0, 0] {
-        log::warn!("[sh-coarsen] degenerate SH grid; coarsening skipped (uniform L0)");
-        return Ok(());
-    }
-    let validity: Vec<u8> = base.probes.iter().map(|p| p.validity).collect();
-    let grid = sh_coarsen::SectionGrid {
-        grid_origin: base.grid_origin,
-        cell_size: base.cell_size,
-        grid_dims: base.grid_dimensions,
-        validity: &validity,
-    };
-    let params = sh_coarsen::CoarsenParams::default();
-
-    // Both protection sources reach the classifier: the `--sh-protect-aabb` CLI
-    // stand-in and the mapper-authored `sh_protect_volume` brush AABBs. Their
-    // union forces every intersecting brick to L0 (dense).
-    let protect_aabbs = combined_protect_aabbs(&args.sh_protect_aabbs, map_protect_aabbs);
-
-    // The direct classifier still reads all three dense sections for the
-    // composed reference magnitude, but produces levels only for id 41.
-    let direct_levels = {
-        let all = delta_sections.refs();
-        delta_sections.direct.as_ref().map(|_| {
-            sh_coarsen::classify_direct_levels(
-                base,
-                base_direct,
-                all,
-                grid,
-                &protect_aabbs,
-                &params,
-            )
-        })
-    };
-
-    // Guard the defensive grid-mismatch path so id 41 is never handed a
-    // wrong-length level array that would corrupt compaction / the wire
-    // contract. All sections remain uniform L0 in that case.
-    let mut direct_classified = false;
-    if let (Some(section), Some(levels)) = (delta_sections.direct.as_mut(), direct_levels) {
-        let cells = section.affinity_cell_count();
-        if levels.len() == cells {
-            section.cell_levels = levels;
-            direct_classified = true;
-        } else {
-            section
-                .cell_levels
-                .fill(postretro_level_format::sh_reconstruct::Level::L0.to_u8());
-            log::warn!(
-                "[sh-coarsen] direct affinity mismatch (levels {} vs {cells} cells); leaving uniform L0",
-                levels.len()
-            );
-        }
-    }
-    log::info!(
-        "[sh-coarsen] id 41 classification {}; ids 27/45 remain uniform L0",
-        if direct_classified {
-            "applied"
-        } else {
-            "not applicable"
-        }
-    );
-    crate::sh_runtime_envelope::apply_runtime_safe_envelope(
-        base,
-        base_direct,
-        delta_sections,
-        mutable_descriptors,
-        &params,
-    )?;
-    Ok(())
-}
-
-/// Drive the output-preserving SH coarsenability analysis and emit its summary
-/// and JSON. Reads captured pre-BC6H base tiles and the three FINALIZED delta
-/// sections (post static-light selection + exact-zero-drop, i.e. the emitted
-/// set); mutates nothing that reaches the packer.
-#[allow(clippy::too_many_arguments)]
-fn run_sh_analysis(
-    args: &Args,
-    protect_aabbs: &[[f32; 6]],
-    density_params: &sh_coarsen::CoarsenParams,
-    base_indirect: Option<&postretro_level_format::sh_volume::OctahedralShVolumeSection>,
-    base_direct: Option<&postretro_level_format::direct_sh_volume::DirectShVolumeSection>,
-    density_classification: &sh_density::DensityClassification,
-    dense_deltas: Option<sh_analyze::DenseDeltaSections<'_>>,
-    delta_indirect: Option<&postretro_level_format::delta_sh_volumes::DeltaShVolumesSection>,
-    delta_direct: Option<
-        &postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection,
-    >,
-    delta_anim_direct: Option<
-        &postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection,
-    >,
-    mover_channel: Option<&postretro_level_format::mover_probe_channel::MoverProbeChannelSection>,
-) {
-    let Some(base) = base_indirect else {
-        log::warn!("[sh-analyze] no base SH volume produced (empty grid?); analysis skipped");
-        return;
-    };
-    if base.grid_dimensions == [0, 0, 0] {
-        log::warn!("[sh-analyze] degenerate SH grid; analysis skipped");
-        return;
-    }
-    let validity: Vec<u8> = base.probes.iter().map(|p| p.validity).collect();
-    let protect: Vec<sh_analyze::ProtectAabb> = protect_aabbs
-        .iter()
-        .map(|a| sh_analyze::ProtectAabb {
-            min: [a[0], a[1], a[2]],
-            max: [a[3], a[4], a[5]],
-        })
-        .collect();
-    let inputs = sh_analyze::AnalyzeInputs {
-        grid_origin: base.grid_origin,
-        cell_size: base.cell_size,
-        grid_dims: base.grid_dimensions,
-        validity: &validity,
-        base_indirect: base,
-        base_direct,
-        delta_indirect,
-        delta_direct,
-        delta_anim_direct,
-        mover_channel,
-        protect_aabbs: &protect,
-        thresholds: &sh_analyze::DEFAULT_THRESHOLDS,
-    };
-    let mut report = sh_analyze::run_analysis(
-        &inputs,
-        args.sh_density_force_scale
-            .unwrap_or(crate::sh_hierarchy::MAX_NODE_SCALE),
-        density_params,
-    );
-    if let Some(dense) = dense_deltas {
-        match sh_analyze::run_emitted_reconstruction_analysis(
-            &inputs,
-            &density_classification.levels,
-            &density_classification.scales,
-            dense.indirect,
-            dense.direct,
-            dense.animated_direct,
-            delta_indirect,
-            delta_direct,
-            delta_anim_direct,
-            density_params,
-        ) {
-            Ok(emitted) => report.emitted_reconstruction = Some(emitted),
-            Err(error) => {
-                log::warn!("[sh-analyze] emitted reconstruction validation skipped: {error}")
-            }
-        }
-    }
-    sh_analyze::log_summary(&report);
-
-    let out = args.sh_analyze_out.clone().unwrap_or_else(|| {
-        let mut p = args.output.clone().into_os_string();
-        p.push(".sh-analysis.json");
-        std::path::PathBuf::from(p)
-    });
-    match sh_analyze::write_json(&report, &out) {
-        Ok(()) => log::info!("[sh-analyze] wrote analysis JSON to {}", out.display()),
-        Err(e) => log::warn!("[sh-analyze] failed to write {}: {e}", out.display()),
-    }
-}
-
-fn log_direct_sh_delta_stats(stats: Option<&direct_sh_bake::DirectDeltaBakeStats>, verbose: bool) {
-    if let Some(stats) = stats {
-        let top = stats
-            .rows
-            .first()
-            .expect("a usable direct SH delta section has at least one CSR entry");
-        log::info!(
-            "DirectShDeltaVolumes: {} delta bytes; top static_index {} (selection slot {}, {} CSR entries, {} bytes)",
-            stats.total_bytes,
-            top.static_index,
-            top.selection_slot,
-            top.csr_entry_count,
-            top.byte_total,
-        );
-        if verbose {
-            for row in &stats.rows {
-                log::info!(
-                    "DirectShDeltaVolumes histogram: selection slot {}, static_index {}, {} CSR entries, {} bytes",
-                    row.selection_slot,
-                    row.static_index,
-                    row.csr_entry_count,
-                    row.byte_total,
-                );
-            }
-        }
-    } else if verbose {
-        log::info!("DirectShDeltaVolumes: skipped (no usable selected light deltas)");
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn log_direct_sh_delta_stats_for_test(
-    stats: Option<&direct_sh_bake::DirectDeltaBakeStats>,
-    verbose: bool,
-) {
-    log_direct_sh_delta_stats(stats, verbose);
 }
 
 #[cfg(test)]

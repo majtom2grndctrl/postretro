@@ -22,6 +22,9 @@ pub(crate) struct BakeCounts {
     pub(crate) layers_shaded: u64,
     /// Per-light layers served from the build cache.
     pub(crate) layers_cached: u64,
+    /// Mover pose memo reads failed at their slot by the test seam
+    /// (`MoverBounceRequest::fail_read_back`): each such pose bakes there.
+    pub(crate) read_backs_failed: u64,
     /// Layer cache reads and writes attempted.
     pub(crate) layer_cache_io: u64,
     /// Layer cache reads and writes attempted on a thread holding a governor
@@ -99,6 +102,7 @@ impl Add for BakeCounts {
             patch_light_evaluations: self.patch_light_evaluations + other.patch_light_evaluations,
             layers_shaded: self.layers_shaded + other.layers_shaded,
             layers_cached: self.layers_cached + other.layers_cached,
+            read_backs_failed: self.read_backs_failed + other.read_backs_failed,
             layer_cache_io: self.layer_cache_io + other.layer_cache_io,
             layer_cache_io_under_permit: self.layer_cache_io_under_permit
                 + other.layer_cache_io_under_permit,
@@ -121,6 +125,7 @@ thread_local! {
             patch_light_evaluations: 0,
             layers_shaded: 0,
             layers_cached: 0,
+            read_backs_failed: 0,
             layer_cache_io: 0,
             layer_cache_io_under_permit: 0,
             volume_cache_io: 0,

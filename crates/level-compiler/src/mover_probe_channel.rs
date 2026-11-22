@@ -51,14 +51,14 @@ mod tests;
 pub(crate) use absent_bounces::AbsentLaterBounces;
 pub(crate) use absent_memo::AbsentBounceMemo;
 pub(crate) use bake::{
-    MoverBounceBake, MoverBounceJob, MoverBounceRequest, StaticBounce, bake_mover_bounce,
-    poses_progress_units, sh_base_bounce_count,
+    MoverBounceBake, MoverBounceJob, MoverBounceRefusal, MoverBounceRequest, PosedRadianceSource,
+    SlotRadiance, StaticBounce, bake_mover_bounce, poses_progress_units, sh_base_bounce_count,
 };
-pub(crate) use blocks::BounceBlocks;
+pub(crate) use blocks::{BounceBlocks, DEFAULT_PAYLOAD_MAX_BYTES};
 pub(crate) use cost::{MoverChannelCost, pose_held_bytes};
-pub(crate) use depth::{
-    CarriedDepth, DepthReservation, MoverAbsentDepth, refuse_cut_short, reserve_mover_tiles,
-};
+pub(crate) use depth::{CarriedDepth, DepthReservation, reserve_mover_tiles};
+#[cfg(test)]
+pub(crate) use depth::{DepthUnion, MoverAbsentDepth};
 pub(crate) use direct::{DirectScene, MoverDirectBake, ProbeCells, bake_direct};
 #[cfg(test)]
 pub(crate) use domain::direct_display_levels;
@@ -76,14 +76,17 @@ pub(crate) use mid_pose_only::mid_pose_only_lights;
 pub(crate) use near_field::NearFieldDomain;
 #[cfg(test)]
 pub(crate) use pose_bake::PosedBounce;
-pub(crate) use pose_lookup::{HitReduction, MoverPoseBounces, PoseLookup};
+pub(crate) use pose_lookup::{MoverPoseBounces, PoseLookup};
 pub(crate) use pose_memo::PoseMemo;
 pub(crate) use posed_scene::PosedScene;
 pub(crate) use posed_solid::{PosedMovers, enclosure_inset};
 #[cfg(test)]
 pub(crate) use posed_solid::{PosedSolid, box_brush as sided_box_brush};
 pub(crate) use section::{EmittedDirectEntries, MoverPayloadBars, MoverRecords, channel_section};
-pub(crate) use skip::{SkipBars, SkipCounts, skip_redundant_mid_poses};
+pub(crate) use skip::SkipCounts;
+#[cfg(test)]
+pub(crate) use skip::{SkipBars, skip_redundant_mid_poses};
+#[cfg(test)]
 pub(crate) use states::MoverBounceStates;
 #[cfg(test)]
 pub(crate) use states::{BounceProbe, DepthProbe};

@@ -47,6 +47,9 @@ pub(super) struct DeltaWorkingSetProjection {
     pub(super) bakes: Vec<DeltaWorkingSetBakeProjection>,
     pub(super) cumulative_dense_bytes: u64,
     pub(super) copy_chain_factor: u64,
+    /// What the mover probe channel carries through the delta and
+    /// direct-SH stages, added on top of the copy chain ([`Self::carry`]).
+    pub(super) carried_bytes: u64,
     pub(super) estimated_peak_bytes: u64,
     pub(super) budget_bytes: u64,
 }
@@ -67,11 +70,12 @@ impl fmt::Display for DeltaWorkingSetGateError {
             Self::BudgetExceeded(projection) => {
                 write!(
                     formatter,
-                    "SH delta working-set gate refused before dense baking: estimated peak {} bytes exceeds budget {} bytes ({} cumulative dense bytes × copy-chain factor {})",
+                    "SH delta working-set gate refused before dense baking: estimated peak {} bytes exceeds budget {} bytes ({} cumulative dense bytes × copy-chain factor {}) plus {} bytes the mover probe channel carries",
                     projection.estimated_peak_bytes,
                     projection.budget_bytes,
                     projection.cumulative_dense_bytes,
                     projection.copy_chain_factor,
+                    projection.carried_bytes,
                 )?;
                 for bake in &projection.bakes {
                     write!(
@@ -136,6 +140,14 @@ pub(super) fn gate_delta_working_set(
 }
 
 impl DeltaWorkingSetProjection {
+    /// Add `bytes` the mover probe channel carries through the delta and
+    /// direct-SH stages: its blocks at the cap, the posed solids, and id 34
+    /// with its analysis clone.
+    pub(super) fn carry(&mut self, bytes: u64) {
+        self.carried_bytes = self.carried_bytes.saturating_add(bytes);
+        self.estimated_peak_bytes = self.estimated_peak_bytes.saturating_add(bytes);
+    }
+
     /// Admit the projection, or refuse it by name when it exceeds the budget.
     pub(super) fn admit(self) -> Result<Self, DeltaWorkingSetGateError> {
         if self.estimated_peak_bytes > self.budget_bytes {
@@ -242,6 +254,7 @@ pub(super) fn project_delta_working_set(
         bakes: projected_bakes,
         cumulative_dense_bytes,
         copy_chain_factor,
+        carried_bytes: 0,
         estimated_peak_bytes,
         budget_bytes,
     })
@@ -252,8 +265,9 @@ pub(super) fn log_delta_working_set_projection(
     verbose: bool,
 ) {
     log::info!(
-        "[Compiler] SH delta working-set gate: estimated peak {} bytes, budget {} bytes, admitted",
+        "[Compiler] SH delta working-set gate: estimated peak {} bytes ({} carried for the mover probe channel), budget {} bytes, admitted",
         projection.estimated_peak_bytes,
+        projection.carried_bytes,
         projection.budget_bytes,
     );
     if verbose {

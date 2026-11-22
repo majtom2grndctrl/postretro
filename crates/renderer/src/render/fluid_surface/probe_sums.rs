@@ -8,6 +8,7 @@ use postretro_render_cpu::fluid_surface::reflection::reflection_probe_sums_workg
 use super::InstalledFluidSurfaces;
 use crate::render::fluid_reflection_probes::fluid_sums_pass_bind_group_layout_entries;
 use crate::render::frame_timing::FrameTiming;
+use crate::render::gpu_create::GpuCreate;
 use crate::render::pipeline_layout::TIMING_PAIR_FLUID_REFLECTION_SUMS;
 
 /// The sums shader: its own bindings and entry, then the light helpers it
@@ -73,7 +74,7 @@ impl FluidProbeSumsPass {
             bind_group_layouts: &[Some(camera_bgl), Some(sh_bgl), Some(&layout)],
             immediate_size: 0,
         });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        let pipeline = device.new_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("Fluid Reflection Sums Pipeline"),
             layout: Some(&pipeline_layout),
             module: &shader,

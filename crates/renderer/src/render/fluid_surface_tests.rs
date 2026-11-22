@@ -5992,9 +5992,12 @@ fn the_sums_pass_and_blend_wgsl_match_the_cpu_references() {
 fn the_sums_live_with_the_level_and_their_pipeline_builds_at_full_init() {
     let sums_pass = production(include_str!("fluid_surface/probe_sums.rs"));
     let code = code_only(sums_pass);
-    assert_eq!(code.matches("create_compute_pipeline(").count(), 1);
-    assert!(code_only(wgsl_fn(sums_pass, "new")).contains("create_compute_pipeline("));
+    // Through the creation chokepoint (`gpu_create.rs`), so creation counts
+    // see it.
+    assert_eq!(code.matches("new_compute_pipeline(").count(), 1);
+    assert!(code_only(wgsl_fn(sums_pass, "new")).contains("new_compute_pipeline("));
     for compile in [
+        "new_compute_pipeline(",
         "create_compute_pipeline(",
         "create_shader_module(",
         "create_pipeline_layout(",

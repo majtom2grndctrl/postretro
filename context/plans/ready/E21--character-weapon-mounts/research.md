@@ -72,6 +72,13 @@ Read at 956a929b.
 - Bakes need Blender, which the cloud container lacks. The executor installs it, or the owner runs the commands `solve-weapon-mount` prints. `docs/weapon-mounts.md` has the workflow; `done/character-clip-library/plan.md` records the ar_4 bakes as precedent.
 - Write each bake's buffer as `<rig>.bin`. Check that the export leaves the viewmodel's textures byte-identical.
 
+## exo_red bakes (made 2026-11-22)
+- exo_red faces model −Z: player bodies draw with no model-front half turn. `--check` against today's exo_red reads barrel·+Z = −1 for a correct bake. A separate brief re-faces player bodies to +Z by setting exo_red's `mixamorig:Hips` rest rotation to identity, which turns every posed joint exactly 180° about Y. Bakes are unchanged by that re-face.
+- The bakes were solved and checked against a re-faced copy of exo_red (Hips rest = identity) and report `VERIFIED` there. Against the real exo_red, `VERIFIED` waits on that brief.
+- Raw source: each folder's `model.gltf`. Declared axes (glTF): barrel `0 0 -1`, up `0 1 0`. Scale `0.62` for all. Euler `71.611732 2.943644 80.080856` for all.
+- Grip (`prop_to_gltf.py --grip`, Blender space after scale): pistol `0.025 -0.047 0.044`, rifle `0.025 -0.068 0.082`, shotgun `0.025 -0.066 0.075`, smg `0.025 -0.061 0.087`, rpg `0.025 -0.180 0.082`, sci_fi_weapon `0.025 -0.076 0.051`. Each places the handle at exo_red's palm in `idle_aiming`, not at the `hand_r` wrist joint.
+- Export to a scratch folder and copy only `exo_red.gltf` (LF) and `exo_red.bin`: `prop_to_gltf.py` rewrites `texture.png`.
+
 ## Weaker rivals
 - Baking `thirdPersonModel` for exo_red only: fixes one rig.
 - Keying mounts by rig: the engine has no rig identity. A shared script constant gives authors the same reuse.

@@ -76,3 +76,19 @@ SSR and forward passes unchanged within spread on every view.
 
 - The saving is the probes map's: it stores animated lights per probe, so its fragments ran the light loop. e24 stores none (its bake skips the animated direct SH bake), so its per-fragment loop already found every slot empty and the sums pass is added cost with nothing to remove.
 - Row 24's "No view is slower beyond run-to-run spread" fails for fluid + sums on the three e24 views: +0.05 to +0.10 ms against a two-run spread of at most 0.03 ms. Whole-frame GPU time on those views moves −0.09 to +0.03 ms, within its own run-to-run spread (up to 0.28 ms).
+
+### Where the e24 cost goes
+
+Overlap = sum of labelled pass times − union frame time (both per complete frame, two-run means). On e24 the overlap grows by the sums pass's own time, so the sums dispatch runs beside other labelled GPU work and adds nothing to the frame's busy span. The residual is the fluid pass's sums read, the same order as the drift between builds in passes this brief did not touch.
+
+| View | Sums pass | Δ overlap | Δ fluid pass | Largest Δ of an untouched pass | Δ GPU frame |
+|---|---|---|---|---|---|
+| near 4K | 0.068 | +0.069 | +0.036 | 0.029 | +0.026 |
+| mid 4K | 0.067 | +0.066 | +0.014 | 0.086 | −0.090 |
+| near Auto | 0.040 | +0.039 | +0.006 | 0.038 | +0.015 |
+| mid Auto | 0.043 | +0.042 | +0.002 | 0.007 | −0.004 |
+| probes 4K | 0.032 | +0.024 | −3.056 | 0.091 | −2.995 |
+| probes Auto | 0.024 | +0.008 | −0.537 | 0.106 | −0.472 |
+
+- e24's probes (13) and the probes map's (3) both fit one workgroup, so the dispatch's work is the same; the sums pass's interval tracks resolution and scene instead, as a concurrent span would.
+- Skipping the dispatch on a level that stores no light would save about nothing in frame time; the fluid pass's read (up to +0.036 ms, 0.3% at near 4K) would stay.

@@ -144,6 +144,7 @@ fn point_light(origin: DVec3, color: [f32; 3]) -> MapLight {
         is_animated: false,
         tags: Vec::new(),
         shadow_type: ShadowType::StaticLightMap,
+        area: None,
     }
 }
 
@@ -1717,3 +1718,5 @@ mod reach_verify_walk_tests;
 mod reach_warm_tests;
 
 mod mover_gate_tests;
+
+mod area_light_tests;

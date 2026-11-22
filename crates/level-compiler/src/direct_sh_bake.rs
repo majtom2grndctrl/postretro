@@ -1295,6 +1295,7 @@ mod tests {
             is_animated: false,
             tags: vec![],
             shadow_type: ShadowType::StaticLightMap,
+            area: None,
         }
     }
 

@@ -185,7 +185,9 @@ fn footprint_samples_pair_with_emitter_samples_along_or_against_their_offsets() 
                     let turned = spin * probe_sample_direction(light, i, count);
                     let live = match light.light_type {
                         LightType::Directional => (live(i) - world_p).normalize(),
-                        LightType::Point | LightType::Spot => (live(i) - centre).normalize(),
+                        LightType::Point | LightType::Spot | LightType::Area => {
+                            (live(i) - centre).normalize()
+                        }
                     };
                     assert!(
                         turned.distance(live) < 1.0e-4,

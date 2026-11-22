@@ -184,6 +184,7 @@ pub(super) fn install_level(
                 vertex_spec_owners: &[],
                 vertex_emissive_volumes: &[],
                 emissive_volumes: &[],
+                area_glow_lights: &[],
                 indices: &[],
                 bvh: &bvh,
                 lights,

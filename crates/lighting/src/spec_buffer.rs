@@ -68,9 +68,17 @@ pub fn pack_spec_lights(lights: &[MapLight]) -> Vec<u8> {
         bytes.extend_from_slice(&pz.to_le_bytes());
         bytes.extend_from_slice(&l.falloff_range.to_le_bytes());
 
-        let cr = l.color[0] * l.intensity;
-        let cg = l.color[1] * l.intensity;
-        let cb = l.color[2] * l.intensity;
+        // An area light's placeholder record keeps its spec index (id-42
+        // owners and id-23 chunk lists name lights by it) and adds no
+        // specular on any path: zero colour. No owner or chunk list names it.
+        let scale = if l.light_type == LightType::Area {
+            0.0
+        } else {
+            l.intensity
+        };
+        let cr = l.color[0] * scale;
+        let cg = l.color[1] * scale;
+        let cb = l.color[2] * scale;
         bytes.extend_from_slice(&cr.to_le_bytes());
         bytes.extend_from_slice(&cg.to_le_bytes());
         bytes.extend_from_slice(&cb.to_le_bytes());
@@ -99,7 +107,9 @@ pub fn pack_spec_lights(lights: &[MapLight]) -> Vec<u8> {
                 let d = glam::Vec3::from(l.cone_direction).normalize_or(glam::Vec3::NEG_Y);
                 ([d.x, d.y, d.z], SPEC_LIGHT_TYPE_DIRECTIONAL, 1.0, -1.0)
             }
-            LightType::Point => ([0.0, 0.0, 0.0], SPEC_LIGHT_TYPE_POINT, 1.0, -1.0),
+            LightType::Point | LightType::Area => {
+                ([0.0, 0.0, 0.0], SPEC_LIGHT_TYPE_POINT, 1.0, -1.0)
+            }
         };
         bytes.extend_from_slice(&dir[0].to_le_bytes());
         bytes.extend_from_slice(&dir[1].to_le_bytes());
@@ -261,6 +271,33 @@ mod tests {
                 read_f32(&unauthored, 40)
             ],
             [0.0, -1.0, 0.0]
+        );
+    }
+
+    /// An area light keeps a spec record, so every later light keeps its
+    /// index, but the record is inert: zero colour, cone-less, no sdf flag.
+    #[test]
+    fn area_light_packs_an_inert_placeholder_at_its_index() {
+        let mut area = sample();
+        area.light_type = LightType::Area;
+        let mut spot = sample();
+        spot.light_type = LightType::Spot;
+        spot.cone_direction = [0.0, -1.0, 0.0];
+        let bytes = pack_spec_lights(&[sample(), area, spot]);
+        assert_eq!(bytes.len(), 3 * SPEC_LIGHT_SIZE);
+        let placeholder = &bytes[SPEC_LIGHT_SIZE..2 * SPEC_LIGHT_SIZE];
+        assert_eq!(read_f32(placeholder, 0), 1.0, "position is the centroid");
+        assert_eq!(read_f32(placeholder, 12), 12.5, "range is the reach");
+        for offset in [16, 20, 24, 28] {
+            assert_eq!(read_f32(placeholder, offset), 0.0);
+        }
+        assert_eq!(read_f32(placeholder, 44), SPEC_LIGHT_TYPE_POINT);
+        assert_eq!(read_f32(placeholder, 48), 1.0);
+        assert_eq!(read_f32(placeholder, 52), -1.0);
+        assert_eq!(
+            read_f32(&bytes, 2 * SPEC_LIGHT_SIZE + 44),
+            SPEC_LIGHT_TYPE_SPOT,
+            "the spot after it keeps its own index"
         );
     }
 

@@ -152,6 +152,7 @@ impl World {
                     vertex_spec_owners: &[],
                     vertex_emissive_volumes: &[],
                     emissive_volumes: &[],
+                    area_glow_lights: &[],
                     indices: &self.indices,
                     bvh: &self.bvh,
                     lights: &self.lights,

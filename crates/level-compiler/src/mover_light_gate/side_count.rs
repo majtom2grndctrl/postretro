@@ -52,6 +52,10 @@ pub(crate) fn side_counts(
                     LightType::Point | LightType::Spot => {
                         sphere_touches_box(light.origin, f64::from(light.falloff_range), swept)
                     }
+                    LightType::Area => {
+                        let (centre, radius) = light.reach_sphere();
+                        sphere_touches_box(centre, radius, swept)
+                    }
                 };
                 if !reaches {
                     continue;

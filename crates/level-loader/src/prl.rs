@@ -16,6 +16,8 @@ use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
 #[cfg(feature = "load-prl")]
+use postretro_level_format::area_glow::AreaGlowSection;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::billboard_direct_scatter_volume::BillboardDirectScatterVolumeSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::cell_draw_index::CellDrawIndexSection;
@@ -399,6 +401,13 @@ pub enum LightType {
     Point,
     Spot,
     Directional,
+    /// Polygon area light. Its whole contribution is baked (lightmap, SH,
+    /// scatter, mover channel); the runtime record is a placeholder that keeps
+    /// the light's index in every light namespace. It is never dynamic, never
+    /// promoted, never a shadowmask owner or chunk-list member, and adds no
+    /// specular. `origin` is the polygons' area-weighted centroid and
+    /// `falloff_range` the resolved reach.
+    Area,
 }
 
 /// Mirrors `postretro-level-compiler::map_data::FalloffModel`.
@@ -698,6 +707,10 @@ pub struct LevelWorld {
     /// Required — loader rejects files where the section is absent.
     #[cfg(feature = "load-prl")]
     pub emissive: EmissiveSection,
+    /// Area glow (PRL section 62): each area light's glow and emitting
+    /// faces. Empty when the section is absent: the map has no area light.
+    #[cfg(feature = "load-prl")]
+    pub area_glow: AreaGlowSection,
     /// Always present — loader rejects files without a BVH section.
     #[cfg(feature = "load-prl")]
     pub bvh: BvhTree,
@@ -805,10 +818,11 @@ pub struct LevelWorld {
     /// no face draws static non-SDF world specular.
     #[cfg(feature = "load-prl")]
     pub vertex_spec_owners: Vec<SpecOwnerVertex>,
-    /// One emissive volume id per world vertex, stamped from id 60's face
-    /// lists: the volume index + 1, or 0 for a face in no volume. The forward
-    /// pass's slot-2 vertex stream. Empty when no volume lists a face; the
-    /// renderer then binds a zero-filled stream.
+    /// One glow table id per world vertex, stamped from id 60's and id 62's
+    /// face lists: the volume index + 1, `AREA_GLOW_FIRST_ENTRY` + the face's
+    /// area entry, or 0 for neither. The forward pass's slot-2 vertex stream.
+    /// Empty when neither lists a face; the renderer then binds a zero-filled
+    /// stream.
     #[cfg(feature = "load-prl")]
     pub vertex_emissive_volumes: Vec<u32>,
     /// Id-22 and id-42 block payloads, held only until install moves them
@@ -961,6 +975,8 @@ impl LevelWorld {
             texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
             #[cfg(feature = "load-prl")]
             emissive: EmissiveSection::default(),
+            #[cfg(feature = "load-prl")]
+            area_glow: AreaGlowSection::default(),
             #[cfg(feature = "load-prl")]
             bvh: BvhTree {
                 nodes: vec![],
@@ -1955,9 +1971,85 @@ mod tests {
         );
     }
 
+    /// An AlphaLights record as the compiler writes an area light: centroid
+    /// origin, reach as range, InverseSquared, zero cone fields, baked only.
+    fn area_alpha_light_record() -> postretro_level_format::alpha_lights::AlphaLightRecord {
+        postretro_level_format::alpha_lights::AlphaLightRecord {
+            origin: [2.0, 3.5, -1.25],
+            light_type: AlphaLightType::Area,
+            intensity: 300.0,
+            color: [1.0, 0.5, 0.25],
+            falloff_model: AlphaFalloffModel::InverseSquared,
+            falloff_range: 16.0,
+            cone_angle_inner: 0.0,
+            cone_angle_outer: 0.0,
+            cone_direction: [0.0, 0.0, 0.0],
+            is_dynamic: false,
+            casts_entity_shadows: false,
+            leaf_index: ALPHA_LIGHT_LEAF_UNASSIGNED,
+            shadow_type: AlphaShadowType::StaticLightMap,
+        }
+    }
+
+    #[test]
+    fn convert_alpha_lights_keeps_an_area_record_as_a_placeholder_at_its_index() {
+        let mut alpha = sample_alpha_lights();
+        alpha.lights.insert(1, area_alpha_light_record());
+        let lights = convert_alpha_lights(alpha).expect("an area record loads");
+        let types: Vec<LightType> = lights.iter().map(|l| l.light_type).collect();
+        assert_eq!(
+            types,
+            [
+                LightType::Point,
+                LightType::Area,
+                LightType::Spot,
+                LightType::Directional
+            ]
+        );
+        let area = &lights[1];
+        assert_eq!(area.origin, [2.0, 3.5, -1.25]);
+        assert_eq!(area.falloff_range, 16.0);
+        assert_eq!(area.falloff_model, FalloffModel::InverseSquared);
+        assert!(!area.is_dynamic && !area.casts_entity_shadows);
+        assert_eq!(area.cell_index, ALPHA_LIGHT_LEAF_UNASSIGNED);
+    }
+
+    #[test]
+    fn convert_alpha_lights_rejects_a_dynamic_sdf_or_shadow_casting_area_record() {
+        let corrupt: [fn(&mut postretro_level_format::alpha_lights::AlphaLightRecord); 3] = [
+            |r| r.is_dynamic = true,
+            |r| r.shadow_type = AlphaShadowType::Sdf,
+            |r| r.casts_entity_shadows = true,
+        ];
+        for corrupt in corrupt {
+            let mut alpha = sample_alpha_lights();
+            let mut area = area_alpha_light_record();
+            corrupt(&mut area);
+            alpha.lights.insert(1, area);
+            let err = convert_alpha_lights(alpha).unwrap_err().to_string();
+            assert!(
+                err.contains("light 1 is an area light"),
+                "expected a rejection naming the area light, got {err}",
+            );
+        }
+    }
+
+    #[test]
+    fn validate_entity_shadow_lights_rejects_an_area_light() {
+        let mut alpha = sample_alpha_lights();
+        alpha.lights.insert(1, area_alpha_light_record());
+        let lights = convert_alpha_lights(alpha).expect("an area record loads");
+        let err = validate_entity_shadow_light_selection(&[1], &lights).unwrap_err();
+        assert!(
+            err.to_string().contains("references an area light"),
+            "expected an area-light rejection, got {err:?}",
+        );
+        assert!(validate_entity_shadow_light_selection(&[0], &lights).is_ok());
+    }
+
     #[test]
     fn validate_entity_shadow_lights_accepts_static_lightmap_point_or_spot() {
-        let lights = convert_alpha_lights(sample_alpha_lights());
+        let lights = convert_alpha_lights(sample_alpha_lights()).expect("no area records");
 
         assert!(validate_entity_shadow_light_selection(&[0], &lights).is_ok());
     }
@@ -1966,7 +2058,7 @@ mod tests {
     fn validate_entity_shadow_lights_rejects_dynamic_directional_and_sdf_lights() {
         let mut alpha = sample_alpha_lights();
         alpha.lights[0].shadow_type = AlphaShadowType::Sdf;
-        let lights = convert_alpha_lights(alpha);
+        let lights = convert_alpha_lights(alpha).expect("no area records");
 
         let sdf = validate_entity_shadow_light_selection(&[0], &lights).unwrap_err();
         assert!(
@@ -2110,6 +2202,7 @@ mod tests {
             texture_names: vec![],
             texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
             emissive: EmissiveSection::default(),
+            area_glow: AreaGlowSection::default(),
             bvh: empty_bvh(),
             lights: vec![],
             light_influences: vec![],
@@ -2226,6 +2319,7 @@ mod tests {
             texture_names: vec![],
             texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
             emissive: EmissiveSection::default(),
+            area_glow: AreaGlowSection::default(),
             bvh: empty_bvh(),
             lights: vec![],
             light_influences: vec![],
@@ -2296,6 +2390,7 @@ mod tests {
             texture_names: vec![],
             texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
             emissive: EmissiveSection::default(),
+            area_glow: AreaGlowSection::default(),
             bvh: empty_bvh(),
             lights: vec![],
             light_influences: vec![],
@@ -4971,6 +5066,74 @@ mod tests {
         std::fs::remove_file(&tmp).ok();
     }
 
+    fn area_glow_level(area_glow: &[u8], name: &str) -> std::path::PathBuf {
+        write_prl_fixture(
+            vec![
+                geometry_blob(sample_geometry()),
+                bvh_blob(sample_bvh_section()),
+                texture_names_blob(&["signs/bar", "metal/plate"]),
+                default_texture_cache_keys_blob(),
+                default_fog_volumes_blob(),
+                emissive_blob(&EmissiveSection::dark(2)),
+                prl_format::SectionBlob {
+                    section_id: SectionId::AreaGlow as u32,
+                    version: postretro_level_format::area_glow::AREA_GLOW_VERSION,
+                    data: area_glow.to_vec(),
+                },
+            ],
+            name,
+        )
+    }
+
+    fn area_glow_light(faces: Vec<u32>) -> postretro_level_format::area_glow::AreaGlowLight {
+        postretro_level_format::area_glow::AreaGlowLight {
+            glow: 4.0,
+            color: [1.0, 0.0, 0.0],
+            intensity: 1.0,
+            compose_slot: Some(0),
+            faces,
+        }
+    }
+
+    // Acceptance row 60 (research.md O5) and row 45 (loader half): id 62
+    // reaches the world and stamps its face's vertices from entry 257; a
+    // table past the glow table's cap, or a face outside the level, refuses
+    // the load by name.
+    #[test]
+    fn load_prl_carries_area_glow_and_refuses_an_over_cap_table() {
+        use postretro_level_format::area_glow::{AreaGlowSection, MAX_AREA_GLOW_FACES};
+        let section = AreaGlowSection {
+            lights: vec![area_glow_light(vec![1])],
+        };
+        let tmp = area_glow_level(&section.to_bytes(), "postretro_test_area_glow_loads.prl");
+        let world = load_prl(tmp.to_str().unwrap()).expect("a level with id 62 loads");
+        assert_eq!(world.area_glow, section);
+        assert!(world.vertex_emissive_volumes.contains(&257));
+        assert!(world.vertex_emissive_volumes.contains(&0));
+        std::fs::remove_file(&tmp).ok();
+
+        let over_cap = AreaGlowSection {
+            lights: vec![area_glow_light((0..=MAX_AREA_GLOW_FACES as u32).collect())],
+        };
+        let outside = AreaGlowSection {
+            lights: vec![area_glow_light(vec![2])],
+        };
+        for (case, section, expected) in [
+            ("over cap", over_cap, "more than 3839 emitting faces"),
+            ("face range", outside, "outside the level's 2 faces"),
+        ] {
+            let tmp = area_glow_level(&section.to_bytes(), "postretro_test_area_glow_refused.prl");
+            match load_prl(tmp.to_str().unwrap()).unwrap_err() {
+                PrlLoadError::SectionValidation { section, message } => {
+                    assert_eq!(section, "AreaGlow", "{case}");
+                    assert!(message.contains(expected), "{case}: {message}");
+                }
+                other => panic!("{case}: got {other:?}"),
+            }
+            std::fs::remove_file(&tmp).ok();
+        }
+    }
+
     #[test]
     fn load_prl_refuses_emissive_records_that_do_not_fit_the_level() {
         let mut short = baked_emissive();
@@ -5066,8 +5229,7 @@ mod tests {
             PrlLoadError::SectionValidation { section, message } => {
                 assert_eq!(section, "Emissive");
                 assert!(
-                    message
-                        .contains("faces 0 and 1 share vertex 0 but belong to different volumes"),
+                    message.contains("faces 0 and 1 share vertex 0 but carry different glow ids"),
                     "{message}"
                 );
             }
@@ -5484,6 +5646,74 @@ mod tests {
         assert_eq!(world.lights[2].cell_index, ALPHA_LIGHT_LEAF_UNASSIGNED);
 
         std::fs::remove_file(&tmp).ok();
+    }
+
+    fn alpha_lights_fixture_sections(alpha_lights_bytes: Vec<u8>) -> Vec<prl_format::SectionBlob> {
+        vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: GEOMETRY_CONTAINER_VERSION,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: sample_bvh_section().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::AlphaLights as u32,
+                version: 1,
+                data: alpha_lights_bytes,
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ]
+    }
+
+    // AC 38: a v5 AlphaLights section with an area light between a point and
+    // a spot loads, and the area light keeps its index.
+    #[test]
+    fn load_prl_loads_an_area_light_at_its_authored_index() {
+        let mut alpha_lights = sample_alpha_lights();
+        alpha_lights.lights.insert(1, area_alpha_light_record());
+        let tmp = write_prl_fixture(
+            alpha_lights_fixture_sections(alpha_lights.to_bytes()),
+            "postretro_test_alpha_lights_area.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap()).expect("an area-light map loads");
+        std::fs::remove_file(&tmp).ok();
+
+        let types: Vec<LightType> = world.lights.iter().map(|l| l.light_type).collect();
+        assert_eq!(
+            types,
+            [
+                LightType::Point,
+                LightType::Area,
+                LightType::Spot,
+                LightType::Directional
+            ]
+        );
+        assert_eq!(world.lights[1].origin, [2.0, 3.5, -1.25]);
+        assert_eq!(world.lights[1].falloff_range, 16.0);
+    }
+
+    // AC 38: a v4 AlphaLights section, written before area lights existed,
+    // fails the load rather than being read as v5.
+    #[test]
+    fn load_prl_rejects_a_v4_alpha_lights_section() {
+        let mut bytes = sample_alpha_lights().to_bytes();
+        bytes[..4].copy_from_slice(&4u32.to_le_bytes());
+        let tmp = write_prl_fixture(
+            alpha_lights_fixture_sections(bytes),
+            "postretro_test_alpha_lights_v4.prl",
+        );
+        let err = load_prl(tmp.to_str().unwrap()).expect_err("a v4 section is refused");
+        std::fs::remove_file(&tmp).ok();
+        assert!(
+            err.to_string()
+                .contains("unsupported AlphaLights section version 4"),
+            "unexpected error: {err}",
+        );
     }
 
     fn empty_bvh_blob() -> prl_format::SectionBlob {

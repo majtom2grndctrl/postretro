@@ -293,16 +293,79 @@ struct AnimatedBlockTable {
 };
 @group(4) @binding(7) var<uniform> animated_block_table: AnimatedBlockTable;
 
-// Emissive volume table: one rgb glow factor per emissive volume (PRL id 60),
-// `(min + brightness × (max − min)) × colour`, packed on CPU each frame a value
-// changes. Entry 0 is "no volume", (1, 1, 1); entry `i + 1` is volume `i`, so
-// the per-vertex volume id indexes it directly. The array length is
-// `EMISSIVE_TABLE_ENTRIES` from `render-cpu` (MAX_EMISSIVE_VOLUMES + 1). Read
-// only for faces whose texture glows.
+// Glow table. Entries below `AREA_GLOW_FIRST_ENTRY` are emissive volumes (PRL
+// id 60): one rgb glow factor each, `(min + brightness × (max − min)) ×
+// colour`, packed on CPU each frame a value changes. Entry 0 is "no volume",
+// (1, 1, 1); entry `i + 1` is volume `i`, so the per-vertex id indexes it
+// directly; read only for faces whose texture glows. Entries from
+// `AREA_GLOW_FIRST_ENTRY` are area-light faces (PRL id 62), written once at
+// install and read by `area_glow_factor`. The array length is
+// `GLOW_TABLE_ENTRIES` from `level-format` (the 64 KiB uniform limit).
 struct EmissiveVolumeTable {
-    entries: array<vec4<f32>, 257>,
+    entries: array<vec4<f32>, 4096>,
 };
 @group(4) @binding(8) var<uniform> emissive_volume_table: EmissiveVolumeTable;
+
+// `AREA_GLOW_FIRST_ENTRY` (level-format `area_glow`): MAX_EMISSIVE_VOLUMES + 1.
+const AREA_GLOW_FIRST_ENTRY: u32 = 257u;
+// The emissive ceiling (level-format `EMISSIVE_VALUE_CEILING`).
+const AREA_GLOW_CEILING: f32 = 64.0;
+
+// An area-light face's rgb glow factor, mirrored on the CPU by render-cpu
+// `emissive_volume::area_glow_factor`. Three entry forms:
+// - Static (w < 0): `_glow × _color`, drawn as is; `_color` is at most 1, so
+//   each channel is at most the ceiling.
+// - Slotted (w = slot ≥ 0, y > 0): `(_glow, 1 / intensity, 0, slot)`. The
+//   descriptor's base colour carries colour × intensity, which y divides
+//   back out (research.md O2).
+// - Slotted at `light 0` (w = slot ≥ 0, y = 0): `(_glow, 0, packed _color,
+//   slot)`. The descriptor's base colour is 0, so the colour rides z, 8 bits
+//   per channel, red lowest; a colour curve replaces it, as on a lit light.
+// A slotted entry reads the light's compose descriptor and the frame's
+// time, as compose does, so glow and room light take one curve value per
+// frame (O13). Inactive reads 0. The live `_glow × brightness` stops at the
+// emissive ceiling, and so does each channel.
+fn area_glow_factor(entry: vec4<f32>) -> vec3<f32> {
+    if entry.w < 0.0 {
+        return entry.rgb;
+    }
+    let slot = u32(entry.w);
+    if slot >= arrayLength(&anim_descriptors) {
+        return vec3<f32>(0.0);
+    }
+    let desc = anim_descriptors[slot];
+    if desc.is_active == 0u {
+        return vec3<f32>(0.0);
+    }
+    let t = animation_curve_t(desc.period, desc.phase, uniforms.time);
+    let brightness = max(
+        sample_curve_catmull_rom(desc.brightness_offset, desc.brightness_count, t),
+        0.0,
+    );
+    var base = desc.base_color;
+    var unit = entry.y;
+    if entry.y <= 0.0 {
+        unit = 1.0;
+        base = vec3<f32>(1.0);
+        if desc.color_count == 0u {
+            let packed = u32(entry.z);
+            base = vec3<f32>(
+                f32(packed & 0xffu),
+                f32((packed >> 8u) & 0xffu),
+                f32((packed >> 16u) & 0xffu),
+            ) / 255.0;
+        }
+    }
+    var color = base;
+    if desc.color_count > 0u {
+        color = max(
+            sample_color_catmull_rom(desc.color_offset, desc.color_count, t, vec3<f32>(1.0)),
+            vec3<f32>(0.0),
+        ) * base;
+    }
+    let scale = min(entry.x * brightness, AREA_GLOW_CEILING) * unit;
+    return min(color * scale, vec3<f32>(AREA_GLOW_CEILING));
+}
 
 // The lightmap helpers — the vertex-stage `resolve_lightmap_block`, and
 // `sample_lightmap_irradiance`, `sample_lightmap_direction`,
@@ -1600,9 +1663,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     // Texture strength × the face's volume factor. A texture with no glow
-    // samples nothing and reads no table entry.
+    // samples nothing and reads no table entry. An area-light face instead
+    // draws its `_e` × its light's live glow, whatever its texture strength.
     var emissive = vec3<f32>(0.0);
-    if material.emissive_strength > 0.0 {
+    if in.emissive_volume >= AREA_GLOW_FIRST_ENTRY {
+        let area_factor = area_glow_factor(emissive_volume_table.entries[in.emissive_volume]);
+        emissive = sample_color(emissive_texture, shade_uv, ddx, ddy).rgb * area_factor;
+    } else if material.emissive_strength > 0.0 {
         let volume_factor = emissive_volume_table.entries[in.emissive_volume].rgb;
         emissive = sample_color(emissive_texture, shade_uv, ddx, ddy).rgb
             * material.emissive_strength

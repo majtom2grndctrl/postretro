@@ -12,7 +12,7 @@ use postretro_level_format::reflection_probes::{
 
 use super::capture::SUPERSAMPLE_OFFSETS;
 use super::capture_exclusion::ProbeExclusion;
-use super::emissive_factor::EmissiveFaceFactors;
+use super::emissive_factor::{AreaGlowFaces, EmissiveFaceFactors};
 use super::exclusion::ExclusionConstants;
 use super::placement::PlacedProbe;
 use super::reference::REFERENCE_MEAN_SAMPLES;
@@ -175,6 +175,11 @@ pub(super) fn cache_key(
         "emissive volumes",
         &EmissiveFaceFactors::key_bytes(inputs.emissive_volumes),
     );
+    // Each area face's glow (id 62): `_glow` keys this stage alone. Only a
+    // map with an area light has the section, so no other map's key moves.
+    if let Some(area_glow) = inputs.area_glow {
+        section("area glow", &AreaGlowFaces::key_bytes(area_glow));
+    }
     // The animated lights the capture reads: their baked direct and bounce as
     // the level ships them, and their runtime descriptors (whose clamped cycle
     // mean is each light's reference).

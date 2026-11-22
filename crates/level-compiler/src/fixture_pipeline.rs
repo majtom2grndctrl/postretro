@@ -34,7 +34,8 @@ use crate::portals::Portal;
 /// stress fixture (a long narrow corridor whose >24 m length makes the warm-vs-cold
 /// SH approximation non-vacuous under the 16 m reach cutoff — see gate 3); it replaces
 /// campaign-test (194k probes, ~10 min/SH-bake) at a fraction of the cost.
-/// soft_shadow_test and the animated-weight-map maps cover the remaining cases.
+/// soft_shadow_test and the animated-weight-map maps cover the remaining cases;
+/// area-light-panel covers a `light_area`'s polygon emitter and its exact skips.
 ///
 /// Keep this list cheap. Bake cost tracks probe and texel counts, not `.map` size:
 /// the heavily-lit entries dominate while the animated-weight-map fixtures are
@@ -54,6 +55,7 @@ pub const GATE_FIXTURES: &[&str] = &[
     "test_animated_weight_maps_mixed",
     "test_animated_weight_maps_occluded",
     "test_animated_weight_maps_single",
+    "area-light-panel",
 ];
 
 /// The products compile-pipeline fixture tests need. Owns the shared pipeline
@@ -139,7 +141,7 @@ pub fn load_fixture(name: &str) -> FixturePipeline {
 /// `.map`, as `pipeline.rs` runs those stages.
 pub fn load_map(path: &Path) -> FixturePipeline {
     let name = path.display();
-    let map_data = parse::parse_map_file(path, MapFormat::IdTech2)
+    let mut map_data = parse::parse_map_file(path, MapFormat::IdTech2)
         .unwrap_or_else(|e| panic!("parse {name}: {e}"));
 
     let ShippedCells {
@@ -148,6 +150,18 @@ pub fn load_map(path: &Path) -> FixturePipeline {
         runtime,
     } = ShippedCells::build(&map_data.brush_volumes, &map_data.kinematic_movers)
         .unwrap_or_else(|e| panic!("partition {name}: {e}"));
+    if !map_data.area_lights.is_empty() {
+        let has_emissive_map =
+            crate::texture_mips::emissive_map_lookup(&crate::resolve_texture_root(path));
+        crate::area_light::resolve_area_lights(
+            &mut map_data,
+            &result.faces,
+            &result.tree,
+            &full_exterior,
+            has_emissive_map,
+        )
+        .unwrap_or_else(|e| panic!("area lights {name}: {e}"));
+    }
     let RuntimeCells { cells, portals } = runtime;
 
     let geometry = extract_geometry(&result.faces, &cells.tree, &cells.exterior_cells);

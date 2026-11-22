@@ -435,6 +435,7 @@ fn tile_texture_bytes_are_ledgered_while_installed_and_gone_after_unload() {
                     vertex_spec_owners: &[],
                     vertex_emissive_volumes: &[],
                     emissive_volumes: &[],
+                    area_glow_lights: &[],
                     indices: &[],
                     bvh: &bvh,
                     lights: &[],

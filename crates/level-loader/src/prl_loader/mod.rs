@@ -312,6 +312,7 @@ fn finalize_lighting(
         &spatial.bvh.leaves,
         geometry.face_meta.len(),
         &geometry.emissive,
+        &geometry.area_glow,
     )?;
     Ok(FinalLighting {
         lights,
@@ -403,6 +404,7 @@ fn assemble_world(
         texture_names,
         texture_cache_keys,
         emissive,
+        area_glow,
     } = geometry;
     let SpatialSections {
         bvh,
@@ -471,6 +473,7 @@ fn assemble_world(
         texture_names,
         texture_cache_keys,
         emissive,
+        area_glow,
         bvh,
         lights,
         light_influences,

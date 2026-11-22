@@ -7,6 +7,7 @@ pub mod animated_block_ids;
 pub mod animated_direct_sh_bake;
 pub mod animated_light_chunks;
 pub mod animated_light_weight_maps;
+pub(crate) mod area_light;
 pub(crate) mod bake_content_keys;
 pub mod bake_control;
 pub(crate) mod bake_fidelity;
@@ -92,6 +93,10 @@ pub mod tui;
 pub mod visibility;
 mod working_set;
 
+#[cfg(test)]
+mod area_light_bounce_tests;
+#[cfg(test)]
+mod area_light_probe_tests;
 #[cfg(test)]
 mod bake_counters;
 #[cfg(test)]
@@ -3638,6 +3643,35 @@ mod tests {
         let map_path = workspace.join("content/dev/maps/script_light_membership_fixture.map");
         let mut map_data = parse::parse_map_file(&map_path, MapFormat::IdTech2)
             .expect("parse script-membership fixture");
+
+        // Acceptance row 57: light 0 is a static point light with
+        // `_start_inactive 1` and no `_animated` key or curve. With no script
+        // step it gains no animated reservation and bakes lit, at its full
+        // authored intensity, into the static namespace: point lights keep
+        // their own rule, unlike an area light.
+        assert_eq!(
+            map_data.lights[0].light_type,
+            crate::map_data::LightType::Point
+        );
+        assert!(!map_data.lights[0].is_animated);
+        assert!(map_data.lights[0].animation.is_none());
+        let unscripted = map_data.lights.clone();
+        let static_lights = light_namespaces::StaticBakedLights::from_lights(&unscripted);
+        assert!(
+            static_lights
+                .entries()
+                .iter()
+                .any(|entry| entry.source_index == 0
+                    && entry.light.intensity == unscripted[0].intensity),
+            "with no script step the `_start_inactive` point light bakes lit"
+        );
+        assert!(
+            light_namespaces::AnimatedBakedLights::from_lights(&unscripted)
+                .slot_for_source_lights(unscripted.len())[0]
+                == postretro_level_format::sh_volume::ANIMATED_SLOT_NONE,
+            "and gains no animated reservation"
+        );
+
         let compiled = compile_worldspawn_data_script(
             &map_path,
             map_data.data_script.as_deref(),
@@ -3680,6 +3714,112 @@ mod tests {
             "the KVP curve and script target must each reserve animated bake output"
         );
         assert!(!compiled.section.compiled_bytes.is_empty());
+    }
+
+    // Acceptance rows 55 and 56, build side (research.md O3, O15): two
+    // `_start_inactive 1` area lights with no `_animated` key each take the
+    // animated reservation. A `levelLoad` pulse on one starts it lit; the
+    // other's only `levelLoad` step is a `sweep`, which the runtime refuses
+    // on an area light, so it keeps its authored dark start.
+    #[test]
+    fn a_level_load_pulse_lights_a_start_inactive_area_light_and_a_sweep_does_not() {
+        let tmp_dir = unique_temp_dir("area-start-state");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let glass = |x: i32| {
+            let (x0, x1) = (x - 32, x + 32);
+            format!(
+                "{{\n( {x0} 0 0 ) ( {x0} 1 0 ) ( {x0} 0 1 ) wall/plain 0 0 0 1 1\n\
+                 ( {x1} 0 0 ) ( {x1} 0 1 ) ( {x1} 1 0 ) wall/plain 0 0 0 1 1\n\
+                 ( 0 96 0 ) ( 0 96 1 ) ( 1 96 0 ) wall/plain 0 0 0 1 1\n\
+                 ( 0 160 0 ) ( 1 160 0 ) ( 0 160 1 ) wall/plain 0 0 0 1 1\n\
+                 ( 0 0 120 ) ( 1 0 120 ) ( 0 1 120 ) neon/glow_panel 0 0 0 1 1\n\
+                 ( 0 0 124 ) ( 0 1 124 ) ( 1 0 124 ) wall/plain 0 0 0 1 1\n}}\n"
+            )
+        };
+        let area = |tag: &str, x: i32| {
+            format!(
+                "{{\n\"classname\" \"light_area\"\n\"_start_inactive\" \"1\"\n\
+                 \"_tags\" \"{tag}\"\n{}}}\n",
+                glass(x)
+            )
+        };
+        let map = format!(
+            "{{\n\"classname\" \"worldspawn\"\n\"data_script\" \"level.ts\"\n}}\n{}{}",
+            area("lit_at_load", 128),
+            area("swept", 384)
+        );
+        let map_path = tmp_dir.join("area-start-state.map");
+        std::fs::write(&map_path, map).unwrap();
+        std::fs::write(
+            tmp_dir.join("level.ts"),
+            r#"import { defineReaction, getMapEntities } from "postretro";
+export function setupLevel(_ctx: unknown) {
+  const lit = getMapEntities("light", { tag: "lit_at_load" });
+  const swept = getMapEntities("light", { tag: "swept" });
+  return { reactions: [defineReaction("levelLoad", { sequence: [
+    ...lit.flatMap((p) => p.pulse({ min: 0.3, max: 1.0, periodMs: 900 })),
+    ...swept.flatMap((p) => p.sweep({ values: [{ x: 0, y: -1, z: 0 }], periodMs: 900 })),
+  ] })] };
+}
+"#,
+        )
+        .unwrap();
+
+        let mut map_data =
+            parse::parse_map_file(&map_path, MapFormat::IdTech2).expect("parse the area map");
+        let types: Vec<_> = map_data.lights.iter().map(|l| l.light_type).collect();
+        assert_eq!(types, [map_data::LightType::Area; 2]);
+        assert_eq!(map_data.light_start_active_defaults, [false, false]);
+        for light in &map_data.lights {
+            let animation = light
+                .animation
+                .as_ref()
+                .expect("`_start_inactive` reserves the animated bake");
+            assert!(!animation.start_active, "authored dark");
+        }
+
+        let compiled = compile_worldspawn_data_script(
+            &map_path,
+            map_data.data_script.as_deref(),
+            &map_data.lights,
+            &buried_lights::BuriedLights::none(),
+            Vec::new(),
+        )
+        .expect("compile the data script")
+        .expect("the map has a data_script");
+        let records: Vec<_> = compiled
+            .membership_manifest
+            .lights
+            .iter()
+            .map(|record| (record.index, record.start_active))
+            .collect();
+        assert_eq!(
+            records,
+            [(0, Some(true))],
+            "the pulse starts light 0; the refused sweep records nothing"
+        );
+        script_light_membership::apply_manifest(
+            &mut map_data.lights,
+            &map_data.light_start_active_defaults,
+            &compiled.membership_manifest,
+        )
+        .expect("apply the membership");
+        let starts: Vec<bool> = map_data
+            .lights
+            .iter()
+            .map(|light| light.animation.as_ref().unwrap().start_active)
+            .collect();
+        assert_eq!(
+            starts,
+            [true, false],
+            "lit by its pulse; dark under its sweep"
+        );
+        assert_eq!(
+            light_namespaces::AnimatedBakedLights::from_lights(&map_data.lights).len(),
+            2,
+            "both keep their animated reservation"
+        );
+        std::fs::remove_dir_all(&tmp_dir).unwrap();
     }
 
     #[test]
@@ -3781,6 +3921,7 @@ mod tests {
             is_animated: false,
             tags: vec![],
             shadow_type: crate::map_data::ShadowType::StaticLightMap,
+            area: None,
         }
     }
 

@@ -80,7 +80,7 @@ The material enum and prefix derivation are implemented. Behavior hooks are plan
 
 | Behavior | Status |
 |----------|--------|
-| **Emissive surfaces** | Implemented — world and kinematic-brush `_e` texels add self-illumination to HDR scene color, scaled by a strength baked per texture from `materials.toml` (default 1.0 for any texture with an `_e` map, whatever its prefix), and on static world faces by an `emissive_volume`. They never replace or inject into direct/indirect lighting; bright values bloom in the renderer compositor. A `light_area` face's glow follows its light instead (decided, not yet built). See §4.5. |
+| **Emissive surfaces** | Implemented — world and kinematic-brush `_e` texels add self-illumination to HDR scene color, scaled by a strength baked per texture from `materials.toml` (default 1.0 for any texture with an `_e` map, whatever its prefix), and on static world faces by an `emissive_volume`. They never replace or inject into direct/indirect lighting; bright values bloom in the renderer compositor. A `light_area` face's glow follows its light instead. See §4.5. |
 | **Shininess** | Implemented (Epic 5) — specular exponent on enum variant. Fallback for texels without a `_p` smoothness map (§4.7). |
 | **Surface Depth** | Implemented — per-prefix depth (each direction), terrace count, march step cap, and fade distance for the signed texel-space parallax march. `glass` resolves to flat by intent, not by omission. See §4.6. |
 | **Footstep sounds** | Planned. |
@@ -151,8 +151,8 @@ mean's glow test is whether the texture has an `_e` map, whatever its strength
 (0 included); a `light_area` face's `_glow` never enters it. To light a scene, an
 author places a light entity. A `light_area` is such an entity: its `_e` faces
 form its emitter and glow with it, and its cast light takes the entity's `light`
-and `_color`, never the emissive map or its strength (decided, not yet built;
-`build_pipeline.md` §Custom FGD).
+and `_color`, never the emissive map or its strength (`build_pipeline.md`
+§Custom FGD).
 
 - **Naming:** `{name}_e.png` beside the diffuse texture.
 - **Format:** `Rgba8UnormSrgb`, sampled as linear color by hardware. Dimensions
@@ -188,11 +188,17 @@ and `_color`, never the emissive map or its strength (decided, not yet built;
     is ignored. A mod with no file compiles silently at defaults.
   - A strength edit re-runs only reflection capture and id 60; lightmap, SH and
     `.prm` caches stay warm.
-  - A `light_area` face (decided, not yet built) instead takes its light's
-    `_glow` × the light's live colour and brightness, so its glow follows its
-    light frame for frame. No `emissive_volume` claims it. Reflection capture
-    shows it at `_glow` × the light's reference colour (§5) and counts it in
-    that light's live-lighting share.
+  - A `light_area` face instead takes its light's `_glow` × the light's live
+    colour and brightness, whatever its texture's strength (0 included), so
+    its glow follows its light frame for frame and never scales with
+    `light`. A static light's faces glow at `_glow` × `_color`. PRL id 62
+    carries each light's faces (`rendering_pipeline.md` §7.3, Area glow). No
+    `emissive_volume` claims it. Reflection capture shows it at `_glow` × the
+    light's reference colour (§5) and counts it in that light's
+    live-lighting share. A `light 0` light keeps its compose slot, so its
+    glow still follows its state, at `_glow` × `_color`; capture shows it
+    static at its reference glow (§5.2). A `_glow` edit re-runs only
+    reflection capture and id 62.
 - **Emissive volumes:** an `emissive_volume` brush scales and tints the static
   world faces it holds. Glow = texture strength × (min + brightness × (max −
   min)) × color. Membership is per final face, fixed at compile time
@@ -392,7 +398,7 @@ A reflection probe is a compile-time capture of the static world, stored for dis
 
 ### 5.2 Capture
 
-Captured in its own cached prl-build stage against the static world (`build_pipeline.md` §Compiler pipeline): movers never appear, `switch` brushes do, and small brushes may be excluded (Exclusion, below). Mover state lighting (`rendering_pipeline.md` §4) does not reach a capture, so water behind a closed mover door still mirrors the lit doorway; mover-aware captures are planned, not built. Load-time GPU capture would be runtime texture generation (§9). Shading is albedo × (direct + indirect) + emissive, as the runtime would draw it at a reference state: the static lightmap, every animated light's weight map, the SDF-shadowed lights the runtime's per-fragment selection picks at each hit, and SH indirect with every animated light's delta. An animated light enters at the cycle mean of its runtime clamped curve, a curveless one at its authored colour, whether or not it starts active. No specular, no dynamic lights. Emissive enters at the no-script state: the baked texture strength (§4.5) × the face's volume max × its authored colour, strength alone outside a volume. Coupled to the renderer by parity: the indirect weight and the baked emissive strengths must equal the renderer's production values, and the SDF light selection and shading mirror the forward pass's as drawn, quirks included: point and directional SDF lights draw at half brightness (a zero aim meets the cone term), and an animated SDF light's direct is static (only its delta SH animates). Tests pin each, so a runtime change there updates the capture and bumps the capture stage's cache epoch (`build_pipeline.md` §Build Cache); the key hashes no shader text, so without the bump warm builds keep stale tiles. A runtime-tuned dev indirect weight mismatches the bake. The SH depth visibility reads id 59 through the runtime's reference decode, and the key hashes id 59, so the capture loses a thin-wall leak exactly when the live view does (`rendering_pipeline.md` §4, Direction-aware probe visibility).
+Captured in its own cached prl-build stage against the static world (`build_pipeline.md` §Compiler pipeline): movers never appear, `switch` brushes do, and small brushes may be excluded (Exclusion, below). Mover state lighting (`rendering_pipeline.md` §4) does not reach a capture, so water behind a closed mover door still mirrors the lit doorway; mover-aware captures are planned, not built. Load-time GPU capture would be runtime texture generation (§9). Shading is albedo × (direct + indirect) + emissive, as the runtime would draw it at a reference state: the static lightmap, every animated light's weight map, the SDF-shadowed lights the runtime's per-fragment selection picks at each hit, and SH indirect with every animated light's delta. An animated light enters at the cycle mean of its runtime clamped curve, a curveless one at its authored colour, whether or not it starts active. No specular, no dynamic lights. Emissive enters at the no-script state: the baked texture strength (§4.5) × the face's volume max × its authored colour, strength alone outside a volume. A `light_area` face shows its `_e` × `_glow` instead, whatever its strength: × `_color` for a static light, or, for an animated one, × the light's reference value ÷ its intensity inside that light's unit term, so its share moves glass and room together and `light` never scales the glass. A `light 0` light keeps its compose slot but has a zero reference, so its glass is static at its reference glow. The capture key gains id 62 only on a map that has it. Coupled to the renderer by parity: the indirect weight and the baked emissive strengths must equal the renderer's production values, and the SDF light selection and shading mirror the forward pass's as drawn, quirks included: point and directional SDF lights draw at half brightness (a zero aim meets the cone term), and an animated SDF light's direct is static (only its delta SH animates). Tests pin each, so a runtime change there updates the capture and bumps the capture stage's cache epoch (`build_pipeline.md` §Build Cache); the key hashes no shader text, so without the bump warm builds keep stale tiles. A runtime-tuned dev indirect weight mismatches the bake. The SH depth visibility reads id 59 through the runtime's reference decode, and the key hashes id 59, so the capture loses a thin-wall leak exactly when the live view does (`rendering_pipeline.md` §4, Direction-aware probe visibility).
 
 - **Colour tile.** BC6H, each texel the mean of four rotated-grid rays.
 - **Distance tile.** R16F, each texel the mean over the same rays of 1/|hit − capture point|₁. Inverse L1 is affine across an octahedral octant on a plane, so bilinear filtering reconstructs a wall exactly. 0 means the ray hit nothing, and no finite hit stores 0, so a later sky term can fill exactly the directions the capture saw nothing.

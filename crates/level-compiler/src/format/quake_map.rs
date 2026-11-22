@@ -20,6 +20,11 @@ pub use angles::{quake_to_engine_angles, try_quake_to_engine_angles};
 // Point-entity origin translation, a child module for the same reason.
 pub mod entity_origin;
 pub use entity_origin::canonical_entity_origin;
+// The `light_area` brush entity's key translation.
+mod area_light;
+pub(crate) use area_light::{
+    area_light_source_label, is_area_light_classname, translate_area_light,
+};
 
 /// Every classname the FGD defines as a light entity. Baked-tier
 /// (`light`/`light_spot`/`light_sun`) and dynamic-tier
@@ -103,6 +108,15 @@ pub enum TranslateError {
         "light {light_ref}: 'color_curve' — color animation is only valid on `_bake_only` or `_animated` lights. Either set `_bake_only 1` / `_animated 1`, or remove `color_curve`."
     )]
     ColorCurveOnBakedLight { light_ref: String },
+
+    /// A `light_area` key that asks for behaviour an area light cannot give,
+    /// or holds a value it cannot read.
+    #[error("light {light_ref}: '{key}' — {reason}")]
+    AreaLightKey {
+        light_ref: String,
+        key: &'static str,
+        reason: String,
+    },
 }
 
 pub fn translate_light(
@@ -170,6 +184,7 @@ pub fn translate_light(
             fade_units as f32 * map_scale
         }
         LightType::Directional => 0.0,
+        LightType::Area => unreachable!("light_area translates through translate_area_light"),
     };
 
     // Bake-only area-light size inputs (soft shadows). `_light_size` is a
@@ -195,6 +210,7 @@ pub fn translate_light(
             0.0,
             parse_optional_angle(props, "_angular_diameter", DEFAULT_ANGULAR_DIAMETER_DEG)?,
         ),
+        LightType::Area => unreachable!("light_area translates through translate_area_light"),
     };
 
     let mut cone_angle_inner = None;
@@ -261,6 +277,7 @@ pub fn translate_light(
             cone_direction = Some(dir);
         }
         LightType::Point => {}
+        LightType::Area => unreachable!("light_area translates through translate_area_light"),
     }
 
     let authored_style = parse_optional_int(props, "style")?.unwrap_or_else(|| {
@@ -410,109 +427,14 @@ pub fn translate_light(
             || props.contains_key("direction_curve"));
 
     let animation = if has_any_curve {
-        let light_ref = format_light_ref(classname, origin);
-
-        let period_ms_raw = props
-            .get("period_ms")
-            .ok_or(TranslateError::MissingProperty("period_ms"))?
-            .trim();
-        let period_ms: f32 =
-            period_ms_raw
-                .parse()
-                .map_err(|_| TranslateError::InvalidProperty {
-                    key: "period_ms",
-                    value: period_ms_raw.to_string(),
-                    reason: "expected a positive number (milliseconds)",
-                })?;
-        if !(period_ms > 0.0 && period_ms.is_finite()) {
-            return Err(TranslateError::InvalidProperty {
-                key: "period_ms",
-                value: period_ms_raw.to_string(),
-                reason: "expected a positive number (milliseconds)",
-            });
-        }
-
-        let curve_phase = match props.get("_curve_phase") {
-            Some(s) => {
-                let v = parse_f32(s).ok_or_else(|| TranslateError::InvalidProperty {
-                    key: "_curve_phase",
-                    value: s.clone(),
-                    reason: "expected a float in [0.0, 1.0)",
-                })?;
-                if !(0.0..1.0).contains(&v) {
-                    log::warn!(
-                        "light {light_ref}: '_curve_phase' {v} outside [0.0, 1.0); clamping"
-                    );
-                    v.clamp(0.0, 1.0 - f32::EPSILON)
-                } else {
-                    v
-                }
-            }
-            None => 0.0,
-        };
-
-        if props.contains_key("brightness_curve") && style != 0 {
-            log::warn!(
-                "light {light_ref}: both 'brightness_curve' and 'style' set; \
-                 'style' is ignored in favor of the authored curve"
-            );
-        }
-
-        let brightness = if let Some(raw) = props.get("brightness_curve") {
-            let keyframes = parse_scalar_curve(raw, "brightness_curve", &light_ref)?;
-            Some(resample_keyframes(
-                &keyframes,
-                period_ms,
-                KEYFRAME_RESAMPLE_RATE_HZ,
-            ))
-        } else {
-            None
-        };
-
-        let color = if let Some(raw) = props.get("color_curve") {
-            // Task 2c: admit `color_curve` on `_bake_only` OR `_animated`
-            // lights. `_animated` lights route their color curve through the
-            // runtime compose pass (Task 2b/2c), so per-frame color drift no
-            // longer mismatches the SH bake — the bake never sees their color
-            // as static.
-            if !bake_only && !is_animated {
-                return Err(TranslateError::ColorCurveOnBakedLight { light_ref });
-            }
-            let keyframes = parse_vec3_curve(raw, "color_curve", &light_ref)?;
-            Some(resample_keyframes(
-                &keyframes,
-                period_ms,
-                KEYFRAME_RESAMPLE_RATE_HZ,
-            ))
-        } else {
-            None
-        };
-
-        let direction = if let Some(raw) = props.get("direction_curve") {
-            let keyframes = parse_vec3_curve(raw, "direction_curve", &light_ref)?;
-            let mut samples = resample_keyframes(&keyframes, period_ms, KEYFRAME_RESAMPLE_RATE_HZ);
-            // Normalize here; the GPU evaluator does not re-normalize.
-            for v in samples.iter_mut() {
-                let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-                if len > 1e-6 {
-                    v[0] /= len;
-                    v[1] /= len;
-                    v[2] /= len;
-                }
-            }
-            Some(samples)
-        } else {
-            None
-        };
-
-        Some(LightAnimation {
-            period: period_ms / 1000.0,
-            phase: curve_phase,
-            brightness,
-            color,
-            direction,
-            start_active: !start_inactive,
-        })
+        Some(parse_keyframe_animation(
+            props,
+            &format_light_ref(classname, origin),
+            style,
+            bake_only,
+            is_animated,
+            !start_inactive,
+        )?)
     } else if style == 0 {
         if props.contains_key("_phase") && phase_raw != 0.0 {
             log::warn!("light _phase set but style=0 (no animation); phase has no effect");
@@ -579,6 +501,120 @@ pub fn translate_light(
         is_animated,
         tags,
         shadow_type,
+        area: None,
+    })
+}
+
+/// The `period_ms`, `_curve_phase`, `brightness_curve`, `color_curve` and
+/// `direction_curve` keys of a light that authors at least one curve,
+/// resampled to uniform samples. `style` only feeds the warning that a curve
+/// overrides it. Shared by point, spot and area lights.
+fn parse_keyframe_animation(
+    props: &HashMap<String, String>,
+    light_ref: &str,
+    style: i32,
+    bake_only: bool,
+    is_animated: bool,
+    start_active: bool,
+) -> Result<LightAnimation, TranslateError> {
+    let light_ref = light_ref.to_owned();
+    let period_ms_raw = props
+        .get("period_ms")
+        .ok_or(TranslateError::MissingProperty("period_ms"))?
+        .trim();
+    let period_ms: f32 = period_ms_raw
+        .parse()
+        .map_err(|_| TranslateError::InvalidProperty {
+            key: "period_ms",
+            value: period_ms_raw.to_string(),
+            reason: "expected a positive number (milliseconds)",
+        })?;
+    if !(period_ms > 0.0 && period_ms.is_finite()) {
+        return Err(TranslateError::InvalidProperty {
+            key: "period_ms",
+            value: period_ms_raw.to_string(),
+            reason: "expected a positive number (milliseconds)",
+        });
+    }
+
+    let curve_phase = match props.get("_curve_phase") {
+        Some(s) => {
+            let v = parse_f32(s).ok_or_else(|| TranslateError::InvalidProperty {
+                key: "_curve_phase",
+                value: s.clone(),
+                reason: "expected a float in [0.0, 1.0)",
+            })?;
+            if !(0.0..1.0).contains(&v) {
+                log::warn!("light {light_ref}: '_curve_phase' {v} outside [0.0, 1.0); clamping");
+                v.clamp(0.0, 1.0 - f32::EPSILON)
+            } else {
+                v
+            }
+        }
+        None => 0.0,
+    };
+
+    if props.contains_key("brightness_curve") && style != 0 {
+        log::warn!(
+            "light {light_ref}: both 'brightness_curve' and 'style' set; \
+             'style' is ignored in favor of the authored curve"
+        );
+    }
+
+    let brightness = if let Some(raw) = props.get("brightness_curve") {
+        let keyframes = parse_scalar_curve(raw, "brightness_curve", &light_ref)?;
+        Some(resample_keyframes(
+            &keyframes,
+            period_ms,
+            KEYFRAME_RESAMPLE_RATE_HZ,
+        ))
+    } else {
+        None
+    };
+
+    let color = if let Some(raw) = props.get("color_curve") {
+        // Task 2c: admit `color_curve` on `_bake_only` OR `_animated`
+        // lights. `_animated` lights route their color curve through the
+        // runtime compose pass (Task 2b/2c), so per-frame color drift no
+        // longer mismatches the SH bake — the bake never sees their color
+        // as static.
+        if !bake_only && !is_animated {
+            return Err(TranslateError::ColorCurveOnBakedLight { light_ref });
+        }
+        let keyframes = parse_vec3_curve(raw, "color_curve", &light_ref)?;
+        Some(resample_keyframes(
+            &keyframes,
+            period_ms,
+            KEYFRAME_RESAMPLE_RATE_HZ,
+        ))
+    } else {
+        None
+    };
+
+    let direction = if let Some(raw) = props.get("direction_curve") {
+        let keyframes = parse_vec3_curve(raw, "direction_curve", &light_ref)?;
+        let mut samples = resample_keyframes(&keyframes, period_ms, KEYFRAME_RESAMPLE_RATE_HZ);
+        // Normalize here; the GPU evaluator does not re-normalize.
+        for v in samples.iter_mut() {
+            let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+            if len > 1e-6 {
+                v[0] /= len;
+                v[1] /= len;
+                v[2] /= len;
+            }
+        }
+        Some(samples)
+    } else {
+        None
+    };
+
+    Ok(LightAnimation {
+        period: period_ms / 1000.0,
+        phase: curve_phase,
+        brightness,
+        color,
+        direction,
+        start_active,
     })
 }
 

@@ -24,7 +24,7 @@ A gap U1 leaves open by decision. U1 ships a photosensitivity floor only on the 
 
 ## Already decided elsewhere
 
-- **Area lights** (in progress; `plans/in-progress/area-lights/`): a `light_area`'s faces glow with its light's live colour and brightness, evaluated in the forward shader from the light's compose descriptor, not packed CPU-side. That brief leaves the glow unlimited, as light animation is. A light-animation clamp here must therefore reach the compose descriptor or its curve inputs, so that glow and room light are limited together; a clamp on CPU-packed values alone misses the glow.
+- **Area lights** (done; `plans/done/area-lights/`): a `light_area`'s faces glow with its light's live colour and brightness, evaluated in the forward shader from the light's compose descriptor, not packed CPU-side. That brief leaves the glow unlimited, as light animation is. A light-animation clamp here must therefore reach the compose descriptor or its curve inputs, so that glow and room light are limited together; a clamp on CPU-packed values alone misses the glow.
 
 - **Emissive volumes** (built; `rendering_pipeline.md` §7.8): each `emissive_volume` is a per-value clamp source, one `ValueClamp` per volume, fed the shown glow (brightest member texture's strength × baked mean glow luminance × volume multiplier, capped at 1) with glow colour × volume colour as the clamp's colour. Left here, per the owner's rulings at its review (2026-11-20):
   - colour-only strobes at any strength (white ↔ blue reads one strength both ways);

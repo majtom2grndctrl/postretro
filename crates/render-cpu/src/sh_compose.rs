@@ -223,14 +223,14 @@ pub fn animated_light_scale(
     ]
 }
 
-fn animation_curve_t(period: f32, phase: f32, time: f32) -> f32 {
+pub(crate) fn animation_curve_t(period: f32, phase: f32, time: f32) -> f32 {
     if period < 0.0 {
         return -1.0 - (time / (-period).max(1.0e-6) + phase).clamp(0.0, 1.0);
     }
     (time / period.max(1.0e-6) + phase).rem_euclid(1.0)
 }
 
-fn sample_curve_catmull_rom(samples: &[f32], cycle_t: f32) -> f32 {
+pub(crate) fn sample_curve_catmull_rom(samples: &[f32], cycle_t: f32) -> f32 {
     match samples {
         [] => 1.0,
         [value] => *value,
@@ -271,7 +271,7 @@ fn sample_curve_catmull_rom(samples: &[f32], cycle_t: f32) -> f32 {
     }
 }
 
-fn sample_color_catmull_rom(samples: &[[f32; 3]], cycle_t: f32) -> [f32; 3] {
+pub(crate) fn sample_color_catmull_rom(samples: &[[f32; 3]], cycle_t: f32) -> [f32; 3] {
     match samples {
         [] => [1.0; 3],
         [value] => *value,

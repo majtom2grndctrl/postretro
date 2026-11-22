@@ -132,6 +132,8 @@ mod world_specular_test;
 
 // --- Extracted submodules (module root is slim; impls split by concern) ---
 #[cfg(test)]
+mod area_glow_gpu_test;
+#[cfg(test)]
 mod fluid_baked_frame_test;
 #[cfg(test)]
 mod fluid_baked_frame_test_fixtures;

@@ -602,6 +602,70 @@ fn widget_anchor_typedef_matches_layout_anchor_variants() {
     );
 }
 
+/// The generated `LightKind` union in both SDK files is exactly the runtime
+/// enum's serde spelling, every variant once. Variants are walked by an
+/// exhaustive successor match, so a new `LightKind` fails to compile here
+/// until the walk and the registered enum both carry it.
+#[test]
+fn light_kind_typedef_matches_the_component_enum() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::components::light::LightKind;
+    use postretro_entities::ctx::ScriptCtx;
+
+    fn next(kind: LightKind) -> Option<LightKind> {
+        match kind {
+            LightKind::Point => Some(LightKind::Spot),
+            LightKind::Spot => Some(LightKind::Directional),
+            LightKind::Directional => Some(LightKind::Area),
+            LightKind::Area => None,
+        }
+    }
+    let expected: Vec<String> = std::iter::successors(Some(LightKind::Point), |kind| next(*kind))
+        .map(|kind| {
+            serde_json::to_value(kind)
+                .unwrap()
+                .as_str()
+                .expect("a unit variant serializes as its name")
+                .to_owned()
+        })
+        .collect();
+
+    /// The quoted members of the `export type LightKind =` alias, which may
+    /// span lines with doc comments between members.
+    fn members(output: &str) -> Vec<String> {
+        let start = output
+            .find("export type LightKind =")
+            .expect("LightKind alias emitted");
+        let rest = &output[start + "export type LightKind =".len()..];
+        let mut found = Vec::new();
+        for line in rest.lines() {
+            let line = line.trim();
+            if line.starts_with("/**") || line.starts_with("---") {
+                continue;
+            }
+            if !found.is_empty() && !line.starts_with('|') && !line.starts_with('"') {
+                break;
+            }
+            found.extend(
+                line.split('"')
+                    .skip(1)
+                    .step_by(2)
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>(),
+            );
+            if line.ends_with(';') {
+                break;
+            }
+        }
+        found
+    }
+
+    let mut r = PrimitiveRegistry::new();
+    register_all(&mut r, ScriptCtx::new());
+    assert_eq!(members(&generate_typescript(&r)), expected, "TS LightKind");
+    assert_eq!(members(&generate_luau(&r)), expected, "Luau LightKind");
+}
+
 /// M13 G2 Task 5: the emitted typedefs must NARROW props per widget kind, so
 /// an author wiring the wrong prop to the wrong widget gets a compile error
 /// in their editor (the no-`tsc`-CI contract — the committed `.d.ts`/`.d.luau`

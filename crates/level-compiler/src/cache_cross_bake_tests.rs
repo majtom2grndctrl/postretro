@@ -204,6 +204,7 @@ fn light(origin: DVec3, animated: bool) -> MapLight {
         is_animated: false,
         tags: Vec::new(),
         shadow_type: ShadowType::StaticLightMap,
+        area: None,
     }
 }
 

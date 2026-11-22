@@ -471,6 +471,7 @@ pub(crate) fn level_world(
         texture_names: Vec::new(),
         texture_cache_keys: Default::default(),
         emissive: Default::default(),
+        area_glow: Default::default(),
         bvh: postretro_render_data::geometry::BvhTree {
             nodes: Vec::new(),
             leaves: Vec::new(),

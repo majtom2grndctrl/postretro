@@ -173,6 +173,7 @@ fn light_over(face: usize, intensity: f32) -> MapLight {
         is_animated: false,
         tags: Vec::new(),
         shadow_type: ShadowType::StaticLightMap,
+        area: None,
     }
 }
 
@@ -984,6 +985,25 @@ fn eligibility_skips_dynamic_sdf_bake_only_and_animated_lights() {
         .collect();
     assert_eq!(named, vec![(4, 2, true), (5, 3, false)]);
     assert_eq!(static_spec_light_count(&alpha_lights), 4);
+}
+
+// AC 32: an area light's placeholder spec record keeps its index, so the
+// point after it keeps spec index 1, but it is never owner-eligible.
+#[test]
+fn eligibility_skips_an_area_light_and_keeps_later_spec_indices() {
+    let base = light_over(0, 1.0);
+    let mut area = base.clone();
+    area.light_type = LightType::Area;
+    let lights = vec![area, base];
+    let static_lights = StaticBakedLights::from_lights(&lights);
+    let alpha_lights = AlphaLightsNs::from_lights(&lights);
+    let eligible = owner_eligible_lights(&static_lights, &alpha_lights, None);
+    let named: Vec<(usize, u16)> = eligible
+        .iter()
+        .map(|l| (l.source_index, l.spec_index))
+        .collect();
+    assert_eq!(named, vec![(1, 1)]);
+    assert_eq!(static_spec_light_count(&alpha_lights), 2);
 }
 
 // More static spec lights than a u16 owner can name fails with a

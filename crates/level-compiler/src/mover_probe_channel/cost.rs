@@ -413,6 +413,10 @@ fn for_each_probe_in_reach(
         LightType::Point | LightType::Spot => {
             Some((light.origin, f64::from(light.falloff_range.max(0.0)) + 1.0))
         }
+        LightType::Area => {
+            let (centre, radius) = light.reach_sphere();
+            Some((centre, radius + 1.0))
+        }
     };
     let Some((centre, radius)) = ball else {
         (0..layout.total_probes())

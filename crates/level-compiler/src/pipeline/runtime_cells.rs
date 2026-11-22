@@ -220,12 +220,12 @@ pub(crate) struct RuntimeCells {
 impl RuntimeCells {
     /// The runtime cells of a two-tier partition as the pipeline ships them,
     /// and the full tree's exterior flood over its own portals, which the
-    /// readers of exact sub-leaf solidity take. The full tree's portals feed
-    /// only that flood and are dropped here.
+    /// readers of exact sub-leaf solidity take: [`full_exterior_flood`] then
+    /// [`Self::build`], in one call. The pipeline makes the two calls apart.
+    #[cfg(test)]
     pub(crate) fn of_partition(tree: &BspTree, tier: &OccluderTier) -> (Self, HashSet<usize>) {
-        let full_tree_portals = portals::generate_portals(tree);
-        let full_exterior = visibility::find_exterior_leaves(tree, &full_tree_portals);
-        let runtime = Self::build(tree, tier, &full_exterior, full_tree_portals.len());
+        let (full_exterior, full_tree_portal_count) = full_exterior_flood(tree);
+        let runtime = Self::build(tree, tier, &full_exterior, full_tree_portal_count);
         (runtime, full_exterior)
     }
 
@@ -265,6 +265,16 @@ impl RuntimeCells {
         );
         Self { cells, portals }
     }
+}
+
+/// The full tree's exterior leaves, flooded over its own portals, and their
+/// portal count for the runtime-cells log; the portals feed only the flood.
+/// The pipeline runs it apart from [`RuntimeCells::build`] because area-light
+/// exposure reads the flood before the light table forms, ahead of the cells.
+pub(crate) fn full_exterior_flood(tree: &BspTree) -> (HashSet<usize>, usize) {
+    let full_tree_portals = portals::generate_portals(tree);
+    let full_exterior = visibility::find_exterior_leaves(tree, &full_tree_portals);
+    (full_exterior, full_tree_portals.len())
 }
 
 #[cfg(test)]

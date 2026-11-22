@@ -1809,8 +1809,13 @@ export type ModManifest = {
   stores: {StoreDeclaration}?,
 }
 
---- Valid values: `Point`, `Spot`, `Directional`.
-export type LightKind = "Point" | "Spot" | "Directional"
+--- Valid values: `Point`, `Spot`, `Directional`, `Area`.
+export type LightKind =
+  "Point"
+  | "Spot"
+  | "Directional"
+  --- A `light_area` polygon light. `position` is its emitting faces' area-weighted centroid and `falloffRange` its resolved reach. Brightness and colour animate; `sweep` fails with InvalidArgument.
+  | "Area"
 
 --- Valid values: `Linear`, `InverseDistance`, `InverseSquared`.
 export type FalloffKind = "Linear" | "InverseDistance" | "InverseSquared"
@@ -1891,7 +1896,7 @@ declare function entityExists(id: EntityId): boolean
 --- Reads a per-placement KVP value authored on the source `.map` entity. Returns null when the key is absent or the entity has no KVP bag (e.g. runtime-spawned). Available in definition and data contexts.
 declare function getEntityProperty(id: EntityId, key: string): string?
 
---- Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. Non-unit direction samples are silently normalized; zero-length direction samples and empty channel arrays error with InvalidArgument. Definition context.
+--- Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. Non-unit direction samples are silently normalized; zero-length direction samples and empty channel arrays error with InvalidArgument, as does a direction channel (sweep) on an Area light. Definition context.
 declare function setLightAnimation(id: EntityId, animation: LightAnimation | null): ()
 
 --- Read the current value of an engine-global state slot by stable dotted name. Per-owner slots require an owner-addressed read and are rejected. Available in definition and data contexts.
@@ -2093,6 +2098,7 @@ export type LightEntityHandle = {
   fade: (self: LightEntityHandle, opts: { from: number, to: number, periodMs: number }) -> {SetLightAnimationStep},
   flicker: (self: LightEntityHandle, opts: { min: number, max: number, rate: number }) -> {SetLightAnimationStep},
   colorShift: (self: LightEntityHandle, opts: { values: {Vec3}, periodMs: number }) -> {SetLightAnimationStep},
+  --- Sweep the `direction` channel through unit vectors over `periodMs`. Refused with InvalidArgument on an area light (`lightType` `"Area"`), which has no direction.
   sweep: (self: LightEntityHandle, opts: { values: {Vec3}, periodMs: number }) -> {SetLightAnimationStep},
 }
 

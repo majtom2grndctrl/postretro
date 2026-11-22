@@ -44,8 +44,9 @@ fn zero_strength_materials_skip_emissive_texture_sampling() {
         let guard = shader
             .find("if material.emissive_strength > 0.0")
             .unwrap_or_else(|| panic!("{label} shader must guard the emissive texture fetch"));
-        let sample = shader
+        let sample = shader[guard..]
             .find(sample)
+            .map(|at| guard + at)
             .unwrap_or_else(|| panic!("{label} shader must retain positive emissive sampling"));
         let additive = shader
             .find(additive)
@@ -84,22 +85,37 @@ fn forward_reads_the_emissive_volume_table_only_inside_the_glow_branch() {
         branch.contains("* material.emissive_strength") && branch.contains("* volume_factor;"),
         "glow = sample × texture strength × volume factor: {branch}"
     );
-    let outside = fs_main.replacen(branch, "", 1);
+    // The area branch (acceptance row 45): an area face's id names an area
+    // entry, and it draws `_e` × its light's glow whatever its texture
+    // strength, so it sits before, not inside, the strength branch.
+    let area = wgsl_item(fs_main, "if in.emissive_volume >= AREA_GLOW_FIRST_ENTRY {");
+    assert!(
+        area.contains("area_glow_factor(emissive_volume_table.entries[in.emissive_volume])")
+            && area
+                .contains("sample_color(emissive_texture, shade_uv, ddx, ddy).rgb * area_factor"),
+        "the area branch samples `_e` × its entry's live glow: {area}"
+    );
+    assert!(!area.contains("emissive_strength"), "{area}");
+    let area_at = fs_main.find(area).expect("area branch");
+    let strength_at = fs_main.find(branch).expect("strength branch");
+    assert!(area_at < strength_at, "the area branch is tested first");
+    let outside = fs_main.replacen(branch, "", 1).replacen(area, "", 1);
     for name in [
         "emissive_volume_table",
         "in.emissive_volume",
         "volume_factor",
+        "area_glow_factor",
     ] {
         assert!(
             !outside.contains(name),
-            "fs_main reads `{name}` outside the glow branch"
+            "fs_main reads `{name}` outside the glow branches"
         );
     }
     let declaration = "@group(4) @binding(8) var<uniform> emissive_volume_table";
     assert_eq!(
         code.matches("emissive_volume_table").count(),
-        2,
-        "declaration and branch only"
+        3,
+        "declaration and the two branches only"
     );
     assert!(code.contains(declaration));
     for other in [
@@ -110,11 +126,14 @@ fn forward_reads_the_emissive_volume_table_only_inside_the_glow_branch() {
     }
 }
 
-// The shader's table and the CPU pack are one size: 256 volumes plus the
-// "no volume" entry, within the default uniform binding limit.
+// The shader's table and the CPU table are one size: 256 volumes plus the
+// "no volume" entry, then the area entries, exactly the default uniform
+// binding limit. The shader's first area entry is the format's.
 #[test]
 fn emissive_volume_table_length_matches_the_cpu_pack() {
-    use postretro_render_cpu::emissive_volume::{EMISSIVE_TABLE_BYTES, EMISSIVE_TABLE_ENTRIES};
+    use postretro_render_cpu::emissive_volume::{
+        AREA_GLOW_FIRST_ENTRY, EMISSIVE_TABLE_ENTRIES, GLOW_TABLE_BYTES, GLOW_TABLE_ENTRIES,
+    };
 
     let forward = include_str!("../../shaders/forward.wgsl");
     let declared = forward
@@ -123,9 +142,20 @@ fn emissive_volume_table_length_matches_the_cpu_pack() {
         .and_then(|rest| rest.split('>').next())
         .and_then(|len| len.trim().parse::<usize>().ok())
         .expect("forward.wgsl declares the emissive volume table");
-    assert_eq!(declared, EMISSIVE_TABLE_ENTRIES);
-    assert_eq!(declared * 16, EMISSIVE_TABLE_BYTES);
-    assert!(EMISSIVE_TABLE_BYTES as u64 <= wgpu::Limits::default().max_uniform_buffer_binding_size);
+    assert_eq!(declared, GLOW_TABLE_ENTRIES);
+    assert_eq!(declared * 16, GLOW_TABLE_BYTES);
+    assert_eq!(AREA_GLOW_FIRST_ENTRY, EMISSIVE_TABLE_ENTRIES);
+    assert!(forward.contains(&format!(
+        "const AREA_GLOW_FIRST_ENTRY: u32 = {AREA_GLOW_FIRST_ENTRY}u;"
+    )));
+    assert!(forward.contains(&format!(
+        "const AREA_GLOW_CEILING: f32 = {:.1};",
+        postretro_level_format::emissive::EMISSIVE_VALUE_CEILING
+    )));
+    assert_eq!(
+        GLOW_TABLE_BYTES as u64,
+        wgpu::Limits::default().max_uniform_buffer_binding_size
+    );
 }
 
 /// Regression: every storage/uniform buffer binding in `forward.wgsl` must

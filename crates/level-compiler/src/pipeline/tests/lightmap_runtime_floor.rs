@@ -93,6 +93,7 @@ fn lights() -> Vec<MapLight> {
         is_animated: false,
         tags: Vec::new(),
         shadow_type: ShadowType::StaticLightMap,
+        area: None,
     }]
 }
 

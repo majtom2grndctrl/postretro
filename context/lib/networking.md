@@ -633,13 +633,13 @@ host holds no remote viewmodel). Within each peer's path, the spawned projectile
 origin equals its validated fire origin. If the projectile's exact radius contacts
 the world along the eye-to-muzzle sweep, or the eye ray contacts world at or before
 the muzzle's forward plane, that peer uses the eye origin so the projectile cannot
-spawn through nearby geometry. That world holds movers at the peer's tick poses: the
-host tick's on the host, the prediction table's on a client, never a presented pose.
-The eye-ray query reaches through the muzzle plane even when projectile range is
-shorter. Otherwise its direction converges on the
-crosshair target. An omitted offset preserves the historical camera-eye origin. The
-observer's third-person muzzle, posed by the avatar socket rather than placement,
-is a separate presentation vantage, deferred.
+spawn through nearby geometry. The eye-ray query reaches through the muzzle plane
+even when projectile range is shorter. Otherwise its direction converges on the
+crosshair target. Both queries see movers at the peer's tick poses: the host tick's
+on the host, the client's movement-predicted poses on a client, never a presented
+pose. An omitted offset preserves the historical camera-eye origin. The observer's
+third-person muzzle, posed by the avatar socket rather than placement, is a separate
+presentation vantage, deferred.
 
 ## Combat authority: FIRE vs HIT
 
@@ -651,10 +651,11 @@ lag-compensation history window (see *Non-goals*).
 admits activations, resolves charge and shot statistics, debits each shot's resource,
 owns timed reload progression and reserve transfer, and mints authorized shots. It
 never applies a client's target or damage from this path. Projectile FIRE resolves
-the eye ray against the world, with movers at the host tick's pose, and live targetable
-entities to reconstruct an obstruction-safe origin and crosshair-converged direction.
-Every authorized shot retains its resolved combat and presentation tuning through later switching or
-descriptor replacement. Hit declarations cannot select those statistics.
+the eye ray against live targetable entities and the world, movers at the host tick's
+pose included, to reconstruct an obstruction-safe origin and crosshair-converged
+direction. Every authorized shot retains its resolved combat and presentation tuning
+through later switching or descriptor replacement. Hit declarations cannot select
+those statistics.
 
 Each execution, including a hold restart, requires a client-named initiation on an
 admitted real input command. The request names its client tick and primary/secondary
@@ -1017,15 +1018,15 @@ the impact it saw without choosing where the blast lands off that path.
 - **March.** Each host tick, where host projectiles advance, the host steps each open
   client splash shot's frozen path one tick against that tick's world, with movers at
   that tick's pose. It tests world contacts only and never steps on the FIRE tick. A
-  march whose centre is inside a mover's hull is struck where it is.
+  step that starts with the shot's centre inside a mover's hull is struck where it is.
 - **Credit.** The first valid declared contact counts when it lies within an on-path
-  tolerance of the host's frozen path. FIRE fixes the tolerance: projectile radius, plus
-  the launched muzzle's offset from the eye ray, plus slack for eye prediction. A late
-  start's contact usually does not.
+  tolerance of the host's frozen path. A late start's contact usually does not. FIRE
+  fixes the tolerance: projectile radius, plus the launched muzzle's offset from the eye
+  ray, plus slack for eye prediction.
 - **Deciding point.** A host world contact nearer than the declared point wins, with its
   own surface. So does one within a small fixed slack past a declared world point: before
-  a world point lands in open air, the host casts that slack ahead, so a client cannot
-  stop a blast just short of a wall. Otherwise the blast lands at the declared point. A
+  a world point lands in open air, the host casts that slack ahead, so a wall just beyond
+  the point still takes the blast despite float noise between the two casts. Otherwise the blast lands at the declared point. A
   declared enemy still live there is the impact target, so the weapon's direct push
   composes with splash. Otherwise the declared normal orients the blast.
 - **Fallbacks.** With an off-path first contact, the host's own march contact decides.
@@ -1123,8 +1124,8 @@ predicted poses differ by up to a round trip of travel.
   target — a world contact, or an entity contact no longer nameable. Projectile and
   hitscan declarations share it. For direct projectiles, the finite in-range point may
   retire presentation even when entity lookup or damage validation fails. For splash,
-  the marker only reports contact; the host-replayed first contact supplies damage,
-  occlusion, and presentation position. Empty projectile declarations remain normal
+  a world record under the marker is a candidate blast point: the host march decides
+  whether it or the host's own contact lands the blast (§Combat authority). Empty projectile declarations remain normal
   travel/range expiry. Hitscan declarations carry every world contact under the marker,
   so the host holds a remote shot's full contact set. The host validates a hitscan world
   contact with the checks an entity hit gets — range from the live eye, and eye line of
@@ -1133,10 +1134,10 @@ predicted poses differ by up to a round trip of travel.
 - **Declared normals are contact data only.** An accepted entity or world contact whose
   declared normal is non-finite or non-unit keeps its contact with a zero normal, so the
   burst takes its upward fallback; the invalid normal never affects damage validation.
-  Validated normals reach the
-  host's impact presentation; a splash impact keeps its host-resolved normal. The host
-  raises one `impact` per remote shot carrying every validated contact, as a local
-  shot does (`audio.md` §4).
+  Validated normals reach the host's impact presentation. A splash impact takes its
+  deciding point's normal: the host surface's at a host contact, the validated declared
+  one at a declared point. The host raises one `impact` per remote shot carrying every
+  validated contact, as a local shot does (`audio.md` §4).
 - **`ActivationOutcome`** (server -> client, reliable owner-private Input channel):
   initiation/execution and terminal facts naming the token, bound host instance where
   accepted, resolved charge at execution acceptance, and authoritative recovery.

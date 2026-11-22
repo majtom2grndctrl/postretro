@@ -39,6 +39,8 @@ mod install;
 mod planar_routing;
 pub(crate) mod probe_sums;
 mod reflection_pass;
+#[cfg(test)]
+mod register_screen_capture;
 pub(crate) use install::{FluidLevelLayout, FluidLevelTargets, InstalledFluidSurfaces};
 pub(crate) use reflection_pass::FluidReflectionMarchTuning;
 #[cfg(test)]

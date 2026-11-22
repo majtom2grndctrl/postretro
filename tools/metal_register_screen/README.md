@@ -71,3 +71,25 @@ One beauty pipeline per style (mover-smooth-specular-pipeline):
 | shared per-record helpers, smooth one specular sum, albedo after the loop | `fs_pixel` | 127 | 104 |
 | same | `fs_smooth` | 119 | 104 |
 | same, `fs_smooth` reading albedo before the loop (screen only) | `fs_smooth` | 119 | 104 |
+
+## Fluid surface entries
+
+```bash
+tools/metal_register_screen/screen_fluid.sh <out dir> [fragment entry...]
+```
+
+Screens the fluid pipelines' fragment entries: `fs_main_reflecting`,
+`fs_main_reflecting_per_fragment` and `fs_main` by default. The capture test
+`fluid_pipeline_msl_capture_for_the_register_screen` builds the production
+fluid pipelines over their production layouts, then the reflecting entry once
+more from the same source with the live-lighting sums blend replaced by the
+per-fragment ratio it replaced, renamed `fs_main_reflecting_per_fragment`, so
+one run screens before and after side by side. It also writes `vertex_layout`,
+the fluid's three vertex streams, which `screen.swift` reads in place of the
+mover's stream when present.
+
+| Build | Entry | VGPRs | SGPRs |
+|---|---|---|---|
+| reflection-probe-fluid-pass-performance: live lighting from per-probe sums | `fs_main_reflecting` | 72 | 98 |
+| same source, per-fragment ratio (the build before) | `fs_main_reflecting_per_fragment` | 72 | 102 |
+| same | `fs_main` | 55 | 100 |

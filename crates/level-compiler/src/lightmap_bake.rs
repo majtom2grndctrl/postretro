@@ -9,7 +9,10 @@ use postretro_level_format::coded_plane::BlockCodec;
 use postretro_level_format::lightmap::{LIGHTMAP_POOL_LAYER_EDGE, LightmapSection};
 use rayon::prelude::*;
 
-use crate::area_light::{AreaSampler, area_lattice_point, area_probe_indices, weighted_visibility};
+use crate::area_light::{
+    AreaSampler, area_lattice_point, area_probe_indices, one_sample_visibility,
+    weighted_visibility,
+};
 use crate::bake_control::BakeControl;
 use crate::texel_footprint::ProbeEarlyOut;
 use thiserror::Error;
@@ -1420,6 +1423,10 @@ pub(crate) fn area_probe_visibility(
 /// mean over every index is the whole lattice's clear fraction, which
 /// `soft_visibility` returns whenever it escalates; its 4-probe early-out can
 /// differ. Choosing the index is the caller's stratification.
+///
+/// An area light takes the polygon arm instead
+/// ([`area_visibility_one_sample`]): its value is an unbiased one-sample
+/// estimate of the weighted visibility, not 0 or 1, and can exceed 1.
 pub(crate) fn soft_visibility_one_sample(
     surface_point: Vec3,
     surface_normal: Vec3,
@@ -1430,6 +1437,18 @@ pub(crate) fn soft_visibility_one_sample(
     trace: impl Fn(Vec3, Vec3) -> bool,
 ) -> f32 {
     let origin = surface_point + surface_normal * RAY_EPSILON;
+    if light.light_type == LightType::Area {
+        // Same clamp as `SoftProbes::new`, so the lattice matches the full set's.
+        let full_samples = full_samples.max(SOFT_PROBE_SAMPLES);
+        let index = sample_index(full_samples) % full_samples;
+        return area_visibility_one_sample(
+            surface_point,
+            surface_normal,
+            light,
+            area_lattice_point(index, full_samples, seed),
+            |target| trace(origin, target),
+        );
+    }
     let target = if emitter_radius(light) <= 0.0 {
         hard_ray_target(surface_point, light)
     } else {
@@ -1439,6 +1458,41 @@ pub(crate) fn soft_visibility_one_sample(
         area_sample_target(surface_point, light, seed, index, full_samples)
     };
     if trace(origin, target) { 1.0 } else { 0.0 }
+}
+
+/// The animated bounce's polygon arm (research.md O23): one solid-angle
+/// sample at lattice point `u` on the polygons whose front half-space holds
+/// the receiver, its visibility w·V·Ω / ∫w dω. w is the sample's cosθ at the
+/// receiver, Ω the faced polygons' solid angle and ∫w dω their clipped
+/// projected solid angle, the unwindowed irradiance per unit radiance. Given
+/// a uniformly random `u`, the sample is uniform in solid angle, so the
+/// expectation is Σ w·V / Σ w over the polygons: the ratio of the shadowed
+/// to the unshadowed term, 1 when open, whatever the receiver. A sample
+/// with no weight traces nothing; a receiver no polygon faces reads 0.
+fn area_visibility_one_sample(
+    surface_point: Vec3,
+    surface_normal: Vec3,
+    light: &MapLight,
+    u: DVec2,
+    trace: impl FnOnce(Vec3) -> bool,
+) -> f32 {
+    let Some(sampler) = area_sampler(light, surface_point, surface_normal) else {
+        return 0.0;
+    };
+    let sample = sampler.sample(u);
+    if sample.weight <= 0.0 || !trace(sample.target.as_vec3()) {
+        return 0.0;
+    }
+    let Some(emitter) = light.area.as_ref() else {
+        return 0.0;
+    };
+    let (projected, _) = emitter.irradiance(surface_point.as_dvec3(), surface_normal.as_dvec3());
+    one_sample_visibility(
+        sample.weight,
+        true,
+        sampler.total_solid_angle(),
+        projected,
+    ) as f32
 }
 
 /// The emitter extent soft visibility samples: the sphere radius of a point or

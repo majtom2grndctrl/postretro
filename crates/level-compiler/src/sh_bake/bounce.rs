@@ -9,7 +9,7 @@ use super::{BOUNCE_ALBEDO, BounceVisibility, RaytracingCtx, SAMPLING_LATTICE_OFF
 #[cfg(test)]
 use crate::lightmap_bake::soft_visibility_early_out;
 use crate::lightmap_bake::{DEFAULT_AREA_SAMPLE_COUNT, soft_visibility_one_sample};
-use crate::map_data::{LightType, MapLight};
+use crate::map_data::MapLight;
 use crate::surface_materials::stats::BounceMaterials;
 #[cfg(test)]
 use crate::texel_footprint::ProbeEarlyOut;
@@ -89,7 +89,9 @@ pub(crate) fn bounce_sample_index(
 /// gate).
 /// `visibility` picks how a soft light resolves: production traces one
 /// stratified emitter sample per (hit, light) (`bounce_sample_index`), whose
-/// expectation at a hit is the full 32-sample lattice's clear fraction.
+/// expectation at a hit is the full 32-sample lattice's clear fraction, or
+/// for an area light its weighted visibility (the polygon arm of
+/// `soft_visibility_one_sample`, research.md O23).
 ///
 /// `light_global_indices` carries each `lights[i]`'s seed axis. The delta bake
 /// passes its one light's content-derived digest (`bake_probe_indirect_rgb`). The
@@ -120,13 +122,8 @@ pub(super) fn sample_radiance_rgb(
                 // This must precede `global_index` and seed derivation: a skipped
                 // light would only add `0 × visibility`. Kept lights retain their
                 // original slice/global index and therefore their deterministic
-                // visibility seed.
-                //
-                // An area light's one-sample polygon arm lands with area-lights
-                // task 5 (research.md O23); until then it adds no per-hit bounce.
-                if light.light_type == LightType::Area {
-                    continue;
-                }
+                // visibility seed. An area light's term is its windowed polygon
+                // term, and its one sample is the polygon arm (research.md O23).
                 let Some(contribution) = bounce_contribution(light, hit.point, hit.normal) else {
                     continue;
                 };

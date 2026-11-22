@@ -1,6 +1,6 @@
 # glossy-world-reflections — research
 
-Derivation behind the brief. Source read at `e7438238`. The handoff's verified facts are re-cited here by symbol; each was re-read this session unless marked.
+Derivation behind the brief. Source read at `e7438238` and re-checked at `a1d14351` (main plus `reflection-probe-fluid-pass-performance`): every census claim below holds. The placement, share, exclusion, capture and level-format files are unchanged between the two. `ReflectionProbeInputs` also gained `emissive_textures`, `emissive_volumes` and `area_glow`.
 
 ## Source census
 
@@ -23,14 +23,14 @@ Derivation behind the brief. Source read at `e7438238`. The handoff's verified f
 **Runtime.**
 - `fluid_reflection_probes.rs` `array_descriptor`: `mip_level_count: 1`.
 - render-cpu `fluid_surface/reflection.rs` `fill_probe_indices` builds the fluid per-vertex probe index at install.
-- `fluid_reflection_ray.wgsl` `fluid_reflection_above_horizon` floors the ray above y = 0.
+- `fluid_reflection_ray.wgsl` `fluid_reflection_above_horizon` floors the ray to `FLUID_REFLECTION_RAY_MIN_Y` above the horizon.
 - `compute_cull.rs` `IndirectDrawPlan::visit` issues `IndirectDrawCommand::BindMaterial` once per bucket change; `draw_indirect_buckets` executes it.
 - `@invariant` clip position is shared by `depth_prepass.wgsl`, `forward.wgsl` and `kinematic_brush.wgsl`; that is what lets a second entry land on `Equal`.
 - `pipeline_layout.rs` `FORWARD_SAMPLED_TEXTURE_BUDGET` = 16, at 16/16 (`surface_depth.wgsl` header). Forward uses groups 0–6 (`rendering_pipeline.md` §10).
 - Precedent for a per-vertex side stream: world specular owners, forward-only, vertex slot 1, stamped from id 42 per id-17 face (`rendering_pipeline.md` §6).
 - No memory-ledger row for probes: `sh_allocation.rs` `ShAllocationKind` names none.
 
-**Stage order (handoff "not verified", now grounded).** `pipeline.rs` runs `texture_stage::bake_world_materials` and `bake_remaining_textures` before `reflection_probes::bake_or_load_reflection_probes`. `ReflectionProbeInputs` already carries `texture_keys` and `prm_root`, so placement can read each material's baked `_p` channel before capture.
+**Stage order (handoff "not verified", now grounded).** `pipeline.rs` runs `texture_stage::bake_world_materials` and `bake_remaining_textures` before `reflection_probes::bake_or_load_reflection_probes`. `ReflectionProbeInputs` already carries `texture_keys` and `prm_root`, so placement can read each material's baked `_p` channel before capture. `specular_slot.rs` `bake_specular_slot` widens the slot to `Rgba8Unorm` when `_p` or `_t` exists: B holds smoothness, 0 (`SMOOTHNESS_ABSENT`) without `_p`; A holds tint, 255 (`TINT_ABSENT`) without `_t`. Without either the slot stays R8 or RG8.
 
 ## Today's specular combine and the tint rule
 
@@ -68,7 +68,7 @@ Blinn-Phong lobe, half-vector half-angle at half maximum: θh = acos(0.5^(1/n)).
 
 Rotating the lookup direction by φ rotates the half-vector by φ/2, so the environment lobe is about twice the half-vector lobe. The sharpness brief's estimate ("a 256 lobe of about 5° is about two texels") reads the half-vector angle. Under a matched lobe, the sharpest texel (256) blurs over about six mip-0 texels, two to three mips down, and never reads as a mirror.
 
-So a matched lobe at exponent 256 never reads as a mirror. `specular-texel-sharpness` therefore stores smoothness with an 8192 cap: a matched lobe stays matched everywhere, and texels at the cap read the unblurred level.
+So a matched lobe at exponent 256 never reads as a mirror. `specular-texel-sharpness` stores smoothness with an 8192 cap, so highlights can be very tight. Reflections stop short of that: the owner ruled no glossy world face is a mirror (2026-11-22), so the selection clamps at a minimum-blur mip and texels near the cap read it. The ruling serves the look (a pixel world that comes alive, not a photoreal one) and the floor layer's cost: a blurred screen-space term needs less target resolution and march detail.
 
 Floor estimate: the roughness conversion in `specular-texel-sharpness/research.md` §Tint gives r = 0.7 → n ≈ 6. At that width the term is close to the SH ambient it would double-count. A floor near n ≈ 6–16 keeps rough PBR conversions out of the overlay. Unmeasured.
 
@@ -97,24 +97,56 @@ Not measured. One probe per coplanar glossy face group means a box room with a g
 - **Forward integration.** Read the probe term inside `fs_main` for glossy buckets. Forward is at 16/16 sampled textures and 8/8 fragment storage. The always-run shader would also pay registers and layout cost for a branch most fragments skip, as Surface Depth showed on AMD Metal (`rendering_pipeline.md` §7.3). Rejected by the owner.
 - **Per-material forward pipeline variant** (`context/research/gi-rtx-lite/index.md` measurement item 9). It keeps the always-run shader clean but still needs a binding slot forward lacks. The overlay's own layout sidesteps it.
 - **Room-centre probes.** Fewer probes, but one elevated point per room leaves capture-shadow holes on faces it cannot see (behind pillars, alcoves), and the IP rules forbid filling them. Face-lifted probes also shadow behind pillars, but each face group gets the vantage closest to its own plane. Rejected by the owner.
-- **SSR or planar on world faces.** No-go by owner decision; SSR on world faces would be a second screen-space exception needing its own sign-off (`index.md` §1.1).
+- **SSR or planar on world faces.** Planar stays water's. SSR is signed off for up-facing glossy faces only (owner, 2026-11-22; §Monument); walls stay probe-only, as a second screen-space use there would need its own sign-off (`index.md` §2 Pre-RTX).
 - **Composite (1 − W)·diffuse** (the first lock, reopened 2026-11-21 by `/validate-plan`). Diffuse includes Σ dynamic direct (`rendering_pipeline.md` §7.3 output), and dynamic lights draw no specular (§4), so W removed their light with nothing in its place. Fresnel drives W toward 1 at grazing: about 0.44 untinted for a floor 10 m ahead at eye height, and near 1 at any angle for a tint-1 metal. Replaced by forward + W·(R − D_static), which also spares the overlay forward's specular and emissive inputs.
 - **Animated glow in reflections** (glow delta tiles, selective glow SSR): moved with their IP checks to `drafts/dynamic-reflection-layer/`. v1 holds animated content at reference.
 
-## IP fences carried over
+## IP basis
 
-From `plans/done/reflection-probes/ip-check.md` §4 and `rendering_pipeline.md` §7.3a:
-- Placement and capture at compile time; the camera never places or moves a probe.
-- Tiles never rewritten or re-shaded at runtime; live lighting stays a post-sample ratio.
-- Capture shadow withheld, never filled (SH, lightmap, screen space or another probe).
-- Hard per-face binding by position; no lookup-direction value picks the probe.
-- No precomputed intersection table; no history.
+The fences are in the brief's IP Decision. Their sources: `plans/done/reflection-probes/ip-check.md` §4, `rendering_pipeline.md` §7.3a (Live lighting IP rules, Screen-space layer IP rules), `plans/done/reflection-probe-fluid-pass-performance/ip-check.md` §Lever A and §Shape B.
 
-Tencent WO2026113651A1 claim 1 reads on most parallax-corrected probe reflection on a textured surface. `gi-rtx-lite/index.md` gates glossy world surfaces on counsel. Compile-time exponent-driven prefiltering has no recorded patent in the project's IP notes; it was not searched this session.
+Basis for the 2026-11-22 claim-1 ruling, from `reflection-probes/ip-check.md` §1, §3, §5:
+- Shipped water already carries the reading: elements 1a, 1b, 1d and 1e appear present; 1c ("texture image") is left to counsel, since water samples albedo per fragment in forward and builds no screen-space unshaded image.
+- The same check reads claim 1 as covering Bjorke 2004 and Lagarde & Zanuttini 2012.
+- The application is pending. US national phase is due about 2027-05-28, EP about 2027-06-28; claims may narrow before grant.
+- The overlay redraws each face and samples its material per fragment, as water does, with no G-buffer. It adds no claim-1 element and keeps every dependent-claim fence. The description names metal and glass among its reflectors; that adds no element.
+
+`gi-rtx-lite/index.md` and the roadmap's Lighting extensions row gated glossy world surfaces on counsel; the ruling lifts that gate at promotion. Compile-time exponent-driven prefiltering has no recorded patent in the project's IP notes; it was not searched. The floor layer's blur is charted in `ip-check.md` here.
+
+## Live lighting
+
+The sums landed with `reflection-probe-fluid-pass-performance` (`rendering_pipeline.md` §7.3a Per-probe sums). As built:
+- `FluidProbeResources::new` creates the sums buffer, `FLUID_PROBE_SUMS_BYTES` = `MAX_REFLECTION_PROBES` × `REFLECTION_PROBE_LOBE_COUNT` × 16 = 20 480 B, usage storage and uniform. Six lobes make it 24 576 B, still a multiple of 256 and under 64 KiB.
+- `InstalledFluidSurfaces` owns it, so a level with no fluid face has none. The fluid fragment reads it as a uniform at group 4 binding 4, beside the colour array, share table and distance array; it borrows group 3's sampler.
+- `FluidProbeSumsPass` (`fluid_reflection_sums.wgsl`) dispatches from `record_fluid_surface_passes`, inside the fluid pass's own draw gate, when `FluidSurfacePass::has_probe_term_draws`. That is after world forward, movers, skinned meshes and ghosts; the overlay records before the Ghost Pass, so the dispatch must move ahead of it.
+- WGSL hard-codes five lobes in `fluid_reflection_lobe_weights`, `fluid_reflection_light_share`, the sums shader's unrolled writes, `fluid_reflection_ratio_from_sums`' unrolled reads, and the `array<vec4<f32>, 1280>` sums declarations. Tests pin the literals to the Rust constant.
+- The per-fragment `fluid_reflection_ratio` stays reachable from no entry: the sums' oracle, and the fallback for a moving reflector. Glossy world faces are static, so they read the sums.
+
+## Monument
+
+The owner's motivating case: a freestanding monument on a glossy floor, as in Control, which appears to switch probes at wall corners so only one reflection shows at a time. A freestanding monument has no occluder to hide a switch.
+
+**Probe-only leaves a wedge.** The capture point sits 2 mm above the floor. A floor point behind the monument, seen from it, lies along a segment under 2 mm high that meets the monument's base. So every floor fragment in the angle the monument covers from the capture point, out to the walls, is in capture shadow: a dull stripe across the floor, withheld and never filled.
+
+**Splitting groups cannot help.** Each probe's capture point lies on the same plane, so each sees its own wedge. Placing boundaries around the monument puts them in open floor, which the seams ruling rules out.
+
+**Exclusion plus a floor layer** is water's answer for pillars (`resource_management.md` §5.2). With the monument out of the capture, the probe holds the room behind it, and the screen-space layer draws the monument at the tiers that run it. At Low it is absent and nothing is withheld. Threshold t = p(W)·W with W = √(bound area), p = 0.85 to a 10 m knee, then a power law through 0.33 at 50 m (`ExclusionConstants::size_threshold`):
+
+| W | p(W) | t |
+|---|---|---|
+| 10 m | 0.85 | 8.5 m |
+| 20 m | ≈ 0.57 | ≈ 11.3 m |
+| 30 m | ≈ 0.45 | ≈ 13.4 m |
+
+So a monument whose brushes are each shorter in plan than t is excluded with no override. A brush with a downward face over the floor stays, as water keeps undersides, and leaves its wedge; `never` excludes it.
+
+**Cost evidence.** Water's screen-space pass on the 5300M at High (target fraction 1, 90 steps, stride rows ÷ 180), at the e24 near view, which looks straight down with water filling the screen: 2.6 ms at Auto, 6.7 ms at 1440p, 14.7 ms at 4K, against forward's 5.6, 14.2 and 31.5 ms (`measurements/fluid-base-pass-cost/results-remaining-cost.md`). Scaled by coverage, a floor on 40% of the screen would cost about 1.1, 2.7 and 5.9 ms: an extrapolation from a view unlike a floor's usual grazing one. A glossy hall's floor is on screen most frames, unlike water. The blur lets the floor layer run a reduced target and a coarser march; its values are set at the plan stop from the owner's 5300M runs.
+
+**Movers and characters.** The layer can only show what is drawn when it runs. The owner chose to include movers and characters, so the overlay moves from before the mover pass to after the skinned-mesh pass, before the Ghost Pass. Character and mover pixels in front of a floor fail the overlay's `Equal`; a mover face exactly coplanar with the floor passes it, so it needs a guard (pin P15).
 
 ## Overlay hazards
 
-- **Coplanar mover.** A mover face exactly coplanar with a world face passes the colour pass's `Equal` and draws over the world (`rendering_pipeline.md` §7.3). An overlay `Equal` redraw of the glossy world face would then blend the world face's reflection over the mover there. Answered: the overlay records before the mover pass (P15).
+- **Coplanar mover.** A mover face exactly coplanar with a world face passes the colour pass's `Equal` and draws over the world (`rendering_pipeline.md` §7.3). The overlay records after the mover pass, so its `Equal` redraw of the glossy world face would blend the world face's reflection over the mover there. It needs a guard (P15).
 - **Glossy faces in captures.** Capture shading has no specular, so a glossy face seen in another probe's capture shows its diffuse only. No recursion. Accepted.
 - **Planar mirror.** The mirror view reuses main pipelines for world draws. Whether it also records the overlay is open.
 
@@ -135,12 +167,12 @@ Orderings the Acceptance rows cite.
 | P9 | A committed reflection-style switch while a level is installed, either direction | style commit, then the next frame | That frame's overlay is in the new style |
 | P10 | Very high, selected plane, glossy faces in the mirror's reach | planar group records world draws with main pipelines | Mirror glossy faces draw no overlay, or one tested against mirror depth from the mirror camera |
 | P11 | Surface Depth quality toggled live over a glossy Surface Depth material | toggle applies, then the next frame | The overlay's sampled texel follows the same quality as forward's on that frame |
-| P12 | A ghost, water, a billboard or fog drawn over a bound glossy face | world forward, overlay, then the Ghost Pass and every later colour pass | The overlay's destination is forward's output alone; nothing drawn after it is dimmed by the reflection weight |
+| P12 | A ghost, water, a billboard or fog drawn over a bound glossy face | world forward, movers, skinned meshes, overlay, then the Ghost Pass and every later colour pass | The overlay's destination is forward's output alone; nothing drawn after it is dimmed by the reflection weight |
 | P13 | A character under a promoted static light casts its pool shadow on a bound glossy floor, head-on and at grazing, untinted and tint-1 | forward subtracts the shadowmask union from static direct, then the overlay adds W·(R − D_static) | D_static carries the same union subtraction at the same promotion weight, so the shadow fades by (1 − W) with the rest of static diffuse; no channel of the overlay's output is below 0 |
 | P14 | On frame N an animated baked light pulses, a promoted light's w crossfades, an SH cluster becomes resident, and the lighting mask toggles one bit | mask snapshot and frame scales, compose, forward, then the overlay, all on N | The overlay's D_static reads N's values for every input forward read on N; with any all-terms bit off on N, the overlay draws no term on N |
-| P15 | A mover face coplanar with a bound glossy world face, and a mover in front of one | world forward, overlay, then the mover pass and the skinned-mesh pass | The mover's pixels show the mover pass's output alone; no overlay term lands on them |
-| P16 | Counsel refuses the precompute and the plan stop drops world-face live lighting at Low; a stored light forced off its reference; tier switched live low → medium → low | tier change applies on its commit frame | At Low, world-face reflections stay at reference while water's change on that frame; at medium they change on the commit frame |
-| P17 | A glossy level at low or above; the camera turns from a view with N glossy faces to one with 0, then to one with 1 | cull, then the overlay gate and the precompute's dispatch condition | A frame with no overlay draw records no overlay pass and, with no reflecting fluid draw, dispatches no precompute; the 1-face frame records one pass and dispatches the precompute once |
+| P15 | A mover face coplanar with a bound glossy world face, and a mover or character in front of one | world forward, the mover pass, the skinned-mesh pass, then the overlay | The mover's and character's pixels show their own pass's output alone; no overlay term lands on them, the coplanar face included |
+| P16 | A freestanding monument on a glossy floor, each brush under the exclusion threshold; a character walks past it; tier switched live low → medium → low | capture with the monument excluded; then per frame the floor layer's march, then the overlay | No floor fragment is withheld behind the monument at any tier; at medium both monument and character reflect on that frame; at low neither does |
+| P17 | A glossy level at low or above; the camera turns from a view with N glossy faces to one with 0, then to one with 1 | cull, then the overlay gate and the sums' dispatch condition | A frame with no overlay draw records no overlay pass and, with no reflecting fluid draw, dispatches no sums; the 1-face frame records one pass and dispatches the sums once, ahead of the overlay |
 | P18 | A water map one probe under the cap gains glossy faces needing two probes | authored, derived, then the cap | Every water probe survives; the smaller of the two world-face-only probes drops, and the warning names its faces |
 | P19 | A map at the cap whose derived water probes fill it, plus an authored `reflection_volume` over glossy walls making world-face-only probes | authored and derived probes placed, then the cap | Every water probe survives; the authored world-face-only probes drop, smallest bound area first, and the warning names the box and its faces |
 
@@ -148,7 +180,7 @@ Orderings the Acceptance rows cite.
 
 ## Not verified
 
-- Overlay cost on the 5300M at glossy-heavy coverage.
+- Overlay and floor-layer cost on the 5300M at glossy-heavy coverage (the owner runs it).
 - Probe counts on glossy-heavy maps (above).
 - The exponent-to-blur estimates (above).
 - Source and Black Ops gloss-driven envmap precedent: from memory, not re-checked.

@@ -255,7 +255,7 @@ fn per_frame_rider_passes_allocate_nothing_when_warm() {
     let deck = [deck()];
     let world = CollisionWorld::new();
     let mut poses = PresentedMoverPoses::default();
-    let mut frame = |registry: &mut EntityRegistry, poses: &mut PresentedMoverPoses, alpha: f32| {
+    let frame = |registry: &mut EntityRegistry, poses: &mut PresentedMoverPoses, alpha: f32| {
         registry.advance_presentation_corrections(0.5, 1.0e-9);
         poses.refresh(&table, registry, alpha);
         update_rider_foot_probes(registry, &world, &deck, poses, &store, 0.0, alpha);

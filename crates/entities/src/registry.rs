@@ -933,9 +933,10 @@ pub struct EntityRegistry {
     previous_transforms: Vec<Option<Transform>>,
     /// Sparse render-only pose corrections, applied by
     /// [`interpolated_transform`](Self::interpolated_transform) after its blend.
-    /// Simulation reads of `Transform` never see them. Empty except while a
-    /// connected client glides a mover onto a correction, so an entity without
-    /// one pays a single empty check. See: context/lib/entity_model.md §5.
+    /// Simulation reads of `Transform` never see them. Holds a connected
+    /// client's mover glides and the per-frame pinned offsets their owners set;
+    /// usually empty, and short, so an entity without one pays one empty check
+    /// or a short scan. See: context/lib/entity_model.md §5.
     presentation_corrections: Vec<PresentationCorrectionEntry>,
     /// Presentation-only projectile timing, kept outside `ComponentValue` so it
     /// never grows the replicated component vocabulary. The remote materializer
@@ -2034,7 +2035,9 @@ impl EntityRegistry {
 
     /// Render-stage accessor: the entity's visual transform blended between its
     /// previous-tick and current transforms by `alpha` (0 = previous, 1 =
-    /// current). Position and scale are component-lerped; rotation is
+    /// current), then carried by any render-only presentation correction in
+    /// flight ([`presentation_correction`](Self::presentation_correction)): the
+    /// one presented pose every reader draws. Position and scale are component-lerped; rotation is
     /// shortest-path slerped (glam's `Quat::slerp` negates one endpoint when
     /// the dot is negative, so it never takes the long arc).
     ///

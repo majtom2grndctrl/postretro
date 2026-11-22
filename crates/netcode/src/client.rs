@@ -806,6 +806,7 @@ impl ClientReplication {
         self.ghost_link_updates.clear();
         self.ghost_audio = None;
         self.presented_state_ticks.clear();
+        self.rebased_riders.clear();
 
         let mut requests = Vec::with_capacity(known.len());
         for (network_id, missing_baseline_ref) in known {
@@ -859,6 +860,7 @@ impl ClientReplication {
         self.ghost_link_updates.clear();
         self.ghost_audio = None;
         self.presented_state_ticks.clear();
+        self.rebased_riders.clear();
     }
 
     /// Read-only view of the current `NetworkId -> EntityId` map. Test-only; the
@@ -2112,7 +2114,11 @@ impl ClientReplication {
                 // onto the corrected pose; a first bind or a rebind lands
                 // whole. `settle_mover_correction_snaps` snaps a glide that
                 // would move the deck by the teleport floor.
-                let glide = bound_mover_id == Some(plan.mover_id);
+                // The baseline path binds before this runs, so the binding
+                // cannot tell a first bind; a mover with no history yet has
+                // never been drawn from a snapshot.
+                let glide = bound_mover_id == Some(plan.mover_id)
+                    && self.mover_history.has_samples(plan.mover_id);
                 registry.correct_transform(id, plan.transform, glide).ok()
             };
             if let Some(current) = pre_correction {
@@ -2484,6 +2490,10 @@ impl ClientReplication {
     /// Remotes this frame's presentation placed on a mover.
     pub fn rebased_riders(&self) -> &[EntityId] {
         &self.rebased_riders
+    }
+
+    pub(crate) fn clear_rebased_riders(&mut self) {
+        self.rebased_riders.clear();
     }
 
     /// Draw every remote at its sampled world pose; see

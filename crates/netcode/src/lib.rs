@@ -1233,9 +1233,7 @@ pub fn client_receive_and_apply(
                 life_state_tables,
             );
             mover_glide::exclude_mover_share_from_offset(
-                registry,
                 prediction,
-                local.entity_id,
                 pawn_before,
                 &outcome.mover_corrections,
             );
@@ -1670,11 +1668,6 @@ fn local_hits_to_wire_records(
         .collect()
 }
 
-/// Decay the local-pawn presentation offset once per predicted tick, after the
-/// tick-rate camera follow has folded it into the camera pose and before that pose
-/// is pushed to frame timing. The render stage interpolates those presented poses
-/// directly, so the offset enters the frame-timing endpoints exactly once. A no-op
-/// for single-player, the host, or a client with no correction in flight.
 /// Connected-client [`shift_local_presentation_offset`]; a no-op elsewhere.
 pub fn client_shift_local_presentation_offset(
     endpoint: Option<&mut NetEndpoint>,
@@ -1684,6 +1677,12 @@ pub fn client_shift_local_presentation_offset(
         prediction.shift_presentation_offset(delta);
     }
 }
+
+/// Decay the local-pawn presentation offset once per predicted tick, after the
+/// tick-rate camera follow has folded it into the camera pose and before that pose
+/// is pushed to frame timing. The render stage interpolates those presented poses
+/// directly, so the offset enters the frame-timing endpoints exactly once. A no-op
+/// for single-player, the host, or a client with no correction in flight.
 
 pub fn client_decay_local_correction(endpoint: Option<&mut NetEndpoint>) {
     if let Some(NetEndpoint::Client { prediction, .. }) = endpoint {
@@ -1732,6 +1731,8 @@ pub fn client_sample_interpolation(
     let Some(estimated_tick) = time_sync.estimated_server_tick() else {
         replication.apply_held_remote_enemy_walk_playback_rates(registry, frame_anim_time);
         replication.apply_held_remote_player_presentation(registry, frame_anim_time);
+        // Nothing was rebased this frame: no remote stands on a drawn deck.
+        replication.clear_rebased_riders();
         return replication.presented_player_inputs().clone();
     };
     // Jitter and RTT are available whenever the estimate is; default to 0 defensively.

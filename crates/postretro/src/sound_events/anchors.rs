@@ -40,10 +40,16 @@ impl AnchorScene<'_> {
     /// sound starts on the deck the frame draws.
     pub(crate) fn fire_time_point(&mut self, id: EntityId) -> Option<Vec3> {
         let pose = *self.registry.get_component::<Transform>(id).ok()?;
-        let pose = self
-            .registry
-            .presentation_correction(id)
-            .map_or(pose, |correction| correction.apply(&pose));
+        // A mover's glide is a whole-pose correction; another entity's render
+        // offset (the local pawn's eye placement) is alpha-dependent and stays
+        // out of the fire-time point.
+        let pose = match self.registry.get_component::<KinematicMoverComponent>(id) {
+            Ok(_) => self
+                .registry
+                .presentation_correction(id)
+                .map_or(pose, |correction| correction.apply(&pose)),
+            Err(_) => pose,
+        };
         self.placed(id, pose)
     }
 

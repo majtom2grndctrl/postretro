@@ -824,9 +824,7 @@ impl LoopbackHarness {
                     &self.life_state_tables,
                 );
                 super::mover_glide::exclude_mover_share_from_offset(
-                    &self.client_registry,
                     &mut self.prediction,
-                    reconcile.entity_id,
                     pawn_before,
                     &outcome.mover_corrections,
                 );

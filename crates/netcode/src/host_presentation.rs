@@ -209,22 +209,7 @@ pub fn present_client_pawns(
         let Some(mut pose) = buffer.presented_pose(network_id, target) else {
             continue;
         };
-        if let Some(rebased) = pose.rider_bracket.and_then(|bracket| {
-            crate::rider_rebase::rebase_rider(
-                &bracket,
-                &pose.transform,
-                |mover_id, tick| buffer.host_mover_poses.pose_at(mover_id, tick),
-                |mover_id| {
-                    let mover = buffer.host_mover_poses.entity(mover_id)?;
-                    crate::rider_rebase::presented_entity_mover(registry, mover, alpha)
-                },
-            )
-        }) {
-            pose.transform = rebased.transform;
-            pose.intrinsic_velocity = pose
-                .intrinsic_velocity
-                .map(|velocity| rebased.turn(velocity));
-        }
+        rebase_on_presented_mover(buffer, registry, &mut pose, alpha);
         let _ = registry.set_presentation_transform(pawn, pose.transform);
         // The drawn transform is the delayed capsule centre, so the feet-authored
         // mesh drops by the delayed sample's capsule, not the live one: across a
@@ -246,8 +231,8 @@ pub fn present_client_pawns(
 /// into the registry; the fixed tick probed from the live pose, which leads it and
 /// sits at the arrival while the body is still drawn at a teleport's source. A pawn
 /// with no buffered sample keeps its live pose, which is then also what is drawn.
-/// `mover_poses` are live (end-of-tick), not delayed, so a pawn riding a fast mover
-/// plants its feet on the mover's live surface rather than where it was drawn.
+/// `mover_poses` are the movers as this frame draws them, the poses a riding
+/// pawn is placed on, so its feet plant on the drawn deck.
 /// `anim_time` is the render frame's animation clock the body is posed at.
 pub fn probe_presented_client_pawn_feet(
     owners: &MovementOwners,
@@ -366,15 +351,44 @@ pub fn presented_client_pawn_state_tick(
 pub fn presented_client_pawn_transform(
     buffer: &RemoteInterpolationBuffer,
     allocator: &NetworkIdAllocator,
+    registry: &EntityRegistry,
     pawn: EntityId,
     current_tick: u32,
     alpha: f32,
 ) -> Option<Transform> {
     let network_id = allocator.network_id_for_entity(pawn)?;
     let target = presentation_target_tick(current_tick, alpha, PRESENTATION_DELAY_TICKS);
-    buffer
-        .presented_pose(network_id, target)
-        .map(|pose| pose.transform)
+    let mut pose = buffer.presented_pose(network_id, target)?;
+    rebase_on_presented_mover(buffer, registry, &mut pose, alpha);
+    Some(pose.transform)
+}
+
+/// Place a delayed client-pawn pose whose bracketing samples stand on one
+/// mover through that mover's presented pose at `alpha`, turning its legs with
+/// it (`crate::rider_rebase`). Any other pose is left as sampled.
+fn rebase_on_presented_mover(
+    buffer: &RemoteInterpolationBuffer,
+    registry: &EntityRegistry,
+    pose: &mut PresentedPose,
+    alpha: f32,
+) {
+    let Some(rebased) = pose.rider_bracket.and_then(|bracket| {
+        crate::rider_rebase::rebase_rider(
+            &bracket,
+            &pose.transform,
+            |mover_id, tick| buffer.host_mover_poses.pose_at(mover_id, tick),
+            |mover_id| {
+                let mover = buffer.host_mover_poses.entity(mover_id)?;
+                crate::rider_rebase::presented_entity_mover(registry, mover, alpha)
+            },
+        )
+    }) else {
+        return;
+    };
+    pose.transform = rebased.transform;
+    pose.intrinsic_velocity = pose
+        .intrinsic_velocity
+        .map(|velocity| rebased.turn(velocity));
 }
 
 #[cfg(test)]

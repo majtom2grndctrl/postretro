@@ -5,7 +5,10 @@
 use glam::{Quat, Vec3};
 use postretro_entities::{EntityId, EntityRegistry, Transform};
 
-use super::{hand_off_eye_across_apply, next_view_yaw_handoff, push_eye_endpoint};
+use super::{
+    apply_authoritative_mover_corrections, drawn_deck_view_yaw, hand_off_eye_across_apply,
+    next_view_yaw_handoff, push_eye_endpoint,
+};
 use crate::frame_timing::{EyeBody, EyeMover, FrameTiming, InterpolableState, present_eye};
 
 const MOVER: u32 = 4;
@@ -235,17 +238,114 @@ fn snapping_deck_cuts_the_eye() {
 fn view_yaw_hands_off_a_gliding_carry_yaw_deck() {
     let dt = 1.0 / 60.0;
     // Leaving: drawn glide 0.2 rad on mover 4, none now.
-    let left = next_view_yaw_handoff(0.0, (Some(4), 0.2), (None, 0.0), dt);
+    let left = next_view_yaw_handoff(0.0, (Some(4), 0.2), (None, 0.0, false), dt);
     assert!((left - 0.2).abs() < 1.0e-6);
     // Landing on a deck gliding 0.15 rad.
-    let landed = next_view_yaw_handoff(0.0, (None, 0.0), (Some(4), 0.15), dt);
+    let landed = next_view_yaw_handoff(0.0, (None, 0.0), (Some(4), 0.15, true), dt);
     assert!((landed + 0.15).abs() < 1.0e-6);
     // Same deck, its own glide shrinking: no hand-off.
     assert_eq!(
-        next_view_yaw_handoff(0.0, (Some(4), 0.2), (Some(4), 0.1), dt),
+        next_view_yaw_handoff(0.0, (Some(4), 0.2), (Some(4), 0.1, true), dt),
         0.0
     );
+    // Same deck, its glide gone (despawned, rebound): the drawn yaw hands off.
+    let lost = next_view_yaw_handoff(0.0, (Some(4), 0.2), (Some(4), 0.0, false), dt);
+    assert!((lost - 0.2).abs() < 1.0e-6);
     // In flight, it decays.
-    let decayed = next_view_yaw_handoff(0.2, (None, 0.0), (None, 0.0), dt);
+    let decayed = next_view_yaw_handoff(0.2, (None, 0.0), (None, 0.0, false), dt);
     assert!(decayed < 0.2 && decayed > 0.0);
+}
+
+// Pin P13: a carry_yaw correction that changes the spin rate lands on a frame
+// that runs no fixed tick. The settled yaw takes the tick-start correction and
+// the table the corrected tick turn, while the drawn deck glides on its
+// predicted turn; the view keeps its yaw on the drawn deck at every alpha.
+#[test]
+fn carry_yaw_view_stays_on_the_drawn_deck_when_a_correction_changes_spin() {
+    use crate::kinematic_mover::{MoverTickState, MoverTickStateTable};
+    let state = |end_yaw: f32, turn: f32, entity| MoverTickState {
+        entity,
+        transform: at(0.0, end_yaw),
+        linear_velocity: Vec3::ZERO,
+        tick_delta: Vec3::ZERO,
+        angular_velocity: Vec3::Y,
+        tick_rotation_delta: Quat::from_rotation_y(turn),
+        carry_yaw: true,
+        tick_dt: 1.0 / 60.0,
+    };
+    let mut registry = EntityRegistry::new();
+    let mover = registry.spawn(at(0.0, 0.0));
+    registry.snapshot_transforms();
+    // Predicted: +0.03 rad this tick. The host reversed it: -0.02 rad, ending
+    // 0.05 rad back from the prediction.
+    registry.set_component(mover, at(0.0, 0.03)).unwrap();
+    let mut table = MoverTickStateTable::default();
+    table.publish(MOVER, state(0.03, 0.03, mover));
+    let mut camera = crate::camera::Camera::new(Vec3::ZERO, 1.0, 0.0);
+    let deck_yaw = |registry: &EntityRegistry, alpha: f32| {
+        super::world_up_yaw_delta(
+            registry
+                .interpolated_transform(mover, alpha)
+                .unwrap()
+                .rotation,
+        )
+    };
+    let view_minus_deck = |camera: &crate::camera::Camera,
+                           table: &MoverTickStateTable,
+                           registry: &EntityRegistry,
+                           alpha: f32| {
+        let drawn = registry.interpolated_transform(mover, alpha).unwrap();
+        drawn_deck_view_yaw(camera.yaw, table.get(MOVER).unwrap(), &drawn).unwrap()
+            - deck_yaw(registry, alpha)
+    };
+    let before = view_minus_deck(&camera, &table, &registry, 0.3);
+    registry
+        .correct_transform(mover, at(0.0, -0.02), true)
+        .unwrap();
+    let correction = crate::netcode::MoverCorrection {
+        pre_correction: at(0.0, 0.03),
+        applied: None,
+        network_id: postretro_net::wire::NetworkId(1),
+        mover_id: MOVER,
+        magnitude: 0.0,
+        authoritative_state: state(-0.02, -0.02, mover),
+    };
+    apply_authoritative_mover_corrections(
+        &mut camera,
+        postretro_foundation::GroundRef::Mover(MOVER),
+        &mut table,
+        &[correction],
+    );
+    for alpha in ALPHAS {
+        let after = view_minus_deck(&camera, &table, &registry, alpha);
+        assert!(
+            (after - before).abs() < 1.0e-5,
+            "alpha {alpha}: {after} vs {before}"
+        );
+    }
+}
+
+// Pin P6: an apply that cut the eye (a teleport adopted while riding held both
+// endpoints at the arrival) carries nothing across: no shift, no offset.
+#[test]
+fn apply_time_cut_while_riding_stays_a_cut() {
+    let (registry, mover) = gliding_mover();
+    let mut timing = timing(
+        endpoint(Some((mover, at(0.0, 0.0))), on(&at(0.0, 0.0)), Vec3::ZERO),
+        endpoint(Some((mover, at(0.1, 0.05))), on(&at(0.1, 0.05)), Vec3::ZERO),
+    );
+    let presented = |timing: &FrameTiming| {
+        present_eye(&timing.previous_state, &timing.current_state, 0.5, |m| {
+            registry.interpolated_transform(m, 0.5).ok()
+        })
+    };
+    let before = presented(&timing);
+    let arrival = Vec3::new(40.0, 2.0, -7.0);
+    timing.hold_state(InterpolableState::new(arrival));
+    let after = presented(&timing);
+    let mut prediction = crate::netcode::ClientPrediction::default();
+    hand_off_eye_across_apply(&mut timing, &mut prediction, before, after, &[]);
+    assert_eq!(timing.current_state.position, arrival);
+    assert_eq!(timing.previous_state.position, arrival);
+    assert_eq!(prediction.presentation_offset(), Vec3::ZERO);
 }

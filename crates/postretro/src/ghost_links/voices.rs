@@ -171,11 +171,15 @@ impl GhostLinks {
                 };
                 // The owner is judged where membership and its ghost present it.
                 let lane = clocks::member_lane(registry, owner, member.1, member.0);
-                let Some(pose) = frame.stamps.presented_transform(owner, lane).or_else(|| {
-                    registry
-                        .interpolated_transform(owner, self.voices.alpha)
-                        .ok()
-                }) else {
+                let Some(pose) = frame
+                    .stamps
+                    .presented_transform(registry, owner, lane)
+                    .or_else(|| {
+                        registry
+                            .interpolated_transform(owner, self.voices.alpha)
+                            .ok()
+                    })
+                else {
                     return;
                 };
                 let owner_point = self

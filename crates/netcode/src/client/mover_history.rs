@@ -47,6 +47,13 @@ impl MoverHistoryBuffer {
         }
     }
 
+    /// Whether any sample of `mover_id` is held.
+    pub(crate) fn has_samples(&self, mover_id: u32) -> bool {
+        self.samples
+            .get(&mover_id)
+            .is_some_and(|samples| !samples.is_empty())
+    }
+
     /// The newest authoritative pose at or before `server_tick`. A mover the
     /// host did not resend has not changed, so an older sample still holds. `None`
     /// when no retained authoritative sample reaches back that far, never the

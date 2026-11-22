@@ -4,13 +4,31 @@
 
 use super::*;
 
+/// The view yaw on a carry_yaw deck drawn at `drawn`: the settled yaw, which
+/// stands at the tick start of `state`, plus the deck's drawn world-up turn
+/// since that tick start.
+pub(crate) fn drawn_deck_view_yaw(
+    settled_yaw: f32,
+    state: &kinematic_mover::MoverTickState,
+    drawn: &postretro_entities::Transform,
+) -> Option<f32> {
+    let tick_start = state.tick_rotation_delta.inverse() * state.transform.rotation;
+    let turn = world_up_yaw_delta(drawn.rotation * tick_start.inverse());
+    turn.is_finite().then_some(settled_yaw + turn)
+}
+
+/// A carry_yaw deck the view rides, its glide yaw, and whether a glide is in
+/// flight on it.
+pub(crate) type CarriedGlide = (Option<u32>, f32, bool);
+
 /// One frame of the view-yaw hand-off: decay what is in flight by `frame_dt`,
-/// then, when the carry_yaw deck the view rides changed since last frame,
-/// take the glide yaw it drew there less the one it draws now.
+/// then, when the carry_yaw deck the view rides changed since last frame or its
+/// glide is gone (despawned, rebound, settled), take the glide yaw it drew
+/// there less the one it draws now.
 pub(crate) fn next_view_yaw_handoff(
     handoff: f32,
     drawn: (Option<u32>, f32),
-    now: (Option<u32>, f32),
+    now: CarriedGlide,
     frame_dt: f32,
 ) -> f32 {
     let mut handoff = handoff;
@@ -20,7 +38,7 @@ pub(crate) fn next_view_yaw_handoff(
             handoff = 0.0;
         }
     }
-    if drawn.0 != now.0 && drawn.1.is_finite() && now.1.is_finite() {
+    if (drawn.0 != now.0 || !now.2) && drawn.1.is_finite() && now.1.is_finite() {
         handoff += drawn.1 - now.1;
     }
     handoff
@@ -141,22 +159,28 @@ impl App {
             || self.frame_timing.interpolated_state().position,
             |registry| self.presented_local_eye(registry, alpha).eye,
         );
-        // A carry_yaw mover gliding onto a correction turns the drawn deck
-        // only as the glide runs; the settled yaw took the whole correction at
-        // apply, so the view adds the glide's yaw to stay on the drawn deck.
-        let glide_yaw = registry
+        // On a carry_yaw deck the view turns with the deck as drawn: the
+        // settled yaw stands at the tick start, and the deck's drawn world-up
+        // turn since that tick start is added. With no glide this is the tick's
+        // alpha-scaled turn; across a correction the settled yaw took the whole
+        // start correction at apply while the drawn deck glides, so the view
+        // stays on the drawn deck even when the correction changed the spin rate.
+        let yaw = registry
             .as_deref()
-            .map_or(0.0, |registry| self.carried_glide_yaw(registry).1)
+            .and_then(|registry| self.drawn_deck_yaw(registry, alpha))
+            .unwrap_or_else(|| {
+                effective_render_yaw(
+                    self.camera.yaw,
+                    self.mover_yaw_carry_ground,
+                    &self.kinematic_mover_tick_states,
+                    alpha,
+                )
+            })
             + self.view_yaw_handoff;
         PresentedAimPose {
             // Timing already carries the connected owner's presentation correction.
             position: eye,
-            yaw: effective_render_yaw(
-                self.camera.yaw,
-                self.mover_yaw_carry_ground,
-                &self.kinematic_mover_tick_states,
-                alpha,
-            ) + glide_yaw,
+            yaw,
             // Look is render-rate, including frames with no fixed tick.
             pitch: self.camera.pitch,
         }
@@ -178,25 +202,40 @@ impl App {
         )
     }
 
-    /// The carry_yaw mover the view rides, and the world-up yaw still to glide
-    /// on it.
-    fn carried_glide_yaw(
+    /// The view yaw on the carry_yaw deck the view rides, from the deck as
+    /// drawn at `alpha`; `None` off such a deck or when it is not drawn.
+    fn drawn_deck_yaw(
         &self,
         registry: &postretro_entities::EntityRegistry,
-    ) -> (Option<u32>, f32) {
+        alpha: f32,
+    ) -> Option<f32> {
         let postretro_foundation::GroundRef::Mover(mover_id) = self.mover_yaw_carry_ground else {
-            return (None, 0.0);
+            return None;
+        };
+        let state = self.kinematic_mover_tick_states.get(mover_id)?;
+        if !state.carry_yaw {
+            return None;
+        }
+        let drawn = registry.interpolated_transform(state.entity, alpha).ok()?;
+        drawn_deck_view_yaw(self.camera.yaw, state, &drawn)
+    }
+
+    /// The carry_yaw mover the view rides, the world-up yaw still to glide on
+    /// it, and whether a glide is in flight there.
+    fn carried_glide_yaw(&self, registry: &postretro_entities::EntityRegistry) -> CarriedGlide {
+        let postretro_foundation::GroundRef::Mover(mover_id) = self.mover_yaw_carry_ground else {
+            return (None, 0.0, false);
         };
         let Some(state) = self.kinematic_mover_tick_states.get(mover_id) else {
-            return (None, 0.0);
+            return (None, 0.0, false);
         };
         if !state.carry_yaw {
-            return (None, 0.0);
+            return (None, 0.0, false);
         }
-        let glide = registry
-            .presentation_correction(state.entity)
-            .map_or(0.0, |glide| world_up_yaw_delta(glide.rotation));
-        (Some(mover_id), glide)
+        match registry.presentation_correction(state.entity) {
+            Some(glide) => (Some(mover_id), world_up_yaw_delta(glide.rotation), true),
+            None => (Some(mover_id), 0.0, false),
+        }
     }
 
     /// Hand the view yaw across a change of the carry_yaw deck it rides (pin
@@ -205,10 +244,19 @@ impl App {
     /// the drawn view does not turn and the settled yaw commands read is
     /// untouched. Runs once per frame.
     fn hand_off_view_yaw(&mut self, registry: &postretro_entities::EntityRegistry, frame_dt: f32) {
+        // A held eye (teleport, cut, level install, menu) carries no yaw
+        // across: drop any hand-off in flight and the deck it came from.
+        if self.frame_timing.previous_state.body.is_none()
+            && self.frame_timing.current_state.body.is_none()
+        {
+            self.view_yaw_handoff = 0.0;
+            self.drawn_glide_yaw = (None, 0.0);
+            return;
+        }
         let now = self.carried_glide_yaw(registry);
         self.view_yaw_handoff =
             next_view_yaw_handoff(self.view_yaw_handoff, self.drawn_glide_yaw, now, frame_dt);
-        self.drawn_glide_yaw = now;
+        self.drawn_glide_yaw = (now.0, now.1);
     }
 
     /// Draw the local pawn's mesh, shadow and mirror included, where this
@@ -381,6 +429,12 @@ pub(crate) fn hand_off_eye_across_apply(
     let Some(riding) = before.riding else {
         return;
     };
+    // The apply already cut the eye (a teleport, a teleport-class correction,
+    // a composed-offset snap, a first-record hold): it held both endpoints
+    // with no pawn behind them. A cut carries nothing across (pin P6).
+    if timing.previous_state.body.is_none() && timing.current_state.body.is_none() {
+        return;
+    }
     if snapped.contains(&riding.mover_id) {
         timing.hold_state(frame_timing::InterpolableState::new(after.eye));
         return;

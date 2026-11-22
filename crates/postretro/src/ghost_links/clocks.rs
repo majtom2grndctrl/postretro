@@ -202,6 +202,7 @@ impl PoseStamps<'_> {
     /// every other member already holds by then.
     pub(crate) fn presented_transform(
         &self,
+        registry: &postretro_entities::EntityRegistry,
         entity: EntityId,
         lane: MemberLane,
     ) -> Option<Transform> {
@@ -213,7 +214,7 @@ impl PoseStamps<'_> {
                 alpha,
             } if lane == MemberLane::Remote => {
                 crate::netcode::host_presented_client_pawn_transform(
-                    buffer, allocator, entity, tick, alpha,
+                    buffer, allocator, registry, entity, tick, alpha,
                 )
             }
             _ => None,

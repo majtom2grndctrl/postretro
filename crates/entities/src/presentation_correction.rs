@@ -75,19 +75,6 @@ impl PoseCorrection {
         let rotation = self.rotation.normalize();
         2.0 * rotation.xyz().length().atan2(rotation.w.abs())
     }
-
-    /// The farthest any of `points`, in the entity's local frame at `pose`,
-    /// moves under this correction.
-    pub fn max_point_displacement(&self, pose: &Transform, points: &[Vec3]) -> f32 {
-        let corrected = self.apply(pose);
-        points
-            .iter()
-            .map(|local| {
-                let at = |t: &Transform| t.position + t.rotation * (t.scale * *local);
-                (at(&corrected) - at(pose)).length()
-            })
-            .fold(0.0, f32::max)
-    }
 }
 
 #[cfg(test)]

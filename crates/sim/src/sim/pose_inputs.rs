@@ -612,9 +612,12 @@ pub(super) const FOOT_PENETRATION_ALLOWANCE: f32 = 0.15;
 /// probe `i`; `foot_count` is the entity's leg-set length even when a foot finds
 /// no ground (that foot reports `hit == false`). The world-pose sample is the
 /// unmodified pose shared with hit zones — distinct from the renderer's modified
-/// palette. Everything runs against the same fixed-tick registry/collision state
-/// through the same per-instance seed, so repeated headless runs of a tick
-/// sequence produce identical probes.
+/// palette. Off a mover, everything runs against the same fixed-tick
+/// registry/collision state through the same per-instance seed, so repeated
+/// headless runs of a tick sequence produce identical probes. Feet on a mover
+/// follow `riders` ([`super::RiderFeet`]): the fixed tick skips them and a
+/// per-frame pass probes them from presented poses, which are not fixed-tick
+/// state.
 pub(super) fn update_foot_ground_probes(
     registry: &mut EntityRegistry,
     collision_world: &CollisionWorld,

@@ -315,7 +315,9 @@ impl KinematicMoverRenderCollector {
 
     /// One frame's movers. Beauty draws and SH sample regions admit against
     /// `drawn`, the frame's drawn set (`main` plus the planar mirror's
-    /// cells), so a mover only the mirror sees still draws there.
+    /// cells), so a mover only the mirror sees still draws there. A mover
+    /// gliding onto a correction also admits when its presented bounds are in
+    /// `drawn`, so it draws where it is seen, not where it is simulated.
     /// [`Self::visible_at`] culls against `main` alone. Shadow casters ignore
     /// both.
     pub(crate) fn collect_with_mirror(
@@ -1917,12 +1919,8 @@ pub(crate) mod tests {
         assert!(collector.occluder_aabbs().is_empty());
     }
 
-    // With the planar mirror drawing, a mover in a cell only the mirror
-    // draws (cell 0 here; the main view draws cell 1) records for the beauty
-    // pass and SH sampling, while a ghost culled at the same pose through
-    // `visible_at` reads the main view's cells alone and is not collected.
-    // Pins P2 and row 31 of the rider brief: on a frame a mover glides onto
-    // a correction, every reader of its pose draws the one presented pose:
+    // On a frame a mover glides onto a correction, every reader of its pose
+    // draws the one presented pose:
     // beauty, shadow, occluder and SH region, ghost, sound anchor, the rider
     // foot-probe source, and the local eye and pawn mesh riding it. (Attached
     // lights and the remote rider rebase read the same accessor:
@@ -2078,6 +2076,10 @@ pub(crate) mod tests {
         assert!(collector.instances().is_empty());
     }
 
+    // With the planar mirror drawing, a mover in a cell only the mirror
+    // draws (cell 0 here; the main view draws cell 1) records for the beauty
+    // pass and SH sampling, while a ghost culled at the same pose through
+    // `visible_at` reads the main view's cells alone and is not collected.
     #[test]
     fn mover_collector_admits_mirror_only_movers_but_culls_ghosts_against_main_cells() {
         let mut registry = EntityRegistry::new();

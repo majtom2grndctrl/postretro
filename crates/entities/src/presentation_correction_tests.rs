@@ -197,17 +197,3 @@ fn entities_without_a_correction_present_their_blend_bit_for_bit() {
         .collect();
     assert_eq!(before, after);
 }
-
-#[test]
-fn bounds_displacement_measures_rotation_at_the_far_corner() {
-    let rotation_only = PoseCorrection {
-        translation: Vec3::ZERO,
-        rotation: Quat::from_rotation_y(0.5),
-    };
-    let corners = [Vec3::ZERO, Vec3::new(4.0, 0.0, 0.0)];
-    let moved = rotation_only.max_point_displacement(&pose(0.0, 0.0), &corners);
-    assert!(
-        (moved - 2.0 * 4.0 * (0.25_f32).sin()).abs() < 1.0e-4,
-        "{moved}"
-    );
-}

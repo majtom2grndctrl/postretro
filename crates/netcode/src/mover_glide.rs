@@ -83,23 +83,20 @@ pub(crate) fn pawn_before_reconcile(
 /// world offset: the eye rides the drawn deck, which glides that share in
 /// already, so counting it in the offset too would carry it twice. The share
 /// is the correction's displacement of the pawn's pre-correction point, taken
-/// only when the pawn's ground names the corrected mover before and after the
-/// reconcile, and only while the reconcile left an offset in flight (a cut
-/// clears it).
+/// when the pawn's ground named the corrected mover before the reconcile (the
+/// deck its eye rides), and only while the reconcile left an offset in flight
+/// (a cut clears it). A pawn the snapshot also moves off that deck keeps the
+/// share out too: the eye's next push detaches and hands the deck's remaining
+/// glide into the offset exactly once (pin P5).
 pub(crate) fn exclude_mover_share_from_offset(
-    registry: &EntityRegistry,
     prediction: &mut crate::prediction::ClientPrediction,
-    pawn: EntityId,
     before: Option<(Vec3, GroundRef)>,
     corrections: &[MoverCorrection],
 ) {
     let Some((point, GroundRef::Mover(mover_id))) = before else {
         return;
     };
-    let after = registry
-        .get_component::<PlayerMovementComponent>(pawn)
-        .map(|movement| movement.ground);
-    if after != Ok(GroundRef::Mover(mover_id)) || prediction.presentation_offset() == Vec3::ZERO {
+    if prediction.presentation_offset() == Vec3::ZERO {
         return;
     }
     let share = corrections
@@ -386,13 +383,7 @@ mod share_tests {
         prediction.shift_presentation_offset(-share - mispredict);
         movement.ground = after;
         registry.set_component(pawn, movement).unwrap();
-        exclude_mover_share_from_offset(
-            &registry,
-            &mut prediction,
-            pawn,
-            pawn_before,
-            &[correction(applied, pawn)],
-        );
+        exclude_mover_share_from_offset(&mut prediction, pawn_before, &[correction(applied, pawn)]);
         (prediction.presentation_offset(), share)
     }
 
@@ -407,16 +398,19 @@ mod share_tests {
         assert!((offset + mispredict).length() < 1.0e-6, "{offset}");
     }
 
-    // Pin P5: when the snapshot also moves the pawn's ground onto or off the
-    // corrected mover, the whole correction stays in the offset; the eye's
-    // push hands off the rest.
+    // Pin P5: leaving the corrected deck in the same snapshot still keeps its
+    // share out (the eye's detach hands the deck's remaining glide in once);
+    // landing on it keeps the whole correction, which the eye's attach cancels.
     #[test]
-    fn ground_change_keeps_the_whole_correction_in_the_offset() {
+    fn ground_change_excludes_the_share_only_from_the_deck_the_eye_rode() {
         let mispredict = Vec3::new(0.01, 0.0, -0.02);
         let on = GroundRef::Mover(MOVER);
-        for (before, after) in [(on, GroundRef::World), (GroundRef::Airborne, on)] {
-            let (offset, share) = offset_after(before, after, mispredict);
-            assert!((offset + share + mispredict).length() < 1.0e-6);
-        }
+        let (offset, _) = offset_after(on, GroundRef::World, mispredict);
+        assert!((offset + mispredict).length() < 1.0e-6, "leaving: {offset}");
+        let (offset, share) = offset_after(GroundRef::Airborne, on, mispredict);
+        assert!(
+            (offset + share + mispredict).length() < 1.0e-6,
+            "landing: {offset}"
+        );
     }
 }

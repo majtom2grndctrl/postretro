@@ -5140,18 +5140,6 @@ impl App {
         }
     }
 
-    /// Client remote-interpolation sampling step (M15 Phase 2 Task 6). Thin delegation
-    /// to `crate::netcode`. Samples each remote entity's interpolation buffer at the
-    /// adaptive render target tick (jitter delay plus held-newest starvation
-    /// feedback) and writes the presented pose through the
-    /// registry's remote-presentation helper. That pose is already resolved at the
-    /// correct server-time target, so the write is alpha-agnostic (previous ==
-    /// current); the render-stage `interpolated_transform` blend reproduces it
-    /// verbatim rather than re-blending it by the unrelated sim sub-tick alpha.
-    ///
-    /// Runs after the catch-up tick loop so the stage-0 `snapshot_transforms` cannot
-    /// clobber the presented pose, and before the render stage reads entities.
-    /// No-op for single-player and the host (no client interpolation buffers).
     /// Refresh each mover's presented pose for this frame's rider foot probes,
     /// then, on single-player and the host, probe every rider's feet from its
     /// presented pose. A connected client probes its riders in its own
@@ -5191,6 +5179,20 @@ impl App {
         netcode::advance_mover_correction_glides(&mut registry, frame_dt);
     }
 
+    /// Client remote-interpolation sampling step (M15 Phase 2 Task 6). Thin delegation
+    /// to `crate::netcode`. Samples each remote entity's interpolation buffer at the
+    /// adaptive render target tick (jitter delay plus held-newest starvation
+    /// feedback) and writes the presented pose through the
+    /// registry's remote-presentation helper. That pose is already resolved at the
+    /// correct server-time target, so the write is alpha-agnostic (previous ==
+    /// current); the render-stage `interpolated_transform` blend reproduces it
+    /// verbatim rather than re-blending it by the unrelated sim sub-tick alpha. A
+    /// rider whose samples stand on one mover is placed through that mover's
+    /// presented pose at the frame `alpha` before the write.
+    ///
+    /// Runs after the catch-up tick loop so the stage-0 `snapshot_transforms` cannot
+    /// clobber the presented pose, and before the render stage reads entities.
+    /// No-op for single-player and the host (no client interpolation buffers).
     fn net_sample_remote_interpolation(&mut self, frame_dt: f32, frame_anim_time: f64, alpha: f32) {
         let Some(script_ctx) = self
             .session

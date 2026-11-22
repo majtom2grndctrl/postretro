@@ -70,7 +70,8 @@ impl InterpolableState {
         }
     }
 
-    /// Linearly interpolate position between two tick-state snapshots.
+    /// Linearly interpolate position between two tick-state snapshots, in world
+    /// space; drops `body`. The presented eye comes from [`present_eye`].
     pub fn lerp(&self, other: &InterpolableState, alpha: f32) -> InterpolableState {
         InterpolableState::new(self.position.lerp(other.position, alpha))
     }
@@ -272,7 +273,8 @@ impl FrameTiming {
         )
     }
 
-    /// Compute the interpolated state for rendering.
+    /// The world-space eye blend, ignoring any mover the endpoints ride; the
+    /// presented eye comes from [`Self::presented_eye`].
     pub fn interpolated_state(&self) -> InterpolableState {
         self.previous_state
             .lerp(&self.current_state, self.current_alpha())

@@ -44,7 +44,7 @@ read at: be041cf8
 
 ## Delegated answers
 
-- **Smoothing time constant.** Exponential approach with τ = 25 ms, as `1 − exp(−dt/τ)` per frame so the rate does not depend on frame rate. The pawn offset's glide is 0.7 per 16.7 ms tick, τ ≈ 47 ms, so this is faster. Task 6 reports it with the measured steps, and the settle epsilon matches `OFFSET_SETTLED_EPSILON_M` (1e-4 m).
+- **Smoothing time constant.** Exponential approach with τ = 25 ms, as `1 − exp(−dt/τ)` per frame so the rate does not depend on frame rate. The pawn offset's glide is 0.7 per 16.7 ms tick, τ ≈ 47 ms, so this is faster. Task 6 reports it with the measured steps, and a glide settles below 1e-5 m and rad (`MOVER_GLIDE_SETTLED`), so dropping it steps a deck point by far less than the rows' 1e-4 m bound.
 - **Held and extrapolated remote samples** (clarification within "Transitions fall back to world space"). A held or extrapolated pose is a degenerate interval whose two ends are the newest (or oldest) sample. It attaches when that sample names a loaded mover with an authoritative pose for its tick, so a starved rider holds its deck point instead of detaching or extrapolating carry as world velocity. Otherwise it keeps today's world-space hold or extrapolation.
 - **Order of the first tasks.** The brief's Path says to split first; the skill says to test the riskiest premise first. Task 1 is the thin client rebase slice, built in new modules (`client/rider_rebase.rs`, plus fields added at `interpolation.rs`'s boundary) with only a hook line in `client.rs`. The behaviour-preserving splits follow as task 2, before any further growth of `client.rs` or `main.rs`.
 

@@ -403,7 +403,7 @@ fn real_dummy_splash_direct_settled_player_eye_aim_hits_local_and_display_copy()
         component.is_grounded(),
         "real neutral player movement settles on map floor"
     );
-    // main.rs::local_pawn_eye_position with the resting presentation offset zero.
+    // local_eye.rs::local_pawn_eye_position with the resting presentation offset zero.
     let eye = transform.position + Vec3::Y * component.capsule.eye_height;
     let aim = transform.rotation * Vec3::NEG_Z;
     for display_copy in [false, true] {

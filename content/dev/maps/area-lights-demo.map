@@ -1,9 +1,12 @@
 // Game: Generic
 // Format: Standard
 // area-lights-demo: the area-light Scripting-surface example. A sealed
-// 512 x 256 x 128 room lit only by two ceiling light_area skylights tagged
+// 512 x 256 x 128 room lit by two ceiling light_area skylights tagged
 // `skylight`, neither with an `_animated` key; the data script pulses both
-// from load, which reserves their animated bake. The east panel still carries
+// from load, which reserves their animated bake. A dim `_bake_only` point
+// light in the south-west corner is the map's one static light: without one
+// the compiler bakes no lightmap and the room draws a flat white placeholder
+// under the pulse. The east panel still carries
 // keys left from a `light_spot` it was converted from (`delay`,
 // `_light_size`, `_cone`, `mangle`): each warns at build and is ignored.
 // See: content/dev/maps/area-lights-demo.README.md
@@ -126,4 +129,14 @@
 "classname" "info_player_start"
 "origin" "256 40 24"
 "angle" "90"
+}
+// entity 4
+// The static light the lightmap needs; `_bake_only`, so scripts never see it.
+{
+"classname" "light"
+"origin" "24 24 16"
+"light" "40"
+"_color" "255 255 255"
+"_falloff_range" "96"
+"_bake_only" "1"
 }

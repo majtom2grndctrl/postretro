@@ -1,0 +1,387 @@
+// Game: Generic
+// Format: Standard
+// area-lights-ab-grid: manual check M3 of the area-lights brief, the template
+// half of an A/B pair with area-lights-ab-panel.map (same geometry and
+// entities). The glass is plain worldspawn glowing by its texture strength,
+// and each panel is a grid of light delay 2 point lights, one per square
+// metre of glass, 12 units below it (the ericw-tools `_surface` template
+// offset is 2, but a 0.25 m soft emitter that close sinks 40% into the glass):
+// 16 at light 300 under the skylight, one at light 100 under the
+// corridor panel. Each template point reaches 630 units, a 1 m^2 panel's
+// reach at light 300; the corridor point reaches 370, the panel's.
+// See: content/dev/maps/area-lights-ab.README.md
+// entity 0
+{
+"classname" "worldspawn"
+"wad" ""
+"_tb_mod" "dev"
+// main floor
+{
+( -16 0 0 ) ( -16 1 0 ) ( -16 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 656 0 0 ) ( 656 0 1 ) ( 656 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 -16 0 ) ( 0 -16 1 ) ( 1 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 400 0 ) ( 1 400 0 ) ( 0 400 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 -16 ) ( 1 0 -16 ) ( 0 1 -16 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 0 1 0 ) ( 1 0 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// main ceiling
+{
+( -16 0 0 ) ( -16 1 0 ) ( -16 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 656 0 0 ) ( 656 0 1 ) ( 656 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 -16 0 ) ( 0 -16 1 ) ( 1 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 400 0 ) ( 1 400 0 ) ( 0 400 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 128 ) ( 1 0 128 ) ( 0 1 128 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 144 ) ( 0 1 144 ) ( 1 0 144 ) concrete_pavement_036 0 0 0 1 1
+}
+// main west wall
+{
+( -16 0 0 ) ( -16 1 0 ) ( -16 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 0 0 1 ) ( 0 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 0 0 1 ) ( 1 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 384 0 ) ( 1 384 0 ) ( 0 384 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) concrete_pavement_036 0 0 0 1 1
+}
+// main east wall
+{
+( 640 0 0 ) ( 640 1 0 ) ( 640 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 656 0 0 ) ( 656 0 1 ) ( 656 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 -16 0 ) ( 0 -16 1 ) ( 1 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 400 0 ) ( 1 400 0 ) ( 0 400 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) concrete_pavement_036 0 0 0 1 1
+}
+// main south wall
+{
+( 0 0 0 ) ( 0 1 0 ) ( 0 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 640 0 0 ) ( 640 0 1 ) ( 640 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 -16 0 ) ( 0 -16 1 ) ( 1 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) concrete_pavement_036 0 0 0 1 1
+}
+// main north wall, west of the doorway
+{
+( 0 0 0 ) ( 0 1 0 ) ( 0 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 560 0 0 ) ( 560 0 1 ) ( 560 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 384 0 ) ( 0 384 1 ) ( 1 384 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 400 0 ) ( 1 400 0 ) ( 0 400 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) concrete_pavement_036 0 0 0 1 1
+}
+// main north wall, east of the doorway
+{
+( 624 0 0 ) ( 624 1 0 ) ( 624 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 640 0 0 ) ( 640 0 1 ) ( 640 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 384 0 ) ( 0 384 1 ) ( 1 384 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 400 0 ) ( 1 400 0 ) ( 0 400 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) concrete_pavement_036 0 0 0 1 1
+}
+// doorway lintel
+{
+( 560 0 0 ) ( 560 1 0 ) ( 560 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 624 0 0 ) ( 624 0 1 ) ( 624 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 384 0 ) ( 0 384 1 ) ( 1 384 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 400 0 ) ( 1 400 0 ) ( 0 400 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 96 ) ( 1 0 96 ) ( 0 1 96 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) concrete_pavement_036 0 0 0 1 1
+}
+// dogleg floor
+{
+( 544 0 0 ) ( 544 1 0 ) ( 544 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 640 0 0 ) ( 640 0 1 ) ( 640 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 400 0 ) ( 0 400 1 ) ( 1 400 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 608 0 ) ( 1 608 0 ) ( 0 608 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 -16 ) ( 1 0 -16 ) ( 0 1 -16 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 0 1 0 ) ( 1 0 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// dogleg ceiling
+{
+( 544 0 0 ) ( 544 1 0 ) ( 544 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 640 0 0 ) ( 640 0 1 ) ( 640 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 400 0 ) ( 0 400 1 ) ( 1 400 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 608 0 ) ( 1 608 0 ) ( 0 608 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 128 ) ( 1 0 128 ) ( 0 1 128 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 144 ) ( 0 1 144 ) ( 1 0 144 ) concrete_pavement_036 0 0 0 1 1
+}
+// dogleg west wall
+{
+( 544 0 0 ) ( 544 1 0 ) ( 544 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 560 0 0 ) ( 560 0 1 ) ( 560 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 400 0 ) ( 0 400 1 ) ( 1 400 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 608 0 ) ( 1 608 0 ) ( 0 608 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) concrete_pavement_036 0 0 0 1 1
+}
+// dogleg east wall
+{
+( 624 0 0 ) ( 624 1 0 ) ( 624 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 640 0 0 ) ( 640 0 1 ) ( 640 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 400 0 ) ( 0 400 1 ) ( 1 400 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 528 0 ) ( 1 528 0 ) ( 0 528 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) concrete_pavement_036 0 0 0 1 1
+}
+// corridor floor
+{
+( 640 0 0 ) ( 640 1 0 ) ( 640 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 1424 0 0 ) ( 1424 0 1 ) ( 1424 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 512 0 ) ( 0 512 1 ) ( 1 512 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 608 0 ) ( 1 608 0 ) ( 0 608 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 -16 ) ( 1 0 -16 ) ( 0 1 -16 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 0 1 0 ) ( 1 0 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// corridor ceiling
+{
+( 640 0 0 ) ( 640 1 0 ) ( 640 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 1424 0 0 ) ( 1424 0 1 ) ( 1424 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 512 0 ) ( 0 512 1 ) ( 1 512 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 608 0 ) ( 1 608 0 ) ( 0 608 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 128 ) ( 1 0 128 ) ( 0 1 128 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 144 ) ( 0 1 144 ) ( 1 0 144 ) concrete_pavement_036 0 0 0 1 1
+}
+// corridor south wall
+{
+( 640 0 0 ) ( 640 1 0 ) ( 640 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 1408 0 0 ) ( 1408 0 1 ) ( 1408 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 512 0 ) ( 0 512 1 ) ( 1 512 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 528 0 ) ( 1 528 0 ) ( 0 528 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) concrete_pavement_036 0 0 0 1 1
+}
+// corridor north wall
+{
+( 560 0 0 ) ( 560 1 0 ) ( 560 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 1424 0 0 ) ( 1424 0 1 ) ( 1424 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 592 0 ) ( 0 592 1 ) ( 1 592 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 608 0 ) ( 1 608 0 ) ( 0 608 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) concrete_pavement_036 0 0 0 1 1
+}
+// corridor east wall
+{
+( 1408 0 0 ) ( 1408 1 0 ) ( 1408 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 1424 0 0 ) ( 1424 0 1 ) ( 1424 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 528 0 ) ( 0 528 1 ) ( 1 528 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 592 0 ) ( 1 592 0 ) ( 0 592 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) concrete_pavement_036 0 0 0 1 1
+}
+// skylight frame
+{
+( 0 0 0 ) ( 0 1 0 ) ( 0 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 192 0 0 ) ( 192 0 1 ) ( 192 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 96 0 ) ( 0 96 1 ) ( 1 96 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 288 0 ) ( 1 288 0 ) ( 0 288 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 124 ) ( 1 0 124 ) ( 0 1 124 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) concrete_pavement_036 0 0 0 1 1
+}
+// skylight glass
+{
+( 16 0 0 ) ( 16 1 0 ) ( 16 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 176 0 0 ) ( 176 0 1 ) ( 176 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 112 0 ) ( 0 112 1 ) ( 1 112 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 272 0 ) ( 1 272 0 ) ( 0 272 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 120 ) ( 1 0 120 ) ( 0 1 120 ) neon/glow_panel 0 0 0 1 1
+( 0 0 124 ) ( 0 1 124 ) ( 1 0 124 ) concrete_pavement_036 0 0 0 1 1
+}
+// corridor panel frame
+{
+( 1336 0 0 ) ( 1336 1 0 ) ( 1336 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 1408 0 0 ) ( 1408 0 1 ) ( 1408 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 528 0 ) ( 0 528 1 ) ( 1 528 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 592 0 ) ( 1 592 0 ) ( 0 592 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 124 ) ( 1 0 124 ) ( 0 1 124 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) concrete_pavement_036 0 0 0 1 1
+}
+// corridor panel glass
+{
+( 1352 0 0 ) ( 1352 1 0 ) ( 1352 0 1 ) concrete_pavement_036 0 0 0 1 1
+( 1392 0 0 ) ( 1392 0 1 ) ( 1392 1 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 540 0 ) ( 0 540 1 ) ( 1 540 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 580 0 ) ( 1 580 0 ) ( 0 580 1 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 120 ) ( 1 0 120 ) ( 0 1 120 ) neon/glow_panel 0 0 0 1 1
+( 0 0 124 ) ( 0 1 124 ) ( 1 0 124 ) concrete_pavement_036 0 0 0 1 1
+}
+}
+// entity 1
+{
+"classname" "light"
+"origin" "36 132 108"
+"light" "300"
+"_color" "255 255 255"
+"delay" "2"
+"_falloff_range" "630"
+}
+// entity 2
+{
+"classname" "light"
+"origin" "36 172 108"
+"light" "300"
+"_color" "255 255 255"
+"delay" "2"
+"_falloff_range" "630"
+}
+// entity 3
+{
+"classname" "light"
+"origin" "36 212 108"
+"light" "300"
+"_color" "255 255 255"
+"delay" "2"
+"_falloff_range" "630"
+}
+// entity 4
+{
+"classname" "light"
+"origin" "36 252 108"
+"light" "300"
+"_color" "255 255 255"
+"delay" "2"
+"_falloff_range" "630"
+}
+// entity 5
+{
+"classname" "light"
+"origin" "76 132 108"
+"light" "300"
+"_color" "255 255 255"
+"delay" "2"
+"_falloff_range" "630"
+}
+// entity 6
+{
+"classname" "light"
+"origin" "76 172 108"
+"light" "300"
+"_color" "255 255 255"
+"delay" "2"
+"_falloff_range" "630"
+}
+// entity 7
+{
+"classname" "light"
+"origin" "76 212 108"
+"light" "300"
+"_color" "255 255 255"
+"delay" "2"
+"_falloff_range" "630"
+}
+// entity 8
+{
+"classname" "light"
+"origin" "76 252 108"
+"light" "300"
+"_color" "255 255 255"
+"delay" "2"
+"_falloff_range" "630"
+}
+// entity 9
+{
+"classname" "light"
+"origin" "116 132 108"
+"light" "300"
+"_color" "255 255 255"
+"delay" "2"
+"_falloff_range" "630"
+}
+// entity 10
+{
+"classname" "light"
+"origin" "116 172 108"
+"light" "300"
+"_color" "255 255 255"
+"delay" "2"
+"_falloff_range" "630"
+}
+// entity 11
+{
+"classname" "light"
+"origin" "116 212 108"
+"light" "300"
+"_color" "255 255 255"
+"delay" "2"
+"_falloff_range" "630"
+}
+// entity 12
+{
+"classname" "light"
+"origin" "116 252 108"
+"light" "300"
+"_color" "255 255 255"
+"delay" "2"
+"_falloff_range" "630"
+}
+// entity 13
+{
+"classname" "light"
+"origin" "156 132 108"
+"light" "300"
+"_color" "255 255 255"
+"delay" "2"
+"_falloff_range" "630"
+}
+// entity 14
+{
+"classname" "light"
+"origin" "156 172 108"
+"light" "300"
+"_color" "255 255 255"
+"delay" "2"
+"_falloff_range" "630"
+}
+// entity 15
+{
+"classname" "light"
+"origin" "156 212 108"
+"light" "300"
+"_color" "255 255 255"
+"delay" "2"
+"_falloff_range" "630"
+}
+// entity 16
+{
+"classname" "light"
+"origin" "156 252 108"
+"light" "300"
+"_color" "255 255 255"
+"delay" "2"
+"_falloff_range" "630"
+}
+// entity 17
+{
+"classname" "light"
+"origin" "1372 560 108"
+"light" "100"
+"_color" "255 255 255"
+"delay" "2"
+"_falloff_range" "370"
+}
+// entity 18
+{
+"classname" "info_player_start"
+"origin" "600 48 24"
+"angle" "180"
+}
+// entity 19
+{
+"classname" "target_dummy"
+"origin" "96 192 16"
+"angles" "0 0 0"
+"_tags" "dummy"
+}
+// entity 20
+{
+"classname" "target_dummy"
+"origin" "352 192 16"
+"angles" "0 180 0"
+"_tags" "dummy"
+}
+// entity 21
+{
+"classname" "reference_enemy"
+"origin" "520 320 16"
+"angles" "0 180 0"
+"_tags" "enemy"
+}

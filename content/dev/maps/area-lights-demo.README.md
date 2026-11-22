@@ -17,6 +17,11 @@ facing north.
 Each panel is a concrete frame brush and a glass brush whose underside alone
 carries `neon/glow_panel`, so only the underside emits and glows.
 
+A dim `_bake_only` point light sits in the south-west corner. It is the map's
+only static light: with every light animated the compiler bakes no lightmap,
+and the room would draw a flat white placeholder under the pulse. Scripts
+never see it.
+
 ## Manual checks
 
 - **Glow with the room.** Each pane's glow and the floor beneath it brighten

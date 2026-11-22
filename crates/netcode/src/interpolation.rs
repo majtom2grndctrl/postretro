@@ -1005,6 +1005,9 @@ pub struct RemoteInterpolationBuffer {
     /// Host seat only: each ridden mover's pose at the ticks its riders were
     /// recorded, for the rider rebase. A client's stays empty.
     pub(crate) host_mover_poses: crate::rider_rebase::RiderMoverPoses,
+    /// Per-remote eases across changes of placement; interior so the host
+    /// seat's read-only present path can advance them.
+    pub(crate) rider_handoffs: std::cell::RefCell<crate::rider_rebase::RiderHandoffs>,
     /// Test A/B switch: resolve poses without their rider bracket, so every
     /// remote draws at its sampled world pose as before rider rebasing.
     world_space_riders: bool,
@@ -1087,6 +1090,7 @@ impl RemoteInterpolationBuffer {
     /// Drop an entity's buffer (it despawned). Idempotent.
     pub fn forget(&mut self, network_id: NetworkId) {
         self.buffers.remove(&network_id);
+        self.rider_handoffs.get_mut().forget(network_id);
         self.pending_teleports.forget(network_id);
     }
 

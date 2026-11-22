@@ -8,6 +8,8 @@ read at: be041cf8
 
 - **Rows 24/29 (was blocked).** Option A. A connected client's pawn mesh (shadow and mirror) always carries the same world-space presentation offset as its eye, so the mesh and eye agree on every frame and a hand-off never steps the mesh. Brief updated: the local-eye Decision's mesh clause, and row 24 now reads "…draw an eye bit-equal to before. Their pawn mesh is bit-equal to before, except that a connected client's mesh now carries the same world-space presentation offset as its eye while one glides." Source fact behind it: `present_local_pose` has no production caller, so today the client mesh carries no offset.
 - **Plan approved** by the owner with that ruling.
+- **R1, remote riders on transitions (after review).** The owner chose a smooth client experience over a hard world-space transition. The Transitions Decision and row 4 now read: a change of placement eases the drawn rider from the pose drawn the frame before onto its new pose; a teleport cut still cuts clean. Built as `rider_rebase::RiderHandoffs` (τ 100 ms on render ticks, both seats).
+- **O2, rider foot probe allocations (after review).** The owner extended this brief to cover the shared pose sampler: `sample_world_pose_for_probe_into` writes into storage the hit-zone store reuses, and clones the animation only on the tick a state is entered.
 
 ## Corrections
 
@@ -57,7 +59,7 @@ Row numbers follow the brief's Acceptance list in order.
 | 1 | Ten revolutions planted, `1e-4`, client view and host seat (P11) | `remote_rider_stays_planted_on_spinning_travelling_mover_client_view`, `..._host_seat` on a new spin+travel fixture with a second rider, mandated profile | achievable as stated | pass: client 0.6273 → 0.000006 m, host 0.0465 → 0.000006 m |
 | 2 | Spin start, stop, reversal mid-interval | same fixture, scripted spin changes | achievable as stated | pass: ≤ 0.000019 m both seats |
 | 3 | `carry_yaw` yaw rule; deterministic; pitch/roll no effect | rebase unit tests | achievable as stated | pass |
-| 4 | Same mover attaches; differing ends draw today's world pose | rebase unit tests, both sides | achievable as stated | pass (see review item R1) |
+| 4 | Same mover attaches; differing ends draw today's world pose | rebase unit tests, both sides | achievable as stated | pass as restated: `remote_rider_leaving_a_deck_never_pops` (walking off the spinning deck, worst frame-to-frame drawn move 1.2370 m → 0.2806 m, within its own 0.5965 m per sample); `rider_rebase::tests::handoffs` (eases from the last drawn pose, bit-exact when unchanged, cut drops the ease) |
 | 5 | Sparse deltas: Transform-only and movement-only attach | interpolation buffer tests | achievable as stated | pass |
 | 6 | Late ground sample decides later samples (P9) | interpolation buffer test | achievable as stated | pass |
 | 7 | Fallbacks: missing ground or history, P8, unloaded, non-finite, zero-scale | rebase unit tests | achievable as stated | pass |
@@ -89,7 +91,7 @@ Row numbers follow the brief's Acceptance list in order.
 | 33 | Authority bit-equal with features disabled; `WIRE_VERSION` unchanged | A/B harness run with a presentation-off switch | achievable as stated | pass |
 | 34 | `carry_yaw` legs relative to aim equal; off → equal outright | remote locomotion test | achievable as stated | pass |
 | 35 | Non-riders, static, no-ground and mover-less maps bit-equal | equality tests | achievable as stated | pass at unit level (world fallback and blends bit-exact, other entities untouched by a glide, authority A/B); no full-render equality run |
-| 36 | Every remote riding, several movers: bounds, zero allocation, Presentation stage cost before/after | stress fixture plus `alloc_probe` (installed in netcode's tests), cost figures here | achievable as stated (see Corrections, hot paths) | partial: zero allocations for rebase, glide advance, presented poses, eye; rider foot probe allocates 6 per probe in the shared pose sampler (owner item O2); Presentation stage before/after needs an in-engine run (owner item O4) |
+| 36 | Every remote riding, several movers: bounds, zero allocation, Presentation stage cost before/after | stress fixture plus `alloc_probe` (installed in netcode's tests), cost figures here | achievable as stated (see Corrections, hot paths) | partial: zero allocations per frame for rebase, glide advance, presented poses, eye placement and rider foot probes (`per_frame_rider_passes_allocate_nothing_when_warm`, O2 fixed); Presentation stage before/after needs an in-engine run (owner item O4) |
 | M1 | Co-op carousel under the lag proxy; README recipe | owner, in-engine | manual | outstanding: manual, owner in-engine |
 
 ## Tasks
@@ -135,7 +137,6 @@ After the fixes, these pass: netcode lib 1143, sim lib 2227, entities 353, physi
 
 ## Owner items
 
-- **R1 — remote riders step on leaving or landing.** The Transitions Decision and row 4 draw a remote rider's leave/land interval exactly in world space. The rider was drawn on the current deck the frame before, so it jumps by the mover's motion over the interpolation delay: up to about 0.6 m on the client view and 0.05 m on the host seat. That conflicts with the Problem's "landing, leaving and changing movers look as they do today" and with M1's "no correction pop". A fix (blend the transition between the deck-placed and world poses, or hand the gap off) changes Decision/row 4 wording, so it waits for the owner.
-- **O2 — rider foot probe allocations.** 6 per probe inside the shared hit-zone pose sampler (`sample_world_pose_for_probe` clones the mesh animation and returns a joint `Vec`). The Hot-paths Decision says none allocates per frame. Fixing it refactors the sampler that hit detection shares: extend this brief, or file a follow-up?
+- **R1 and O2** were resolved by owner ruling; see *Owner rulings*.
 - **O3 — host-seat stage attribution.** Host-seat rebase and probes run in HostSend, not Presentation (see Corrections).
 - **O4 — measurements.** The Presentation CPU stage before/after figures and M1 need an in-engine run.

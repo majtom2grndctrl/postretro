@@ -209,7 +209,16 @@ pub fn present_client_pawns(
         let Some(mut pose) = buffer.presented_pose(network_id, target) else {
             continue;
         };
-        rebase_on_presented_mover(buffer, registry, &mut pose, alpha);
+        let placed_on = rebase_on_presented_mover(buffer, registry, &mut pose, alpha);
+        // Leaving, landing on or changing decks eases from where the pawn was
+        // drawn last frame, so it never steps.
+        pose.transform = buffer.rider_handoffs.borrow_mut().present(
+            network_id,
+            pose.transform,
+            placed_on,
+            target,
+            pose.source == crate::interpolation::PoseSource::TeleportCut,
+        );
         let _ = registry.set_presentation_transform(pawn, pose.transform);
         // The drawn transform is the delayed capsule centre, so the feet-authored
         // mesh drops by the delayed sample's capsule, not the live one: across a
@@ -360,18 +369,24 @@ pub fn presented_client_pawn_transform(
     let target = presentation_target_tick(current_tick, alpha, PRESENTATION_DELAY_TICKS);
     let mut pose = buffer.presented_pose(network_id, target)?;
     rebase_on_presented_mover(buffer, registry, &mut pose, alpha);
-    Some(pose.transform)
+    Some(
+        buffer
+            .rider_handoffs
+            .borrow()
+            .peek(network_id, pose.transform),
+    )
 }
 
 /// Place a delayed client-pawn pose whose bracketing samples stand on one
 /// mover through that mover's presented pose at `alpha`, turning its legs with
-/// it (`crate::rider_rebase`). Any other pose is left as sampled.
+/// it (`crate::rider_rebase`). Any other pose is left as sampled. Returns the
+/// mover it was placed on.
 fn rebase_on_presented_mover(
     buffer: &RemoteInterpolationBuffer,
     registry: &EntityRegistry,
     pose: &mut PresentedPose,
     alpha: f32,
-) {
+) -> Option<u32> {
     let Some(rebased) = pose.rider_bracket.and_then(|bracket| {
         crate::rider_rebase::rebase_rider(
             &bracket,
@@ -383,12 +398,13 @@ fn rebase_on_presented_mover(
             },
         )
     }) else {
-        return;
+        return None;
     };
     pose.transform = rebased.transform;
     pose.intrinsic_velocity = pose
         .intrinsic_velocity
         .map(|velocity| rebased.turn(velocity));
+    Some(rebased.mover_id)
 }
 
 #[cfg(test)]

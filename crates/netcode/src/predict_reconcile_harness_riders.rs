@@ -351,3 +351,81 @@ fn rider_presentation_leaves_authority_bit_equal() {
         assert_eq!(on, off, "frame {frame}");
     }
 }
+
+/// The client's view of the second rider walking off the spinning, travelling
+/// deck: the worst frame-to-frame move of its drawn position, and the worst
+/// move of its delayed world pose (its own motion), over the frames around the
+/// moment it leaves.
+fn walk_off_deck(eased: bool) -> (f32, f32) {
+    let mut h =
+        LoopbackHarness::with_spinning_travelling_platform(mandated_link(), SPIN_RATE_RAD_S);
+    h.client_replication.set_rider_handoff_bypass(!eased);
+    // A floor just below the deck, so the rider steps down onto world ground.
+    h.world = crate::collision::CollisionWorld::from_triangles_for_test(
+        vec![
+            Vec3::new(-500.0, -0.3, -500.0),
+            Vec3::new(500.0, -0.3, -500.0),
+            Vec3::new(500.0, -0.3, 500.0),
+            Vec3::new(-500.0, -0.3, 500.0),
+        ],
+        vec![[0, 2, 1], [0, 3, 2]],
+    );
+    let mut delay = InterpolationDelayState::new();
+    let host_rider = h.host_second_rider.unwrap();
+    let (mut drawn_prev, mut world_prev): (Option<Vec3>, Option<Vec3>) = (None, None);
+    let (mut worst_drawn, mut worst_world) = (0.0_f32, 0.0_f32);
+    for index in 0..420 {
+        if index == WARMUP_FRAMES + 60 {
+            h.host_second_rider_wish = glam::Vec2::new(0.0, 1.0);
+        }
+        h.step(&idle_command());
+        crate::advance_mover_correction_glides(&mut h.client_registry, DT);
+        let inputs = client_sample_interpolation(
+            &mut h.client_registry,
+            &mut h.client_replication,
+            &h.time_sync,
+            &mut delay,
+            f64::from(DT),
+            f64::from(index) * f64::from(DT),
+            1.0,
+        );
+        if index < WARMUP_FRAMES || inputs.render_server_tick.is_none() {
+            continue;
+        }
+        let network_id = h.allocator.stamp(host_rider);
+        let Some(rider) = h.client_replication.entity_for_network_id(network_id) else {
+            continue;
+        };
+        let drawn = h
+            .client_registry
+            .get_component::<Transform>(rider)
+            .unwrap()
+            .position;
+        let world = h
+            .client_replication
+            .newest_sample_transform(network_id)
+            .map(|transform| transform.position)
+            .unwrap_or(drawn);
+        if let (Some(previous), Some(world_previous)) = (drawn_prev, world_prev) {
+            worst_drawn = worst_drawn.max((drawn - previous).length());
+            worst_world = worst_world.max((world - world_previous).length());
+        }
+        drawn_prev = Some(drawn);
+        world_prev = Some(world);
+    }
+    (worst_drawn, worst_world)
+}
+
+// Regression: a delayed remote leaving its deck popped back by the deck's
+// motion over the interpolation delay as its interval fell to world space.
+#[test]
+fn remote_rider_leaving_a_deck_never_pops() {
+    let (popped, own_motion) = walk_off_deck(false);
+    let (eased, _) = walk_off_deck(true);
+    eprintln!(
+        "[riders] walking off the deck, worst frame-to-frame drawn move: before {popped:.4} m, \
+         after {eased:.4} m (own motion {own_motion:.4} m per sample)"
+    );
+    assert!(popped > 0.2, "the fixture leaves a moving deck: {popped} m");
+    assert!(eased < popped * 0.5, "eased {eased} m vs popped {popped} m");
+}

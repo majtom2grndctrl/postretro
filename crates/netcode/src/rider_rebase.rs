@@ -10,6 +10,9 @@ use postretro_entities::{
 };
 use postretro_foundation::GroundRef;
 
+use postretro_entities::presentation_correction::PoseCorrection;
+use postretro_net::wire::NetworkId;
+
 use crate::interpolation::RiderBracket;
 use crate::kinematic_mover::world_up_yaw;
 
@@ -31,6 +34,8 @@ pub(crate) struct PresentedMover {
 pub(crate) struct RebasedRider {
     pub(crate) transform: Transform,
     pub(crate) yaw_turn: f32,
+    /// The mover the rider was placed on.
+    pub(crate) mover_id: u32,
 }
 
 impl RebasedRider {
@@ -103,6 +108,7 @@ pub(crate) fn rebase_rider(
     Some(RebasedRider {
         transform,
         yaw_turn,
+        mover_id,
     })
 }
 
@@ -238,6 +244,106 @@ impl RiderMoverPoses {
     /// the rider. A despawned entity fails that read and the rider falls back.
     pub(crate) fn entity(&self, mover_id: u32) -> Option<EntityId> {
         self.movers.get(&mover_id).map(|ridden| ridden.entity)
+    }
+}
+
+/// How fast a remote's hand-off ease converges, in seconds: about the
+/// interpolation delay, so a rider leaving a deck catches up to its delayed
+/// world pose in roughly the time that delay spans.
+pub(crate) const RIDER_HANDOFF_TAU_SECS: f64 = 0.1;
+
+/// An ease within this many metres and radians is done.
+const RIDER_HANDOFF_SETTLED: f32 = 1.0e-5;
+
+/// One remote's hand-off between placements: what placed it last frame, where
+/// it was drawn, and the ease still carrying it from there.
+#[derive(Debug, Clone, Copy)]
+struct RiderHandoff {
+    placed_on: Option<u32>,
+    drawn: Transform,
+    ease: PoseCorrection,
+    at_tick: f64,
+}
+
+/// Per-remote hand-offs, so a rider that leaves, lands on or changes decks
+/// never steps (`networking.md` §Host-side remote-pawn presentation). On a
+/// deck a delayed rider is drawn at the deck's present pose; off it, at its
+/// delayed world pose. The two differ by the deck's motion over the delay, so
+/// a change of placement starts an ease from where the rider was last drawn,
+/// converging on the new pose over presented time. Allocates only the first
+/// time a remote is presented.
+#[derive(Debug, Default)]
+pub(crate) struct RiderHandoffs {
+    remotes: HashMap<NetworkId, RiderHandoff>,
+    /// Test A/B switch: draw every pose as placed, with no ease.
+    bypass: bool,
+}
+
+impl RiderHandoffs {
+    /// The pose to draw `network_id` at this frame: `pose` as sampled and
+    /// placed (`placed_on` names the mover the rebase placed it on), eased off
+    /// the pose it was drawn at last frame when its placement changed. A
+    /// teleport `cut` draws `pose` exactly and drops any ease. `render_tick` is
+    /// the presentation's target tick, which times the ease.
+    pub(crate) fn present(
+        &mut self,
+        network_id: NetworkId,
+        pose: Transform,
+        placed_on: Option<u32>,
+        render_tick: f64,
+        cut: bool,
+    ) -> Transform {
+        if self.bypass {
+            return pose;
+        }
+        let fresh = RiderHandoff {
+            placed_on,
+            drawn: pose,
+            ease: PoseCorrection::IDENTITY,
+            at_tick: render_tick,
+        };
+        let entry = self.remotes.entry(network_id).or_insert(fresh);
+        if cut {
+            *entry = fresh;
+            return pose;
+        }
+        let elapsed_ticks = (render_tick - entry.at_tick).max(0.0);
+        let elapsed_secs = elapsed_ticks * crate::SERVER_TICK_MICROS as f64 / 1_000_000.0;
+        let remaining = (-elapsed_secs / RIDER_HANDOFF_TAU_SECS).exp() as f32;
+        let mut ease = entry.ease.scaled(remaining);
+        if entry.placed_on != placed_on {
+            // Hold the rider where it was drawn; the ease takes it on from there.
+            ease = PoseCorrection::between(&pose, &entry.drawn);
+        }
+        if !ease.is_finite() || ease.is_within(RIDER_HANDOFF_SETTLED) {
+            ease = PoseCorrection::IDENTITY;
+        }
+        let drawn = ease.apply(&pose);
+        *entry = RiderHandoff {
+            placed_on,
+            drawn,
+            ease,
+            at_tick: render_tick.max(entry.at_tick),
+        };
+        drawn
+    }
+
+    /// `pose` carried by the ease `network_id` is drawn with now, without
+    /// advancing it: a look-ahead read of the pose the frame will draw.
+    pub(crate) fn peek(&self, network_id: NetworkId, pose: Transform) -> Transform {
+        self.remotes
+            .get(&network_id)
+            .map_or(pose, |handoff| handoff.ease.apply(&pose))
+    }
+
+    pub(crate) fn forget(&mut self, network_id: NetworkId) {
+        self.remotes.remove(&network_id);
+    }
+
+    /// Draw every pose as placed; the before half of a test's A/B.
+    #[cfg(test)]
+    pub(crate) fn set_bypass(&mut self, bypass: bool) {
+        self.bypass = bypass;
     }
 }
 

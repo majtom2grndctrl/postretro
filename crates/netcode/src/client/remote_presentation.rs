@@ -73,6 +73,7 @@ impl ClientReplication {
             self.presented_state_ticks
                 .insert(network_id, pose.state_tick);
             let mut pose = pose;
+            let mut placed_on = None;
             if let Some(rebased) = pose.rider_bracket.and_then(|bracket| {
                 crate::rider_rebase::rebase_rider(
                     &bracket,
@@ -91,7 +92,17 @@ impl ClientReplication {
                     .intrinsic_velocity
                     .map(|velocity| rebased.turn(velocity));
                 self.rebased_riders.push(entity_id);
+                placed_on = Some(rebased.mover_id);
             }
+            // Leaving, landing on or changing decks eases from where the rider
+            // was drawn last frame, so it never steps.
+            pose.transform = self.interp.rider_handoffs.get_mut().present(
+                network_id,
+                pose.transform,
+                placed_on,
+                render_server_tick,
+                pose.source == crate::interpolation::PoseSource::TeleportCut,
+            );
             let mut transform = pose.transform;
             if let Some(facts) = self.projectile_presentations.get(&network_id)
                 && facts.sprite_size.is_none()

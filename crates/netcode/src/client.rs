@@ -2496,6 +2496,13 @@ impl ClientReplication {
         self.rebased_riders.clear();
     }
 
+    /// Draw every rebased remote without easing its hand-offs; the before
+    /// half of a test's A/B.
+    #[cfg(test)]
+    pub(crate) fn set_rider_handoff_bypass(&mut self, bypass: bool) {
+        self.interp.rider_handoffs.get_mut().set_bypass(bypass);
+    }
+
     /// Draw every remote at its sampled world pose; see
     /// [`RemoteInterpolationBuffer::set_world_space_riders`].
     #[cfg(test)]

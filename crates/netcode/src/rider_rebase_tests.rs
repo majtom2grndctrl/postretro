@@ -457,3 +457,69 @@ mod hot_path {
         );
     }
 }
+
+mod handoffs {
+    use glam::{Quat, Vec3};
+    use postretro_entities::Transform;
+    use postretro_net::wire::NetworkId;
+
+    use crate::rider_rebase::RiderHandoffs;
+
+    const NET: NetworkId = NetworkId(9);
+
+    fn at(x: f32) -> Transform {
+        Transform {
+            position: Vec3::new(x, 1.0, 0.0),
+            rotation: Quat::from_rotation_y(x * 0.1),
+            scale: Vec3::ONE,
+        }
+    }
+
+    // A rider on a deck, then off it: the first world-space frame draws where
+    // the deck drew it, and the ease converges onto the world pose.
+    #[test]
+    fn changing_placement_eases_from_the_last_drawn_pose() {
+        let mut handoffs = RiderHandoffs::default();
+        let on_deck = handoffs.present(NET, at(0.6), Some(3), 10.0, false);
+        assert_eq!(on_deck, at(0.6));
+        let left = handoffs.present(NET, at(0.0), None, 10.0, false);
+        assert!(
+            (left.position - on_deck.position).length() < 1.0e-6,
+            "no step"
+        );
+        let mut tick = 10.0;
+        let mut previous = left.position;
+        // Two seconds of presented time, twenty time constants.
+        for _ in 0..240 {
+            tick += 0.5;
+            let drawn = handoffs.present(NET, at(0.0), None, tick, false);
+            assert!((drawn.position - previous).length() <= 0.6 * 0.5 / 3.0);
+            previous = drawn.position;
+        }
+        assert!((previous - at(0.0).position).length() < 1.0e-4, "converged");
+    }
+
+    // With the placement unchanged and no ease in flight, the pose is drawn as
+    // placed, bit for bit.
+    #[test]
+    fn unchanged_placement_draws_the_pose_bit_for_bit() {
+        let mut handoffs = RiderHandoffs::default();
+        for tick in 0..5 {
+            let pose = at(tick as f32 * 0.3);
+            assert_eq!(
+                handoffs.present(NET, pose, Some(3), f64::from(tick), false),
+                pose
+            );
+        }
+    }
+
+    // A teleport cut draws its pose exactly and carries no ease across.
+    #[test]
+    fn teleport_cut_drops_the_ease() {
+        let mut handoffs = RiderHandoffs::default();
+        handoffs.present(NET, at(0.6), Some(3), 10.0, false);
+        handoffs.present(NET, at(0.0), None, 10.0, false);
+        assert_eq!(handoffs.present(NET, at(40.0), None, 10.5, true), at(40.0));
+        assert_eq!(handoffs.present(NET, at(40.1), None, 11.0, false), at(40.1));
+    }
+}

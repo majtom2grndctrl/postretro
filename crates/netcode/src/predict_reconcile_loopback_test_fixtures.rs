@@ -193,6 +193,8 @@ pub(crate) struct LoopbackHarness {
     /// An unowned host pawn the client sees only as a remote, stepped each host
     /// tick with an idle input so it rides whatever it stands on.
     pub(crate) host_second_rider: Option<EntityId>,
+    /// The second rider's walk input, idle unless a scenario walks it.
+    pub(crate) host_second_rider_wish: glam::Vec2,
 
     /// The host seat's delayed presentation of the client's pawn, when a
     /// scenario draws it: recorded each host tick, restored before each host
@@ -337,6 +339,7 @@ impl LoopbackHarness {
             host_bystander,
             client_bystander,
             host_second_rider: None,
+            host_second_rider_wish: glam::Vec2::ZERO,
             host_seat: None,
             to_server: PacketConditioner::new(link),
             to_client: PacketConditioner::new(link),
@@ -559,10 +562,10 @@ impl LoopbackHarness {
             .iter()
             .map(|resolved| (resolved.pawn, resolved.command.movement.clone()))
             .chain(self.host_second_rider.map(|rider| {
-                (
-                    rider,
-                    super::predict_reconcile_harness_test_fixtures::idle_command().movement,
-                )
+                let mut movement =
+                    super::predict_reconcile_harness_test_fixtures::idle_command().movement;
+                movement.wish_dir = self.host_second_rider_wish;
+                (rider, movement)
             }))
             .collect::<Vec<_>>();
         let trigger_use_edges: HashMap<_, _> = resolved_commands

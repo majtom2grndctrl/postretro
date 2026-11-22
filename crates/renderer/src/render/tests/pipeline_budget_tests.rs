@@ -469,7 +469,7 @@ fn fluid_pipeline_fragment_uniforms_and_samplers_stay_within_limits() {
             [4, 0, 1, 1],
             [0, 5, 1, 0],
             [3, 3, 1, 1],
-            [2, 0, 2, 0],
+            [2, 0, 3, 0],
             [2, 0, 1, 0],
         ],
         "fluid FRAGMENT bindings changed"
@@ -477,8 +477,8 @@ fn fluid_pipeline_fragment_uniforms_and_samplers_stay_within_limits() {
     let total = |slot: usize| fragment.iter().map(|group| group[slot]).sum::<u32>();
     assert_eq!(
         total(2),
-        7,
-        "six uniforms before probes, plus the share table"
+        8,
+        "six uniforms before probes, plus the share table and the live-lighting sums"
     );
     assert_eq!(
         total(0),
@@ -495,6 +495,10 @@ fn fluid_pipeline_fragment_uniforms_and_samplers_stay_within_limits() {
     assert!(total(3) <= limits.max_samplers_per_shader_stage);
     assert!(
         postretro_render_cpu::fluid_surface::reflection::FLUID_PROBE_TABLE_BYTES as u64
+            <= limits.max_uniform_buffer_binding_size
+    );
+    assert!(
+        postretro_render_cpu::fluid_surface::reflection::FLUID_PROBE_SUMS_BYTES as u64
             <= limits.max_uniform_buffer_binding_size
     );
 }

@@ -1,6 +1,7 @@
 // Fluid surface pass: environment-volume surface faces drawn translucent,
 // two-sided and moving in whole texels, after skinned meshes and before billboards.
-// Submodules: the level install (`fluid_surface/install.rs`), the screen-space
+// Submodules: the level install (`fluid_surface/install.rs`), the live-lighting
+// sums pass (`fluid_surface/probe_sums.rs`), the screen-space
 // reflection pass (`fluid_surface/reflection_pass.rs`) and
 // planar routing (`fluid_surface/planar_routing.rs`: per-draw plane split, planar group 5).
 // See: context/lib/rendering_pipeline.md §7.3a
@@ -36,6 +37,7 @@ use super::*;
 // this module.
 mod install;
 mod planar_routing;
+pub(crate) mod probe_sums;
 mod reflection_pass;
 pub(crate) use install::{FluidLevelLayout, FluidLevelTargets, InstalledFluidSurfaces};
 pub(crate) use reflection_pass::FluidReflectionMarchTuning;
@@ -60,6 +62,8 @@ const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/fluid_surface.wgsl"),
     "\n",
     include_str!("../shaders/fluid_motion.wgsl"),
+    "\n",
+    include_str!("../shaders/fluid_reflection_lights.wgsl"),
     "\n",
     include_str!("../shaders/fluid_reflection.wgsl"),
     "\n",
@@ -93,10 +97,12 @@ pub(crate) fn fluid_fragment_entry_point(variant: FluidShaderVariant) -> &'stati
 
 /// Group 4, level-scoped: one uniform window (at most 64 KiB) of per-volume
 /// rows selected by a dynamic offset, then the reflection probe array, share
-/// table and distance array. Textures, samplers and uniforms only: the shared
-/// groups already spend the whole FRAGMENT storage budget.
-pub(crate) fn fluid_params_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 4] {
-    let [probe_array, probe_table, probe_distance] = fluid_probe_bind_group_layout_entries();
+/// table, distance array and live-lighting sums. Textures, samplers and
+/// uniforms only: the shared groups already spend the whole FRAGMENT storage
+/// budget.
+pub(crate) fn fluid_params_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 5] {
+    let [probe_array, probe_table, probe_distance, probe_sums] =
+        fluid_probe_bind_group_layout_entries();
     [
         wgpu::BindGroupLayoutEntry {
             binding: 0,
@@ -111,6 +117,7 @@ pub(crate) fn fluid_params_bind_group_layout_entries() -> [wgpu::BindGroupLayout
         probe_array,
         probe_table,
         probe_distance,
+        probe_sums,
     ]
 }
 
@@ -254,8 +261,9 @@ pub(crate) struct FluidSurfacePass {
     /// every tier; its target exists only while a level with a probe-bound
     /// face is installed at a tier that runs the screen-space layer.
     reflection: reflection_pass::FluidReflectionPass,
-    /// `None` until a level with drawable fluid surfaces installs: a level
-    /// without them allocates nothing and never opens the pass.
+    /// The live-lighting sums pass, its pipeline built at full init; the sums
+    /// and its group belong to the level's probe resources.
+    sums: probe_sums::FluidProbeSumsPass,
     /// The planar layer, its own group 5 and this frame's routed plane.
     planar: planar_routing::PlanarRouting,
 }
@@ -293,6 +301,7 @@ impl FluidSurfacePass {
             scene_depth,
             scene_color,
         );
+        let sums = probe_sums::FluidProbeSumsPass::new(device, camera_bgl, sh_bgl);
         let scene_inputs = FluidSceneInputs::new(device, scene_depth, reflection.bound_view());
         // Same group order as `fluid_pipeline_bind_group_layout_entries`.
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -315,6 +324,7 @@ impl FluidSurfacePass {
             params_bind_group_layout,
             scene_inputs,
             reflection,
+            sums,
             planar: Default::default(),
         }
     }
@@ -448,6 +458,46 @@ impl FluidSurfacePass {
         installed.is_some_and(|installed| installed.slots.has_draws())
     }
 
+    /// Whether this frame's fluid pass records a reflecting-variant draw under
+    /// `light_term_mask` and `quality`, the frame's one mask snapshot and
+    /// tier: the sums pass's dispatch condition. It reads this pass's own
+    /// draws, never the screen-space pass's gate, so Low and the planar
+    /// layer's plane dispatch too.
+    pub fn has_probe_term_draws(
+        &self,
+        installed: Option<&InstalledFluidSurfaces>,
+        light_term_mask: LightTermMask,
+        quality: FluidReflectionQuality,
+    ) -> bool {
+        installed.is_some_and(|installed| {
+            installed.slots.has_draws()
+                && installed
+                    .slots
+                    .frame_draws(light_term_mask.bits(), quality)
+                    .any(|(_, variant)| variant.reflections())
+        })
+    }
+
+    /// Record the sums pass over every probe `installed` holds, into the
+    /// frame's encoder. The caller records it once, on a frame
+    /// `has_probe_term_draws` admits, before the fluid pass.
+    pub(crate) fn record_probe_sums(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        timing: Option<&crate::render::frame_timing::FrameTiming>,
+        camera: &wgpu::BindGroup,
+        sh: &wgpu::BindGroup,
+        installed: &InstalledFluidSurfaces,
+    ) {
+        self.sums.record(encoder, timing, camera, sh, installed);
+    }
+
+    /// Sums-pass dispatches recorded so far (tests).
+    #[cfg(test)]
+    pub(crate) fn probe_sums_dispatches(&self) -> u32 {
+        self.sums.dispatches()
+    }
+
     /// Record this frame's draws. The caller binds groups 0, 2 and 3; this
     /// binds 1, 4 and the scene inputs (5), built with the scene targets and
     /// the reflection target. Group 5 starts as the SSR group; the routed
@@ -554,14 +604,14 @@ impl FluidTestView<'_> {
     /// and one layer for the dummy.
     pub(crate) fn probe_array_size(&self) -> Option<wgpu::Extent3d> {
         self.installed
-            .map(|installed| installed._probes.array_size())
+            .map(|installed| installed.probes.array_size())
     }
 
     /// The installed distance array's tile width, height and layer count:
     /// 1×1 and one layer for the dummy.
     pub(crate) fn probe_distance_size(&self) -> Option<wgpu::Extent3d> {
         self.installed
-            .map(|installed| installed._probes.distance_size())
+            .map(|installed| installed.probes.distance_size())
     }
 
     /// Parameter-row uploads since install.

@@ -1,5 +1,7 @@
-// Fluid reflection probe resources: the probe array, share table and distance
-// array that join the fluid pass's level-scoped group 4, created at level install.
+// Fluid reflection probe resources: the probe array, share table, distance
+// array and live-lighting sums that join the fluid pass's level-scoped group 4,
+// and the sums pass's group over the sums and share table, created at level
+// install.
 // See: context/lib/rendering_pipeline.md §7.3a, §10 · context/lib/resource_management.md §5
 
 use crate::render::gpu_create::GpuCreate;
@@ -8,7 +10,9 @@ use std::num::NonZeroU64;
 use postretro_level_format::reflection_probes::ReflectionProbesSection;
 use postretro_render_cpu::fluid_surface::prepared::ProbeArrayFormat;
 pub(crate) use postretro_render_cpu::fluid_surface::prepared::installable_probe_section;
-use postretro_render_cpu::fluid_surface::reflection::{FLUID_PROBE_TABLE_BYTES, pack_probe_table};
+use postretro_render_cpu::fluid_surface::reflection::{
+    FLUID_PROBE_SUMS_BYTES, FLUID_PROBE_TABLE_BYTES, pack_probe_table,
+};
 
 /// Group 4 binding of the probe array: one capture tile per layer.
 pub(crate) const FLUID_PROBE_ARRAY_BINDING: u32 = 1;
@@ -17,6 +21,13 @@ pub(crate) const FLUID_PROBE_TABLE_BINDING: u32 = 2;
 /// Group 4 binding of the distance array: one R16Float distance tile per
 /// probe, in the probe array's layers.
 pub(crate) const FLUID_PROBE_DISTANCE_BINDING: u32 = 3;
+/// Group 4 binding of the live-lighting sums, read as a uniform by the
+/// reflecting fragment entry alone: fragment storage is spent (§10).
+pub(crate) const FLUID_PROBE_SUMS_BINDING: u32 = 4;
+/// The sums pass's own group: the sums it writes, then the share table it
+/// reads, over the buffers group 4 binds.
+pub(crate) const FLUID_SUMS_PASS_SUMS_BINDING: u32 = 0;
+pub(crate) const FLUID_SUMS_PASS_TABLE_BINDING: u32 = 1;
 
 /// A filterable, fragment-visible 2D-array texture entry of group 4.
 fn filterable_array_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
@@ -32,24 +43,75 @@ fn filterable_array_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-/// The probe array, share table and distance array entries of group 4. Both
-/// arrays sample through the SH atlas's linear-clamp sampler (group 3
+/// A non-dynamic uniform entry of `size` bytes visible to `visibility`.
+fn uniform_entry(
+    binding: u32,
+    visibility: wgpu::ShaderStages,
+    size: usize,
+) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: NonZeroU64::new(size as u64),
+        },
+        count: None,
+    }
+}
+
+/// The probe array, share table, distance array and sums entries of group 4.
+/// Both arrays sample through the SH atlas's linear-clamp sampler (group 3
 /// binding 2), so the pass adds no sampler.
-pub(crate) fn fluid_probe_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 3] {
+pub(crate) fn fluid_probe_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 4] {
     [
         filterable_array_entry(FLUID_PROBE_ARRAY_BINDING),
+        uniform_entry(
+            FLUID_PROBE_TABLE_BINDING,
+            wgpu::ShaderStages::FRAGMENT,
+            FLUID_PROBE_TABLE_BYTES,
+        ),
+        filterable_array_entry(FLUID_PROBE_DISTANCE_BINDING),
+        uniform_entry(
+            FLUID_PROBE_SUMS_BINDING,
+            wgpu::ShaderStages::FRAGMENT,
+            FLUID_PROBE_SUMS_BYTES,
+        ),
+    ]
+}
+
+/// The sums pass's own group: the sums, its one writable binding, and the
+/// share table it reads. IP rule (owner review to change,
+/// rendering_pipeline.md §7.3a): the pass writes nothing but the sums.
+pub(crate) fn fluid_sums_pass_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 2] {
+    [
         wgpu::BindGroupLayoutEntry {
-            binding: FLUID_PROBE_TABLE_BINDING,
-            visibility: wgpu::ShaderStages::FRAGMENT,
+            binding: FLUID_SUMS_PASS_SUMS_BINDING,
+            visibility: wgpu::ShaderStages::COMPUTE,
             ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
+                ty: wgpu::BufferBindingType::Storage { read_only: false },
                 has_dynamic_offset: false,
-                min_binding_size: NonZeroU64::new(FLUID_PROBE_TABLE_BYTES as u64),
+                min_binding_size: NonZeroU64::new(FLUID_PROBE_SUMS_BYTES as u64),
             },
             count: None,
         },
-        filterable_array_entry(FLUID_PROBE_DISTANCE_BINDING),
+        uniform_entry(
+            FLUID_SUMS_PASS_TABLE_BINDING,
+            wgpu::ShaderStages::COMPUTE,
+            FLUID_PROBE_TABLE_BYTES,
+        ),
     ]
+}
+
+/// The sums buffer's usage: written by the sums pass as storage, read by the
+/// fluid fragment as a uniform; one buffer, so no copy sits between them.
+/// Tests also read it back and prefill it.
+fn sums_usage() -> wgpu::BufferUsages {
+    let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::UNIFORM;
+    #[cfg(any(test, feature = "test-seams"))]
+    let usage = usage | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;
+    usage
 }
 
 /// The fluid mesh's third vertex buffer: the prepared per-vertex probe
@@ -76,8 +138,10 @@ fn probe_array_format(section: &ReflectionProbesSection) -> Option<wgpu::Texture
     })
 }
 
-/// One level's probe array, share table and distance array. Owned by the
-/// installed fluid surfaces, so all three drop with them at clear and unload.
+/// One level's probe array, share table, distance array and live-lighting
+/// sums, with the sums pass's group over them. Owned by the installed fluid
+/// surfaces, so all drop with them at clear and unload; no pass or
+/// renderer-lifetime state holds the sums or a group over them.
 pub(crate) struct FluidProbeResources {
     // Held so the level, not the bind group alone, owns the textures' life.
     _array: wgpu::Texture,
@@ -85,6 +149,14 @@ pub(crate) struct FluidProbeResources {
     table: wgpu::Buffer,
     _distance: wgpu::Texture,
     distance_view: wgpu::TextureView,
+    /// One RGB sum per lobe per probe at the cap, rewritten by the sums pass
+    /// on every frame with a reflecting draw. Never the table or a tile.
+    sums: wgpu::Buffer,
+    /// The installed probes the sums pass evaluates; 0 for the dummies.
+    probe_count: u32,
+    /// The sums pass's group 2, over `sums` and `table`; `None` with no
+    /// installed probe, which never dispatches.
+    sums_bind_group: Option<wgpu::BindGroup>,
 }
 
 impl FluidProbeResources {
@@ -97,6 +169,7 @@ impl FluidProbeResources {
         device: &wgpu::Device,
         queue: &dyn crate::render::queue_writes::QueueWrites,
         section: Option<&ReflectionProbesSection>,
+        sums_layout: &wgpu::BindGroupLayout,
     ) -> Self {
         let array = match section.and_then(|section| Some((section, probe_array_format(section)?)))
         {
@@ -178,13 +251,65 @@ impl FluidProbeResources {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
         });
+        // Zeroed at creation; the sums pass writes every installed probe's
+        // sums before any fragment reads them.
+        let sums = device.new_buffer(&wgpu::BufferDescriptor {
+            label: Some("Fluid Reflection Probe Sums"),
+            size: FLUID_PROBE_SUMS_BYTES as u64,
+            usage: sums_usage(),
+            mapped_at_creation: false,
+        });
+        let probe_count = section
+            .filter(|section| probe_array_format(section).is_some())
+            .map_or(0, |section| section.probes.len() as u32);
+        let sums_bind_group = (probe_count > 0).then(|| {
+            device.new_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Fluid Reflection Sums Pass Bind Group"),
+                layout: sums_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: FLUID_SUMS_PASS_SUMS_BINDING,
+                        resource: sums.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: FLUID_SUMS_PASS_TABLE_BINDING,
+                        resource: table.as_entire_binding(),
+                    },
+                ],
+            })
+        });
         Self {
             _array: array,
             array_view,
             table,
             _distance: distance,
             distance_view,
+            sums,
+            probe_count,
+            sums_bind_group,
         }
+    }
+
+    /// The sums pass's group and the probes it evaluates, or `None` with no
+    /// installed probe.
+    pub(crate) fn sums_dispatch(&self) -> Option<(&wgpu::BindGroup, u32)> {
+        self.sums_bind_group
+            .as_ref()
+            .map(|group| (group, self.probe_count))
+    }
+
+    /// Group 4's sums entry.
+    pub(crate) fn sums_bind_group_entry(&self) -> wgpu::BindGroupEntry<'_> {
+        wgpu::BindGroupEntry {
+            binding: FLUID_PROBE_SUMS_BINDING,
+            resource: self.sums.as_entire_binding(),
+        }
+    }
+
+    /// The sums buffer, for readback and prefill (tests).
+    #[cfg(any(test, feature = "test-seams"))]
+    pub(crate) fn sums_buffer(&self) -> &wgpu::Buffer {
+        &self.sums
     }
 
     /// Group 4's probe array, share table and distance array entries.

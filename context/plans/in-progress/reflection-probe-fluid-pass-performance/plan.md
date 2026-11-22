@@ -19,7 +19,7 @@ read at: e761fb131
 
 | AC | Proof | Status |
 |---|---|---|
-| 1 parity of blended sums vs per-fragment ratio | render-cpu random-case test over `reflection_probe_sums` + `reflection_ratio_from_sums` vs `reflection_ratio`, with the named edge cases | achievable as stated |
+| 1 parity of blended sums vs per-fragment ratio | `ratio_blended_from_probe_sums_matches_the_per_fragment_ratio` (render-cpu) | achievable as stated |
 | 2 frame ordering (P1) | source-order gates: app frame loop and capture setup; renderer `record_scene_passes` timing prefill < sums dispatch < fluid pass, nothing between writes descriptors/samples | achievable as stated |
 | 3 entry globals | naga `global_uses` test: no entry uses `anim_descriptors` or reaches `fluid_reflection_ratio`; reflecting entry uses `fluid_probe_sums`; reflection-free uses none | achievable as stated |
 | 4 dispatch condition snapshot (P6) | source gate on the frame's one mask/tier snapshot + GPU frame with a mask set after upload | achievable as stated |
@@ -50,7 +50,7 @@ read at: e761fb131
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
 | 1 | Behaviour-preserving splits: the frame's fluid block out of `renderer_render_frame.rs`; the level-install half out of `fluid_surface.rs`; retarget source gates | integrating executor | — | done: `renderer_fluid_frame.rs`, `fluid_surface/install.rs`; renderer lib 1440 pass |
-| 2 | Thin slice: CPU refs (sums, blend) + parity test; shaders; sums buffer, layouts, pipeline at full init; dispatch in the fluid block; existing GPU live-lighting case passes | integrating executor | 1 | |
+| 2 | Thin slice: CPU refs (sums, blend) + parity test; shaders; sums buffer, layouts, pipeline at full init; dispatch in the fluid block; existing GPU live-lighting case passes | integrating executor | 1 | done: parity test (12k cases), fluid suite 105 pass on Metal incl. `a_probe_reads_darker_by_its_lights_share_when_its_descriptor_switches_off` |
 | 3 | Source gates and pins (AC 2–11) | integrating executor | 2 | |
 | 4 | GPU gates (AC 12–22) | integrating executor | 2 | |
 | 5 | Register screen of `fs_main_reflecting` before/after; 5300M A/B at probes 4K first, then near/mid and Auto | integrating executor + owner | 2 | |

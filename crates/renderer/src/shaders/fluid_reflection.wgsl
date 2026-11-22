@@ -12,10 +12,6 @@
 const FLUID_REFLECTION_BASE_F0: f32 = 0.02;
 const FLUID_REFLECTION_DIRECTION_EPSILON: f32 = 1.0e-6;
 const FLUID_REFLECTION_COVERAGE_EPSILON: f32 = 1.0e-4;
-const FLUID_REFLECTION_REFERENCE_FLOOR: f32 = 1.0e-30;
-const FLUID_REFLECTION_UNORM10_MAX: u32 = 1023u;
-const FLUID_REFLECTION_NO_LIGHT: u32 = 0xFFFFFFFFu;
-const FLUID_REFLECTION_LIGHTS_PER_PROBE: u32 = 4u;
 
 // The runtime slab test: where the reflected ray leaves the projection box.
 // A component near zero is nudged off it rather than divided by. The origin
@@ -82,90 +78,25 @@ fn fluid_reflection_layered_composite(surface: vec4<f32>, probe: vec3<f32>, shad
     return vec4<f32>(rgb, coverage);
 }
 
-// Live lighting by light share. The capture holds every animated light at its
-// reference; each stored light scales it by its share toward the lookup
-// direction times its live-over-reference change. Reads no SH and no
-// promotion weight, so a switch reaches every reflection on the next frame at
-// any distance, and promotion never moves it.
-
-// The share lobes' blend weights for a lookup direction: up, +X, -X, +Z, -Z.
-// Mirrors level-format `reflection_probe_lobe_weights`, which the compiler
-// split the capture's light by.
-fn fluid_reflection_lobe_weights(direction: vec3<f32>) -> array<f32, 5> {
-    let positive = max(direction, vec3<f32>(0.0));
-    let negative = max(-direction, vec3<f32>(0.0));
-    let down = negative.y * negative.y * 0.25;
-    let weights = array<f32, 5>(
-        positive.y * positive.y,
-        positive.x * positive.x + down,
-        negative.x * negative.x + down,
-        positive.z * positive.z + down,
-        negative.z * negative.z + down,
-    );
-    let sum = weights[0] + weights[1] + weights[2] + weights[3] + weights[4];
-    if !(sum > 0.0) {
-        return array<f32, 5>(1.0, 0.0, 0.0, 0.0, 0.0);
-    }
-    return array<f32, 5>(weights[0] / sum, weights[1] / sum, weights[2] / sum, weights[3] / sum,
-        weights[4] / sum);
+// The capture's live-lighting scale toward `direction`, read from the probe's
+// sums, which the sums pass (fluid_reflection_sums.wgsl) wrote this frame:
+// the lobe weights blend the per-lobe sums, clamped at 0. No fragment
+// evaluates a stored light. Mirrors `reflection_ratio_from_sums`.
+fn fluid_reflection_ratio_from_sums(probe: u32, direction: vec3<f32>) -> vec3<f32> {
+    let lobes = fluid_reflection_lobe_weights(direction);
+    let base = probe * FLUID_REFLECTION_LOBES;
+    var ratio = vec3<f32>(1.0);
+    ratio = ratio + fluid_probe_sums.lobes[base].xyz * lobes[0];
+    ratio = ratio + fluid_probe_sums.lobes[base + 1u].xyz * lobes[1];
+    ratio = ratio + fluid_probe_sums.lobes[base + 2u].xyz * lobes[2];
+    ratio = ratio + fluid_probe_sums.lobes[base + 3u].xyz * lobes[3];
+    ratio = ratio + fluid_probe_sums.lobes[base + 4u].xyz * lobes[4];
+    return max(ratio, vec3<f32>(0.0));
 }
 
-// The reserved roster value, and any index past the descriptors, indexes
-// nothing: the entry adds no term.
-fn fluid_reflection_light_present(roster_index: u32) -> bool {
-    return roster_index != FLUID_REFLECTION_NO_LIGHT
-        && roster_index < arrayLength(&anim_descriptors);
-}
-
-// A stored light's live value: sh_compose.wgsl's `animated_light_scale`, read
-// straight from descriptor `roster_index` (identity table). Clamped colour x
-// clamped brightness, 0 while inactive; no promotion weight, lighting mask or
-// debug override.
-fn fluid_reflection_light_value(roster_index: u32) -> vec3<f32> {
-    let desc = anim_descriptors[roster_index];
-    if (desc.is_active == 0u) {
-        return vec3<f32>(0.0);
-    }
-
-    let t = animation_curve_t(desc.period, desc.phase, uniforms.time);
-    let brightness = max(
-        sample_curve_catmull_rom(desc.brightness_offset, desc.brightness_count, t),
-        0.0,
-    );
-    var color = desc.base_color;
-    if (desc.color_count > 0u) {
-        color = max(
-            sample_color_catmull_rom(desc.color_offset, desc.color_count, t, vec3<f32>(1.0)),
-            vec3<f32>(0.0),
-        ) * desc.base_color;
-    }
-    return color * brightness;
-}
-
-fn fluid_reflection_unpack_unorm10x3(word: u32) -> vec3<f32> {
-    let field = FLUID_REFLECTION_UNORM10_MAX;
-    return vec3<f32>(f32(word & field), f32((word >> 10u) & field), f32((word >> 20u) & field))
-        / f32(field);
-}
-
-// A stored light's RGB share toward the lookup: its lobe shares, blended.
-fn fluid_reflection_light_share(shares: array<vec4<u32>, 2>, lobes: array<f32, 5>) -> vec3<f32> {
-    return fluid_reflection_unpack_unorm10x3(shares[0].x) * lobes[0]
-        + fluid_reflection_unpack_unorm10x3(shares[0].y) * lobes[1]
-        + fluid_reflection_unpack_unorm10x3(shares[0].z) * lobes[2]
-        + fluid_reflection_unpack_unorm10x3(shares[0].w) * lobes[3]
-        + fluid_reflection_unpack_unorm10x3(shares[1].x) * lobes[4];
-}
-
-// current / reference - 1 per channel; a channel the reference holds no light
-// in adds no term.
-fn fluid_reflection_light_change(current: vec3<f32>, reference: vec3<f32>) -> vec3<f32> {
-    return select(vec3<f32>(0.0),
-        current / max(reference, vec3<f32>(FLUID_REFLECTION_REFERENCE_FLOOR)) - vec3<f32>(1.0),
-        reference > vec3<f32>(0.0));
-}
-
-// The capture's live-lighting scale toward `direction`, clamped at 0. Lights
+// The per-fragment form the sums replace, kept unreachable from every entry:
+// the sums' parity oracle, and the fallback for a reflector the IP rules
+// return to per-fragment evaluation (rendering_pipeline.md §7.3a). Lights
 // past the stored K have no entry and hold their reference.
 fn fluid_reflection_ratio(probe: u32, direction: vec3<f32>) -> vec3<f32> {
     let lobes = fluid_reflection_lobe_weights(direction);
@@ -378,7 +309,7 @@ struct FluidReflectionSample {
 };
 
 // The search runs first and ends; only its lookup and weight reach the colour
-// tap and the ratio loop. The layer comes from the face's probe index alone,
+// tap and the sums blend. The layer comes from the face's probe index alone,
 // and the distance taps read that same layer; the lookup picks only the texel
 // and the share. A mirrored ray at the horizon is lifted above it first.
 fn fluid_reflection_sample(probe: u32, world_position: vec3<f32>, view: vec3<f32>,
@@ -390,6 +321,6 @@ fn fluid_reflection_sample(probe: u32, world_position: vec3<f32>, view: vec3<f32
         fluid_probes.tile.xy, layer);
     let uv = fluid_reflection_tile_uv(search.lookup, fluid_probes.tile.x, fluid_probes.tile.y);
     let capture = textureSampleLevel(fluid_probe_array, sh_atlas_sampler, uv, layer, 0.0).rgb;
-    return FluidReflectionSample(capture * fluid_reflection_ratio(probe, search.lookup),
+    return FluidReflectionSample(capture * fluid_reflection_ratio_from_sums(probe, search.lookup),
         search.weight);
 }

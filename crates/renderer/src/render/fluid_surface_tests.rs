@@ -12,6 +12,8 @@ const FLUID_WGSL: &str = concat!(
     "\n",
     include_str!("../shaders/fluid_motion.wgsl"),
     "\n",
+    include_str!("../shaders/fluid_reflection_lights.wgsl"),
+    "\n",
     include_str!("../shaders/fluid_reflection.wgsl"),
     "\n",
     include_str!("../shaders/fluid_reflection_ray.wgsl"),
@@ -344,13 +346,30 @@ fn the_reflection_free_variant_compiles_no_reflection_into_its_executable_path()
         "fluid_reflection_shadow_fade",
         "fluid_reflection_shadow_edge",
         "fluid_reflection_shadow_tap",
-        "fluid_reflection_ratio",
+        "fluid_reflection_ratio_from_sums",
     ] {
         assert!(
             functions.iter().any(|name| name == reached),
             "reaches {reached}: {functions:?}"
         );
     }
+    // The per-fragment ratio and its light evaluation stay in the module,
+    // reachable from no entry: the sums' oracle.
+    for unreached in [
+        "fluid_reflection_ratio",
+        "fluid_reflection_light_value",
+        "fluid_reflection_light_present",
+        "fluid_reflection_light_share",
+    ] {
+        assert!(
+            !functions.iter().any(|name| name == unreached),
+            "the reflecting variant reaches {unreached}: {functions:?}"
+        );
+    }
+    assert!(
+        !globals.iter().any(|name| name == "anim_descriptors"),
+        "the reflecting variant reads the descriptors: {globals:?}"
+    );
     for probe_global in REFLECTION_GLOBALS {
         assert!(
             globals.iter().any(|name| name == probe_global),
@@ -363,15 +382,18 @@ const REFLECTION_GLOBALS: [&str; 5] = [
     "fluid_probes",
     "fluid_probe_array",
     "fluid_probe_distance",
-    "anim_descriptors",
+    "fluid_probe_sums",
     "reflection_target",
 ];
 
 // What naga's MSL writer declares as entry-point arguments: the globals in the
 // entry's `global_uses`. The reflection-free entry uses none of the five
-// reflection globals, the reflection target included; the reflecting entry
-// uses each. An override-folded branch would still count as a use, so this
-// fails against a shader that selects the variant by override constant.
+// reflection globals, the reflection target and the live-lighting sums
+// included; the reflecting entry uses each. Neither uses the animated-light
+// descriptors: the sums pass evaluates stored lights, never a fragment
+// (reflection-probe-fluid-pass-performance acceptance row 3). An
+// override-folded branch would still count as a use, so this fails against a
+// shader that selects the variant by override constant.
 #[test]
 fn the_reflection_free_entry_declares_none_of_the_reflection_globals() {
     let (module, info) = validated_module_and_info();
@@ -396,6 +418,12 @@ fn the_reflection_free_entry_declares_none_of_the_reflection_globals() {
         assert!(
             !uses_of("fs_main_reflecting", global).is_empty(),
             "fs_main_reflecting must use {global}"
+        );
+    }
+    for entry in ["fs_main", "fs_main_reflecting"] {
+        assert!(
+            uses_of(entry, "anim_descriptors").is_empty(),
+            "{entry} must not use the animated-light descriptors"
         );
     }
 }
@@ -533,8 +561,13 @@ fn fluid_shader_layouts_match_the_cpu_vertex_and_parameter_windows() {
         FLUID_PARAMS_WINDOW_BYTES / FLUID_PARAMS_STRIDE as u64,
         u64::from(FLUID_SLOTS_PER_WINDOW)
     );
-    let [param_entry, probe_array, probe_table, probe_distance] =
-        fluid_params_bind_group_layout_entries();
+    let [
+        param_entry,
+        probe_array,
+        probe_table,
+        probe_distance,
+        probe_sums,
+    ] = fluid_params_bind_group_layout_entries();
     assert!(matches!(
         param_entry.ty,
         wgpu::BindingType::Buffer {
@@ -574,7 +607,18 @@ fn fluid_shader_layouts_match_the_cpu_vertex_and_parameter_windows() {
             multisampled: false,
         }
     ));
-    for entry in [&probe_array, &probe_table, &probe_distance] {
+    // The live-lighting sums: a second non-dynamic uniform at the probe cap,
+    // since fragment storage is spent.
+    assert_eq!(probe_sums.binding, 4);
+    assert!(matches!(
+        probe_sums.ty,
+        wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: Some(size),
+        } if size.get() == postretro_render_cpu::fluid_surface::reflection::FLUID_PROBE_SUMS_BYTES as u64
+    ));
+    for entry in [&probe_array, &probe_table, &probe_distance, &probe_sums] {
         assert_eq!(entry.visibility, wgpu::ShaderStages::FRAGMENT);
     }
     let source = FLUID_WGSL;
@@ -2106,7 +2150,7 @@ fn fluid_reflection_wgsl_bodies_match_the_cpu_reference() {
          fluid_probes.tile.xy,layer);\
          letuv=fluid_reflection_tile_uv(search.lookup,fluid_probes.tile.x,fluid_probes.tile.y);\
          letcapture=textureSampleLevel(fluid_probe_array,sh_atlas_sampler,uv,layer,0.0).rgb;\
-         returnFluidReflectionSample(capture*fluid_reflection_ratio(probe,search.lookup),\
+         returnFluidReflectionSample(capture*fluid_reflection_ratio_from_sums(probe,search.lookup),\
          search.weight);}"
     );
     assert_eq!(
@@ -2127,8 +2171,9 @@ fn fluid_reflection_wgsl_bodies_match_the_cpu_reference() {
          letsearch=reflection_search(point.position,ray,Vec3::from(probe.box_min),\
          Vec3::from(probe.box_max),Vec3::from(probe.capture_point),tile,\
          |uv|distance(probe.layer,uv),);\
+         letsums=reflection_probe_sums(&FluidProbeGpu::pack(probe).lights,lights);\
          letcapture=sample(probe.layer,reflection_tile_uv(search.lookup,tile[0],tile[1]),)\
-         *reflection_ratio(&FluidProbeGpu::pack(probe).lights,search.lookup,lights);\
+         *reflection_ratio_from_sums(&sums,search.lookup);\
          letband=fog_proximity(fragment.camera,fragment.world_position,outward);\
          letfresnel=reflection_fresnel(view.dot(outward),fragment.reflectivity)*band;\
          reflection_layered_composite(surface,capture,search.weight,screen,fresnel)}"
@@ -3103,7 +3148,16 @@ fn fluid_pass_picks_variants_by_the_frames_group_0_mask() {
         )
         .expect("the reflection pass records with the frame's mask and tier");
     assert!(snapshot < gate && gate < reflection && reflection < record);
-    assert_eq!(frame.matches("frame_reflection_quality").count(), 4);
+    // The sums pass takes its dispatch by the same snapshot, before the
+    // reflection pass and the fluid pass.
+    let sums = frame
+        .find(
+            "fluid_surface.has_probe_term_draws(self.fluid_surfaces(),frame_light_term_mask,\
+             frame_reflection_quality,)",
+        )
+        .expect("the sums dispatch reads the frame's mask and tier");
+    assert!(snapshot < sums && sums < gate);
+    assert_eq!(frame.matches("frame_reflection_quality").count(), 5);
 
     let source = include_str!("fluid_surface.rs");
     let reflection_source = include_str!("fluid_surface/reflection_pass.rs");
@@ -3721,6 +3775,7 @@ fn fluid_pass_declares_no_history_or_precomputed_intersection_binding() {
         (4, 1, "fluid_probe_array"),
         (4, 2, "fluid_probes"),
         (4, 3, "fluid_probe_distance"),
+        (4, 4, "fluid_probe_sums"),
         (5, 0, "scene_depth"),
         (5, 1, "fluid_scene"),
         (5, 2, "reflection_target"),
@@ -3770,10 +3825,60 @@ fn fluid_pass_declares_no_history_or_precomputed_intersection_binding() {
             "fluid_reflection_pass.wgsl",
             composed_reflection_shader_source(),
         ),
+        (
+            "fluid_surface/install.rs",
+            include_str!("fluid_surface/install.rs"),
+        ),
+        (
+            "fluid_surface/probe_sums.rs",
+            include_str!("fluid_surface/probe_sums.rs"),
+        ),
+        (
+            "fluid_reflection_sums.wgsl",
+            probe_sums::composed_sums_shader_source(),
+        ),
     ] {
         let code = code_only(source).to_lowercase();
         for word in forbidden {
             assert!(!code.contains(word), "{file} names `{word}` in code");
+        }
+    }
+
+    // The sums pass's shader: the frame's clock, the roster-indexed
+    // descriptors and their curve samples, the sums it writes and the share
+    // table. Nothing named for history or intersections.
+    let sums_module = naga::front::wgsl::parse_str(probe_sums::composed_sums_shader_source())
+        .expect("sums shader parses");
+    let mut sums_declared: Vec<(u32, u32, String)> = sums_module
+        .global_variables
+        .iter()
+        .filter_map(|(_, global)| {
+            let binding = global.binding.as_ref()?;
+            Some((
+                binding.group,
+                binding.binding,
+                global.name.clone().unwrap_or_default(),
+            ))
+        })
+        .collect();
+    sums_declared.sort();
+    let sums_expected: Vec<(u32, u32, String)> = [
+        (0, 0, "uniforms"),
+        (1, 11, "anim_descriptors"),
+        (1, 12, "anim_samples"),
+        (2, 0, "fluid_probe_sums"),
+        (2, 1, "fluid_probes"),
+    ]
+    .into_iter()
+    .map(|(group, binding, name)| (group, binding, name.to_owned()))
+    .collect();
+    assert_eq!(
+        sums_declared, sums_expected,
+        "the sums shader's binding inventory"
+    );
+    for (_, _, name) in &sums_declared {
+        for word in forbidden {
+            assert!(!name.to_lowercase().contains(word), "binding `{name}`");
         }
     }
 
@@ -3782,8 +3887,8 @@ fn fluid_pass_declares_no_history_or_precomputed_intersection_binding() {
         |group: usize| -> Vec<u32> { groups[group].iter().map(|entry| entry.binding).collect() };
     assert_eq!(
         bindings(4),
-        [0, 1, 2, 3],
-        "group 4: params, probe array, table, distance array"
+        [0, 1, 2, 3, 4],
+        "group 4: params, probe array, table, distance array, live-lighting sums"
     );
     assert_eq!(
         bindings(5),
@@ -3841,7 +3946,11 @@ fn fluid_probe_layer_derives_from_the_face_binding_alone() {
         code.matches("fluid_probes.probes[probe]").count() + 3,
         table_reads
     );
-    for function in ["fluid_reflection_sample", "fluid_reflection_ratio"] {
+    for function in [
+        "fluid_reflection_sample",
+        "fluid_reflection_ratio",
+        "fluid_reflection_ratio_from_sums",
+    ] {
         let body = code_only(wgsl_fn(source, function));
         assert!(body.contains(&format!("fn{function}(probe:u32,")), "{body}");
         assert!(!body.contains("letprobe") && !body.contains("varprobe"));
@@ -3878,10 +3987,10 @@ fn fluid_probe_layer_derives_from_the_face_binding_alone() {
     assert_eq!(
         sample.matches("lookup").count() - sample.matches("_lookup").count(),
         2,
-        "lookup feeds only the tile UV and the ratio: {sample}"
+        "lookup feeds only the tile UV and the sums blend: {sample}"
     );
     assert!(sample.contains("fluid_reflection_tile_uv(search.lookup,"));
-    assert!(sample.contains("fluid_reflection_ratio(probe,search.lookup)"));
+    assert!(sample.contains("fluid_reflection_ratio_from_sums(probe,search.lookup)"));
 
     // The search, its h and the capture-shadow fade's functions take the
     // layer as a parameter, never bind or assign it, and only pass it on:
@@ -3911,9 +4020,19 @@ fn fluid_probe_layer_derives_from_the_face_binding_alone() {
          fluid_reflection_tile_uv(level,tile.x,tile.y),layer,0.0)"
     ));
 
-    let ratio = code_only(wgsl_fn(source, "fluid_reflection_ratio"));
-    assert_eq!(ratio.matches("direction").count(), 2, "{ratio}");
-    assert!(ratio.contains("letlobes=fluid_reflection_lobe_weights(direction);"));
+    for function in ["fluid_reflection_ratio", "fluid_reflection_ratio_from_sums"] {
+        let ratio = code_only(wgsl_fn(source, function));
+        assert_eq!(ratio.matches("direction").count(), 2, "{ratio}");
+        assert!(ratio.contains("letlobes=fluid_reflection_lobe_weights(direction);"));
+    }
+    // The sums are indexed by the probe alone; the direction only weights
+    // the lobes.
+    let blend = code_only(wgsl_fn(source, "fluid_reflection_ratio_from_sums"));
+    assert!(
+        blend.contains("letbase=probe*FLUID_REFLECTION_LOBES;"),
+        "{blend}"
+    );
+    assert_eq!(blend.matches("fluid_probe_sums.lobes[base").count(), 5);
 }
 
 // P3 and P4: the fluid grid takes the lattice the SH sampler reads. A
@@ -4047,7 +4166,7 @@ fn fluid_reflection_pass_binds_no_probe_array_and_no_fluid_group_5() {
         [0, 2],
         "the parameter window and the probe table"
     );
-    let [window, _, table, _] = fluid_params_bind_group_layout_entries();
+    let [window, _, table, _, _] = fluid_params_bind_group_layout_entries();
     let subset = fluid_reflection_probe_bind_group_layout_entries();
     assert_eq!(subset[0], window);
     assert_eq!(subset[1], table);

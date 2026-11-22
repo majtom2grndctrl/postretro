@@ -159,6 +159,14 @@ struct FluidProbeTable {
 // inverse L1 distance from the capture point to what each texel saw, 0 where
 // it saw nothing. Sampled at level 0 through the same sampler.
 @group(4) @binding(3) var fluid_probe_distance: texture_2d_array<f32>;
+// The probes' live-lighting sums: one RGB sum per lobe per probe, probe-major,
+// written this frame by the sums pass before the fluid pass, read only by
+// fs_main_reflecting. Laid out at the probe cap; mirrors render-cpu
+// `FLUID_PROBE_SUMS_BYTES`.
+struct FluidProbeSums {
+    lobes: array<vec4<f32>, 1280>,
+};
+@group(4) @binding(4) var<uniform> fluid_probe_sums: FluidProbeSums;
 
 // --- Group 5: fluid scene inputs, rebuilt with the scene targets and the reflection target ---
 // Scene depth, loaded under the pass's read-only depth attachment.

@@ -545,6 +545,73 @@ pub fn reflection_ratio(
     ratio.max(Vec3::ZERO)
 }
 
+/// Bytes of one per-probe, per-lobe live-lighting sum: RGB in a `vec4`.
+pub const FLUID_PROBE_SUM_STRIDE: usize = 16;
+/// The live-lighting sums at the probe cap: one RGB sum per lobe per probe,
+/// probe-major, in one uniform binding.
+pub const FLUID_PROBE_SUMS_BYTES: usize =
+    MAX_REFLECTION_PROBES * REFLECTION_PROBE_LOBE_COUNT * FLUID_PROBE_SUM_STRIDE;
+/// Probes one workgroup of the sums pass evaluates, one per invocation.
+pub const FLUID_PROBE_SUMS_WORKGROUP_WIDTH: u32 = 64;
+
+const _: () = assert!(FLUID_PROBE_SUMS_BYTES <= 64 * 1024);
+// D3D binds a uniform as a constant buffer in whole 256-byte rows.
+const _: () = assert!(FLUID_PROBE_SUMS_BYTES.is_multiple_of(256));
+
+/// Workgroups the sums pass dispatches over `probe_count` installed probes.
+pub fn reflection_probe_sums_workgroups(probe_count: u32) -> u32 {
+    probe_count.div_ceil(FLUID_PROBE_SUMS_WORKGROUP_WIDTH)
+}
+
+/// A probe's live-lighting sums: per lobe k, `Σ share_k × change` over its
+/// stored lights, the part of [`reflection_ratio`] that does not depend on
+/// the lookup direction. The sums pass writes these for every installed
+/// probe once per dispatching frame. IP rule (owner review to change,
+/// rendering_pipeline.md §7.3a): the coefficient stays `current / ref − 1`
+/// per light, with no SH basis, transform or virtual-light projection.
+pub fn reflection_probe_sums(
+    probe_lights: &[FluidProbeLightGpu; REFLECTION_PROBE_LIGHTS_PER_PROBE],
+    lights: &FluidReflectionLights<'_>,
+) -> [Vec3; REFLECTION_PROBE_LOBE_COUNT] {
+    let mut sums = [Vec3::ZERO; REFLECTION_PROBE_LOBE_COUNT];
+    for light in probe_lights {
+        if !reflection_light_present(lights, light.roster_index) {
+            continue;
+        }
+        let change = reflection_light_change(
+            reflection_light_value(lights, light.roster_index),
+            Vec3::from(light.reference),
+        );
+        for (sum, word) in sums.iter_mut().zip(&light.shares) {
+            *sum += reflection_unpack_unorm10x3(*word) * change;
+        }
+    }
+    sums
+}
+
+/// The capture's live-lighting scale toward `direction` from its probe's
+/// sums: `1 + Σ weight_k × S_k`, clamped at 0. Equal to [`reflection_ratio`]
+/// over the same lights up to float reassociation.
+pub fn reflection_ratio_from_sums(
+    sums: &[Vec3; REFLECTION_PROBE_LOBE_COUNT],
+    direction: Vec3,
+) -> Vec3 {
+    let lobes = reflection_probe_lobe_weights(direction.to_array());
+    let mut ratio = Vec3::ONE;
+    for (sum, weight) in sums.iter().zip(lobes) {
+        ratio += *sum * weight;
+    }
+    ratio.max(Vec3::ZERO)
+}
+
+/// One probe's sums as the sums buffer stores them: each lobe's RGB in a
+/// `vec4`, the fourth lane 0.
+pub fn pack_probe_sums(
+    sums: &[Vec3; REFLECTION_PROBE_LOBE_COUNT],
+) -> [[f32; 4]; REFLECTION_PROBE_LOBE_COUNT] {
+    sums.map(|sum| sum.extend(0.0).to_array())
+}
+
 /// Everything one fluid fragment's probe term reads besides its surface.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FluidReflectionFragment {
@@ -645,10 +712,13 @@ pub fn reflection_fragment(
         tile,
         |uv| distance(probe.layer, uv),
     );
+    // The sums pass's output for this probe this frame, blended toward the
+    // lookup: no fragment evaluates a stored light.
+    let sums = reflection_probe_sums(&FluidProbeGpu::pack(probe).lights, lights);
     let capture = sample(
         probe.layer,
         reflection_tile_uv(search.lookup, tile[0], tile[1]),
-    ) * reflection_ratio(&FluidProbeGpu::pack(probe).lights, search.lookup, lights);
+    ) * reflection_ratio_from_sums(&sums, search.lookup);
     let band = fog_proximity(fragment.camera, fragment.world_position, outward);
     let fresnel = reflection_fresnel(view.dot(outward), fragment.reflectivity) * band;
     reflection_layered_composite(surface, capture, search.weight, screen, fresnel)

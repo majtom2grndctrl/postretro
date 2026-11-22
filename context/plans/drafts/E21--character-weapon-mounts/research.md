@@ -22,6 +22,7 @@ Read at 956a929b.
   - pistol, rifle, shotgun;
   - the plasma rifle → `cyberpunk_weapons/rpg`, and the rocket launcher → `sci_fi_weapon` (the folder names look swapped);
   - the co-op and wieldable fixtures → `smg` and `shotgun`.
+- `incendiary_rifle` (`status-hazards.ts`) spreads the reference rifle's components, so it carries the rifle's `thirdPersonModel` without naming it. It sits in the dev player loadout and needs its own exo_red entry, which may name the rifle's bake.
 - None carries `extras.mount`; each has only a rigid `muzzle` socket. The rifle's bounding box spans about 1.29 m on Z, with the barrel on −Z.
 - Raw sources: none are in the repo. `tools/extract_cyberpunk_weapons.py` exported the pack from a `.blend` outside it. `tools/prop_to_gltf.py` accepts glTF input, so the exported model can serve as the raw source.
 - Bake precedent: `done/character-clip-library/plan.md` records `ar_4_trooper` and `ar_4_warrior` (barrel `1 0 0`, up `0 1 0`, grip `0.075 -0.05 0`, scale 0.34). The shared `ar_4` failed `--check` on both rigs, which is why each got its own bake.
@@ -40,3 +41,18 @@ Read at 956a929b.
 - `done/E21--coop-avatar-weapon-presentation/`: hand IK is a non-goal; the socket poses the weapon.
 - `done/E21--bone-sockets-attachments/`: attachments are presentation only and resolve at spawn; runtime attach landed with replicated weapon identity.
 - `networking.md` §Weapon placement is content: the third-person mount carries no placement offset, and art owns the fit.
+
+## Review findings (round 1)
+- Loadout precedent splits. Both SDK builders reject a non-weapon reference by value, with an error naming the field path rather than the character (`sdk/lib/data_script.ts`, `.luau`). The Rust runtime receives a name and only warns at spawn for an unregistered or non-weapon loadout name (`wieldable_inventory.rs`). Rejecting a `weaponMounts` name at load, naming the character, needs new commit-time cross-descriptor validation.
+- A socket the holder model lacks already warns once in the binding resolver (`mesh_bindings.rs`), keyed by holder model, socket and attachment model. It names neither character nor weapon, and the resolver knows neither.
+- `--check` measures orientation only (`MountVerification`: barrel and up alignment). Scale and grip origin have no automated metric.
+- With no declared axes, `--check` prints `UNVERIFIED: mount check passed.` and exits 0 (`crates/tool/src/mount/mod.rs`).
+
+## Pin table
+| Id | Scenario | Ordering | Expected outcome |
+|---|---|---|---|
+| P1 | A client's arming snapshot carries a non-default `pawn:` class and an active weapon | The record surfaces the weapon update before arm records the class; the writer runs after arm, in the same apply | The local pawn mounts that class's entry on the arming snapshot. A record with no class resolves as `player`, as body materialization does. |
+| P2 | Hot reload stages a `weaponMounts` edit, then the pawn switches weapons in the same level | Edit deferred → switch → next level load | The switch mounts the pre-edit entry. The edited entry first mounts after the next level load. |
+| P3 | A pawn with a base attachment on a socket some entry covers has no active weapon: at install, or after dropping its active weapon | The writer runs with no active archetype | The base attachment is present. |
+| P4 | A switch from entry {hand_r: M, back: S} to entry {hand_r: M} | Same model on the shared socket; the old entry has an extra socket | `hand_r` keeps M; `back` returns to its base attachment, or empties. |
+| P5 | A level transition where `player_spawn` names a different player class and the pawn carries its active weapon | New class installed → sync → first frame | The pawn mounts the new class's entry for that weapon, or nothing plus its missing-entry warning. |

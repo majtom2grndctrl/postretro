@@ -800,7 +800,7 @@ fn fluid_pipeline_blends_over_the_scene_two_sided_without_writing_depth() {
 // colour holding the opaque scene alone (P13).
 #[test]
 fn fluid_pass_records_between_skinned_meshes_and_billboards_on_its_own_gate() {
-    let frame = include_str!("renderer_render_frame.rs");
+    let frame = &scene_source_with_fluid_passes();
     let skinned = frame
         .find("label: Some(\"Skinned Mesh Pass\")")
         .expect("skinned mesh pass");
@@ -1112,7 +1112,7 @@ fn fluid_drift_rides_a_second_vertex_buffer_at_location_three() {
 // ever batch-writes the drift buffer, so a direct write is safe at every one.
 #[test]
 fn fluid_drift_writes_directly_so_every_re_resolve_point_stays_unbatched() {
-    let source = include_str!("fluid_surface.rs");
+    let source = include_str!("fluid_surface/install.rs");
     let body = code_only(wgsl_fn(source, "set_drift"));
     assert!(
         body.contains("queue.direct_write_buffer(&installed.drift_buffer,"),
@@ -1751,6 +1751,7 @@ fn fluid_shade_fogs_from_the_outward_normal_and_the_reflecting_entry_returns_the
 // is not installed.
 #[test]
 fn the_install_filter_and_the_bound_face_predicate_agree() {
+    use crate::render::fluid_reflection_probes::installable_probe_section;
     use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
     use postretro_level_format::reflection_probes::{
         REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1, REFLECTION_PROBE_LIGHTS_PER_PROBE,
@@ -2900,7 +2901,7 @@ fn fluid_reflection_reads_descriptors_from_the_shared_group_3_binding_11() {
     // The fluid pass binds the same group-3 bind group the flush's buffer
     // sits in.
     assert!(
-        code_only(fluid_pass_block())
+        code_only(&fluid_pass_block())
             .contains("fluid_pass.set_bind_group(3,self.level().sh_bind_group(),&[]);")
     );
 }
@@ -2948,6 +2949,10 @@ fn the_frames_one_descriptor_flush_precedes_the_fluid_pass() {
         (
             "renderer_render_frame.rs",
             include_str!("renderer_render_frame.rs"),
+        ),
+        (
+            "renderer_fluid_frame.rs",
+            include_str!("renderer_fluid_frame.rs"),
         ),
         ("renderer_capture.rs", include_str!("renderer_capture.rs")),
         (
@@ -3030,8 +3035,8 @@ fn the_frames_one_descriptor_flush_precedes_the_fluid_pass() {
 }
 
 /// The frame's fluid pass block: from its gate to the end of its draws.
-fn fluid_pass_block() -> &'static str {
-    let frame = include_str!("renderer_render_frame.rs");
+fn fluid_pass_block() -> String {
+    let frame = scene_source_with_fluid_passes();
     let start = frame
         .find("if render_world && self.full().fluid_surface.has_draws(self.fluid_surfaces())")
         .expect("fluid pass gate");
@@ -3039,7 +3044,23 @@ fn fluid_pass_block() -> &'static str {
         + frame[start..]
             .find("fluid_surface.record_draws(")
             .expect("fluid draws");
-    &frame[start..end]
+    frame[start..end].to_owned()
+}
+
+/// `renderer_render_frame.rs` with the frame's fluid recorder
+/// (`renderer_fluid_frame.rs`) spliced in at its one call, so order gates
+/// read the frame's passes as one recorded sequence.
+pub(crate) fn scene_source_with_fluid_passes() -> String {
+    let frame = include_str!("renderer_render_frame.rs");
+    let fluid = include_str!("renderer_fluid_frame.rs");
+    let call = "self.record_fluid_surface_passes(";
+    assert_eq!(frame.matches(call).count(), 1, "one fluid recorder call");
+    let start = frame.find(call).expect("fluid recorder call");
+    let end = start + frame[start..].find(");").expect("call end") + 2;
+    let recorder = wgsl_fn(fluid, "record_fluid_surface_passes");
+    let body_start = recorder.find(") {").expect("recorder body") + 3;
+    let body = &recorder[body_start..recorder.rfind('}').expect("recorder end")];
+    format!("{}{}{}", &frame[..start], body, &frame[end..])
 }
 
 // Two fluid pipelines: the frame's fluid draws pick their shader variants by
@@ -3050,7 +3071,7 @@ fn fluid_pass_block() -> &'static str {
 // every draw's variant (fluid-ssr-reflections acceptance row 3, P9, P13).
 #[test]
 fn fluid_pass_picks_variants_by_the_frames_group_0_mask() {
-    let frame = code_only(include_str!("renderer_render_frame.rs"));
+    let frame = code_only(&scene_source_with_fluid_passes());
     let snapshot = frame
         .find(
             "letframe_light_term_mask=self.frame_light_term_mask();\
@@ -3138,7 +3159,7 @@ fn fluid_pass_picks_variants_by_the_frames_group_0_mask() {
 // tests depth and never writes it.
 #[test]
 fn fluid_pass_opens_depth_read_only() {
-    let block = code_only(fluid_pass_block());
+    let block = code_only(&fluid_pass_block());
     let attachment = &block[block
         .find("depth_stencil_attachment:Some(wgpu::RenderPassDepthStencilAttachment{")
         .expect("fluid pass depth attachment")..];
@@ -3176,7 +3197,7 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
     assert!(!block.contains("create_bind_group"), "{block}");
     assert!(!block.contains("new_bind_group"), "{block}");
     assert!(!block.contains("rebuild_scene_inputs"), "{block}");
-    let frame_block = code_only(block);
+    let frame_block = code_only(&block);
     let upload = frame_block
         .find("fluid_surface.upload_scene_inputs(queue);")
         .expect("scene inputs upload in the fluid gate");
@@ -3434,7 +3455,10 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
         "{wanted}"
     );
     assert!(!wanted.contains("reflectivity"), "{wanted}");
-    let set_draws = code_only(wgsl_fn(source, "set_draws"));
+    let set_draws = code_only(wgsl_fn(
+        include_str!("fluid_surface/install.rs"),
+        "set_draws",
+    ));
     for rebuild in [
         "set_reflection_target",
         "rebind",
@@ -4343,7 +4367,10 @@ fn raising_the_reflection_tier_compiles_nothing() {
         ),
         (
             "has_probe_bound_face",
-            code_only(wgsl_fn(source, "has_probe_bound_face")),
+            code_only(wgsl_fn(
+                include_str!("fluid_surface/install.rs"),
+                "has_probe_bound_face",
+            )),
         ),
         ("FluidReflectionTarget::new", code_only(target_impl)),
         (

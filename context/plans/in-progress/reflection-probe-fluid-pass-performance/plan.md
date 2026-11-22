@@ -49,7 +49,7 @@ read at: e761fb131
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Behaviour-preserving splits: the frame's fluid block out of `renderer_render_frame.rs`; the level-install half out of `fluid_surface.rs`; retarget source gates | integrating executor | — | |
+| 1 | Behaviour-preserving splits: the frame's fluid block out of `renderer_render_frame.rs`; the level-install half out of `fluid_surface.rs`; retarget source gates | integrating executor | — | done: `renderer_fluid_frame.rs`, `fluid_surface/install.rs`; renderer lib 1440 pass |
 | 2 | Thin slice: CPU refs (sums, blend) + parity test; shaders; sums buffer, layouts, pipeline at full init; dispatch in the fluid block; existing GPU live-lighting case passes | integrating executor | 1 | |
 | 3 | Source gates and pins (AC 2–11) | integrating executor | 2 | |
 | 4 | GPU gates (AC 12–22) | integrating executor | 2 | |

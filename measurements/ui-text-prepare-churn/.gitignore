@@ -1,0 +1,10 @@
+*.log
+*.sample.txt
+*.pid
+*.png
+*.ioreg.txt
+*.ioreg.txt.gz
+*.trace
+foreground
+lockstate
+__pycache__/

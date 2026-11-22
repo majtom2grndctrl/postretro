@@ -1,0 +1,143 @@
+{
+ "campaign/before": {
+  "runs": 4,
+  "total": {
+   "median": 18.202,
+   "min": 18.078,
+   "max": 18.228
+  },
+  "work": {
+   "median": 6.402,
+   "min": 6.351,
+   "max": 6.545
+  },
+  "render": {
+   "median": 5.377,
+   "min": 5.345,
+   "max": 5.437
+  },
+  "rec_ui": {
+   "median": 0.576,
+   "min": 0.567,
+   "max": 0.578
+  },
+  "render_submit": {
+   "median": 3.762,
+   "min": 3.734,
+   "max": 3.781
+  },
+  "ui_text_spans_prepared_max_any_window": null
+ },
+ "campaign/after": {
+  "runs": 4,
+  "total": {
+   "median": 18.075,
+   "min": 17.782,
+   "max": 18.188
+  },
+  "work": {
+   "median": 5.312,
+   "min": 5.224,
+   "max": 5.486
+  },
+  "render": {
+   "median": 4.252,
+   "min": 4.212,
+   "max": 4.292
+  },
+  "rec_ui": {
+   "median": 0.072,
+   "min": 0.071,
+   "max": 0.074
+  },
+  "render_submit": {
+   "median": 3.011,
+   "min": 2.97,
+   "max": 3.047
+  },
+  "ui_text_spans_prepared_max_any_window": 0.0
+ },
+ "hallway/before": {
+  "runs": 4,
+  "total": {
+   "median": 17.042,
+   "min": 16.971,
+   "max": 17.114
+  },
+  "work": {
+   "median": 6.558,
+   "min": 6.508,
+   "max": 6.576
+  },
+  "render": {
+   "median": 5.103,
+   "min": 5.056,
+   "max": 5.137
+  },
+  "rec_ui": {
+   "median": 0.456,
+   "min": 0.454,
+   "max": 0.457
+  },
+  "render_submit": {
+   "median": 2.995,
+   "min": 2.971,
+   "max": 3.042
+  },
+  "ui_text_spans_prepared_max_any_window": null
+ },
+ "hallway/after": {
+  "runs": 4,
+  "total": {
+   "median": 17.108,
+   "min": 16.983,
+   "max": 17.23
+  },
+  "work": {
+   "median": 5.62,
+   "min": 5.541,
+   "max": 5.673
+  },
+  "render": {
+   "median": 4.199,
+   "min": 4.13,
+   "max": 4.263
+  },
+  "rec_ui": {
+   "median": 0.061,
+   "min": 0.06,
+   "max": 0.062
+  },
+  "render_submit": {
+   "median": 2.26,
+   "min": 2.205,
+   "max": 2.293
+  },
+  "ui_text_spans_prepared_max_any_window": 0.0
+ },
+ "conditions": {
+  "runs": 20,
+  "cpu_speed_limit_before": [
+   100
+  ],
+  "cpu_speed_limit_during": [
+   100
+  ],
+  "gpu_temp_idle_range_C": [
+   62,
+   78
+  ],
+  "gpu_temp_during_range_C": [
+   62,
+   93
+  ],
+  "vram_inuse_idle_GB_range": [
+   1.06,
+   1.19
+  ],
+  "gpu_util_idle_pct_range": [
+   2,
+   10
+  ]
+ }
+}

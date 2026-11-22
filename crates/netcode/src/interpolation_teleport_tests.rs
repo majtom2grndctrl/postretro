@@ -3,6 +3,7 @@ use postretro_entities::EntityRegistry;
 
 fn sample(tick: u32, position: Vec3, generation: u8, last_teleporter: u16) -> TransformSample {
     TransformSample {
+        ground: None,
         server_tick: tick,
         transform: Transform {
             position,

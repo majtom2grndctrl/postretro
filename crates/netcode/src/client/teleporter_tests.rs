@@ -203,10 +203,10 @@ fn teleport_starved_arrival_cut_feeds_adaptive_delay_like_a_held_pose() {
         ),
     );
     // Bracketed by the cut: not starved.
-    let stats = client.sample_into_registry(&mut registry, 10.5, 0.0);
+    let stats = client.sample_into_registry(&mut registry, 10.5, 0.0, 1.0);
     assert_eq!((stats.held_newest, stats.starvation_feedback), (0, 0));
     // Past the newest sample, which arrived through a teleport: the cut holds
     // it, and a still-moving pawn feeds the adaptive delay as starvation.
-    let stats = client.sample_into_registry(&mut registry, 15.0, 0.0);
+    let stats = client.sample_into_registry(&mut registry, 15.0, 0.0, 1.0);
     assert_eq!((stats.held_newest, stats.starvation_feedback), (1, 1));
 }

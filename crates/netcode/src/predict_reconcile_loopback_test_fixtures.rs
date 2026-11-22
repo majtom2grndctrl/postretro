@@ -190,6 +190,10 @@ pub(crate) struct LoopbackHarness {
     pub(crate) host_bystander: EntityId,
     pub(crate) client_bystander: EntityId,
 
+    /// An unowned host pawn the client sees only as a remote, stepped each host
+    /// tick with an idle input so it rides whatever it stands on.
+    pub(crate) host_second_rider: Option<EntityId>,
+
     // --- Link conditioners (one per direction) + virtual clock ---
     pub(crate) to_server: PacketConditioner,
     pub(crate) to_client: PacketConditioner,
@@ -327,6 +331,7 @@ impl LoopbackHarness {
             latest_predicted_movement_events: MovementEvents::default(),
             host_bystander,
             client_bystander,
+            host_second_rider: None,
             to_server: PacketConditioner::new(link),
             to_client: PacketConditioner::new(link),
             down_drop: None,
@@ -539,6 +544,10 @@ impl LoopbackHarness {
         let pawn_inputs = resolved_commands
             .iter()
             .map(|resolved| (resolved.pawn, resolved.command.movement.clone()))
+            .chain(
+                self.host_second_rider
+                    .map(|rider| (rider, super::predict_reconcile_harness_test_fixtures::idle_command().movement)),
+            )
             .collect::<Vec<_>>();
         let trigger_use_edges: HashMap<_, _> = resolved_commands
             .iter()

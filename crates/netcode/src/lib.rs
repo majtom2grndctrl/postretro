@@ -86,6 +86,7 @@ mod presentation;
 pub mod presentation_commands;
 mod projectile_presentation;
 mod reconcile;
+mod rider_rebase;
 mod remote_materialize;
 mod replication;
 mod seat;
@@ -155,6 +156,8 @@ mod predict_reconcile_harness_swim;
 // Co-op vault parity: a predicted mantle replayed from acked baselines.
 #[cfg(test)]
 mod predict_reconcile_harness_vault;
+#[cfg(test)]
+mod predict_reconcile_harness_riders;
 // E24 swim slots: the output-only immersion component is never read by prediction,
 // replay or the wire merge.
 #[cfg(test)]
@@ -1689,6 +1692,7 @@ pub fn client_sample_interpolation(
     interpolation_delay: &mut InterpolationDelayState,
     frame_dt_secs: f64,
     frame_anim_time: f64,
+    mover_alpha: f32,
 ) -> ClientPresentationInputs {
     // No estimate yet: retain the last-applied pose until the clock initializes,
     // while deriving walk playback from that held (zero-speed) presentation.
@@ -1717,7 +1721,12 @@ pub fn client_sample_interpolation(
         rtt,
         SERVER_TICK_MICROS,
     );
-    let stats = replication.sample_into_registry(registry, render_server_tick, frame_anim_time);
+    let stats = replication.sample_into_registry(
+        registry,
+        render_server_tick,
+        frame_anim_time,
+        mover_alpha,
+    );
     if stats.presented > 0 {
         interpolation_delay.observe_sampled_frame(stats.starvation_feedback > 0, frame_dt_secs);
     }
@@ -1738,8 +1747,9 @@ pub fn client_sample_interpolation_at(
     replication: &mut ClientReplication,
     render_server_tick: f64,
     frame_anim_time: f64,
+    mover_alpha: f32,
 ) -> ClientPresentationInputs {
-    replication.sample_into_registry(registry, render_server_tick, frame_anim_time);
+    replication.sample_into_registry(registry, render_server_tick, frame_anim_time, mover_alpha);
     ClientPresentationInputs {
         render_server_tick: Some(render_server_tick),
         ..replication.presented_player_inputs().clone()
@@ -7526,6 +7536,7 @@ mod tests {
             &mut InterpolationDelayState::new(),
             1.0 / 60.0,
             1.0,
+            1.0,
         );
         assert_eq!(
             pre_sync.render_server_tick, None,
@@ -7541,6 +7552,7 @@ mod tests {
             &time_sync,
             &mut InterpolationDelayState::new(),
             1.0 / 60.0,
+            1.0,
             1.0,
         );
         let render_tick = inputs
@@ -7640,6 +7652,7 @@ mod tests {
             &time_sync,
             &mut delay,
             1.0 / 60.0,
+            1.0,
             1.0,
         );
 
@@ -7749,6 +7762,7 @@ mod tests {
             &ClientTimeSync::new(),
             &mut InterpolationDelayState::new(),
             1.0 / 60.0,
+            1.0,
             1.0,
         );
 

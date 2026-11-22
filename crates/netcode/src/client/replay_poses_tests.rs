@@ -100,6 +100,7 @@ fn record_host_ticks(history: &mut MoverHistoryBuffer, start_tick: u32, recorded
             history.record(
                 phase.mover_id,
                 MoverHistorySample {
+                    authoritative: true,
                     server_tick: *tick,
                     pose,
                     phase,
@@ -315,6 +316,7 @@ fn replay_pose_cost() {
             history.record(
                 id,
                 MoverHistorySample {
+                    authoritative: true,
                     server_tick: tick,
                     pose: MoverPose {
                         transform: Transform::default(),

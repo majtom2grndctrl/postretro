@@ -436,6 +436,7 @@ fn respawn_conditioned_o10_o28_coalesced_observer_cuts_once_without_replaying_la
         &mut observer.replication,
         f64::from(respawn_tick) - 0.5,
         0.0,
+        1.0,
     );
     assert!(
         observer
@@ -452,6 +453,7 @@ fn respawn_conditioned_o10_o28_coalesced_observer_cuts_once_without_replaying_la
         &mut observer.replication,
         f64::from(respawn_tick),
         0.0,
+        1.0,
     );
     assert!(
         observer

@@ -5344,7 +5344,7 @@ impl App {
     /// Runs after the catch-up tick loop so the stage-0 `snapshot_transforms` cannot
     /// clobber the presented pose, and before the render stage reads entities.
     /// No-op for single-player and the host (no client interpolation buffers).
-    fn net_sample_remote_interpolation(&mut self, frame_dt: f32, frame_anim_time: f64) {
+    fn net_sample_remote_interpolation(&mut self, frame_dt: f32, frame_anim_time: f64, alpha: f32) {
         let Some(script_ctx) = self
             .session
             .as_ref()
@@ -5373,6 +5373,7 @@ impl App {
                 interpolation_delay,
                 f64::from(frame_dt),
                 frame_anim_time,
+                alpha,
             )
         };
         self.remote_player_presentation = presentation;

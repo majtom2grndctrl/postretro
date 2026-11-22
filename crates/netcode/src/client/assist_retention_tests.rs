@@ -223,7 +223,7 @@ fn remote_assist_position_reads_the_interpolated_pose_not_the_raw_applied_one() 
 
     let interpolated = client.remote_assist_position(entity, Some(3.0)).unwrap();
     assert!((interpolated.x - 2.0).abs() < 1e-4, "{interpolated:?}");
-    client.sample_into_registry(&mut registry, 3.0, 0.0);
+    client.sample_into_registry(&mut registry, 3.0, 0.0, 1.0);
     let presented = registry
         .get_component::<postretro_entities::Transform>(entity)
         .unwrap()

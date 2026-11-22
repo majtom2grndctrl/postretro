@@ -452,7 +452,7 @@ fn run_paced(
         .expect("the client maps the paced enemy");
     let render_tick = f64::from(h.server_tick.saturating_sub(4));
     h.client_replication
-        .sample_into_registry(&mut h.client_registry, render_tick, 1.0);
+        .sample_into_registry(&mut h.client_registry, render_tick, 1.0, 1.0);
     let client_animation = h
         .client_registry
         .get_component::<MeshComponent>(remote)
@@ -715,7 +715,7 @@ fn moving_within_a_pose_restarts_no_clip_on_host_or_loopback_client() {
         };
         let render_tick = f64::from(h.server_tick.saturating_sub(4));
         h.client_replication
-            .sample_into_registry(&mut h.client_registry, render_tick, 1.0);
+            .sample_into_registry(&mut h.client_registry, render_tick, 1.0, 1.0);
         let client_view = presented(&h.client_registry, remote);
         if client_view.0 != STATE {
             assert!(

@@ -1337,6 +1337,7 @@ mod tests {
         history.record(
             42,
             MoverHistorySample {
+                authoritative: true,
                 server_tick: 11,
                 pose: MoverPose {
                     transform: Transform::default(),
@@ -1426,6 +1427,7 @@ mod tests {
         history.record(
             42,
             MoverHistorySample {
+                authoritative: true,
                 server_tick: 11,
                 pose: MoverPose {
                     transform: Transform::default(),

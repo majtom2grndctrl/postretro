@@ -45,6 +45,7 @@ use std::collections::VecDeque;
 use glam::{Quat, Vec3};
 
 use crate::sim::LocomotionStance;
+use postretro_foundation::GroundRef;
 
 use postretro_net::wire::NetworkId;
 
@@ -447,6 +448,11 @@ pub(crate) struct TransformSample {
     pub(crate) stance: Option<LocomotionStance>,
     pub(crate) capsule_half_height: Option<f32>,
     pub(crate) aim_pitch: f32,
+    /// The movement payload's ground reference, when this sample carried one.
+    /// Sparse like the other movement fields: a Transform-only sample takes the
+    /// newest ground at or before its tick, resolved when sampled, so a ground
+    /// sample that arrives late still decides every later sample it precedes.
+    pub(crate) ground: Option<GroundRef>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -465,6 +471,7 @@ pub(crate) struct MovementOnlySample {
     pub(crate) capsule_half_height: f32,
     pub(crate) aim_pitch: f32,
     pub(crate) teleport: Option<TeleportSample>,
+    pub(crate) ground: GroundRef,
 }
 
 /// Accepted authoritative sample where a remote pawn's generation changed.
@@ -501,6 +508,7 @@ fn cut_pose(
         stance,
         capsule_half_height,
         aim_pitch: sample.aim_pitch,
+        rider_bracket: None,
     }
 }
 
@@ -548,6 +556,28 @@ pub(crate) struct PresentedPose {
     pub(crate) capsule_half_height: Option<f32>,
     /// Interpolated remote camera pitch for avatar pose presentation.
     pub(crate) aim_pitch: f32,
+    /// The samples this pose was resolved from, with their ground, for the
+    /// mover-relative rider rebase (`crate::rider_rebase`). A hold or an
+    /// extrapolation brackets the newest (or oldest) sample with itself. `None`
+    /// for a teleport cut, which stays in world space.
+    pub(crate) rider_bracket: Option<RiderBracket>,
+}
+
+/// The two samples around a presented pose and the blend between them. A held
+/// pose brackets one sample with itself.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct RiderBracket {
+    pub(crate) from: RiderSample,
+    pub(crate) to: RiderSample,
+    pub(crate) alpha: f32,
+}
+
+/// One sample's tick, world pose and ground (newest at or before its tick).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct RiderSample {
+    pub(crate) server_tick: u32,
+    pub(crate) transform: Transform,
+    pub(crate) ground: Option<GroundRef>,
 }
 
 /// Which branch of the sample state machine produced a [`PresentedPose`].
@@ -640,6 +670,7 @@ impl EntityBuffer {
                 stance: self.stance_at_or_before(oldest.server_tick),
                 capsule_half_height: self.capsule_half_height_at_or_before(oldest.server_tick),
                 aim_pitch: oldest.aim_pitch,
+                rider_bracket: Some(self.held_bracket(oldest)),
             });
         }
 
@@ -696,6 +727,11 @@ impl EntityBuffer {
                     stance: self.stance_at_or_before(at.server_tick),
                     capsule_half_height: self.interpolated_capsule_half_height(a, b, alpha),
                     aim_pitch: a.aim_pitch + (b.aim_pitch - a.aim_pitch) * alpha,
+                    rider_bracket: Some(RiderBracket {
+                        from: self.rider_sample(a),
+                        to: self.rider_sample(b),
+                        alpha,
+                    }),
                 });
             }
             a = b;
@@ -714,6 +750,7 @@ impl EntityBuffer {
             stance: self.stance_at_or_before(newest.server_tick),
             capsule_half_height: self.capsule_half_height_at_or_before(newest.server_tick),
             aim_pitch: newest.aim_pitch,
+            rider_bracket: Some(self.held_bracket(newest)),
         })
     }
 
@@ -768,6 +805,9 @@ impl EntityBuffer {
                     stance: self.stance_at_or_before(newest.server_tick),
                     capsule_half_height: self.capsule_half_height_at_or_before(newest.server_tick),
                     aim_pitch: newest.aim_pitch,
+                    // A rider's world velocity on a mover is mostly carry, so a
+                    // starved rider holds its newest point on the deck instead.
+                    rider_bracket: Some(self.held_bracket(newest)),
                 }
             }
             // No adjacent transform sample or past the extrapolation window: hold the
@@ -783,6 +823,7 @@ impl EntityBuffer {
                 stance: self.stance_at_or_before(newest.server_tick),
                 capsule_half_height: self.capsule_half_height_at_or_before(newest.server_tick),
                 aim_pitch: newest.aim_pitch,
+                rider_bracket: Some(self.held_bracket(newest)),
             },
         }
     }
@@ -843,6 +884,29 @@ impl EntityBuffer {
     /// `server_tick`, inherited the same way as [`Self::stance_at_or_before`].
     fn capsule_half_height_at_or_before(&self, server_tick: u32) -> Option<f32> {
         self.movement_field_at_or_before(server_tick, |sample| sample.capsule_half_height)
+    }
+
+    /// Most recent replicated ground at or before `server_tick`, inherited the
+    /// same way as [`Self::stance_at_or_before`].
+    fn ground_at_or_before(&self, server_tick: u32) -> Option<GroundRef> {
+        self.movement_field_at_or_before(server_tick, |sample| sample.ground)
+    }
+
+    fn rider_sample(&self, sample: &TransformSample) -> RiderSample {
+        RiderSample {
+            server_tick: sample.server_tick,
+            transform: sample.transform,
+            ground: self.ground_at_or_before(sample.server_tick),
+        }
+    }
+
+    fn held_bracket(&self, sample: &TransformSample) -> RiderBracket {
+        let held = self.rider_sample(sample);
+        RiderBracket {
+            from: held,
+            to: held,
+            alpha: 0.0,
+        }
     }
 
     /// The newest movement-payload field at or before `server_tick`, never
@@ -993,6 +1057,7 @@ impl RemoteInterpolationBuffer {
             capsule_half_height,
             aim_pitch,
             teleport,
+            ground,
         } = movement;
         let Some(buffer) = self.buffers.get_mut(&network_id) else {
             return;
@@ -1008,6 +1073,7 @@ impl RemoteInterpolationBuffer {
             stance: Some(stance),
             capsule_half_height: Some(capsule_half_height),
             aim_pitch,
+            ground: Some(ground),
         };
         self.record(network_id, sample);
     }
@@ -1103,6 +1169,10 @@ mod observed_teleports;
 #[path = "interpolation_teleport_tests.rs"]
 mod teleport_tests;
 
+#[cfg(test)]
+#[path = "interpolation_rider_tests.rs"]
+mod rider_tests;
+
 /// Lerp position and scale, slerp rotation, between two transforms. `alpha` in
 /// `[0, 1]`; glam's `slerp` takes the shortest arc.
 fn lerp_transform(a: &Transform, b: &Transform, alpha: f32) -> Transform {
@@ -1183,6 +1253,7 @@ mod tests {
 
     fn sample(tick: u32, x: f32) -> TransformSample {
         TransformSample {
+            ground: None,
             teleport: None,
             server_tick: tick,
             transform: Transform {
@@ -2367,6 +2438,7 @@ mod tests {
         // Newest sample at tick 100, moving at (3, 10, 4) m/s. The vertical
         // component must not affect displayed ground-plane speed.
         let moving = TransformSample {
+            ground: None,
             teleport: None,
             server_tick: 100,
             transform: Transform {
@@ -2383,6 +2455,7 @@ mod tests {
         buf.record(
             id,
             TransformSample {
+                ground: None,
                 teleport: None,
                 server_tick: 97,
                 transform: Transform {
@@ -2433,6 +2506,7 @@ mod tests {
         let mut buf = RemoteInterpolationBuffer::new();
         let id = NetworkId(1);
         let moving = TransformSample {
+            ground: None,
             teleport: None,
             server_tick: 1000,
             transform: Transform {
@@ -2509,6 +2583,7 @@ mod tests {
         buf.record(
             id,
             TransformSample {
+                ground: None,
                 teleport: None,
                 server_tick: 100,
                 transform: Transform {
@@ -2525,6 +2600,7 @@ mod tests {
         buf.record(
             id,
             TransformSample {
+                ground: None,
                 teleport: None,
                 server_tick: 103,
                 transform: Transform {
@@ -2561,6 +2637,7 @@ mod tests {
         buf.record(
             id,
             TransformSample {
+                ground: None,
                 teleport: None,
                 server_tick: 100,
                 transform: Transform {
@@ -2577,6 +2654,7 @@ mod tests {
         buf.record(
             id,
             TransformSample {
+                ground: None,
                 teleport: None,
                 server_tick: 103,
                 transform: Transform {
@@ -2619,6 +2697,7 @@ mod tests {
         buf.record(
             id,
             TransformSample {
+                ground: None,
                 intrinsic_velocity: Some(Vec3::ZERO),
                 stance: Some(stance(LocomotionFooting::Grounded)),
                 capsule_half_height: None,
@@ -2628,6 +2707,7 @@ mod tests {
         buf.record(
             id,
             TransformSample {
+                ground: None,
                 intrinsic_velocity: Some(Vec3::Y * 6.0),
                 stance: Some(stance(takeoff)),
                 capsule_half_height: None,

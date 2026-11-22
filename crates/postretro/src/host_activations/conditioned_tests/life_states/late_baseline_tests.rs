@@ -306,6 +306,7 @@ fn life_state_late_join_full_baseline_carries_downed_teammate_and_presents_crouc
         replication,
         900.0,
         15.0,
+        1.0,
     );
     let registry = client_ctx.registry.borrow();
     let mesh = registry.get_component::<MeshComponent>(remote).unwrap();

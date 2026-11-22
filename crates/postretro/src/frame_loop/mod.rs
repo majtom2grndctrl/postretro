@@ -1304,7 +1304,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // not clobber the previous/current pair this writes) and BEFORE the
     // render stage reads entities, so the renderer stays read-only.
     // No-op for single-player and the host.
-    app.net_sample_remote_interpolation(frame_dt, frame_anim_time);
+    app.net_sample_remote_interpolation(frame_dt, frame_anim_time, frame_result.alpha);
     app.update_repointed_weapon_attachments(&script_ctx, &repointed_pawns);
     // Connected clients skip the authoritative `simulate_tick`, so
     // generate renderer-facing pose inputs here from the freshly

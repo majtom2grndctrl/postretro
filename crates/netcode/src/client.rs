@@ -86,6 +86,8 @@ mod late_baselines;
 mod presentation_tests;
 mod replay_poses;
 #[cfg(test)]
+mod rider_history_tests;
+#[cfg(test)]
 mod teleporter_tests;
 mod teleporters;
 use assist_retention::RemoteAssistRetention;
@@ -534,6 +536,9 @@ pub struct ClientReplication {
     /// Off-by-default remote-interpolation continuity diagnostics (see `netdiag`).
     /// Inert unless `postretro::netdiag=debug`; pure observability, never gameplay.
     netdiag: crate::netcode::netdiag::RemoteInterpDiag,
+    /// Test A/B switch: draw every remote at its sampled world pose, as before
+    /// mover-relative rider presentation. Off in production.
+    world_space_riders: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -541,6 +546,10 @@ pub(crate) struct MoverHistorySample {
     pub(crate) server_tick: u32,
     pub(crate) pose: MoverPose,
     pub(crate) phase: KinematicMoverComponent,
+    /// The pose a snapshot delivered, as opposed to the client's prediction at
+    /// the fast-forward tick recorded beside it. Rider presentation reads only
+    /// these; replay reads both.
+    pub(crate) authoritative: bool,
 }
 
 #[derive(Debug, Default)]
@@ -571,6 +580,25 @@ impl MoverHistoryBuffer {
         while samples.len() > MOVER_HISTORY_LIMIT {
             samples.pop_front();
         }
+    }
+
+    /// The newest authoritative pose at or before `server_tick`. A mover the
+    /// host did not resend has not changed, so an older sample still holds. `None`
+    /// when no retained authoritative sample reaches back that far, never the
+    /// oldest sample in its place (rider rebase treats it as missing history).
+    /// Samples are not tick-sorted (a predicted sample interleaves each apply),
+    /// so this scans the mover's bounded history; it never allocates.
+    pub(crate) fn authoritative_transform_at_or_before(
+        &self,
+        mover_id: u32,
+        server_tick: u32,
+    ) -> Option<Transform> {
+        self.samples
+            .get(&mover_id)?
+            .iter()
+            .filter(|sample| sample.authoritative && tick_le(sample.server_tick, server_tick))
+            .min_by_key(|sample| ticks_between(sample.server_tick, server_tick))
+            .map(|sample| sample.pose.transform)
     }
 
     #[cfg(test)]
@@ -2109,6 +2137,8 @@ impl ClientReplication {
         let record_aim_pitch = record_movement.map_or(0.0, |movement| movement.aim_pitch);
         let record_capsule_half_height =
             record_movement.map(|movement| movement.capsule_half_height);
+        let record_ground = record_movement
+            .map(|movement| super::movement_state::wire_ground_ref_to_foundation(movement.ground));
         let record_teleport = record_movement.map(|movement| TeleportSample {
             generation: movement.teleport.generation,
             last_teleporter: movement.teleport.last_teleporter,
@@ -2255,6 +2285,7 @@ impl ClientReplication {
                                 stance: record_stance,
                                 capsule_half_height: record_capsule_half_height,
                                 aim_pitch: record_aim_pitch,
+                                ground: record_ground,
                             },
                         );
                     }
@@ -2369,6 +2400,7 @@ impl ClientReplication {
                     capsule_half_height,
                     aim_pitch: record_aim_pitch,
                     teleport: record_teleport,
+                    ground: record_ground.unwrap_or_default(),
                 },
             );
         }
@@ -2498,11 +2530,16 @@ impl ClientReplication {
     /// `EntityRegistry::set_presentation_transform`). An entity with no buffered
     /// samples yet is left at its last-applied pose. Returns presentation stats for
     /// diagnostics and adaptive delay feedback.
+    ///
+    /// A rider whose bracketing samples stand on one mover is placed relative to
+    /// that mover's presented pose at `mover_alpha`, the frame's render alpha
+    /// (`crate::rider_rebase`); any other remote keeps its sampled world pose.
     pub(crate) fn sample_into_registry(
         &mut self,
         registry: &mut EntityRegistry,
         render_server_tick: f64,
         frame_anim_time: f64,
+        mover_alpha: f32,
     ) -> InterpolationSampleStats {
         let mut stats = InterpolationSampleStats::default();
         // Diagnostics-only: open this render frame's interpolation window at the
@@ -2534,7 +2571,24 @@ impl ClientReplication {
             };
             self.presented_state_ticks
                 .insert(network_id, pose.state_tick);
-            let mut transform = pose.transform;
+            let mut transform = pose
+                .rider_bracket
+                .filter(|_| !self.world_space_riders)
+                .and_then(|bracket| {
+                    crate::rider_rebase::rebase_rider(
+                        &bracket,
+                        &pose.transform,
+                        |mover_id, tick| {
+                            self.mover_history
+                                .authoritative_transform_at_or_before(mover_id, tick)
+                        },
+                        |mover_id| {
+                            let mover = bindings::find_loaded_mover_entity(registry, mover_id)?;
+                            registry.interpolated_transform(mover, mover_alpha).ok()
+                        },
+                    )
+                })
+                .unwrap_or(pose.transform);
             if let Some(facts) = self.projectile_presentations.get(&network_id)
                 && facts.sprite_size.is_none()
             {
@@ -3192,6 +3246,13 @@ impl ClientReplication {
         &mut self.mover_history
     }
 
+    /// Draw every remote at its sampled world pose, as before mover-relative
+    /// rider presentation; the before half of a test's A/B.
+    #[cfg(test)]
+    pub(crate) fn set_world_space_riders(&mut self, world_space: bool) {
+        self.world_space_riders = world_space;
+    }
+
     /// The host tick, in snapshot-stamp units, whose replicated state `entity`'s
     /// presented pose shows this frame: the render tick, except across a blend
     /// (its leading sample) or on the near side of a teleport cut (before the
@@ -3308,6 +3369,7 @@ fn prepare_mover_apply(
         server_tick,
         pose: server_pose,
         phase: phase.clone(),
+        authoritative: true,
     }];
 
     let mut predicted_phase = phase.clone();
@@ -3323,6 +3385,7 @@ fn prepare_mover_apply(
             server_tick: server_tick.wrapping_add(advance_ticks),
             pose: predicted_pose,
             phase: predicted_phase.clone(),
+            authoritative: false,
         });
     }
 
@@ -3847,7 +3910,7 @@ mod tests {
                 )],
             ),
         );
-        client.sample_into_registry(&mut registry, 15.0, 0.0);
+        client.sample_into_registry(&mut registry, 15.0, 0.0, 1.0);
         let entity = client.entity_for_network_id(NetworkId(7)).unwrap();
         assert!(entity_pos(&registry, entity).length() < 1.0e-6);
         // Two accepted generation changes in one frame are two cues, in order,
@@ -4821,7 +4884,7 @@ mod tests {
         );
         let stale_id = *client.map().get(&NetworkId(7)).expect("initial mapping");
         client.cache_remote_player_locomotion(NetworkId(7), Some(locomotion()));
-        client.sample_into_registry(&mut registry, 100.0, 0.0);
+        client.sample_into_registry(&mut registry, 100.0, 0.0, 1.0);
         assert_eq!(client.sample_count(NetworkId(7)), 1);
         assert!(client.remote_player_locomotion.contains_key(&NetworkId(7)));
         assert!(client.active_weapon_archetypes.contains_key(&NetworkId(7)));
@@ -5358,7 +5421,7 @@ mod tests {
         // First present at render tick 102 -> interpolated x = 2.0. The pose must be
         // identical at alpha = 0.0, 0.5, and 1.0: the buffer's resolved pose is shown
         // verbatim, never re-blended by the render alpha.
-        let stats = client.sample_into_registry(&mut registry, 102.0, 0.0);
+        let stats = client.sample_into_registry(&mut registry, 102.0, 0.0, 1.0);
         assert_eq!(stats.presented, 1, "one remote entity presented");
         assert_eq!(stats.held_newest, 0, "bracketed pose did not starve");
         let at_zero = registry.interpolated_transform(id, 0.0).unwrap();
@@ -5383,7 +5446,7 @@ mod tests {
         // Second present at render tick 106 -> the buffer's own trajectory advances the
         // presented pose to x = 6.0, still alpha-invariant. Continuity comes from the
         // buffer, not from the render blend carrying a prior pose.
-        let stats = client.sample_into_registry(&mut registry, 106.0, 0.0);
+        let stats = client.sample_into_registry(&mut registry, 106.0, 0.0, 1.0);
         assert_eq!(stats.presented, 1, "one remote entity presented");
         assert_eq!(stats.held_newest, 0, "bracketed pose did not starve");
         let next_zero = registry.interpolated_transform(id, 0.0).unwrap();
@@ -5426,7 +5489,7 @@ mod tests {
             &mut registry,
             &snapshot(1, 110, vec![delta(7, 1, 2, vec![transform_payload(5.0)])]),
         );
-        client.sample_into_registry(&mut registry, 105.0, 1.0);
+        client.sample_into_registry(&mut registry, 105.0, 1.0, 1.0);
         let half_speed = registry
             .get_component::<MeshComponent>(id)
             .expect("mesh")
@@ -5447,7 +5510,7 @@ mod tests {
             .as_ref()
             .expect("animation")
             .scaled_elapsed(2.0);
-        client.sample_into_registry(&mut registry, 115.0, 2.0);
+        client.sample_into_registry(&mut registry, 115.0, 2.0, 1.0);
         let full_speed = registry
             .get_component::<MeshComponent>(id)
             .expect("mesh")
@@ -5649,7 +5712,7 @@ mod tests {
             .get_component::<MeshComponent>(id)
             .expect("mesh")
             .clone();
-        client.sample_into_registry(&mut registry, 105.0, 1.0);
+        client.sample_into_registry(&mut registry, 105.0, 1.0, 1.0);
         let after = registry.get_component::<MeshComponent>(id).expect("mesh");
         assert_eq!(after, &before, "non-walk state must not rebase or write");
     }
@@ -5699,7 +5762,7 @@ mod tests {
                 )],
             ),
         );
-        client.sample_into_registry(&mut registry, 105.0, 1.0);
+        client.sample_into_registry(&mut registry, 105.0, 1.0, 1.0);
 
         let animation = registry
             .get_component::<MeshComponent>(id)
@@ -5737,7 +5800,7 @@ mod tests {
                     )],
                 ),
             );
-            client.sample_into_registry(&mut registry, 105.0, 1.0);
+            client.sample_into_registry(&mut registry, 105.0, 1.0, 1.0);
             let animation = registry
                 .get_component::<MeshComponent>(id)
                 .unwrap()
@@ -5790,7 +5853,7 @@ mod tests {
                 )],
             ),
         );
-        client.sample_into_registry(&mut registry, 105.0, 1.0);
+        client.sample_into_registry(&mut registry, 105.0, 1.0, 1.0);
 
         let animation = registry
             .get_component::<MeshComponent>(id)
@@ -5826,7 +5889,7 @@ mod tests {
                 )],
             ),
         );
-        client.sample_into_registry(&mut registry, 111.0, 1.02);
+        client.sample_into_registry(&mut registry, 111.0, 1.02, 1.0);
         assert_eq!(
             registry
                 .get_component::<MeshComponent>(id)
@@ -5888,7 +5951,7 @@ mod tests {
                 )],
             ),
         );
-        client.sample_into_registry(&mut registry, 105.0, 1.0);
+        client.sample_into_registry(&mut registry, 105.0, 1.0, 1.0);
         let walking = registry
             .get_component::<MeshComponent>(id)
             .unwrap()
@@ -5912,7 +5975,7 @@ mod tests {
         // Regression: normal frame ordering applies snapshots, then samples remote
         // interpolation before render resolves animation stamps. Velocity derivation
         // must not switch straight back to walk in this same frame.
-        client.sample_into_registry(&mut registry, 111.0, 1.0);
+        client.sample_into_registry(&mut registry, 111.0, 1.0, 1.0);
         let corrected = registry
             .get_component::<MeshComponent>(id)
             .unwrap()
@@ -5924,7 +5987,7 @@ mod tests {
         assert_eq!(corrected.states["idle"].crossfade_ms, 50.0);
 
         resolve_pending_animation_stamps(&mut registry, 1.0);
-        client.sample_into_registry(&mut registry, 111.0, 1.02);
+        client.sample_into_registry(&mut registry, 111.0, 1.02, 1.0);
         assert_eq!(
             registry
                 .get_component::<MeshComponent>(id)
@@ -5937,7 +6000,7 @@ mod tests {
             "client locomotion holds through the configured server crossfade"
         );
         resolve_pending_animation_stamps(&mut registry, 1.06);
-        client.sample_into_registry(&mut registry, 111.0, 1.06);
+        client.sample_into_registry(&mut registry, 111.0, 1.06, 1.0);
         assert_eq!(
             registry
                 .get_component::<MeshComponent>(id)
@@ -5962,7 +6025,7 @@ mod tests {
             ),
         );
         resolve_pending_animation_stamps(&mut registry, 1.1);
-        client.sample_into_registry(&mut registry, 112.0, 1.1);
+        client.sample_into_registry(&mut registry, 112.0, 1.1, 1.0);
         assert_eq!(
             registry
                 .get_component::<MeshComponent>(id)
@@ -6068,7 +6131,7 @@ mod tests {
         speeds: (f32, f32),
     ) -> (EntityRegistry, ClientReplication, EntityId) {
         let (mut registry, mut client, id) = map_remote_player(mesh, declared, velocity, speeds);
-        client.sample_into_registry(&mut registry, 105.0, 1.0);
+        client.sample_into_registry(&mut registry, 105.0, 1.0, 1.0);
         (registry, client, id)
     }
 
@@ -6288,7 +6351,7 @@ mod tests {
                 wire_movement_state,
                 (7.0, 11.0),
             );
-            client.sample_into_registry(&mut registry, 105.0, 1.0);
+            client.sample_into_registry(&mut registry, 105.0, 1.0, 1.0);
             let client_animation = registry
                 .get_component::<MeshComponent>(id)
                 .unwrap()
@@ -6478,7 +6541,7 @@ mod tests {
                 &mut registry,
                 &snapshot(tick, 100 + tick, vec![delta(7, tick, tick + 1, components)]),
             );
-            client.sample_into_registry(&mut registry, f64::from(100 + tick), time);
+            client.sample_into_registry(&mut registry, f64::from(100 + tick), time, 1.0);
             assert!(
                 client.remote_player_locomotion[&NetworkId(7)]
                     .authoritative_correction_state
@@ -6668,7 +6731,7 @@ mod tests {
 
             let render_tick = f64::from(server_tick) - RENDER_LAG;
             let frame_anim_time = render_tick / 60.0;
-            client.sample_into_registry(&mut registry, render_tick, frame_anim_time);
+            client.sample_into_registry(&mut registry, render_tick, frame_anim_time, 1.0);
             resolve_pending_animation_stamps(&mut registry, frame_anim_time);
             let state = registry
                 .get_component::<MeshComponent>(id)
@@ -6893,11 +6956,11 @@ mod tests {
         assert_eq!(presented_state(&registry), "jump_up");
         resolve_pending_animation_stamps(&mut registry, 1.0);
         // Interpolation starts behind it, still on the ground: no landing.
-        client.sample_into_registry(&mut registry, 101.0, 1.02);
+        client.sample_into_registry(&mut registry, 101.0, 1.02, 1.0);
         assert_eq!(presented_state(&registry), "idle");
         resolve_pending_animation_stamps(&mut registry, 1.02);
         // The presented takeoff plays as one.
-        client.sample_into_registry(&mut registry, 102.0, 1.04);
+        client.sample_into_registry(&mut registry, 102.0, 1.04, 1.0);
         assert_eq!(presented_state(&registry), "jump_up");
     }
 
@@ -6963,10 +7026,10 @@ mod tests {
                 .current_state
                 .clone()
         };
-        client.sample_into_registry(&mut registry, 109.0, 1.0);
+        client.sample_into_registry(&mut registry, 109.0, 1.0, 1.0);
         assert_eq!(presented_state(&registry), "crouch_forward");
         resolve_pending_animation_stamps(&mut registry, 1.0);
-        client.sample_into_registry(&mut registry, 110.0, 1.1);
+        client.sample_into_registry(&mut registry, 110.0, 1.1, 1.0);
         assert_eq!(presented_state(&registry), "walk_forward");
     }
 
@@ -7055,7 +7118,7 @@ mod tests {
         // Standing up from 100 to 110: the half-height blends with the centre,
         // so the sole holds through the segment.
         for target in [100.0, 102.0, 105.0, 109.0, 110.0] {
-            client.sample_into_registry(&mut registry, target, target / 100.0);
+            client.sample_into_registry(&mut registry, target, target / 100.0, 1.0);
             assert!(
                 feet(&registry).abs() < 1e-5,
                 "standing up at {target}: {}",
@@ -7082,7 +7145,7 @@ mod tests {
             ),
         );
         for target in [112.0, 115.0, 119.0, 120.0] {
-            client.sample_into_registry(&mut registry, target, target / 100.0);
+            client.sample_into_registry(&mut registry, target, target / 100.0, 1.0);
             assert!(
                 feet(&registry).abs() < 1e-5,
                 "crouching at {target}: {}",
@@ -7165,14 +7228,14 @@ mod tests {
         );
         // The host's tick-111 state waits while the presentation is short of it.
         for render_tick in [105.0, 110.0, 110.99] {
-            client.sample_into_registry(&mut registry, render_tick, 1.0);
+            client.sample_into_registry(&mut registry, render_tick, 1.0, 1.0);
             assert_eq!(
                 presented_state(&registry),
                 "walk_forward",
                 "at render tick {render_tick}"
             );
         }
-        client.sample_into_registry(&mut registry, 111.0, 1.0);
+        client.sample_into_registry(&mut registry, 111.0, 1.0, 1.0);
         assert_eq!(presented_state(&registry), "idle");
         assert_eq!(
             client.remote_player_locomotion[&NetworkId(7)]
@@ -7286,7 +7349,7 @@ mod tests {
                 )],
             ),
         );
-        client.sample_into_registry(&mut registry, 111.0, 1.0);
+        client.sample_into_registry(&mut registry, 111.0, 1.0, 1.0);
         let (state, heading) = presented_state_and_heading(&registry, &client, id);
         assert_eq!(state, "walk_backward", "the correction's clip holds");
         assert!(
@@ -7321,7 +7384,7 @@ mod tests {
             ),
         );
         for anim_time in [1.0, 1.06, 1.2] {
-            client.sample_into_registry(&mut registry, 111.0, anim_time);
+            client.sample_into_registry(&mut registry, 111.0, anim_time, 1.0);
             resolve_pending_animation_stamps(&mut registry, anim_time);
             let (state, heading) = presented_state_and_heading(&registry, &client, id);
             assert_eq!(
@@ -7351,7 +7414,7 @@ mod tests {
                 ),
             );
         }
-        client.sample_into_registry(&mut registry, 125.0, 1.3);
+        client.sample_into_registry(&mut registry, 125.0, 1.3, 1.0);
         let (state, heading) = presented_state_and_heading(&registry, &client, id);
         assert_eq!(state, "walk_backward");
         assert!(heading.abs() <= EPSILON, "+Z travel folds to face aim");
@@ -7379,7 +7442,7 @@ mod tests {
             true
         ));
         client.seed_remote_player_direction(&mut registry, NetworkId(7), id, "walk_backward");
-        client.sample_into_registry(&mut registry, 105.0, 1.0);
+        client.sample_into_registry(&mut registry, 105.0, 1.0, 1.0);
         let (state, heading) = presented_state_and_heading(&registry, &client, id);
         assert_eq!(state, "walk_backward");
         assert!((heading - std::f32::consts::FRAC_PI_2).abs() <= EPSILON);
@@ -7414,7 +7477,7 @@ mod tests {
                 )],
             ),
         );
-        client.sample_into_registry(&mut registry, 111.0, 1.0);
+        client.sample_into_registry(&mut registry, 111.0, 1.0, 1.0);
         let (state, heading) = presented_state_and_heading(&registry, &client, id);
         assert_eq!(state, "walk_backward");
         assert!(
@@ -7424,9 +7487,9 @@ mod tests {
 
         // After the crossfade the client's memory holds the backpedal in the band.
         resolve_pending_animation_stamps(&mut registry, 1.0);
-        client.sample_into_registry(&mut registry, 111.0, 1.06);
+        client.sample_into_registry(&mut registry, 111.0, 1.06, 1.0);
         resolve_pending_animation_stamps(&mut registry, 1.06);
-        client.sample_into_registry(&mut registry, 111.0, 1.06);
+        client.sample_into_registry(&mut registry, 111.0, 1.06, 1.0);
         let (state, heading) = presented_state_and_heading(&registry, &client, id);
         assert_eq!(state, "walk_backward");
         assert!((heading - std::f32::consts::FRAC_PI_2).abs() <= EPSILON);
@@ -7452,7 +7515,7 @@ mod tests {
             client.presented_source(NetworkId(7), 200.0),
             Some(PoseSource::HeldNewest)
         );
-        let stats = client.sample_into_registry(&mut registry, 200.0, 0.0);
+        let stats = client.sample_into_registry(&mut registry, 200.0, 0.0, 1.0);
         assert_eq!(stats.presented, 1, "one remote entity presented");
         assert_eq!(stats.held_newest, 1, "held-newest starvation is reported");
         assert_eq!(
@@ -7490,7 +7553,7 @@ mod tests {
         );
         client.apply_snapshot(&mut registry, &snapshot(1, 110, vec![]));
 
-        let stats = client.sample_into_registry(&mut registry, 200.0, 0.0);
+        let stats = client.sample_into_registry(&mut registry, 200.0, 0.0, 1.0);
         assert_eq!(stats.presented, 1, "stationary remote still presents");
         assert_eq!(stats.held_newest, 1, "pose holds newest as expected");
         assert_eq!(
@@ -7516,7 +7579,7 @@ mod tests {
             ),
         );
 
-        let stats = client.sample_into_registry(&mut registry, 200.0, 0.0);
+        let stats = client.sample_into_registry(&mut registry, 200.0, 0.0, 1.0);
         assert_eq!(stats.presented, 1, "moving remote still presents");
         assert_eq!(stats.held_newest, 1, "pose holds newest after starvation");
         assert_eq!(

@@ -1244,6 +1244,7 @@ impl Loopback {
             &mut self.client_replication,
             render_tick,
             0.0,
+            1.0,
         );
         let clocks = PresentationClocks::compute(
             ClockSource::Client {

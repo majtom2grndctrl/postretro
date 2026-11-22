@@ -356,7 +356,7 @@ fn ghost_link_presented_state_tick_holds_before_a_cut_and_leads_a_blend() {
     let pawn = client.entity_for_network_id(NetworkId(3)).unwrap();
 
     let mut at = |render_tick: f64| {
-        client.sample_into_registry(&mut registry, render_tick, 0.0);
+        client.sample_into_registry(&mut registry, render_tick, 0.0, 1.0);
         let x = registry
             .get_component::<Transform>(pawn)
             .unwrap()

@@ -81,6 +81,7 @@ pub fn record_client_pawn_poses(
         buffer.record(
             network_id,
             TransformSample {
+                ground: None,
                 teleport: movement.map(|movement| TeleportSample {
                     generation: movement.teleport.generation,
                     last_teleporter: movement.teleport.last_teleporter,
@@ -385,6 +386,7 @@ mod tests {
         registry.set_component(pawn, mesh).unwrap();
         let present = |registry: &mut EntityRegistry, velocity: Vec3| {
             let pose = PresentedPose {
+                rider_bracket: None,
                 state_tick: 0.0,
                 transform: pose_at(0.0, 0.0),
                 source: crate::interpolation::PoseSource::Interpolated,

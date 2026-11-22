@@ -276,6 +276,16 @@ fn ground_ref_to_wire(ground: GroundRef) -> WireGroundRef {
     }
 }
 
+/// A remote pawn's ground, for presentation only. Apply has already rejected a
+/// record naming a mover this client has not loaded (`unknown_ground_mover_id`).
+pub(crate) fn wire_ground_ref_to_foundation(ground: WireGroundRef) -> GroundRef {
+    match ground {
+        WireGroundRef::Airborne => GroundRef::Airborne,
+        WireGroundRef::World => GroundRef::World,
+        WireGroundRef::Mover(mover_id) => GroundRef::Mover(mover_id),
+    }
+}
+
 fn wire_ground_ref_to_foundation_checked(
     ground: WireGroundRef,
     ground_mover_known: &impl Fn(u32) -> bool,

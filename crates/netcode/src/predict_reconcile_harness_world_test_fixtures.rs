@@ -335,6 +335,80 @@ impl LoopbackHarness {
     }
 }
 
+impl LoopbackHarness {
+    /// A mover that spins about its origin while it travels a ping-pong path,
+    /// carrying two riders on opposite sides of its pivot: the client's own pawn,
+    /// and an unowned host pawn the client presents as a remote. The host
+    /// presents the client's pawn from its delay buffer.
+    pub(crate) fn with_spinning_travelling_platform(link: LinkConfig, spin_rate_rad_s: f32) -> Self {
+        let mut h = Self::new(link);
+        h.world = CollisionWorld::new();
+        h.host_registry
+            .set_component(
+                h.host_pawn,
+                Transform {
+                    position: ROTATING_PLATFORM_RIDER_START,
+                    ..Transform::default()
+                },
+            )
+            .expect("place the client's pawn on the platform");
+        let second = h.host_registry.spawn(Transform {
+            position: SECOND_RIDER_START,
+            ..Transform::default()
+        });
+        h.host_registry
+            .set_component(second, super::predict_reconcile_harness_test_fixtures::component())
+            .expect("second rider movement");
+        h.host_registry
+            .set_component(
+                second,
+                super::predict_reconcile_harness_test_fixtures::net_slot_provenance(),
+            )
+            .expect("second rider provenance");
+        h.replicable.register(second);
+        h.allocator.stamp(second);
+        h.host_second_rider = Some(second);
+
+        let spawn = |registry: &mut EntityRegistry| {
+            let id = registry.spawn(Transform::default());
+            let mover = KinematicMoverComponent::new(
+                MOVING_PLATFORM_ID,
+                postretro_entities::KinematicMoverConfig {
+                    waypoints: vec![Vec3::ZERO, Vec3::new(4.0, 0.0, 0.0)],
+                    waypoint_names: vec!["start".to_string(), "finish".to_string()],
+                    speed_mps: MOVING_PLATFORM_SPEED_MPS,
+                    wait_ms: 0.0,
+                    mode: KinematicMoverMode::PingPong,
+                    started: true,
+                    spin_axis: Vec3::Y,
+                    initial_spin_rate_rad_s: spin_rate_rad_s,
+                    spin_accel_rad_s2: 0.0,
+                    carry_yaw: false,
+                },
+            );
+            registry.set_component(id, mover).unwrap();
+            id
+        };
+        let host_mover = spawn(&mut h.host_registry);
+        let client_mover = spawn(&mut h.client_registry);
+        h.mover_colliders
+            .push(platform_collider(MOVING_PLATFORM_ID));
+        host_register_loaded_movers(
+            &h.host_registry,
+            &mut h.allocator,
+            &mut h.replicable,
+            &mut h.host_loaded_movers,
+        );
+        h.allocator.stamp(host_mover);
+        h.host_mover = Some(host_mover);
+        h.client_mover = Some(client_mover);
+        h
+    }
+}
+
+/// The second rider's spawn, opposite the client's pawn across the pivot.
+pub(crate) const SECOND_RIDER_START: Vec3 = Vec3::new(-1.0, 1.21, 0.0);
+
 fn spawn_platform_mover(registry: &mut EntityRegistry, started: bool) -> EntityId {
     let id = registry.spawn(Transform::default());
     let mover = KinematicMoverComponent::new(

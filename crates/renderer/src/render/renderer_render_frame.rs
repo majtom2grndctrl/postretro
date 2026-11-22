@@ -125,6 +125,9 @@ impl Renderer {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("Frame Encoder"),
                 });
+            let marked = self
+                .queue
+                .open_frame_mark(&mut encoder, uploads::MarkSite::Frame);
 
             compose_submitted = self.record_scene_passes(
                 &mut encoder,
@@ -143,6 +146,8 @@ impl Renderer {
                 clear_color,
                 scene,
             )?;
+            self.queue
+                .close_frame_mark(&mut encoder, uploads::MarkSite::Frame, marked);
             {
                 let _submit = cpu.scope(RenderStage::Submit);
                 self.submit_windowed_frame(encoder);
@@ -665,6 +670,7 @@ impl Renderer {
                 &self.level().kinematic,
                 &self.level().gpu_textures,
                 MoverView::Main,
+                self.full().frame_specular_style,
             );
         }
 
@@ -1238,6 +1244,8 @@ impl Renderer {
                 timing.post_submit(device);
             }
         }
+        #[cfg(feature = "dev-tools")]
+        self.queue.playback_post_submit();
 
         // Drive the SH readback map and, when a frame's data has landed, swap it
         // into the probe-marker source so the next overlay frame shows live

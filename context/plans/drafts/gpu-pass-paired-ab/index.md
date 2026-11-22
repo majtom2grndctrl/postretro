@@ -36,7 +36,7 @@ The developer running the `sh-compose-row-cost-spike` hit a measurement failure 
   - §6.4's feature list and dist stage 1's excluded-surface list gain `paired-ab`.
   - `tools/README.md` gains the reducer entry.
 - **Non-goals:**
-  - Per-backend or shipped shader variants: B exists only in feature builds with the env var set, and §8 stays variant-free.
+  - Per-backend or shipped shader variants: B exists only in feature builds with the env var set, so it adds no variant under §8's rule.
   - Paired timestamp timing on adapters that support it: §12's path is unchanged apart from the no-blend rule.
   - Automated perf gating in CI.
   - Host-side changes in B (upload layout, dispatch shape, bind groups): B is shader text only. The spike's `coalesced-b` needed both arms to carry its layout.

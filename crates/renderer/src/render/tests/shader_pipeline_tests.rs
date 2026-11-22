@@ -26,13 +26,13 @@ fn zero_strength_materials_skip_emissive_texture_sampling() {
             "forward",
             forward,
             "emissive = sample_color(emissive_texture",
-            "base_color.rgb * total_light + emissive;",
+            "base_color.rgb * total_light + emissive + tinted_specular;",
         ),
         (
             "kinematic",
             kinematic,
             "emissive = sample_post_retro(emissive_texture",
-            "+ emissive * material.emissive_strength",
+            "return emissive * material.emissive_strength;",
         ),
     ] {
         let derivatives = shader

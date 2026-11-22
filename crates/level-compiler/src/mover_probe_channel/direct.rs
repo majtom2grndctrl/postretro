@@ -148,6 +148,22 @@ impl DirectEntry {
 }
 
 impl MoverDirectBake {
+    /// Heap bytes, by capacity, for the test ledger.
+    #[cfg(test)]
+    pub(crate) fn heap_bytes(&self) -> u64 {
+        (self.lights.capacity() * size_of::<LightEntries>()) as u64
+            + self
+                .lights
+                .iter()
+                .flat_map(|light| {
+                    std::iter::once((light.entries.capacity() * size_of::<DirectEntry>()) as u64)
+                        .chain(light.entries.iter().map(|entry| {
+                            (entry.visibility.capacity() + entry.tiles.capacity() * 2) as u64
+                        }))
+                })
+                .sum::<u64>()
+    }
+
     pub(crate) fn entry_count(&self) -> usize {
         self.lights.iter().map(|light| light.entries.len()).sum()
     }
@@ -320,6 +336,9 @@ pub(crate) fn bake_direct(
         if let Some(entries) = baked[*slot].as_mut() {
             entries.sort_by_key(|entry| (entry.cell, entry.mover_id));
             entries.dedup_by_key(|entry| (entry.cell, entry.mover_id));
+            // Held through the direct half at their length: the SH base
+            // gate prices the entries, not their growth slack.
+            entries.shrink_to_fit();
         }
     }
     if let Some(memo) = memo.as_ref() {
@@ -342,6 +361,7 @@ pub(crate) fn bake_direct(
             })
         })
         .collect();
+    lights.shrink_to_fit();
     // The memo keeps the traced q; each build copies enclosure-run edges
     // over it, before the section reads the q.
     copy_direct_edges(&mut lights, posed, scene.cells, scene.layout);

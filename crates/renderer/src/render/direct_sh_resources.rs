@@ -261,7 +261,8 @@ impl DirectShResources {
 /// VERTEX only here: billboard and fluid read the direct atlas from `vs_main`,
 /// and forward and fog never declare it, so no fragment stage sharing this
 /// layout samples it. That frees forward's fragment slot for the depth tiles
-/// (binding 18). Movers and skinned meshes sample it in `fs_main`, and their
+/// (binding 18). Movers (both beauty entries, through `mover_surface`) and
+/// skinned meshes (`fs_main`) sample it in their fragment stage, and their
 /// mesh superset layout restores FRAGMENT.
 pub(super) fn append_shared_bind_group_layout_entries(
     entries: &mut Vec<wgpu::BindGroupLayoutEntry>,

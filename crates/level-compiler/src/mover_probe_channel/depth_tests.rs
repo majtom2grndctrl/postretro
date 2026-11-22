@@ -9,7 +9,7 @@ use postretro_level_format::probe_depth_tiles::PROBE_DEPTH_TILE_TEXELS;
 
 use std::collections::BTreeSet;
 
-use super::{CarriedDepth, MoverTileRangeExceeded, refuse_cut_short, reserve_mover_tiles};
+use super::{CarriedDepth, DepthUnion, MoverTileRangeExceeded, reserve_mover_tiles};
 use crate::mover_probe_channel::{DepthProbe, MoverBounceStates};
 use crate::sh_bake::depth_tiles_test_fixtures::DepthTileFixture;
 
@@ -219,6 +219,15 @@ fn mid_pose_depth(mover_id: u32, probes: std::ops::Range<u32>) -> MoverBounceSta
     MoverBounceStates::new(mover_id, 3, Vec::new(), depth)
 }
 
+/// The verdict once every one of `movers` has joined, in order.
+fn verdict(movers: &[MoverBounceStates], cap: u32) -> Result<(), MoverTileRangeExceeded> {
+    let mut union = DepthUnion::default();
+    for states in movers {
+        union.join(states);
+    }
+    union.verdict(false, cap)
+}
+
 // Regression: a mover carrying exactly one depth record past the range, the
 // last job, was neither stopped nor cut, so its skips could bring the count
 // back within the range and the build passed, where any later job would
@@ -231,7 +240,7 @@ fn depth_past_the_tile_range_is_refused_before_skips_whatever_the_job_order() {
         !one_past[0].depth_cut(),
         "one record past the range is no cut"
     );
-    let error = refuse_cut_short(&one_past, false, cap).expect_err("one record past the range");
+    let error = verdict(&one_past, cap).expect_err("one record past the range");
     let carried = CarriedDepth::exact(cap as usize + 1);
     assert_eq!(error, MoverTileRangeExceeded { carried, cap });
     let message = error.to_string();
@@ -245,7 +254,7 @@ fn depth_past_the_tile_range_is_refused_before_skips_whatever_the_job_order() {
     let first = mid_pose_depth(0, 0..2);
     let second = mid_pose_depth(1, 2..4);
     for movers in [[first.clone(), second.clone()], [second, first]] {
-        let error = refuse_cut_short(&movers, false, cap).expect_err("the union passes the range");
+        let error = verdict(&movers, cap).expect_err("the union passes the range");
         assert_eq!(
             error,
             MoverTileRangeExceeded {
@@ -257,5 +266,5 @@ fn depth_past_the_tile_range_is_refused_before_skips_whatever_the_job_order() {
 
     // Overlapping movers whose union fills the range exactly pass.
     let at_range = [mid_pose_depth(0, 0..cap), mid_pose_depth(1, 0..cap)];
-    refuse_cut_short(&at_range, false, cap).expect("the union fills the range exactly");
+    verdict(&at_range, cap).expect("the union fills the range exactly");
 }

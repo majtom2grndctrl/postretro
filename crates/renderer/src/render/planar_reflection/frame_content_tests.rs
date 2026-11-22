@@ -555,3 +555,32 @@ fn planar_mirror_uniform_takes_the_mirror_camera_and_drops_screen_terms() {
         assert_eq!(&data[104..], &main[104..], "{mode:?}: the frame's tail");
     }
 }
+
+// Billboards never read the specular style. The mirror's billboards
+// draw through the billboard pipeline under a group 0 that carries the style
+// bit, and the frame is byte-identical under pixel and smooth. (This scene's
+// sprites are emissive, with no chunk grid for static billboard specular; the
+// billboard shader names the style word inert, and a source gate pins it unchanged.)
+#[test]
+fn billboard_frames_are_byte_identical_under_each_specular_style() {
+    use postretro_render_cpu::frame_uniforms::SpecularStyle;
+    let Some((mut renderer, view)) = billboard_renderer() else {
+        return;
+    };
+    renderer.set_planar_particle_draws(std::iter::empty());
+    let base = capture_checked(&mut renderer, view);
+    let (particle_bytes, billboard_bytes) = (
+        sprite(Vec3::new(0.0, 1.0, 5.0), 1.0),
+        sprite(Vec3::new(1.0, 4.5, 6.0), 0.8),
+    );
+    renderer.set_planar_particle_draws([
+        (PARTICLE, particle_bytes.as_slice()),
+        (BILLBOARD, billboard_bytes.as_slice()),
+    ]);
+    renderer.set_specular_style(SpecularStyle::Pixel);
+    let pixel = capture_checked(&mut renderer, view);
+    assert_ne!(pixel, base, "the billboards draw");
+    renderer.set_specular_style(SpecularStyle::Smooth);
+    let smooth = capture_checked(&mut renderer, view);
+    assert!(pixel == smooth, "billboard frames match under each style");
+}

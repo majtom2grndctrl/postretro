@@ -59,7 +59,7 @@ mod tests;
 use glam::Vec3;
 use postretro_level_loader::LevelWorld;
 
-use super::baked_set::bake_identity;
+use postretro_camera_route::bake_identity;
 
 const PRL_ENV: &str = "POSTRETRO_WORLD_POSES_PRL";
 const FILE_ENV: &str = "POSTRETRO_WORLD_POSES_FILE";

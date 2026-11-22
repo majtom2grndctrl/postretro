@@ -160,6 +160,14 @@ either.
 
 3. **Author scripts in TypeScript** against `sdk/types/` and `sdk/lib/`.
 
+   Your editor gets its completions, hover docs and type errors from the
+   `tsconfig.json` at `<mod-root>/`. It covers `start-script.ts` and every
+   script below it, so typing inside `defineMod({ ... })` — the `render` block,
+   say — offers each field and flags a value the engine does not accept. If your
+   mod root has no `tsconfig.json`, copy `sdk/templates/tsconfig.json` there.
+   If the editor still reports `Cannot find module 'postretro'` after you add
+   one, restart its TypeScript server.
+
 4. **Run it:**
 
    ```bash
@@ -225,6 +233,8 @@ If you want to type-check your scripts, run `tsc --noEmit` yourself;
   as mesh and skeleton and take their clips from one file.
 - `docs/diagnostics.md` — runtime diagnostic keyboard chords and simulated
   network lag for co-op testing.
+- `docs/camera-routes.md` — generating, recording and playing camera routes
+  to measure how a level streams.
 - `docs/distribution.md` — producing a lean, shippable player build.
 - `docs/external-projects.md` — keeping your game in its own repository.
 - `tools/` — asset helpers. The Python ones (specular, normal and emissive map

@@ -11,7 +11,7 @@ use postretro_level_loader::{
 use postretro_renderer::{Renderer, ShResidencySnapshot};
 use postretro_stage_timing::StageFrame;
 
-use super::{StreamingFrame, StreamingLevelData, WantedStreaming};
+use super::{LevelStreamingStep, StreamingFrame, StreamingLevelData, WantedStreaming};
 use crate::cpu_timing::StreamingStage;
 use crate::session::lightmap_residency::{LightmapLevelView, LightmapStreamingSession};
 use crate::session::sh_residency::{ShStreamingSession, require_loaded_streaming_mode};
@@ -44,6 +44,7 @@ impl crate::session::Session {
     ) -> Result<ShDrainBatch> {
         self.level_streaming.poll_retirement();
         if !self.ensure_level_streaming_sessions(sh_manifest, level, renderer)? {
+            self.level_streaming.clear_admission();
             return Ok(ShDrainBatch::default());
         }
         // Id 51 straight from the level: SH reads the reach whether or not
@@ -56,22 +57,27 @@ impl crate::session::Session {
     /// The frame's whole streaming step, shared by every frame that holds a
     /// level: [`Self::prepare_streaming_drains`], then
     /// [`Self::drain_lightmap_streaming`]. Returns SH's batch for the
-    /// renderer's pre-compose drain. A Running frame draws what it made
-    /// resident; a held frame (Settling) composes it without drawing.
+    /// renderer's pre-compose drain, and what the step admitted per resource.
+    /// A Running frame draws what it made resident; a held frame (Settling)
+    /// composes it without drawing.
     pub(crate) fn run_level_streaming_step(
         &mut self,
         sh_manifest: Option<&Arc<ShStreamManifest>>,
         level: Option<&LevelWorld>,
         renderer: &mut Renderer,
         frame: StreamingFrame<'_>,
-    ) -> Result<ShDrainBatch> {
+    ) -> Result<LevelStreamingStep> {
         let cpu = frame.cpu;
         let now_seconds = frame.monotonic_seconds;
-        let batch = self.prepare_streaming_drains(sh_manifest, level, renderer, frame)?;
+        let sh_batch = self.prepare_streaming_drains(sh_manifest, level, renderer, frame)?;
+        let admission = self.level_streaming.admission();
         // The lightmap drain runs before the frame records its passes, so
         // the frame samples what it made resident.
         self.drain_lightmap_streaming(renderer, cpu, now_seconds)?;
-        Ok(batch)
+        Ok(LevelStreamingStep {
+            sh_batch,
+            admission,
+        })
     }
 
     /// Level install: creates the level's streaming sessions, so the settle

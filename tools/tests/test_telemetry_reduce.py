@@ -381,5 +381,85 @@ class EdgeCaseTests(unittest.TestCase):
         self.assertEqual(summary["malformed"], 3)
 
 
+def playback_window(index, partial=False, cap_source="seed", cap_bytes=4194304, **figures):
+    """A `playback_window` payload (`crates/postretro/src/playback/window.rs`)."""
+    payload = {
+        "window_index": index, "first_frame": 120 * index, "last_frame": 120 * index + 119,
+        "rows": 120, "route_rows": 120, "measured_rows": 118, "excluded_rows": 2,
+        "frame_time_p99_ms": None, "frames_over_33ms": None,
+        "lightmap_drain_cpu_max_ms": None, "sh_drain_cpu_max_ms": None,
+        "lightmap_late_block_frames": None, "sh_late_cluster_frames": None,
+        "pacing": "frame-locked",
+        "cap": {"source": cap_source, "decoded_bytes_per_drain": cap_bytes},
+        "partial": partial,
+    }
+    payload.update(figures)
+    return payload
+
+
+class PlaybackWindowTests(unittest.TestCase):
+    NULL_FIGURES = ("frame_time_p99_ms_max", "frames_over_33ms", "lightmap_drain_cpu_max_ms",
+                    "sh_drain_cpu_max_ms", "lightmap_late_block_frames",
+                    "sh_late_cluster_frames")
+
+    def test_window_figures_fold_and_a_null_stays_null(self):
+        summary = REDUCER.reduce_lines([
+            run_start("pb-1"),
+            # CPU timing on, both drains streaming.
+            envelope("pb-1", 1, "playback_window", playback_window(
+                0, frame_time_p99_ms=21.5, frames_over_33ms=1, lightmap_drain_cpu_max_ms=0.8,
+                sh_drain_cpu_max_ms=1.25, lightmap_late_block_frames=4,
+                sh_late_cluster_frames=0)),
+            # Every figure null: no measured row carried one.
+            envelope("pb-1", 2, "playback_window", playback_window(
+                1, measured_rows=0, excluded_rows=120)),
+            # A partial window after a cap change; SH figures null.
+            envelope("pb-1", 3, "playback_window", playback_window(
+                2, partial=True, cap_source="slider", cap_bytes=8388608,
+                frame_time_p99_ms=40.25, frames_over_33ms=2, lightmap_drain_cpu_max_ms=0.5,
+                lightmap_late_block_frames=3)),
+        ])
+        self.assertEqual(summary["malformed"], 0)
+        (run,) = summary["runs"]
+        playback = run["no_level_windows"]["playback"]
+        self.assertEqual((playback["windows"], playback["partial_windows"]), (3, 1))
+        self.assertEqual((playback["rows"], playback["route_rows"], playback["measured_rows"],
+                          playback["excluded_rows"]), (360, 360, 236, 124))
+        self.assertEqual(playback["frame_time_p99_ms_max"], 40.25)
+        self.assertEqual(playback["frames_over_33ms"], 3)
+        self.assertEqual(playback["lightmap_drain_cpu_max_ms"], 0.8)
+        self.assertEqual(playback["sh_drain_cpu_max_ms"], 1.25)
+        self.assertEqual(playback["lightmap_late_block_frames"], 7)
+        self.assertEqual(playback["sh_late_cluster_frames"], 0, "a real zero stays zero")
+        self.assertEqual(playback["pacings"], ["frame-locked"])
+        self.assertEqual(playback["caps"], [
+            {"source": "seed", "decoded_bytes_per_drain": 4194304},
+            {"source": "slider", "decoded_bytes_per_drain": 8388608}])
+        self.assertEqual(playback["cap_changes"], 1)
+        text = REDUCER.render_text(summary)
+        self.assertIn("pacing frame-locked; cap seed 4194304 B -> slider 8388608 B "
+                      "(changed between windows 1 time(s))", text)
+
+    def test_windows_with_every_figure_null_never_read_as_zero(self):
+        summary = REDUCER.reduce_lines([
+            run_start("pb-2"),
+            envelope("pb-2", 1, "playback_window", playback_window(0)),
+            envelope("pb-2", 2, "playback_window", playback_window(1, partial=True)),
+        ])
+        (run,) = summary["runs"]
+        playback = run["no_level_windows"]["playback"]
+        self.assertEqual(playback["windows"], 2)
+        for name in self.NULL_FIGURES:
+            self.assertIsNone(playback[name], name)
+        self.assertEqual(playback["cap_changes"], 0)
+        json.dumps(summary)  # serializable, nulls included
+        text = REDUCER.render_text(summary)
+        line = next(l for l in text.splitlines() if "p99 max" in l)
+        values = text.splitlines()[text.splitlines().index(line) + 2]
+        self.assertNotIn("0", values, "a null figure renders as '-', never zero")
+        self.assertIn("cap seed 4194304 B", text)
+        self.assertNotIn("changed between windows", text)
+
+
 if __name__ == "__main__":
     unittest.main()

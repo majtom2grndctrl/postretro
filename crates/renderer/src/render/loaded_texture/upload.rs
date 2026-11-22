@@ -18,10 +18,13 @@ use postretro_level_format::prm::PrmFormat;
 /// from the uploaders so the mapping is checkable without a GPU.
 pub(super) fn upload_bytes_per_pixel(format: wgpu::TextureFormat) -> Option<Option<u32>> {
     match format {
+        // `Rgba8Unorm` is the normal placeholder and, on the specular slot, the
+        // four-channel surface map a `_p.png` or `_t.png` sibling bakes: R
+        // specular, G inverted height, B smoothness, A tint.
         wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => Some(Some(4)),
-        // The two-channel surface map: R specular, G inverted height. A material with an
-        // `_h.png` height sibling bakes its specular slot to this instead of
-        // `R8Unorm`, so every world-material upload path must size it.
+        // The two-channel surface map: R specular, G inverted height. A material
+        // with an `_h.png` height sibling bakes its specular slot to this instead
+        // of `R8Unorm`, so every world-material upload path must size it.
         wgpu::TextureFormat::Rg8Unorm => Some(Some(2)),
         wgpu::TextureFormat::R8Unorm => Some(Some(1)),
         wgpu::TextureFormat::Bc5RgUnorm => Some(None),
@@ -245,16 +248,16 @@ mod tests {
                 "{format:?} is representable in a .prm but has no upload row layout",
             );
         }
-        // The surface map is two bytes per texel — twice the single-channel
-        // specular slot it replaces, and the byte count the upload must write.
-        assert_eq!(
-            prm_format_to_wgpu(PrmFormat::Rg8Unorm),
-            wgpu::TextureFormat::Rg8Unorm,
-        );
-        assert_eq!(
-            upload_bytes_per_pixel(prm_format_to_wgpu(PrmFormat::Rg8Unorm)),
-            Some(Some(2)),
-        );
+        // The surface maps are two and four bytes per texel — the byte count
+        // the upload must write — and keep their linear (non-sRGB) format, so
+        // the shader reads every channel as the stored byte over 255.
+        for (format, wgpu_format, bpp) in [
+            (PrmFormat::Rg8Unorm, wgpu::TextureFormat::Rg8Unorm, 2),
+            (PrmFormat::Rgba8Unorm, wgpu::TextureFormat::Rgba8Unorm, 4),
+        ] {
+            assert_eq!(prm_format_to_wgpu(format), wgpu_format);
+            assert_eq!(upload_bytes_per_pixel(wgpu_format), Some(Some(bpp)));
+        }
         // BC5 stays block-sized, not per-pixel.
         assert_eq!(
             upload_bytes_per_pixel(prm_format_to_wgpu(PrmFormat::Bc5RgUnorm)),
@@ -269,50 +272,54 @@ mod tests {
         );
     }
 
-    /// A surface-map specular slot must slice into upload ranges that exactly
-    /// consume its payload — the CPU-side half of "would upload the right byte
-    /// count", provable without a device.
+    /// Both surface-map specular slots must slice into upload ranges that
+    /// exactly consume their payload — the CPU-side half of "would upload the
+    /// right byte count", provable without a device.
     #[test]
-    fn surface_map_specular_slot_slices_to_its_whole_payload() {
+    fn surface_map_specular_slots_slice_to_their_whole_payload() {
         let (width, height) = (64u16, 32u16);
         let level_count = postretro_level_format::prm::expected_level_count(width, height);
-        let payload_len: usize = (0..level_count)
-            .map(|level| {
-                let w = (u32::from(width) >> level).max(1);
-                let h = (u32::from(height) >> level).max(1);
-                2 * (w * h) as usize
-            })
-            .sum();
-        let slot = PrmSlot {
-            format: PrmFormat::Rg8Unorm,
-            width,
-            height,
-            level_count,
-            payload: vec![0u8; payload_len],
-        };
+        for (format, channels) in [(PrmFormat::Rg8Unorm, 2), (PrmFormat::Rgba8Unorm, 4)] {
+            let payload_len: usize = (0..level_count)
+                .map(|level| {
+                    let w = (u32::from(width) >> level).max(1);
+                    let h = (u32::from(height) >> level).max(1);
+                    channels * (w * h) as usize
+                })
+                .sum();
+            let slot = PrmSlot {
+                format,
+                width,
+                height,
+                level_count,
+                payload: vec![0u8; payload_len],
+            };
 
-        let levels = slot_levels(&slot);
-        assert_eq!(levels.len(), usize::from(level_count));
-        assert_eq!(
-            (levels[0].0, levels[0].1, levels[0].2.len()),
-            (64, 32, 4096)
-        );
+            let levels = slot_levels(&slot);
+            assert_eq!(levels.len(), usize::from(level_count));
+            assert_eq!(
+                (levels[0].0, levels[0].1, levels[0].2.len()),
+                (64, 32, 64 * 32 * channels),
+                "{format:?}"
+            );
 
-        let bpp = upload_bytes_per_pixel(prm_format_to_wgpu(slot.format))
-            .expect("surface map is uploadable")
-            .expect("surface map is uncompressed");
-        let uploaded: usize = levels
-            .iter()
-            .map(|(w, h, bytes)| {
-                // What `upload_texture_data` writes per level: bytes_per_row *
-                // rows_per_image, which must be exactly the slice it was given.
-                assert_eq!(bytes.len(), (bpp * w * h) as usize);
-                bytes.len()
-            })
-            .sum();
-        assert_eq!(
-            uploaded, payload_len,
-            "the per-level uploads must consume the slot payload exactly",
-        );
+            let bpp = upload_bytes_per_pixel(prm_format_to_wgpu(slot.format))
+                .expect("surface map is uploadable")
+                .expect("surface map is uncompressed");
+            let uploaded: usize = levels
+                .iter()
+                .map(|(w, h, bytes)| {
+                    // What `upload_texture_data` writes per level: bytes_per_row
+                    // * rows_per_image, which must be exactly the slice it was
+                    // given.
+                    assert_eq!(bytes.len(), (bpp * w * h) as usize, "{format:?}");
+                    bytes.len()
+                })
+                .sum();
+            assert_eq!(
+                uploaded, payload_len,
+                "{format:?}: the per-level uploads must consume the slot payload exactly",
+            );
+        }
     }
 }

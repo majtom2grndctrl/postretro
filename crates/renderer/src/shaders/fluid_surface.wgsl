@@ -265,16 +265,14 @@ fn fluid_fog_composite(rgb: vec3<f32>, alpha: f32, fog_rgb: vec3<f32>, fog_opaci
 }
 
 // Post Retro sample, the same body as kinematic_brush.wgsl (pinned by a parity
-// test). The seam width and mip footprint come from the UNWARPED derivatives:
-// the warp shifts the sample point, it does not change the pixel footprint.
+// test), reconstructing through the shared `post_retro_texel_uv`
+// (`material_shading.wgsl`). The seam width and mip footprint come from the
+// UNWARPED derivatives: the warp shifts the sample point, it does not change
+// the pixel footprint.
 fn sample_post_retro(tex: texture_2d<f32>, samp: sampler, uv: vec2<f32>,
                      ddx: vec2<f32>, ddy: vec2<f32>) -> vec4<f32> {
     let dims = vec2<f32>(textureDimensions(tex, 0));
-    let uv_tex = uv * dims;
-    let seam = floor(uv_tex + 0.5);
-    let seam_width = max((abs(ddx) + abs(ddy)) * dims, vec2<f32>(1.0e-6));
-    let aa = clamp((uv_tex - seam) / seam_width, vec2(-0.5), vec2(0.5));
-    let uv_recon = (seam + aa) / dims;
+    let uv_recon = post_retro_texel_uv(uv, dims, ddx, ddy);
     return textureSampleGrad(tex, samp, uv_recon, ddx, ddy);
 }
 

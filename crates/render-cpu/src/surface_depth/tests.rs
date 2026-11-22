@@ -46,9 +46,12 @@ fn field(width: i32, height: i32, stored_g: &[f32], levels: u32) -> SurfaceDepth
 /// load-time extraction over one level, then the material's quantization.
 fn band(authored: &[u8], levels: u32) -> SurfaceRelief {
     let rg: Vec<u8> = authored.iter().flat_map(|&h| [0u8, 255 - h]).collect();
-    surface_relief_from_rg8_levels(&[(authored.len() as u32, 1, &rg)])
-        .at(0)
-        .quantized(levels as f32)
+    surface_relief_from_surface_map(
+        &[(authored.len() as u32, 1, &rg)],
+        SURFACE_MAP_RG_BYTES_PER_TEXEL,
+    )
+    .at(0)
+    .quantized(levels as f32)
 }
 
 /// Deterministic authored bytes, no libm involved.
@@ -590,8 +593,10 @@ fn relief_extraction_measures_every_mip_separately() {
     let base = rg_level(2, 2, &[127, 127, 200, 150]);
     let mip1 = rg_level(1, 1, &[27]);
     let mip2 = rg_level(1, 1, &[240]);
-    let relief =
-        surface_relief_from_rg8_levels(&[(2, 2, &base[..]), (1, 1, &mip1[..]), (1, 1, &mip2[..])]);
+    let relief = surface_relief_from_surface_map(
+        &[(2, 2, &base[..]), (1, 1, &mip1[..]), (1, 1, &mip2[..])],
+        SURFACE_MAP_RG_BYTES_PER_TEXEL,
+    );
     assert_eq!(relief.at(0).peak_raise, 0.0);
     assert_eq!(relief.at(0).trough, (127.0 - 200.0) / 128.0);
     assert_eq!(relief.at(1).peak_raise, (127.0 - 27.0) / 128.0);
@@ -605,7 +610,10 @@ fn relief_extraction_measures_every_mip_separately() {
 fn relief_extraction_of_an_all_sink_map_has_no_peak() {
     let base = rg_level(2, 2, &[127, 255, 200, 150]);
     let mip1 = rg_level(1, 1, &[180]);
-    let relief = surface_relief_from_rg8_levels(&[(2, 2, &base[..]), (1, 1, &mip1[..])]);
+    let relief = surface_relief_from_surface_map(
+        &[(2, 2, &base[..]), (1, 1, &mip1[..])],
+        SURFACE_MAP_RG_BYTES_PER_TEXEL,
+    );
     for level in 0..2 {
         assert_eq!(relief.at(level).peak_raise, 0.0);
     }
@@ -615,7 +623,8 @@ fn relief_extraction_of_an_all_sink_map_has_no_peak() {
 #[test]
 fn relief_extraction_of_an_all_raise_map_has_no_trough() {
     let base = rg_level(1, 2, &[0, 100]);
-    let relief = surface_relief_from_rg8_levels(&[(1, 2, &base[..])]);
+    let relief =
+        surface_relief_from_surface_map(&[(1, 2, &base[..])], SURFACE_MAP_RG_BYTES_PER_TEXEL);
     assert_eq!(relief.at(0).peak_raise, SURFACE_HEIGHT_MAX_RAISE);
     assert_eq!(relief.at(0).trough, 0.0);
 }
@@ -623,13 +632,56 @@ fn relief_extraction_of_an_all_raise_map_has_no_trough() {
 #[test]
 fn relief_extraction_of_nothing_is_flat() {
     assert_eq!(
-        surface_relief_from_rg8_levels(&[]),
+        surface_relief_from_surface_map(&[], SURFACE_MAP_RG_BYTES_PER_TEXEL),
         SurfaceReliefLevels::FLAT
     );
     assert_eq!(SurfaceReliefLevels::FLAT.at(3), SurfaceRelief::FLAT);
     let mid = rg_level(2, 1, &[127, 127]);
     assert!(
-        surface_relief_from_rg8_levels(&[(2, 1, &mid[..])])
+        surface_relief_from_surface_map(&[(2, 1, &mid[..])], SURFACE_MAP_RG_BYTES_PER_TEXEL)
+            .at(0)
+            .is_flat()
+    );
+}
+
+/// The four-channel surface map reads height from G at offset 1 of 4. B
+/// (smoothness) and A (tint) hold bytes that would measure as full raise and
+/// full sink if read as height, so a wrong offset or stride moves the band.
+#[test]
+fn four_channel_relief_reads_g_and_never_smoothness_or_tint() {
+    let rgba_level = |stored_g: &[u8]| -> Vec<u8> {
+        stored_g
+            .iter()
+            .enumerate()
+            .flat_map(|(i, &g)| [0x7F, g, if i % 2 == 0 { 0 } else { 1 }, 255])
+            .collect()
+    };
+    let base_g = [127, 127, 200, 64];
+    let mip1_g = [140];
+    let rg = surface_relief_from_surface_map(
+        &[
+            (2, 2, &rg_level(2, 2, &base_g)[..]),
+            (1, 1, &rg_level(1, 1, &mip1_g)[..]),
+        ],
+        SURFACE_MAP_RG_BYTES_PER_TEXEL,
+    );
+    let rgba = surface_relief_from_surface_map(
+        &[
+            (2, 2, &rgba_level(&base_g)[..]),
+            (1, 1, &rgba_level(&mip1_g)[..]),
+        ],
+        SURFACE_MAP_RGBA_BYTES_PER_TEXEL,
+    );
+    assert_eq!(rgba, rg);
+    assert_eq!(rgba.at(0).peak_raise, (127.0 - 64.0) / 128.0);
+    assert_eq!(rgba.at(0).trough, (127.0 - 200.0) / 128.0);
+    assert_eq!(rgba.at(1).trough, (127.0 - 140.0) / 128.0);
+
+    // Without `_h` the bake stores the plane in G at every mip: an empty band,
+    // whatever B and A hold.
+    let plane = rgba_level(&[127; 4]);
+    assert!(
+        surface_relief_from_surface_map(&[(2, 2, &plane[..])], SURFACE_MAP_RGBA_BYTES_PER_TEXEL)
             .at(0)
             .is_flat()
     );
@@ -641,7 +693,10 @@ fn the_resolve_reads_the_band_of_the_clamped_base_mip() {
     // base level's band.
     let base = rg_level(2, 1, &[100, 200]);
     let mip1 = rg_level(1, 1, &[0]);
-    let relief = surface_relief_from_rg8_levels(&[(2, 1, &base[..]), (1, 1, &mip1[..])]);
+    let relief = surface_relief_from_surface_map(
+        &[(2, 1, &base[..]), (1, 1, &mip1[..])],
+        SURFACE_MAP_RG_BYTES_PER_TEXEL,
+    );
     let depth = Material::Concrete.surface_depth();
     let levels = depth.quantize_levels as f32;
     for (requested, mip_count, source) in [(0, 2, 0), (1, 2, 1), (7, 2, 1), (1, 1, 0)] {

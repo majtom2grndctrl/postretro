@@ -3,6 +3,7 @@
 
 use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
 use postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle;
+use postretro_render_cpu::frame_uniforms::SpecularStyle;
 use postretro_render_cpu::lightmap_pool::PerPool;
 use serde::Deserialize;
 use thiserror::Error;
@@ -70,6 +71,10 @@ pub(crate) struct CaptureScene {
     /// loads no mod manifest, so this stands in for `render.reflections.style`.
     /// Omitted keeps the renderer's default, pixel.
     pub(crate) reflection_style: Option<CaptureReflectionStyle>,
+    /// Capture-only specular style, `"pixel"` or `"smooth"`. Capture loads no
+    /// mod manifest, so this stands in for `render.specular.style`. Omitted
+    /// keeps the renderer's default, pixel; an unknown name rejects the scene.
+    pub(crate) specular_style: Option<CaptureSpecularStyle>,
     /// Capture-only overrides on the tier's screen-space preset, applied
     /// after `reflection_quality`. Every member is optional. Ignored, with a
     /// warning, at a tier that runs no screen-space layer (off, low).
@@ -160,6 +165,23 @@ impl CaptureReflectionStyle {
         match self {
             Self::Pixel => FluidReflectionStyle::Pixel,
             Self::Smooth => FluidReflectionStyle::Smooth,
+        }
+    }
+}
+
+/// A capture scene's specular style: the manifest's vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CaptureSpecularStyle {
+    Pixel,
+    Smooth,
+}
+
+impl CaptureSpecularStyle {
+    pub(crate) const fn renderer(self) -> SpecularStyle {
+        match self {
+            Self::Pixel => SpecularStyle::Pixel,
+            Self::Smooth => SpecularStyle::Smooth,
         }
     }
 }
@@ -630,6 +652,40 @@ mod tests {
         );
     }
 
+    // Capture half: `specular_style` is capture's only source of the
+    // specular style. Absent keeps pixel; each manifest name parses to its
+    // renderer style; an unknown name or wrong type rejects the scene.
+    #[test]
+    fn parse_scene_specular_style_defaults_absent_parses_each_name_and_rejects_unknown() {
+        let scene = parse_scene(SCENE_WITH_DEFAULT_FOV).expect("scene must parse");
+        assert_eq!(scene.specular_style, None);
+        for style in SpecularStyle::ALL {
+            let name = match style {
+                SpecularStyle::Pixel => "pixel",
+                SpecularStyle::Smooth => "smooth",
+            };
+            let json = SCENE_WITH_DEFAULT_FOV.replace(
+                "\"output\": \"capture.png\"",
+                &format!("\"output\": \"capture.png\", \"specular_style\": \"{name}\""),
+            );
+            let scene = parse_scene(&json).expect("a named style parses");
+            assert_eq!(
+                scene.specular_style.map(CaptureSpecularStyle::renderer),
+                Some(style)
+            );
+        }
+        for value in ["\"glossy\"", "\"Smooth\"", "\"\"", "1", "true"] {
+            let json = SCENE_WITH_DEFAULT_FOV.replace(
+                "\"output\": \"capture.png\"",
+                &format!("\"output\": \"capture.png\", \"specular_style\": {value}"),
+            );
+            assert!(
+                parse_scene(&json).is_err(),
+                "specular_style {value} must reject the scene"
+            );
+        }
+    }
+
     // Unknown names, unknown march members and out-of-range or non-finite
     // values fail with a named error.
     #[test]
@@ -1001,6 +1057,7 @@ mod tests {
             mask_pool_layers: None,
             reflection_quality: None,
             reflection_style: None,
+            specular_style: None,
             reflection_march: None,
             planar_reflection: None,
             ghost_styles: None,

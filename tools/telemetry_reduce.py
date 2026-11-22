@@ -17,8 +17,11 @@ This reducer joins them per run and per load:
   generation missing between two seen ones was cancelled; a cancelled load
   emits nothing.
 * windows, grouped by the level in their envelope: SH and lightmap miss
-  buckets, CPU stage and GPU pass p50 and max. A null GPU mean is absent,
-  never zero.
+  buckets, CPU stage and GPU pass p50 and max, and camera-route playback
+  windows (row counts, worst frame-time p99, frames over 33 ms, drain CPU max,
+  late counts, pacing, and cap with how often it changed between windows). A
+  null GPU mean or playback figure is absent, never zero. The 33 ms threshold
+  is the engine's, not `playback_trace_reduce.py`'s `--budget-ms`.
 * log record counts per level.
 
 Standard library only. Usage:
@@ -41,8 +44,14 @@ KNOWN_KINDS = frozenset({
     "run_start", "producer_state", "run_end", "log", "boot_phases", "mod_phases",
     "load_phases", "unload", "geometry_install", "sh_streaming_window",
     "lightmap_streaming_window", "cpu_timing_window", "gpu_timing_window",
-    "bake_stage", "bake_summary",
+    "bake_stage", "bake_summary", "playback_window",
 })
+
+# `playback_window` counts, summed across windows.
+PLAYBACK_ROW_COUNTS = ("rows", "route_rows", "measured_rows", "excluded_rows")
+# Nullable figures: a null is absent, never zero. Maxes and sums skip it.
+PLAYBACK_MAXES = ("frame_time_p99_ms", "lightmap_drain_cpu_max_ms", "sh_drain_cpu_max_ms")
+PLAYBACK_SUMS = ("frames_over_33ms", "lightmap_late_block_frames", "sh_late_cluster_frames")
 
 SH_MISS_BUCKETS = (
     "misses", "miss_reach", "miss_pressure", "miss_in_flight", "miss_budget",
@@ -147,6 +156,16 @@ def validate_payload(kind, payload):
     elif kind == "bake_summary":
         if payload.get("timings") is not None:
             check_rows(payload["timings"], "bake timings")
+    elif kind == "playback_window":
+        for name in PLAYBACK_ROW_COUNTS:
+            check(is_int(payload.get(name)), f"playback_window {name} is not an integer")
+        for name in PLAYBACK_MAXES + PLAYBACK_SUMS:
+            value = payload.get(name)
+            check(value is None or is_number(value), f"playback_window {name} is not a number")
+        pacing = payload.get("pacing")
+        check(pacing is None or isinstance(pacing, str), "playback_window pacing is not a string")
+        cap = payload.get("cap")
+        check(cap is None or isinstance(cap, dict), "playback_window cap is not an object")
 
 
 def p50(values):
@@ -172,6 +191,7 @@ class WindowGroup:
         self.lightmap = {"windows": 0, "partial": 0, "buckets": Counter()}
         self.cpu = TimingSeries()
         self.gpu = TimingSeries()
+        self.playback = PlaybackSeries()
 
     def add(self, env):
         kind, payload = env["kind"], env["payload"]
@@ -185,6 +205,8 @@ class WindowGroup:
             self.cpu.add_cpu(payload)
         elif kind == "gpu_timing_window":
             self.gpu.add_gpu(payload)
+        elif kind == "playback_window":
+            self.playback.add(payload)
 
     def summary(self):
         return {
@@ -193,7 +215,58 @@ class WindowGroup:
             "lightmap": streaming_summary(self.lightmap, LIGHTMAP_MISS_BUCKETS),
             "cpu": self.cpu.cpu_summary(),
             "gpu": self.gpu.gpu_summary(),
+            "playback": self.playback.summary(),
         }
+
+
+class PlaybackSeries:
+    """`playback_window` events: counts summed, nullable figures folded so a
+    window's null never reads as zero. Pacings are listed once each, in window
+    order. Caps are listed in window order, a repeat of the previous window's
+    cap left out, so `cap_changes` counts windows whose cap differs from the
+    previous window's."""
+
+    def __init__(self):
+        self.windows = 0
+        self.partial = 0
+        self.counts = Counter()
+        self.maxes = {name: None for name in PLAYBACK_MAXES}
+        self.sums = {name: None for name in PLAYBACK_SUMS}
+        self.pacings = []
+        self.caps = []
+
+    def add(self, payload):
+        self.windows += 1
+        pacing = payload.get("pacing")
+        if pacing is not None and pacing not in self.pacings:
+            self.pacings.append(pacing)
+        cap = payload.get("cap")
+        if cap is not None and (not self.caps or cap != self.caps[-1]):
+            self.caps.append(cap)
+        if payload.get("partial"):
+            self.partial += 1
+        for name in PLAYBACK_ROW_COUNTS:
+            self.counts[name] += payload[name]
+        for name in PLAYBACK_MAXES:
+            value = payload.get(name)
+            if value is not None:
+                self.maxes[name] = value if self.maxes[name] is None else max(self.maxes[name], value)
+        for name in PLAYBACK_SUMS:
+            value = payload.get(name)
+            if value is not None:
+                self.sums[name] = (self.sums[name] or 0) + value
+
+    def summary(self):
+        out = {"windows": self.windows, "partial_windows": self.partial}
+        out.update({name: self.counts[name] for name in PLAYBACK_ROW_COUNTS})
+        out["frame_time_p99_ms_max"] = self.maxes["frame_time_p99_ms"]
+        out["lightmap_drain_cpu_max_ms"] = self.maxes["lightmap_drain_cpu_max_ms"]
+        out["sh_drain_cpu_max_ms"] = self.maxes["sh_drain_cpu_max_ms"]
+        out.update(self.sums)
+        out["pacings"] = list(self.pacings)
+        out["caps"] = [dict(cap) for cap in self.caps]
+        out["cap_changes"] = max(len(self.caps) - 1, 0)
+        return out
 
 
 def add_streaming(acc, payload, buckets):
@@ -395,7 +468,7 @@ def reduce_run(run_id, entries, unknown_kinds, malformed):
                 load["prl"] = load["prl"] or payload.get("prl")
                 load["unload_ms"] = payload.get("unload_ms")
             elif kind in ("sh_streaming_window", "lightmap_streaming_window",
-                          "cpu_timing_window", "gpu_timing_window"):
+                          "cpu_timing_window", "gpu_timing_window", "playback_window"):
                 groups.setdefault(level_key(env), WindowGroup(number)).add(env)
                 totals.add(env)
             elif kind in ("bake_stage", "bake_summary"):
@@ -588,6 +661,34 @@ def render_windows(windows, indent="    "):
         out += table(list(LIGHTMAP_MISS_BUCKETS), [[lm[b] for b in LIGHTMAP_MISS_BUCKETS]],
                      indent + "  ")
     out += render_timing(windows["cpu"], windows["gpu"], indent)
+    out += render_playback(windows["playback"], indent)
+    return out
+
+
+def render_playback(playback, indent):
+    if not playback["windows"]:
+        return []
+
+    def count(value):
+        return "-" if value is None else str(value)
+
+    def cap_text(cap):
+        return f"{cap.get('source')} {cap.get('decoded_bytes_per_drain')} B"
+
+    out = [f"{indent}playback windows: {playback['windows']} ({playback['partial_windows']} partial);"
+           f" rows {playback['rows']}, route {playback['route_rows']}, measured "
+           f"{playback['measured_rows']}, excluded {playback['excluded_rows']}"]
+    caps = " -> ".join(cap_text(cap) for cap in playback["caps"]) or "-"
+    changed = (f" (changed between windows {playback['cap_changes']} time(s))"
+               if playback["cap_changes"] else "")
+    out.append(f"{indent}  pacing {', '.join(playback['pacings']) or '-'}; cap {caps}{changed}")
+    out += table(["p99 max", "over 33 ms", "lightmap drain CPU max", "SH drain CPU max",
+                  "late lightmap block-frames", "late SH cluster-frames"],
+                 [[fmt_ms(playback["frame_time_p99_ms_max"]), count(playback["frames_over_33ms"]),
+                   fmt_ms(playback["lightmap_drain_cpu_max_ms"]),
+                   fmt_ms(playback["sh_drain_cpu_max_ms"]),
+                   count(playback["lightmap_late_block_frames"]),
+                   count(playback["sh_late_cluster_frames"])]], indent + "  ")
     return out
 
 

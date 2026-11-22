@@ -710,7 +710,8 @@ fn skipped_level_frame(app: &mut App) {
                 cpu: &cpu,
             },
         )
-        .expect("the in-play streaming step runs");
+        .expect("the in-play streaming step runs")
+        .sh_batch;
     renderer.skip_next_surface_acquire();
     let result = renderer
         .render_frame_indirect(
@@ -3138,6 +3139,7 @@ fn sources_above_level_loader() -> Vec<(PathBuf, String)> {
 /// `crates_above_level_loader_cover_every_dependent` keeps it complete.
 const CRATES_ABOVE_LEVEL_LOADER: &[&str] = &[
     "ai",
+    "camera-route",
     "level-compiler",
     "lighting",
     "netcode",

@@ -29,6 +29,8 @@ use swc_ecma_transforms_typescript::strip;
 use swc_ecma_visit::{VisitMut, VisitMutWith};
 
 pub mod light_membership;
+#[cfg(test)]
+mod sdk_tsconfig_tests;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -461,7 +463,8 @@ fn validate_bare_sdk_imports(module: &swc_ecma_ast::Module, path: &Path) -> Resu
 }
 
 /// Every engine SDK module id. Imports from these resolve to prelude globals
-/// and are stripped; the generated declarations type each one.
+/// and are stripped; the generated declarations type each one, and
+/// `sdk/templates/tsconfig.json` maps each one to them (`sdk_tsconfig_tests`).
 const BARE_SDK_SPECIFIERS: [&str; 3] = ["postretro", "postretro/ui", "postretro/audio"];
 
 fn is_bare_sdk_specifier(specifier: &str) -> bool {

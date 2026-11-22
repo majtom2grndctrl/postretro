@@ -123,6 +123,26 @@ impl Renderer {
         self.ghost_transparency
     }
 
+    /// Commit the mod's specular style (`render.specular.style`). CPU-only
+    /// boot state, so it is safe before full init and with no level loaded,
+    /// survives a full-renderer rebuild, and never enters a level build's
+    /// snapshot. The next group-0 upload snapshots it; forward's uniform
+    /// and the mover's beauty-pipeline choice (main view and planar mirror)
+    /// both read that snapshot, so a change reaches the next frame with no
+    /// pipeline build or bind-group rebuild: both mover pipelines exist from
+    /// full init. A renderer never told draws pixel, as frame capture does.
+    pub fn set_specular_style(
+        &mut self,
+        style: postretro_render_cpu::frame_uniforms::SpecularStyle,
+    ) {
+        self.specular_style = style;
+    }
+
+    /// The specular style the next frame draws.
+    pub fn specular_style(&self) -> postretro_render_cpu::frame_uniforms::SpecularStyle {
+        self.specular_style
+    }
+
     /// Runtime bloom state. `POSTRETRO_BLOOM=0` seeds this false for the
     /// manual no-bloom observation; dev-tools can then change it live.
     #[cfg(feature = "dev-tools")]
@@ -234,11 +254,8 @@ impl Renderer {
             .as_mut()
             .expect("toggle_vsync is a full-ready diagnostic path");
         full.vsync_enabled = !full.vsync_enabled;
-        surface_config.present_mode = if full.vsync_enabled {
-            wgpu::PresentMode::AutoVsync
-        } else {
-            wgpu::PresentMode::AutoNoVsync
-        };
+        surface_config.present_mode =
+            PresentChoice::from_vsync(full.vsync_enabled).wgpu_present_mode();
         surface
             .as_ref()
             .expect("toggle_vsync requires a windowed renderer")
@@ -249,6 +266,17 @@ impl Renderer {
 
     pub fn vsync_enabled(&self) -> bool {
         self.full().vsync_enabled
+    }
+
+    /// Camera-route playback's frame index for the frame about to record:
+    /// while `Some(k)`, the lightmap drain, SH upload-copies and frame
+    /// encoders each carry a `pr-frame <k> <site>` debug group (`<site>` is
+    /// `lightmap`, `sh` or `frame`), so a GPU trace attributes their work to
+    /// that frame and site. `None` marks nothing and leaves every encoder
+    /// label as it is. Set before the frame's streaming step.
+    #[cfg(feature = "dev-tools")]
+    pub fn set_frame_mark(&mut self, frame: Option<u64>) {
+        self.queue.set_frame_mark(frame);
     }
 
     /// Enables CPU stage timing for this renderer. Read once at startup by the

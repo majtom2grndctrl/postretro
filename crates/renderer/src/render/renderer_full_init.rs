@@ -345,6 +345,9 @@ pub(crate) fn build_full_renderer(
         mesh_dynamic_time: 0.0,
         frame_light_term_mask: LightTermMask::ALL,
         frame_indirect_scale: DEFAULT_INDIRECT_SCALE,
+        // Overwritten from boot state by every group-0 upload, before any
+        // consumer reads it.
+        frame_specular_style: postretro_render_cpu::frame_uniforms::SpecularStyle::Pixel,
         kinematic_mover_draws: Vec::new(),
         kinematic_mover_shadow_draws: Vec::new(),
         mover_occluder_aabbs: Vec::new(),

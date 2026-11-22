@@ -16,6 +16,8 @@ pub(super) fn admit_sh_working_sets(
     base: &ShBaseWorkingSetProjection,
     verbose: bool,
 ) -> anyhow::Result<()> {
+    #[cfg(test)]
+    recorded::record(&delta, base);
     if base.estimated_peak_bytes < delta.estimated_peak_bytes {
         admit_base(base)?;
         admit_delta(delta, verbose)
@@ -57,4 +59,30 @@ fn admit_base(projection: &ShBaseWorkingSetProjection) -> anyhow::Result<()> {
         projection.budget_bytes,
     );
     admission.map_err(anyhow::Error::new)
+}
+
+/// Test only: the projections this thread's last build admitted or refused.
+#[cfg(test)]
+pub(super) mod recorded {
+    use std::cell::RefCell;
+
+    use super::{DeltaWorkingSetProjection, ShBaseWorkingSetProjection};
+
+    thread_local! {
+        static LAST: RefCell<Option<(DeltaWorkingSetProjection, ShBaseWorkingSetProjection)>> =
+            const { RefCell::new(None) };
+    }
+
+    pub(in crate::pipeline) fn record(
+        delta: &DeltaWorkingSetProjection,
+        base: &ShBaseWorkingSetProjection,
+    ) {
+        LAST.with(|last| *last.borrow_mut() = Some((delta.clone(), base.clone())));
+    }
+
+    /// The projections the last build on this thread checked.
+    pub(in crate::pipeline) fn take()
+    -> Option<(DeltaWorkingSetProjection, ShBaseWorkingSetProjection)> {
+        LAST.with(|last| last.borrow_mut().take())
+    }
 }

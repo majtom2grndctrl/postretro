@@ -1,468 +1,20 @@
-// GPU readback of forward.wgsl's owner-based world static specular
-// (`world_static_specular`), fed per-face owners through a second vertex
-// buffer and a flat varying exactly as the forward pipeline delivers them.
-// See: context/lib/rendering_pipeline.md §4 (Static specular ownership)
+// GPU readback tests of forward.wgsl's world static specular: per-face owners,
+// the SDF selection, the pixel style's one point per albedo texel, and the
+// specular slot's per-texel sharpness (B) and tint (A).
+// See: context/lib/rendering_pipeline.md §4 (Static specular ownership,
+// Texel-centre highlight)
 //
-// Intentional exception to testing_guide.md §3 "No GPU context in tests": the
-// function is WGSL, so verifying it means running it. Each case renders quads
-// into a one-row `Rgba32Float` target; a pixel's world position is a fixed
-// function of its column. The harness self-skips without an adapter and says
-// so; a skipped run proves nothing. Set `POSTRETRO_REQUIRE_GPU` to any
-// non-empty value other than `0` to make a missing adapter fail instead.
+// Harness and its skip policy: `world_specular_harness.rs`.
 
-use super::gpu_test_harness::{GpuCtx, gpu_or_skip, wgsl_const_line, wgsl_function, wgsl_item};
+use std::collections::HashMap;
 
-const FORWARD_WGSL: &str = include_str!("../shaders/forward.wgsl");
-const MATERIAL_SHADING_WGSL: &str = include_str!("../shaders/material_shading.wgsl");
-const LIGHT_FALLOFF_WGSL: &str = include_str!("../shaders/light_falloff.wgsl");
-const SDF_LIGHT_SELECT_WGSL: &str = include_str!("../shaders/sdf_light_select.wgsl");
-
-const WIDTH: u32 = 16;
-const TEXEL_BYTES: u32 = 16;
-const EMPTY: u16 = 0xFFFF;
-const NO_OWNERS: [u16; 4] = [EMPTY; 4];
-
-fn shader_source() -> String {
-    let prelude = r#"
-struct SpecLight {
-    position_and_range: vec4<f32>,
-    color_and_pad:      vec4<f32>,
-    cone_dir_and_type:  vec4<f32>,
-    cone_cos:           vec4<f32>,
+use super::gpu_test_harness::{gpu_or_skip, wgsl_const_line, wgsl_function};
+use super::world_specular_harness::{
+    Case, EMPTY, FORWARD_WGSL, Face, Geometry, LATTICE, Light, MATERIAL_SHADING_WGSL, March,
+    MaterialCase, MaterialObserve, MaterialPath, NO_OWNERS, PIXELS_PER_TEXEL, Style, TEXEL_TARGET,
+    TexelCase, WIDTH, fragment_visibility, key_is_centre, reconstructed_texel_key, render,
+    render_material, render_texels,
 };
-struct Case {
-    mask: vec4<f32>,
-    sdf_factor: vec4<f32>,
-    sdf_indices: vec4<u32>,
-    sdf_count: u32,
-    owners_readable: u32,
-    spec_shadowmask_flags: u32,
-    sdf_force_lit: u32,
-};
-@group(0) @binding(0) var<uniform> uniforms: Case;
-@group(0) @binding(1) var<storage, read> spec_lights: array<SpecLight>;
-"#;
-    let entry = r#"
-struct HarnessVaryings {
-    @builtin(position) position: vec4<f32>,
-    @location(0) @interpolate(flat) owners: vec4<u32>,
-};
-
-@vertex
-fn vs_main(@location(0) ndc: vec2<f32>, @location(1) owners: vec4<u32>) -> HarnessVaryings {
-    var out: HarnessVaryings;
-    out.position = vec4<f32>(ndc, 0.0, 1.0);
-    out.owners = owners;
-    return out;
-}
-
-@fragment
-fn fs_main(in: HarnessVaryings) -> @location(0) vec4<f32> {
-    // Pixel column c sits at world x = (c + 0.5 - 8) * 0.25 on a floor facing +Y,
-    // viewed from straight above.
-    let world = vec3<f32>((in.position.x - 8.0) * 0.25, 0.0, 0.0);
-    let up = vec3<f32>(0.0, 1.0, 0.0);
-    var sel: SdfLightSelection;
-    sel.indices = array<u32, 4>(
-        uniforms.sdf_indices.x,
-        uniforms.sdf_indices.y,
-        uniforms.sdf_indices.z,
-        uniforms.sdf_indices.w,
-    );
-    sel.count = uniforms.sdf_count;
-    let specular = world_static_specular(
-        world,
-        up,
-        up,
-        8.0,
-        1.0,
-        in.owners,
-        uniforms.mask,
-        uniforms.owners_readable != 0u,
-        sel,
-        uniforms.sdf_factor,
-        uniforms.sdf_force_lit != 0u,
-    );
-    return vec4<f32>(specular, 1.0);
-}
-"#;
-    let consts = [
-        "SPEC_OWNER_EMPTY",
-        "SPEC_OWNER_CHANNELS",
-        "SPEC_LIGHT_TYPE_DIRECTIONAL",
-        "SPEC_SHADOWMASK_FLAG_FORCE_ONE",
-    ]
-    .map(|name| wgsl_const_line(FORWARD_WGSL, name))
-    .join("\n");
-    let helpers = [
-        wgsl_item(SDF_LIGHT_SELECT_WGSL, "struct SdfLightSelection {"),
-        wgsl_function(FORWARD_WGSL, "world_static_specular"),
-        wgsl_function(FORWARD_WGSL, "world_static_light_specular"),
-        wgsl_function(FORWARD_WGSL, "positional_cone_aim"),
-        wgsl_function(FORWARD_WGSL, "spec_shadowmask_forced_one"),
-        wgsl_function(FORWARD_WGSL, "shadowmask_channel_value"),
-        wgsl_function(FORWARD_WGSL, "slice_for_visibility"),
-        wgsl_function(FORWARD_WGSL, "cone_attenuation_cos"),
-        wgsl_function(MATERIAL_SHADING_WGSL, "blinn_phong"),
-        wgsl_function(LIGHT_FALLOFF_WGSL, "light_eval_falloff"),
-    ]
-    .join("\n\n");
-    format!("{prelude}\n{consts}\n{helpers}\n{entry}")
-}
-
-/// A spec light as `pack_spec_lights` lays it out.
-#[derive(Clone, Copy)]
-struct Light {
-    position: [f32; 3],
-    range: f32,
-    color: [f32; 3],
-    sdf: bool,
-    aim: [f32; 3],
-    kind: f32,
-}
-
-impl Light {
-    /// A linear-falloff point light 2 m above the edge between the two faces.
-    fn point(color: [f32; 3]) -> Self {
-        Self {
-            position: [0.0, 2.0, 0.0],
-            range: 10.0,
-            color,
-            sdf: false,
-            aim: [0.0; 3],
-            kind: 0.0,
-        }
-    }
-
-    fn directional(origin: [f32; 3], aim: [f32; 3]) -> Self {
-        Self {
-            position: origin,
-            range: 0.0,
-            color: [1.0, 1.0, 1.0],
-            sdf: false,
-            aim,
-            kind: 2.0,
-        }
-    }
-
-    fn bytes(self) -> Vec<u8> {
-        let floats = [
-            self.position[0],
-            self.position[1],
-            self.position[2],
-            self.range,
-            self.color[0],
-            self.color[1],
-            self.color[2],
-            if self.sdf { 1.0 } else { 0.0 },
-            self.aim[0],
-            self.aim[1],
-            self.aim[2],
-            self.kind,
-            1.0,
-            -1.0,
-            0.0,
-            0.0,
-        ];
-        floats.iter().flat_map(|f| f.to_ne_bytes()).collect()
-    }
-}
-
-/// Columns `[x0, x1)` of the one-row target, all of one face's owners.
-struct Face {
-    columns: (u32, u32),
-    owners: [u16; 4],
-}
-
-#[derive(Clone, Copy)]
-struct Case {
-    mask: [f32; 4],
-    sdf_factor: [f32; 4],
-    sdf_indices: [u32; 4],
-    sdf_count: u32,
-    owners_readable: bool,
-    force_one: bool,
-    sdf_force_lit: bool,
-}
-
-impl Default for Case {
-    fn default() -> Self {
-        Self {
-            mask: [1.0; 4],
-            sdf_factor: [1.0; 4],
-            sdf_indices: [u32::MAX; 4],
-            sdf_count: 0,
-            owners_readable: true,
-            force_one: false,
-            sdf_force_lit: false,
-        }
-    }
-}
-
-impl Case {
-    fn bytes(self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(64);
-        for f in self.mask.iter().chain(&self.sdf_factor) {
-            out.extend_from_slice(&f.to_ne_bytes());
-        }
-        let words = [
-            self.sdf_indices[0],
-            self.sdf_indices[1],
-            self.sdf_indices[2],
-            self.sdf_indices[3],
-            self.sdf_count,
-            u32::from(self.owners_readable),
-            // `SPEC_SHADOWMASK_FLAG_FORCE_ONE`, bit 0.
-            u32::from(self.force_one),
-            u32::from(self.sdf_force_lit),
-        ];
-        for word in words {
-            out.extend_from_slice(&word.to_ne_bytes());
-        }
-        out
-    }
-}
-
-/// Render `faces` with `lights` under `case`; one RGB specular sum per column.
-fn render(ctx: &GpuCtx, lights: &[Light], faces: &[Face], case: Case) -> Vec<[f32; 3]> {
-    use wgpu::util::DeviceExt;
-
-    let device = &ctx.device;
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("world_specular_test shader"),
-        source: wgpu::ShaderSource::Wgsl(shader_source().into()),
-    });
-
-    let mut positions: Vec<u8> = Vec::new();
-    let mut owners: Vec<u8> = Vec::new();
-    for face in faces {
-        let x0 = face.columns.0 as f32 / WIDTH as f32 * 2.0 - 1.0;
-        let x1 = face.columns.1 as f32 / WIDTH as f32 * 2.0 - 1.0;
-        for [x, y] in [
-            [x0, -1.0],
-            [x1, -1.0],
-            [x1, 1.0],
-            [x0, -1.0],
-            [x1, 1.0],
-            [x0, 1.0],
-        ] {
-            positions.extend_from_slice(&f32::to_ne_bytes(x));
-            positions.extend_from_slice(&f32::to_ne_bytes(y));
-            for owner in face.owners {
-                owners.extend_from_slice(&owner.to_ne_bytes());
-            }
-        }
-    }
-    let vertex_count = faces.len() as u32 * 6;
-    let position_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("world_specular_test positions"),
-        contents: &positions,
-        usage: wgpu::BufferUsages::VERTEX,
-    });
-    let owner_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("world_specular_test owners"),
-        contents: &owners,
-        usage: wgpu::BufferUsages::VERTEX,
-    });
-    let uniforms = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("world_specular_test case"),
-        contents: &case.bytes(),
-        usage: wgpu::BufferUsages::UNIFORM,
-    });
-    let light_bytes: Vec<u8> = lights.iter().flat_map(|light| light.bytes()).collect();
-    let light_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("world_specular_test spec lights"),
-        contents: &light_bytes,
-        usage: wgpu::BufferUsages::STORAGE,
-    });
-
-    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("world_specular_test layout"),
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-        ],
-    });
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("world_specular_test bind group"),
-        layout: &layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniforms.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: light_buffer.as_entire_binding(),
-            },
-        ],
-    });
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("world_specular_test pipeline layout"),
-        bind_group_layouts: &[Some(&layout)],
-        immediate_size: 0,
-    });
-    let target_format = wgpu::TextureFormat::Rgba32Float;
-    let position_attributes = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32x2,
-        offset: 0,
-        shader_location: 0,
-    }];
-    // The owner stream's layout: one Uint16x4 per vertex in its own buffer.
-    let owner_attributes = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Uint16x4,
-        offset: 0,
-        shader_location: 1,
-    }];
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("world_specular_test pipeline"),
-        layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &module,
-            entry_point: Some("vs_main"),
-            compilation_options: Default::default(),
-            buffers: &[
-                Some(wgpu::VertexBufferLayout {
-                    array_stride: 8,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &position_attributes,
-                }),
-                Some(wgpu::VertexBufferLayout {
-                    array_stride: 8,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &owner_attributes,
-                }),
-            ],
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: &module,
-            entry_point: Some("fs_main"),
-            compilation_options: Default::default(),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: target_format,
-                blend: None,
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-        }),
-        primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
-        multiview_mask: None,
-        cache: None,
-    });
-
-    let target = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("world_specular_test target"),
-        size: wgpu::Extent3d {
-            width: WIDTH,
-            height: 1,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: target_format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let target_view = target.create_view(&Default::default());
-    let row_bytes = (WIDTH * TEXEL_BYTES).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-    let readback = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("world_specular_test readback"),
-        size: u64::from(row_bytes),
-        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-
-    let mut encoder = device.create_command_encoder(&Default::default());
-    {
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("world_specular_test pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &target_view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: -1.0,
-                        g: -1.0,
-                        b: -1.0,
-                        a: 0.0,
-                    }),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        pass.set_pipeline(&pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
-        pass.set_vertex_buffer(0, position_buffer.slice(..));
-        pass.set_vertex_buffer(1, owner_buffer.slice(..));
-        pass.draw(0..vertex_count, 0..1);
-    }
-    encoder.copy_texture_to_buffer(
-        target.as_image_copy(),
-        wgpu::TexelCopyBufferInfo {
-            buffer: &readback,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(row_bytes),
-                rows_per_image: Some(1),
-            },
-        },
-        wgpu::Extent3d {
-            width: WIDTH,
-            height: 1,
-            depth_or_array_layers: 1,
-        },
-    );
-    ctx.queue.submit([encoder.finish()]);
-
-    let slice = readback.slice(..);
-    slice.map_async(wgpu::MapMode::Read, |result| {
-        result.expect("map world_specular_test readback");
-    });
-    device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .expect("poll world_specular_test device");
-    let bytes = slice
-        .get_mapped_range()
-        .expect("buffer mapped for readback");
-    let texels = bytes[..(WIDTH * TEXEL_BYTES) as usize]
-        .as_chunks::<{ TEXEL_BYTES as usize }>()
-        .0
-        .iter()
-        .map(|texel| {
-            let alpha = f32::from_ne_bytes(texel[12..16].try_into().unwrap());
-            assert_eq!(alpha, 1.0, "every column must be covered by a face");
-            std::array::from_fn(|c| f32::from_ne_bytes(texel[c * 4..c * 4 + 4].try_into().unwrap()))
-        })
-        .collect();
-    drop(bytes);
-    readback.unmap();
-    texels
-}
 
 fn one_face(owners: [u16; 4]) -> [Face; 1] {
     [Face {
@@ -923,4 +475,1308 @@ fn sdf_directional_specular_stays_keyed_on_its_origin() {
         "owned directional is uniform",
     );
     assert_ne!(owned, here);
+}
+
+// --- Texel-centre highlight (pixel style) and the smooth style ---
+
+const OWNER_0: [u16; 4] = [0, EMPTY, EMPTY, EMPTY];
+
+/// A point light and an eye off the floor's low corner, so the highlight
+/// falls off monotonically across the whole floor along x and z.
+fn flank_light() -> Light {
+    Light::point(WHITE).at([-1.0, 1.5, -1.0], 10.0)
+}
+
+/// A spot straight down over the floor's middle, its cone edge crossing
+/// texels.
+fn spot_light() -> Light {
+    Light::spot([2.0, 2.0, 2.0], [0.0, -1.0, 0.0], 20.0, 30.0)
+}
+
+fn sun() -> Light {
+    Light::directional([2.0, 5.0, 2.0], [0.6, -0.8, 0.0])
+}
+
+/// A point light low over the floor's middle whose range circle crosses
+/// texels.
+fn ranged_light() -> Light {
+    Light::point(WHITE).at([2.0, 0.5, 2.0], 1.5)
+}
+
+fn pixel_index(x: u32, y: u32) -> usize {
+    (y * TEXEL_TARGET + x) as usize
+}
+
+fn pixels() -> impl Iterator<Item = (u32, u32)> {
+    (0..TEXEL_TARGET).flat_map(|y| (0..TEXEL_TARGET).map(move |x| (x, y)))
+}
+
+/// Every fragment, grouped by the texel coordinate its shading UV
+/// reconstructs to under `march`.
+fn texel_groups(march: March) -> HashMap<(i64, i64), Vec<usize>> {
+    let mut groups: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    for (x, y) in pixels() {
+        groups
+            .entry(reconstructed_texel_key(x, y, march))
+            .or_default()
+            .push(pixel_index(x, y));
+    }
+    groups
+}
+
+/// Every fragment reconstructing to one texel coordinate draws one value.
+fn assert_constant_per_texel(out: &[[f32; 3]], march: March, what: &str) {
+    let groups = texel_groups(march);
+    assert!(
+        groups.values().filter(|members| members.len() > 1).count() >= 16,
+        "{what}: the target must hold many multi-fragment texels",
+    );
+    for (key, members) in groups {
+        let first = out[members[0]];
+        for &member in &members {
+            assert_eq!(
+                out[member], first,
+                "{what}: texel {key:?} must draw one value, fragment {member}"
+            );
+        }
+    }
+}
+
+/// A fragment well inside albedo texel (tx, ty), clear of every seam band.
+fn interior_value(out: &[[f32; 3]], tx: u32, ty: u32) -> [f32; 3] {
+    out[pixel_index(
+        tx * PIXELS_PER_TEXEL + PIXELS_PER_TEXEL / 2,
+        ty * PIXELS_PER_TEXEL + PIXELS_PER_TEXEL / 2,
+    )]
+}
+
+/// Whether some fragment of one un-marched texel interior differs from
+/// another.
+fn varies_inside_some_texel(out: &[[f32; 3]]) -> bool {
+    texel_groups(March::OFF)
+        .into_iter()
+        .any(|((kx, ky), members)| {
+            key_is_centre(kx)
+                && key_is_centre(ky)
+                && members.iter().any(|&m| out[m] != out[members[0]])
+        })
+}
+
+fn bits(value: [f32; 3]) -> [u32; 3] {
+    value.map(f32::to_bits)
+}
+
+#[test]
+fn pixel_specular_is_constant_inside_a_magnified_texel() {
+    let Some(ctx) = gpu_or_skip("pixel_specular_is_constant_inside_a_magnified_texel") else {
+        return;
+    };
+    for (name, light) in [
+        ("point", flank_light()),
+        ("spot", spot_light()),
+        ("directional", sun()),
+    ] {
+        for march in [March::OFF, March::ON] {
+            let out = render_texels(
+                &ctx,
+                &[light],
+                OWNER_0,
+                TexelCase {
+                    march,
+                    ..TexelCase::new(Style::Pixel)
+                },
+            );
+            assert_constant_per_texel(&out, march, &format!("{name} owner, {march:?}"));
+        }
+    }
+
+    // Neighbouring texels sit at different points, so their highlights
+    // differ, along both texture axes.
+    for (name, light) in [("point", flank_light()), ("directional", sun())] {
+        let out = render_texels(&ctx, &[light], OWNER_0, TexelCase::new(Style::Pixel));
+        for a in 0..LATTICE {
+            for b in 0..LATTICE - 1 {
+                assert_ne!(
+                    interior_value(&out, b, a),
+                    interior_value(&out, b + 1, a),
+                    "{name}: texels ({b}, {a}) and ({}, {a})",
+                    b + 1
+                );
+                assert_ne!(
+                    interior_value(&out, a, b),
+                    interior_value(&out, a, b + 1),
+                    "{name}: texels ({a}, {b}) and ({a}, {})",
+                    b + 1
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn smooth_specular_varies_inside_a_magnified_texel() {
+    let Some(ctx) = gpu_or_skip("smooth_specular_varies_inside_a_magnified_texel") else {
+        return;
+    };
+    for (name, light) in [
+        ("point", flank_light()),
+        ("spot", spot_light()),
+        ("directional", sun()),
+    ] {
+        let out = render_texels(&ctx, &[light], OWNER_0, TexelCase::new(Style::Smooth));
+        assert!(
+            varies_inside_some_texel(&out),
+            "{name}: smooth evaluates per fragment, so a texel's fragments differ",
+        );
+    }
+}
+
+#[test]
+fn pixel_seam_band_lies_between_neighbouring_texels() {
+    let Some(ctx) = gpu_or_skip("pixel_seam_band_lies_between_neighbouring_texels") else {
+        return;
+    };
+    let out = render_texels(
+        &ctx,
+        &[flank_light()],
+        OWNER_0,
+        TexelCase::new(Style::Pixel),
+    );
+    let mut checked = 0;
+    for (x, y) in pixels() {
+        let (kx, ky) = reconstructed_texel_key(x, y, March::OFF);
+        let band_along_u = !key_is_centre(kx) && key_is_centre(ky);
+        let band_along_v = key_is_centre(kx) && !key_is_centre(ky);
+        // The texels either side of the seam the fragment's band straddles.
+        let (tx, ty) = (x / PIXELS_PER_TEXEL, y / PIXELS_PER_TEXEL);
+        let neighbours = if band_along_u && tx + 1 < LATTICE {
+            [
+                interior_value(&out, tx, ty),
+                interior_value(&out, tx + 1, ty),
+            ]
+        } else if band_along_v && ty + 1 < LATTICE {
+            [
+                interior_value(&out, tx, ty),
+                interior_value(&out, tx, ty + 1),
+            ]
+        } else {
+            continue;
+        };
+        let value = out[pixel_index(x, y)][0];
+        let (low, high) = (
+            neighbours[0][0].min(neighbours[1][0]),
+            neighbours[0][0].max(neighbours[1][0]),
+        );
+        assert!(
+            low < value && value < high,
+            "seam fragment ({x}, {y}) draws {value}, outside its neighbours' {low}..{high}",
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 2 * 7 * 7 * 7,
+        "every interior seam crossing must be checked, got {checked}"
+    );
+}
+
+#[test]
+fn pixel_specular_holds_across_range_and_cone_boundaries() {
+    let Some(ctx) = gpu_or_skip("pixel_specular_holds_across_range_and_cone_boundaries") else {
+        return;
+    };
+    for (name, light) in [("range", ranged_light()), ("cone", spot_light())] {
+        for march in [March::OFF, March::ON] {
+            let case = TexelCase {
+                march,
+                ..TexelCase::new(Style::Pixel)
+            };
+            let pixel = render_texels(&ctx, &[light], OWNER_0, case);
+            assert_constant_per_texel(&pixel, march, &format!("{name} boundary, {march:?}"));
+        }
+        // The boundary crosses texel interiors: per fragment it splits them,
+        // and the texel's own point decides the whole texel both ways.
+        let pixel = render_texels(&ctx, &[light], OWNER_0, TexelCase::new(Style::Pixel));
+        let smooth = render_texels(&ctx, &[light], OWNER_0, TexelCase::new(Style::Smooth));
+        let lit_past_the_boundary =
+            (0..pixel.len()).any(|i| smooth[i][0] == 0.0 && pixel[i][0] > 0.0);
+        let dark_inside_it = (0..pixel.len()).any(|i| smooth[i][0] > 0.0 && pixel[i][0] == 0.0);
+        assert!(
+            lit_past_the_boundary && dark_inside_it,
+            "{name}: the boundary must cross texels whose centres fall on either side",
+        );
+    }
+}
+
+#[test]
+fn pixel_point_anchors_on_the_fragment_uv_under_a_march() {
+    let Some(ctx) = gpu_or_skip("pixel_point_anchors_on_the_fragment_uv_under_a_march") else {
+        return;
+    };
+    let lights = [flank_light()];
+    let flat = render_texels(&ctx, &lights, OWNER_0, TexelCase::new(Style::Pixel));
+    let marched = render_texels(
+        &ctx,
+        &lights,
+        OWNER_0,
+        TexelCase {
+            march: March::ON,
+            ..TexelCase::new(Style::Pixel)
+        },
+    );
+    assert_constant_per_texel(&marched, March::ON, "marched");
+    // Fragments from different texels of the plane land on one texel.
+    let gathered = texel_groups(March::ON).values().any(|members| {
+        let own = |m: usize| {
+            let (x, y) = (m as u32 % TEXEL_TARGET, m as u32 / TEXEL_TARGET);
+            reconstructed_texel_key(x, y, March::OFF)
+        };
+        members.iter().any(|&m| own(m) != own(members[0]))
+    });
+    assert!(
+        gathered,
+        "the march must gather fragments from several own texels"
+    );
+
+    // The point is the texel the march landed on, placed on the plane from
+    // the fragment's own UV and position: the un-marched fragment that
+    // reconstructs to that texel draws the same value.
+    let mut flat_by_texel = HashMap::new();
+    for (x, y) in pixels() {
+        flat_by_texel.insert(
+            reconstructed_texel_key(x, y, March::OFF),
+            flat[pixel_index(x, y)],
+        );
+    }
+    let mut matched = 0;
+    for (x, y) in pixels() {
+        if let Some(expected) = flat_by_texel.get(&reconstructed_texel_key(x, y, March::ON)) {
+            assert_eq!(
+                marched[pixel_index(x, y)],
+                *expected,
+                "fragment ({x}, {y}) under the march"
+            );
+            matched += 1;
+        }
+    }
+    assert!(
+        matched > (TEXEL_TARGET * TEXEL_TARGET / 2) as usize,
+        "most marched fragments land on a texel the plane also shows, got {matched}",
+    );
+    assert_ne!(flat, marched, "the march moves the highlight");
+}
+
+#[test]
+fn pixel_specular_scales_by_each_fragments_own_visibility() {
+    let Some(ctx) = gpu_or_skip("pixel_specular_scales_by_each_fragments_own_visibility") else {
+        return;
+    };
+    let sdf_light = Light {
+        sdf: true,
+        ..flank_light()
+    };
+    let sdf_selected = Case {
+        sdf_indices: [0, u32::MAX, u32::MAX, u32::MAX],
+        sdf_count: 1,
+        ..Case::default()
+    };
+    for (name, light, owners, shadowing) in [
+        ("owner mask", flank_light(), OWNER_0, Case::default()),
+        ("SDF slice", sdf_light, NO_OWNERS, sdf_selected),
+    ] {
+        let case = TexelCase {
+            shadowing,
+            ..TexelCase::new(Style::Pixel)
+        };
+        let unshadowed = render_texels(&ctx, &[light], owners, case);
+        let shadowed = render_texels(
+            &ctx,
+            &[light],
+            owners,
+            TexelCase {
+                per_fragment_visibility: true,
+                ..case
+            },
+        );
+        assert_constant_per_texel(&unshadowed, March::OFF, name);
+        for (x, y) in pixels() {
+            let i = pixel_index(x, y);
+            let visibility = fragment_visibility(x, y);
+            assert_eq!(
+                shadowed[i],
+                unshadowed[i].map(|c| c * visibility),
+                "{name}: fragment ({x}, {y}) at visibility {visibility}"
+            );
+        }
+        assert!(
+            varies_inside_some_texel(&shadowed),
+            "{name}: visibility stays per fragment"
+        );
+    }
+}
+
+#[test]
+fn degenerate_jacobian_specular_matches_the_per_pixel_evaluation() {
+    let Some(ctx) = gpu_or_skip("degenerate_jacobian_specular_matches_the_per_pixel_evaluation")
+    else {
+        return;
+    };
+    let lights = [flank_light(), spot_light(), sun()];
+    let owners = [0, 1, 2, EMPTY];
+    for geometry in [Geometry::EdgeOn, Geometry::CollapsedUv] {
+        for march in [March::OFF, March::ON] {
+            let case = |style| TexelCase {
+                geometry,
+                march,
+                ..TexelCase::new(style)
+            };
+            let pixel = render_texels(&ctx, &lights, owners, case(Style::Pixel));
+            let smooth = render_texels(&ctx, &lights, owners, case(Style::Smooth));
+            for (i, (p, s)) in pixel.iter().zip(&smooth).enumerate() {
+                assert!(
+                    p.iter().all(|c| c.is_finite()),
+                    "{geometry:?}: fragment {i} is {p:?}"
+                );
+                assert_eq!(
+                    bits(*p),
+                    bits(*s),
+                    "{geometry:?}, {march:?}: fragment {i} must fall back to per pixel"
+                );
+            }
+            assert!(
+                pixel.iter().any(|p| p[0] > 0.0),
+                "{geometry:?}: the lights must reach the floor"
+            );
+        }
+    }
+}
+
+#[test]
+fn smooth_specular_matches_the_frozen_pre_change_function() {
+    let Some(ctx) = gpu_or_skip("smooth_specular_matches_the_frozen_pre_change_function") else {
+        return;
+    };
+    let sdf_light = Light {
+        sdf: true,
+        ..flank_light()
+    };
+    let all_lights = [
+        flank_light(),
+        spot_light(),
+        sun(),
+        ranged_light(),
+        sdf_light,
+    ];
+    let smooth = TexelCase::new(Style::Smooth);
+    let sdf_selected = Case {
+        sdf_indices: [4, u32::MAX, u32::MAX, u32::MAX],
+        sdf_count: 1,
+        sdf_factor: [0.5, 1.0, 1.0, 1.0],
+        ..Case::default()
+    };
+    let cases = [
+        ("owners", smooth),
+        (
+            "owner masks and SDF selection",
+            TexelCase {
+                shadowing: Case {
+                    mask: [0.9, 0.6, 0.3, 0.15],
+                    ..sdf_selected
+                },
+                ..smooth
+            },
+        ),
+        (
+            "per-fragment visibility",
+            TexelCase {
+                shadowing: sdf_selected,
+                per_fragment_visibility: true,
+                ..smooth
+            },
+        ),
+        (
+            "force-one",
+            TexelCase {
+                shadowing: Case {
+                    mask: [0.0; 4],
+                    force_one: true,
+                    ..Case::default()
+                },
+                ..smooth
+            },
+        ),
+        (
+            "unreadable owners",
+            TexelCase {
+                shadowing: Case {
+                    owners_readable: false,
+                    sdf_force_lit: true,
+                    ..sdf_selected
+                },
+                ..smooth
+            },
+        ),
+        (
+            "march",
+            TexelCase {
+                march: March::ON,
+                ..smooth
+            },
+        ),
+        (
+            "edge-on",
+            TexelCase {
+                geometry: Geometry::EdgeOn,
+                ..smooth
+            },
+        ),
+        (
+            "collapsed UV",
+            TexelCase {
+                geometry: Geometry::CollapsedUv,
+                ..smooth
+            },
+        ),
+        (
+            "sharp exponent",
+            TexelCase {
+                exponent: 96.0,
+                ..smooth
+            },
+        ),
+    ];
+    for (name, case) in cases {
+        let current = render_texels(&ctx, &all_lights, [0, 1, 2, 3], case);
+        let frozen = render_texels(
+            &ctx,
+            &all_lights,
+            [0, 1, 2, 3],
+            TexelCase {
+                frozen: true,
+                ..case
+            },
+        );
+        for (i, (c, f)) in current.iter().zip(&frozen).enumerate() {
+            assert_eq!(
+                bits(*c),
+                bits(*f),
+                "{name}: fragment {i} is {c:?}, the 1c7fc9e3a function drew {f:?}"
+            );
+        }
+        assert!(
+            current.iter().any(|p| p[0] > 0.0),
+            "{name}: the lights must reach the floor"
+        );
+    }
+}
+
+/// `src` with every `//` comment removed, then every whitespace character.
+fn squashed_code(src: &str) -> String {
+    src.lines()
+        .map(|line| line.split("//").next().unwrap_or(""))
+        .collect::<String>()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect()
+}
+
+#[test]
+fn forward_fs_main_builds_the_specular_point_through_the_shared_builder() {
+    let fs = squashed_code(wgsl_function(FORWARD_WGSL, "fs_main"));
+    assert!(
+        fs.contains("letddx=dpdx(in.uv);letddy=dpdy(in.uv);")
+            && fs.contains(
+                "letddx_world=dpdx(in.world_position);letddy_world=dpdy(in.world_position);"
+            ),
+        "the builder's derivatives are fs_main's hoisted ones",
+    );
+    assert_eq!(fs.matches("specular_texel_point(").count(), 1);
+    assert!(
+        fs.contains(
+            "letspec_point=specular_texel_point(specular_style_smooth(),\
+             SpecularPoint(in.world_position,V),in.uv,shade_uv,in.world_position,\
+             uniforms.camera_position,vec2<f32>(textureDimensions(base_texture,0)),\
+             ddx,ddy,ddx_world,ddy_world,);"
+        ),
+        "fs_main feeds the builder its own UV, the marched UV, its plane position, \
+         the albedo lattice and the hoisted derivatives",
+    );
+    assert!(
+        fs.contains("world_static_specular(spec_point.position,N_shade,spec_point.view,"),
+        "world static specular takes L and V from the built point",
+    );
+    // One shared definition: forward calls the material snippet's builder and
+    // reconstruction, and never redeclares either.
+    let composed = super::pipeline_layout::SHADER_SOURCE;
+    for name in [
+        "specular_texel_point",
+        "post_retro_texel_uv",
+        "struct SpecularPoint",
+    ] {
+        let declaration = if name.starts_with("struct") {
+            format!("{name} {{")
+        } else {
+            format!("fn {name}(")
+        };
+        assert!(
+            !FORWARD_WGSL.contains(&declaration),
+            "forward must not redeclare {name}"
+        );
+        assert!(
+            MATERIAL_SHADING_WGSL.contains(&declaration),
+            "{name} lives in material_shading.wgsl"
+        );
+        assert_eq!(
+            composed.matches(&declaration).count(),
+            1,
+            "{name} is composed once"
+        );
+    }
+    assert!(
+        squashed_code(wgsl_function(FORWARD_WGSL, "sample_post_retro"))
+            .contains("post_retro_texel_uv(uv,dims,ddx,ddy)"),
+        "forward's texture sample reconstructs through the shared function",
+    );
+}
+
+#[test]
+fn spec_shadowmask_flag_bits_match_the_cpu_constants() {
+    use postretro_render_cpu::frame_uniforms::{
+        SPEC_SHADOWMASK_FLAG_FORCE_ONE, SPEC_SHADOWMASK_FLAG_MASK_PRESENT,
+        SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH,
+    };
+    for (name, cpu) in [
+        (
+            "SPEC_SHADOWMASK_FLAG_FORCE_ONE",
+            SPEC_SHADOWMASK_FLAG_FORCE_ONE,
+        ),
+        (
+            "SPEC_SHADOWMASK_FLAG_MASK_PRESENT",
+            SPEC_SHADOWMASK_FLAG_MASK_PRESENT,
+        ),
+        (
+            "SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH",
+            SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH,
+        ),
+    ] {
+        let line = wgsl_const_line(FORWARD_WGSL, name);
+        let value = line
+            .split('=')
+            .nth(1)
+            .and_then(|rhs| rhs.trim().strip_suffix("u;"))
+            .and_then(|digits| digits.parse::<u32>().ok())
+            .unwrap_or_else(|| panic!("`{line}` must be a decimal u32 literal"));
+        assert_eq!(value, cpu, "{name}");
+    }
+}
+
+// --- Per-texel sharpness and tint (specular slot B and A) ---
+
+/// Owners 0..=3 of `material_lights`: point, spot, directional and ranged.
+const MATERIAL_OWNERS: [u16; 4] = [0, 1, 2, 3];
+
+fn material_lights() -> [Light; 4] {
+    [flank_light(), spot_light(), sun(), ranged_light()]
+}
+
+fn rgba_bits(value: [f32; 4]) -> [u32; 4] {
+    value.map(f32::to_bits)
+}
+
+/// The interior fragment of each of the `LATTICE`² texels, with its texel.
+fn texel_interiors() -> impl Iterator<Item = ((u32, u32), usize)> {
+    (0..LATTICE).flat_map(|ty| {
+        (0..LATTICE).map(move |tx| {
+            let index = pixel_index(
+                tx * PIXELS_PER_TEXEL + PIXELS_PER_TEXEL / 2,
+                ty * PIXELS_PER_TEXEL + PIXELS_PER_TEXEL / 2,
+            );
+            ((tx, ty), index)
+        })
+    })
+}
+
+/// How the floor maps onto the target, and the texture size it samples.
+#[derive(Clone, Copy, Debug)]
+enum Footprint {
+    /// `LATTICE`² texels magnified 8×, every seam band crossed.
+    Magnified,
+    /// 2.5 texels per pixel: trilinear between mips 1 and 2.
+    Minified,
+    /// Half a texel per pixel along x and seven along y: an anisotropic,
+    /// grazing footprint.
+    Grazing,
+}
+
+const FOOTPRINTS: [Footprint; 3] = [
+    Footprint::Magnified,
+    Footprint::Minified,
+    Footprint::Grazing,
+];
+
+impl Footprint {
+    fn texture_size(self) -> u32 {
+        match self {
+            Footprint::Magnified => LATTICE,
+            Footprint::Minified | Footprint::Grazing => 64,
+        }
+    }
+
+    fn uv_per_pixel(self) -> [f32; 2] {
+        let pixel = 1.0 / TEXEL_TARGET as f32;
+        match self {
+            Footprint::Magnified => [pixel; 2],
+            Footprint::Minified => [pixel * 2.5; 2],
+            Footprint::Grazing => [pixel * 0.5, pixel * 7.0],
+        }
+    }
+}
+
+/// A `_p` slot: smoothness byte 1 on every texel, no tint.
+const SHARP_MARKER_TEXEL: [u8; 4] = [255, 127, 1, 255];
+/// A `_t` slot: no smoothness, tint byte 254 (t = 1) on every texel.
+const TINT_MARKER_TEXEL: [u8; 4] = [255, 127, 0, 254];
+
+/// Smoothness bytes across the decode's bands: 0 (no `_p`), the flat band
+/// 1–24, the curve, and the cap band 224–255.
+fn smoothness_byte(tx: u32, ty: u32) -> u8 {
+    const LISTED: [u8; 45] = [
+        0, 1, 2, 12, 24, 25, 26, 30, 40, 50, 64, 80, 96, 100, 110, 120, 127, 128, 129, 140, 150,
+        160, 170, 180, 190, 200, 205, 210, 215, 220, 222, 223, 224, 225, 226, 230, 235, 240, 245,
+        250, 251, 252, 253, 254, 255,
+    ];
+    let i = (ty * LATTICE + tx) as usize;
+    LISTED.get(i).copied().unwrap_or(((i * 37) % 256) as u8)
+}
+
+#[test]
+fn sharpness_decode_matches_the_cpu_reference() {
+    use super::specular_slot_fixtures::{SlotFormat, white_material};
+    use postretro_render_cpu::specular_texel::texel_exponent;
+    let Some(ctx) = gpu_or_skip("sharpness_decode_matches_the_cpu_reference") else {
+        return;
+    };
+    let material = white_material(&ctx, LATTICE, SlotFormat::Rgba8, &|tx, ty| {
+        [200, 127, smoothness_byte(tx, ty), 255]
+    });
+    let prefix = 64.0;
+    for style in [Style::Pixel, Style::Smooth] {
+        let case = MaterialCase {
+            prefix_exponent: prefix,
+            ..MaterialCase::new(style)
+        };
+        let lights = material_lights();
+        let slot = render_material(
+            &ctx,
+            &lights,
+            MATERIAL_OWNERS,
+            &material,
+            case,
+            MaterialObserve::Slot,
+        );
+        let texel = render_material(
+            &ctx,
+            &lights,
+            MATERIAL_OWNERS,
+            &material,
+            case,
+            MaterialObserve::Texel,
+        );
+        for ((tx, ty), i) in texel_interiors() {
+            let byte = smoothness_byte(tx, ty);
+            let b = slot[i][2];
+            let what = format!("{style:?}: texel ({tx}, {ty}), byte {byte}");
+            assert!(
+                (b - f32::from(byte) / 255.0).abs() <= 0.5 / 255.0,
+                "{what}: sampled B {b}"
+            );
+            let exponent = texel[i][0];
+            let expected = texel_exponent(b, prefix);
+            match byte {
+                0 => assert_eq!(exponent, prefix, "{what}: no `_p` keeps the prefix"),
+                1..=24 => assert_eq!(exponent, 1.0, "{what}"),
+                224..=255 => assert_eq!(exponent, 8192.0, "{what}: past the cap"),
+                _ => assert!(
+                    (exponent - expected).abs() <= expected * 2.0e-6,
+                    "{what}: {exponent} vs the CPU's {expected}"
+                ),
+            }
+        }
+        // The decoded exponent is the one the highlight shades at: the wiring
+        // before tint, fed that exponent, draws the same bits.
+        let current = render_material(
+            &ctx,
+            &lights,
+            MATERIAL_OWNERS,
+            &material,
+            case,
+            MaterialObserve::Shade,
+        );
+        let oracle = render_material(
+            &ctx,
+            &lights,
+            MATERIAL_OWNERS,
+            &material,
+            MaterialCase {
+                path: MaterialPath::Oracle,
+                oracle_decodes: true,
+                ..case
+            },
+            MaterialObserve::Shade,
+        );
+        for (i, (c, o)) in current.iter().zip(&oracle).enumerate() {
+            assert_eq!(rgba_bits(*c), rgba_bits(*o), "{style:?}: fragment {i}");
+        }
+        let raw = render_material(
+            &ctx,
+            &lights,
+            MATERIAL_OWNERS,
+            &material,
+            case,
+            MaterialObserve::RawSpecular,
+        );
+        let interior: Vec<[f32; 4]> = texel_interiors().map(|(_, i)| raw[i]).collect();
+        assert!(
+            interior.iter().any(|p| p[0] > 0.0) && interior.windows(2).any(|w| w[0] != w[1]),
+            "{style:?}: the lights reach the floor and the exponent varies the highlight"
+        );
+    }
+}
+
+/// Albedo rows (sRGB bytes) for the tint cases: a dark green, a bronze, grey,
+/// black, a bright and a dim orange of near one hue, a saturated blue, white.
+const TINT_ALBEDOS: [[u8; 4]; LATTICE as usize] = [
+    [28, 64, 40, 255],
+    [150, 96, 44, 255],
+    [128, 128, 128, 255],
+    [0, 0, 0, 255],
+    [255, 140, 60, 255],
+    [128, 70, 30, 255],
+    [20, 40, 230, 255],
+    [255, 255, 255, 255],
+];
+/// Tint bytes by column: t = 0, three mid values, t = 1, untinted, and t = 0
+/// and 1 again under the other intensity.
+const TINT_BYTES: [u8; LATTICE as usize] = [0, 64, 127, 190, 254, 255, 0, 254];
+
+fn tint_intensity(tx: u32) -> u8 {
+    if tx < 6 { 255 } else { 96 }
+}
+
+fn assert_rgb_close(actual: [f32; 4], expected: [f32; 3], what: &str) {
+    for c in 0..3 {
+        assert!(
+            (actual[c] - expected[c]).abs() <= 2.0e-6 + expected[c].abs() * 2.0e-5,
+            "{what}: channel {c} is {actual:?}, expected {expected:?}"
+        );
+    }
+}
+
+#[test]
+fn tint_mix_matches_the_cpu_reference() {
+    use super::specular_slot_fixtures::{SlotFormat, material_textures};
+    use postretro_render_cpu::specular_texel::{tint_amount, tint_color};
+    let Some(ctx) = gpu_or_skip("tint_mix_matches_the_cpu_reference") else {
+        return;
+    };
+    let material = material_textures(
+        &ctx,
+        LATTICE,
+        &|_, ty| TINT_ALBEDOS[ty as usize],
+        SlotFormat::Rgba8,
+        &|tx, _| [tint_intensity(tx), 127, 0, TINT_BYTES[tx as usize]],
+    );
+    let lights = material_lights();
+    for style in [Style::Pixel, Style::Smooth] {
+        let case = MaterialCase::new(style);
+        let observe =
+            |observe| render_material(&ctx, &lights, MATERIAL_OWNERS, &material, case, observe);
+        let slot = observe(MaterialObserve::Slot);
+        let texel = observe(MaterialObserve::Texel);
+        let albedo = observe(MaterialObserve::Albedo);
+        let raw = observe(MaterialObserve::RawSpecular);
+        let out = observe(MaterialObserve::SpecularOut);
+        for ((tx, ty), i) in texel_interiors() {
+            let what = format!(
+                "{style:?}: texel ({tx}, {ty}), tint byte {}",
+                TINT_BYTES[tx as usize]
+            );
+            let rgb = |p: [f32; 4]| [p[0], p[1], p[2]];
+            assert!(raw[i][0] > 0.0, "{what}: the lights reach the texel");
+            match tint_amount(slot[i][3]) {
+                Some(t) => {
+                    assert_eq!(texel[i][2], 1.0, "{what}: tinted");
+                    assert!(
+                        (texel[i][3] - t).abs() <= 1.0e-6,
+                        "{what}: t {} vs {t}",
+                        texel[i][3]
+                    );
+                    let tint = tint_color(rgb(albedo[i]), t);
+                    let expected = std::array::from_fn(|c| raw[i][c] * tint[c]);
+                    assert_rgb_close(out[i], expected, &what);
+                }
+                None => {
+                    assert_eq!(TINT_BYTES[tx as usize], 255, "{what}");
+                    assert_eq!(texel[i][2], 0.0, "{what}: untinted");
+                    let expected = std::array::from_fn(|c| raw[i][c] * albedo[i][c]);
+                    assert_rgb_close(out[i], expected, &what);
+                }
+            }
+            // The AC's cases, on the GPU's own output: t = 0 glints white
+            // times intensity; grey, black and white glint white at any t.
+            let white = TINT_BYTES[tx as usize] == 0 || matches!(ty, 2 | 3 | 7);
+            if white && TINT_BYTES[tx as usize] != 255 {
+                assert_rgb_close(out[i], rgb(raw[i]), &format!("{what}: glints white"));
+            }
+        }
+        // A mid tint lies between its row's t = 0 and t = 1 results, per
+        // unit of raw specular.
+        for ty in [0, 1, 4, 5, 6] {
+            let ratio = |tx: u32| {
+                let i = texel_interiors().find(|(t, _)| *t == (tx, ty)).unwrap().1;
+                [0, 1, 2].map(|c| out[i][c] / raw[i][c])
+            };
+            let (white, hue) = (ratio(0), ratio(4));
+            for tx in 1..=3 {
+                let mid = ratio(tx);
+                for c in 0..3 {
+                    let (lo, hi) = (white[c].min(hue[c]), white[c].max(hue[c]));
+                    assert!(
+                        lo - 1.0e-5 <= mid[c] && mid[c] <= hi + 1.0e-5,
+                        "{style:?}: row {ty} column {tx} channel {c}: {mid:?} between {white:?} and {hue:?}"
+                    );
+                }
+            }
+        }
+        // Bright and dim orange share a hue to within 8-bit sRGB rounding:
+        // their t = 1 glints agree per unit of raw specular far closer than
+        // their albedos do.
+        let unit = |ty: u32| {
+            let i = texel_interiors().find(|(t, _)| *t == (4, ty)).unwrap().1;
+            [0, 1, 2].map(|c| out[i][c] / raw[i][c])
+        };
+        let (bright, dim) = (unit(4), unit(5));
+        for c in 0..3 {
+            assert!(
+                (bright[c] - dim[c]).abs() < 0.03,
+                "{style:?}: {bright:?} vs {dim:?}"
+            );
+        }
+    }
+}
+
+/// A specular slot of `format` whose intensity, height and (four-channel)
+/// smoothness vary per texel; never tinted.
+fn untinted_slot(
+    format: super::specular_slot_fixtures::SlotFormat,
+) -> impl Fn(u32, u32) -> [u8; 4] {
+    use super::specular_slot_fixtures::SlotFormat;
+    move |tx, ty| {
+        let intensity = (40 + 29 * tx + 11 * ty) as u8;
+        let height = (60 + 17 * ty) as u8;
+        let smoothness = if format == SlotFormat::Rgba8 {
+            smoothness_byte(tx, ty).max(1)
+        } else {
+            0
+        };
+        [intensity, height, smoothness, 255]
+    }
+}
+
+fn varied_albedo(tx: u32, ty: u32) -> [u8; 4] {
+    let (tx, ty) = (tx % 8, ty % 8);
+    [
+        (30 + 25 * tx) as u8,
+        (200 - 20 * ty) as u8,
+        (90 + 13 * (tx ^ ty)) as u8,
+        255,
+    ]
+}
+
+#[test]
+fn untinted_specular_matches_the_frozen_pre_change_function() {
+    use super::specular_slot_fixtures::{SlotFormat, material_textures};
+    let Some(ctx) = gpu_or_skip("untinted_specular_matches_the_frozen_pre_change_function") else {
+        return;
+    };
+    let lights = material_lights();
+    let shadowing = [
+        Case::default(),
+        Case {
+            mask: [0.9, 0.6, 0.3, 0.15],
+            ..Case::default()
+        },
+    ];
+    for format in [SlotFormat::R8, SlotFormat::Rg8, SlotFormat::Rgba8] {
+        let material = material_textures(
+            &ctx,
+            LATTICE,
+            &varied_albedo,
+            format,
+            &untinted_slot(format),
+        );
+        for style in [Style::Pixel, Style::Smooth] {
+            for shadowing in shadowing {
+                let case = MaterialCase {
+                    shadowing,
+                    ..MaterialCase::new(style)
+                };
+                let current = render_material(
+                    &ctx,
+                    &lights,
+                    MATERIAL_OWNERS,
+                    &material,
+                    case,
+                    MaterialObserve::Shade,
+                );
+                // A `_p` slot with A = 255 shades at its texel exponent; the
+                // oracle takes that exponent and everything else from before.
+                let oracle = render_material(
+                    &ctx,
+                    &lights,
+                    MATERIAL_OWNERS,
+                    &material,
+                    MaterialCase {
+                        path: MaterialPath::Oracle,
+                        oracle_decodes: format == SlotFormat::Rgba8,
+                        ..case
+                    },
+                    MaterialObserve::Shade,
+                );
+                for (i, (c, o)) in current.iter().zip(&oracle).enumerate() {
+                    assert_eq!(
+                        rgba_bits(*c),
+                        rgba_bits(*o),
+                        "{format:?}, {style:?}, {shadowing:?}: fragment {i} is {c:?}, before tint {o:?}"
+                    );
+                }
+                let texel = render_material(
+                    &ctx,
+                    &lights,
+                    MATERIAL_OWNERS,
+                    &material,
+                    case,
+                    MaterialObserve::Texel,
+                );
+                for ((tx, ty), i) in texel_interiors() {
+                    assert_eq!(
+                        texel[i][2], 0.0,
+                        "{format:?}: texel ({tx}, {ty}) is untinted"
+                    );
+                    if format != SlotFormat::Rgba8 {
+                        assert_eq!(texel[i][0], case.prefix_exponent, "no `_p`: the prefix");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn diffuse_is_identical_with_and_without_tint() {
+    use super::specular_slot_fixtures::{SlotFormat, material_textures};
+    let Some(ctx) = gpu_or_skip("diffuse_is_identical_with_and_without_tint") else {
+        return;
+    };
+    let lights = material_lights();
+    // No `_t` (narrow, and four-channel at A = 255), then t = 0 and t = 1.
+    let slots: [(&str, SlotFormat, u8); 4] = [
+        ("one-channel", SlotFormat::R8, 255),
+        ("no `_t`", SlotFormat::Rgba8, 255),
+        ("t = 0", SlotFormat::Rgba8, 0),
+        ("t = 1", SlotFormat::Rgba8, 254),
+    ];
+    for style in [Style::Pixel, Style::Smooth] {
+        // Specular masked off, as LightTermMask bit 6 does.
+        let case = MaterialCase {
+            use_specular: false,
+            ..MaterialCase::new(style)
+        };
+        let mut renders = Vec::new();
+        for (name, format, tint) in slots {
+            let material = material_textures(&ctx, LATTICE, &varied_albedo, format, &|tx, ty| {
+                [200, 127, smoothness_byte(tx, ty), tint]
+            });
+            let shade = render_material(
+                &ctx,
+                &lights,
+                MATERIAL_OWNERS,
+                &material,
+                case,
+                MaterialObserve::Shade,
+            );
+            let before = render_material(
+                &ctx,
+                &lights,
+                MATERIAL_OWNERS,
+                &material,
+                MaterialCase {
+                    path: MaterialPath::Oracle,
+                    ..case
+                },
+                MaterialObserve::Shade,
+            );
+            for (i, (c, o)) in shade.iter().zip(&before).enumerate() {
+                assert_eq!(
+                    rgba_bits(*c),
+                    rgba_bits(*o),
+                    "{style:?}, {name}: fragment {i}"
+                );
+            }
+            renders.push((name, shade));
+        }
+        let (_, first) = &renders[0];
+        for (name, shade) in &renders[1..] {
+            for (i, (a, b)) in first.iter().zip(shade).enumerate() {
+                assert_eq!(
+                    rgba_bits(*a),
+                    rgba_bits(*b),
+                    "{style:?}: {name} vs one-channel, fragment {i}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn marker_slots_keep_their_meaning_through_filtering() {
+    use super::specular_slot_fixtures::{SlotFormat, white_material};
+    let Some(ctx) = gpu_or_skip("marker_slots_keep_their_meaning_through_filtering") else {
+        return;
+    };
+    let lights = material_lights();
+    let prefix = 64.0;
+    for footprint in FOOTPRINTS {
+        for (name, marker) in [
+            ("`_p` at B = 1", SHARP_MARKER_TEXEL),
+            ("`_t` at A = 254", TINT_MARKER_TEXEL),
+        ] {
+            let material = white_material(
+                &ctx,
+                footprint.texture_size(),
+                SlotFormat::Rgba8,
+                &|_, _| marker,
+            );
+            let case = MaterialCase {
+                prefix_exponent: prefix,
+                uv_per_pixel: footprint.uv_per_pixel(),
+                ..MaterialCase::new(Style::Pixel)
+            };
+            let texel = render_material(
+                &ctx,
+                &lights,
+                MATERIAL_OWNERS,
+                &material,
+                case,
+                MaterialObserve::Texel,
+            );
+            for (i, [exponent, intensity, tinted, tint]) in texel.into_iter().enumerate() {
+                let what = format!("{footprint:?}, {name}: fragment {i}");
+                assert!(
+                    (intensity - 1.0).abs() <= 0.5 / 255.0,
+                    "{what}: intensity {intensity}"
+                );
+                if marker == SHARP_MARKER_TEXEL {
+                    assert_eq!(exponent, 1.0, "{what}: smoothness byte 1 is exponent 1");
+                    assert_eq!(tinted, 0.0, "{what}: raw albedo");
+                } else {
+                    assert_eq!(exponent, prefix, "{what}: no `_p` keeps the prefix");
+                    assert_eq!(tinted, 1.0, "{what}: tinted");
+                    assert!(
+                        (tint - 1.0).abs() <= 0.5 / 254.0,
+                        "{what}: t = 1, read {tint}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn narrow_specular_slots_shade_in_raw_albedo() {
+    use super::specular_slot_fixtures::{SlotFormat, material_textures};
+    let Some(ctx) = gpu_or_skip("narrow_specular_slots_shade_in_raw_albedo") else {
+        return;
+    };
+    let lights = material_lights();
+    for footprint in FOOTPRINTS {
+        for format in [SlotFormat::R8, SlotFormat::Rg8, SlotFormat::Placeholder] {
+            let material = material_textures(
+                &ctx,
+                footprint.texture_size(),
+                &varied_albedo,
+                format,
+                &untinted_slot(format),
+            );
+            for style in [Style::Pixel, Style::Smooth] {
+                let case = MaterialCase {
+                    uv_per_pixel: footprint.uv_per_pixel(),
+                    ..MaterialCase::new(style)
+                };
+                let what = format!("{footprint:?}, {format:?}, {style:?}");
+                let texel = render_material(
+                    &ctx,
+                    &lights,
+                    MATERIAL_OWNERS,
+                    &material,
+                    case,
+                    MaterialObserve::Texel,
+                );
+                for (i, [exponent, _, tinted, _]) in texel.into_iter().enumerate() {
+                    assert_eq!(
+                        exponent, case.prefix_exponent,
+                        "{what}: fragment {i}: the prefix"
+                    );
+                    assert_eq!(tinted, 0.0, "{what}: fragment {i}: raw albedo");
+                }
+                let current = render_material(
+                    &ctx,
+                    &lights,
+                    MATERIAL_OWNERS,
+                    &material,
+                    case,
+                    MaterialObserve::Shade,
+                );
+                let before = render_material(
+                    &ctx,
+                    &lights,
+                    MATERIAL_OWNERS,
+                    &material,
+                    MaterialCase {
+                        path: MaterialPath::Oracle,
+                        ..case
+                    },
+                    MaterialObserve::Shade,
+                );
+                for (i, (c, o)) in current.iter().zip(&before).enumerate() {
+                    assert_eq!(rgba_bits(*c), rgba_bits(*o), "{what}: fragment {i}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn tint_only_bundles_shade_at_each_prefix_exponent() {
+    use super::specular_slot_fixtures::{SlotFormat, white_material};
+    use postretro_render_data::material::Material;
+    let Some(ctx) = gpu_or_skip("tint_only_bundles_shade_at_each_prefix_exponent") else {
+        return;
+    };
+    // One `_t`-only bundle's bytes, as the content-addressed sidecar two
+    // prefixes share.
+    let material = white_material(&ctx, LATTICE, SlotFormat::Rgba8, &|tx, _| {
+        [255, 127, 0, TINT_BYTES[tx as usize].min(254)]
+    });
+    let lights = material_lights();
+    let mut raws = Vec::new();
+    for prefix in [Material::Metal, Material::Concrete] {
+        let exponent = prefix.shininess().max(1.0);
+        let case = MaterialCase {
+            prefix_exponent: exponent,
+            ..MaterialCase::new(Style::Pixel)
+        };
+        let texel = render_material(
+            &ctx,
+            &lights,
+            MATERIAL_OWNERS,
+            &material,
+            case,
+            MaterialObserve::Texel,
+        );
+        for (i, p) in texel.iter().enumerate() {
+            assert_eq!(
+                p[0], exponent,
+                "{prefix:?}: fragment {i} shades at its prefix"
+            );
+            assert_eq!(p[2], 1.0, "{prefix:?}: fragment {i} is tinted");
+        }
+        raws.push(render_material(
+            &ctx,
+            &lights,
+            MATERIAL_OWNERS,
+            &material,
+            case,
+            MaterialObserve::RawSpecular,
+        ));
+    }
+    assert!(
+        raws[0].iter().zip(&raws[1]).any(|(a, b)| a != b),
+        "the two prefixes' exponents shape different highlights"
+    );
+}
+
+/// The decode's and mix's constants exist twice: the GPU-free authority in
+/// render-cpu `specular_texel` and `material_shading.wgsl`. Pinned by value
+/// (a literal or `a / b` of literals), so the CPU reference tests prove the
+/// shader's numbers.
+#[test]
+fn specular_texel_shader_constants_match_the_cpu_reference() {
+    use postretro_render_cpu::specular_texel as cpu;
+    fn declared(name: &str) -> f32 {
+        let line = wgsl_const_line(MATERIAL_SHADING_WGSL, name);
+        let rhs = line
+            .split_once('=')
+            .and_then(|(_, rhs)| rhs.trim().strip_suffix(';'))
+            .unwrap_or_else(|| panic!("`{line}` must assign a value"));
+        let literal = |text: &str| -> f32 {
+            text.trim()
+                .parse()
+                .unwrap_or_else(|_| panic!("{name}: `{text}` must be an f32 literal"))
+        };
+        match rhs.split_once('/') {
+            Some((num, den)) => literal(num) / literal(den),
+            None => literal(rhs),
+        }
+    }
+    for (name, cpu) in [
+        ("SPECULAR_EXPONENT_MIN", cpu::SPECULAR_EXPONENT_MIN),
+        ("SPECULAR_EXPONENT_MAX", cpu::SPECULAR_EXPONENT_MAX),
+        ("SPECULAR_ROUGHNESS4_FLOOR", cpu::SPECULAR_ROUGHNESS4_FLOOR),
+        (
+            "SPECULAR_SMOOTHNESS_MARKER",
+            cpu::SPECULAR_SMOOTHNESS_MARKER,
+        ),
+        ("SPECULAR_TINT_MARKER", cpu::SPECULAR_TINT_MARKER),
+        ("SPECULAR_TINT_SCALE", cpu::SPECULAR_TINT_SCALE),
+        ("SPECULAR_HUE_EPSILON", cpu::SPECULAR_HUE_EPSILON),
+    ] {
+        assert_eq!(declared(name).to_bits(), cpu.to_bits(), "{name}");
+    }
+}
+
+/// The 255-byte smoothness floor and the one-read rule: forward reads the slot once, decodes it
+/// through the shared functions, floors r⁴ before the divide, and moves only a
+/// tinted texel's highlight out of the albedo multiply.
+#[test]
+fn forward_fs_main_reads_sharpness_and_tint_from_one_slot_sample() {
+    let fs = squashed_code(wgsl_function(FORWARD_WGSL, "fs_main"));
+    assert_eq!(
+        fs.matches("spec_texture").count(),
+        1,
+        "one read of the slot"
+    );
+    assert!(fs.contains(
+        "letspec_texel=specular_texel(sample_color(spec_texture,shade_uv,ddx,ddy),\
+         max(material.shininess,1.0),);"
+    ));
+    assert!(fs.contains("spec_point.view,spec_texel.exponent,spec_texel.intensity,"));
+    assert!(fs.contains(
+        "ifspec_texel.tinted{tinted_specular=specular_sum*specular_tint(base_color.rgb,\
+         spec_texel.tint);specular_sum=vec3<f32>(0.0);}}total_light=total_light+specular_sum;"
+    ));
+    assert!(fs.contains("letrgb=base_color.rgb*total_light+emissive+tinted_specular;"));
+    let decode = squashed_code(wgsl_function(
+        MATERIAL_SHADING_WGSL,
+        "specular_texel_exponent",
+    ));
+    let floor = decode
+        .find("letr4=max(r2*r2,SPECULAR_ROUGHNESS4_FLOOR);")
+        .expect("r⁴ is floored");
+    let divide = decode.find("2.0/r4").expect("the decode divides by r⁴");
+    assert!(floor < divide, "the floor comes before the divide");
+    assert_eq!(
+        decode.matches('/').count(),
+        1,
+        "the floored r⁴ is the only divisor"
+    );
 }

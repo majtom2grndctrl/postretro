@@ -78,7 +78,7 @@ class MigrationTest(unittest.TestCase):
 
     def standard_mod(self):
         self.mod.texture("neon", "neon_glow", "neon_glow_e", "neon_glow_s", "neon_glow_n",
-                         "neon_glow_h", "neon_glow_p", "neon_plain", "other_wall")
+                         "neon_glow_h", "neon_glow_p", "neon_glow_t", "neon_plain", "other_wall")
         self.mod.map("a.map", "neon/neon_glow", "neon/other_wall", "NEON/Neon_Glow")
         self.mod.map("b.map", "textures\\neon\\neon_glow", "neon_plain", '"neon/neon_glow"')
 
@@ -103,7 +103,7 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual(
             names,
             ["glow.png", "glow_e.png", "glow_h.png", "glow_n.png", "glow_p.png", "glow_s.png",
-             "other_wall.png", "plain.png"],
+             "glow_t.png", "other_wall.png", "plain.png"],
         )
         # Content moved with the name.
         self.assertEqual(

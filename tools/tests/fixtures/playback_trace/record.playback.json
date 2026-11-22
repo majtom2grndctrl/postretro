@@ -1,0 +1,159 @@
+{
+  "header": {
+    "schema": "postretro.camera_route_playback.v1",
+    "revision": null,
+    "pose_file": {
+      "path": "$OUT/cp-far.txt",
+      "origin": "generated far-point",
+      "params": {
+        "hfov": "100",
+        "pitch": "0",
+        "seed": "0x5eedb10c",
+        "steps": "40"
+      },
+      "projection": {
+        "hfov_degrees": 100.0,
+        "aspect": 1.7777778
+      },
+      "bake": "id51=4b7255ff5bdf714c walk_epoch=4 size=115342557 mtime=1795136234 prl=content/dev/maps/campaign-test.prl",
+      "cadence_hz": 60,
+      "poses": 1746
+    },
+    "level": {
+      "bake": "id51=4b7255ff5bdf714c walk_epoch=4 size=115342557 mtime=1795136234 prl=content/dev/maps/campaign-test.prl",
+      "identity": "proven"
+    },
+    "pacing": "frame-locked",
+    "hold_frames": 900,
+    "rendered_projection": {
+      "hfov_degrees": 100.0,
+      "aspect": 1.7777778
+    },
+    "adapter": {
+      "name": "AMD Radeon Pro 5300M",
+      "backend": "Metal"
+    }
+  },
+  "rows": [
+    {
+      "frame": 720,
+      "phase": "hold",
+      "pose": 0,
+      "interval_us": 16607
+    },
+    {
+      "frame": 721,
+      "phase": "hold",
+      "pose": 0,
+      "interval_us": 16678
+    },
+    {
+      "frame": 722,
+      "phase": "hold",
+      "pose": 0,
+      "interval_us": 16595
+    },
+    {
+      "frame": 723,
+      "phase": "hold",
+      "pose": 0,
+      "interval_us": 16985
+    },
+    {
+      "frame": 724,
+      "phase": "hold",
+      "pose": 0,
+      "interval_us": 16424
+    },
+    {
+      "frame": 725,
+      "phase": "hold",
+      "pose": 0,
+      "interval_us": 18718
+    },
+    {
+      "frame": 726,
+      "phase": "hold",
+      "pose": 0,
+      "interval_us": 17314
+    },
+    {
+      "frame": 727,
+      "phase": "hold",
+      "pose": 0,
+      "interval_us": 17522
+    },
+    {
+      "frame": 1134,
+      "phase": "route",
+      "pose": 234,
+      "interval_us": 15600
+    },
+    {
+      "frame": 1135,
+      "phase": "route",
+      "pose": 235,
+      "interval_us": 17596
+    },
+    {
+      "frame": 1136,
+      "phase": "route",
+      "pose": 236,
+      "interval_us": 15718
+    },
+    {
+      "frame": 1137,
+      "phase": "route",
+      "pose": 237,
+      "interval_us": 17603
+    },
+    {
+      "frame": 1138,
+      "phase": "route",
+      "pose": 238,
+      "interval_us": 15946
+    },
+    {
+      "frame": 1139,
+      "phase": "route",
+      "pose": 239,
+      "interval_us": 16684
+    },
+    {
+      "frame": 1140,
+      "phase": "route",
+      "pose": 240,
+      "interval_us": 17945
+    },
+    {
+      "frame": 1141,
+      "phase": "route",
+      "pose": 241,
+      "interval_us": 15330
+    },
+    {
+      "frame": 1247,
+      "phase": "route",
+      "pose": 347,
+      "interval_us": 14079
+    },
+    {
+      "frame": 1248,
+      "phase": "route",
+      "pose": 348,
+      "interval_us": 16538
+    },
+    {
+      "frame": 1249,
+      "phase": "route",
+      "pose": 349,
+      "interval_us": 15897
+    },
+    {
+      "frame": 1250,
+      "phase": "route",
+      "pose": 350,
+      "interval_us": 23102
+    }
+  ]
+}

@@ -11,10 +11,12 @@ use std::time::{Duration, Instant};
 use postretro_level_format::prm::{PrmReadError, PrmSlot};
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_render_cpu::loaded_texture::slot_levels;
-use postretro_render_cpu::surface_depth::{SurfaceReliefLevels, surface_relief_from_rg8_levels};
+use postretro_render_cpu::surface_depth::{SurfaceReliefLevels, surface_relief_from_surface_map};
 use postretro_render_cpu::texture_prep::{
     PreparedTexture, PreparedWorldTextures, prepare_world_textures,
 };
+
+use crate::render::specular_surface_map_bytes_per_texel;
 
 pub(super) use placeholders::placeholder_loaded_texture;
 use placeholders::{
@@ -34,8 +36,8 @@ pub struct LoadedTexture {
     /// the texture invalidates the view. Shading samples through
     /// `specular_view`; the texture itself is read only for its METADATA, by
     /// `build_material_bind_group`, which decides Surface Depth's has-depth
-    /// flag from the slot's format (`Rg8Unorm` = a two-channel surface map) and
-    /// clamps the DDA's base mip to this slot's own uploaded chain.
+    /// flag from the slot's format (`Rg8Unorm` or `Rgba8Unorm` = a surface map)
+    /// and clamps the DDA's base mip to this slot's own uploaded chain.
     pub specular_texture: wgpu::Texture,
     pub specular_view: wgpu::TextureView,
     /// Owned alongside `normal_view`; same rationale as `specular_texture`.
@@ -53,7 +55,7 @@ pub struct LoadedTexture {
     pub mip_count: u32,
     /// The specular slot's RAW relief band at every uploaded mip, measured from
     /// the bytes actually uploaded. [`SurfaceReliefLevels::FLAT`] for any slot
-    /// that is not an `Rg8Unorm` surface map. The uniform build picks the base
+    /// that is not a surface map. The uniform build picks the base
     /// mip's band and quantizes it with the material's level count.
     pub surface_relief: SurfaceReliefLevels,
 }
@@ -188,16 +190,20 @@ pub(super) fn upload_prepared_texture(
 /// `upload_slot_or_placeholder` uploads for it.
 ///
 /// Empty ([`SurfaceReliefLevels::FLAT`]) unless the slot is consumed AND decodes as
-/// an `Rg8Unorm` surface map — the same condition under which the bound
-/// texture has that format. Any other slot must never report relief: an R8
-/// slot's G would read as maximum raise under the signed encoding.
+/// a two- or four-channel surface map — the same format test that sets the
+/// bound texture's has-depth flag, read at that format's stride. Any other slot
+/// must never report relief: an R8 slot's G would read as maximum raise under
+/// the signed encoding.
 fn specular_surface_relief(
     slot_result: &Result<PrmSlot, PrmReadError>,
     consume: bool,
 ) -> SurfaceReliefLevels {
-    match slot_result {
-        Ok(slot) if consume && prm_format_to_wgpu(slot.format) == wgpu::TextureFormat::Rg8Unorm => {
-            surface_relief_from_rg8_levels(&slot_levels(slot))
+    let Ok(slot) = slot_result else {
+        return SurfaceReliefLevels::FLAT;
+    };
+    match specular_surface_map_bytes_per_texel(prm_format_to_wgpu(slot.format)) {
+        Some(bytes_per_texel) if consume => {
+            surface_relief_from_surface_map(&slot_levels(slot), bytes_per_texel)
         }
         _ => SurfaceReliefLevels::FLAT,
     }
@@ -288,6 +294,201 @@ mod tests {
         assert_eq!(relief.trough, 0.0);
     }
 
+    /// Edge of the multi-mip specular fixtures: 4×4, 2×2 and 1×1 levels.
+    const EDGE: u16 = 4;
+
+    /// Stored height per texel and mip, as the bake writes it (`255 − h`). The
+    /// coarser mips overshoot the base level's band, as the bake's filter can.
+    fn stored_height(level: usize, texel: usize) -> u8 {
+        match level {
+            0 => [127, 127, 200, 64, 90, 127, 180, 127][texel % 8],
+            1 => [40, 127, 220, 127][texel],
+            _ => 10,
+        }
+    }
+
+    /// One four-channel texel as the bake writes it: R specular, G stored
+    /// height (`height` false stores the plane, 127, at every mip), B
+    /// smoothness held to 1..=255, A tint held to 0..=254. B and A never equal
+    /// G, so a misread channel shows.
+    fn rgba_texel(level: usize, texel: usize, height: bool) -> [u8; 4] {
+        let g = if height {
+            stored_height(level, texel)
+        } else {
+            127
+        };
+        let b = (g ^ 0x5A).max(1);
+        let a = (g.wrapping_add(31)).min(254);
+        [0x80, g, b, a]
+    }
+
+    /// A 4×4 specular slot of `channels` bytes per texel, three mips,
+    /// serialized as a `.prm` and read back through the runtime reader.
+    fn loaded_specular_slot(channels: usize, height: bool) -> Result<PrmSlot, PrmReadError> {
+        use postretro_level_format::prm::{
+            PrmFile, PrmHeader, PrmSlots, STAGE_VERSION, expected_level_count,
+        };
+        let format = match channels {
+            1 => PrmFormat::R8Unorm,
+            2 => PrmFormat::Rg8Unorm,
+            4 => PrmFormat::Rgba8Unorm,
+            other => panic!("no {other}-channel specular slot"),
+        };
+        let level_count = expected_level_count(EDGE, EDGE);
+        let mut payload = Vec::new();
+        for level in 0..usize::from(level_count) {
+            let texels = (usize::from(EDGE) >> level).pow(2);
+            for texel in 0..texels {
+                payload.extend_from_slice(&rgba_texel(level, texel, height)[..channels]);
+            }
+        }
+        let file = PrmFile {
+            header: PrmHeader {
+                stage_version: STAGE_VERSION,
+                slot_mask: PrmSlots::SPECULAR,
+                bundle_hash: [0u8; 32],
+                total_body_bytes: 0,
+                layer_count: 1,
+            },
+            slots: [
+                None,
+                Some(PrmSlot {
+                    format,
+                    width: EDGE,
+                    height: EDGE,
+                    level_count,
+                    payload,
+                }),
+                None,
+                None,
+            ],
+        };
+        let bytes = file.to_bytes().expect("the specular slot serializes");
+        let (header, [_, specular, _, _]) = PrmFile::from_bytes_partial(&bytes);
+        header.expect("the header parses");
+        specular
+    }
+
+    /// The uniform plan `build_material_bind_group` packs for `slot` under
+    /// `material`, from the same three facts it reads off the loaded slot.
+    fn plan_for(
+        material: postretro_render_data::material::Material,
+        slot: &Result<PrmSlot, PrmReadError>,
+    ) -> postretro_render_cpu::material_plan::MaterialUniformPlan {
+        let (format, mip_count) = match slot {
+            Ok(slot) => (prm_format_to_wgpu(slot.format), u32::from(slot.level_count)),
+            // The 1×1 single-channel placeholder an absent slot binds.
+            Err(_) => (wgpu::TextureFormat::R8Unorm, 1),
+        };
+        crate::render::material_uniform_plan(
+            postretro_render_data::material::TextureMaterial {
+                material,
+                emissive_strength: 2.0,
+            },
+            format,
+            mip_count,
+            specular_surface_relief(slot, true),
+        )
+    }
+
+    /// With `_h`, a four-channel slot loaded through the runtime
+    /// reader sets has-depth, and at every uploaded mip its relief band equals
+    /// the two-channel band from the same height. Its sharpness and tint bytes
+    /// differ from the height bytes, so reading B or A as height would move it.
+    #[test]
+    fn four_channel_slot_with_height_sets_has_depth_and_measures_the_two_channel_band() {
+        let rgba = loaded_specular_slot(4, true);
+        let rg = loaded_specular_slot(2, true);
+        let rgba_slot = rgba.as_ref().expect("slot 1 admits Rgba8Unorm");
+        assert_eq!(rgba_slot.format, PrmFormat::Rgba8Unorm);
+        assert!(crate::render::specular_slot_is_surface_map(
+            prm_format_to_wgpu(rgba_slot.format)
+        ));
+        for texel in rgba_slot.payload.as_chunks::<4>().0 {
+            assert_ne!(texel[2], texel[1], "fixture: sharpness differs from height");
+            assert_ne!(texel[3], texel[1], "fixture: tint differs from height");
+        }
+
+        let rgba_relief = specular_surface_relief(&rgba, true);
+        let rg_relief = specular_surface_relief(&rg, true);
+        for level in 0..u32::from(rgba_slot.level_count) {
+            assert_eq!(rgba_relief.at(level), rg_relief.at(level), "mip {level}");
+            assert!(
+                !rgba_relief.at(level).is_flat(),
+                "mip {level} carries relief"
+            );
+        }
+        assert_ne!(
+            rgba_relief.at(0),
+            rgba_relief.at(1),
+            "each mip keeps its own band"
+        );
+
+        // The plan the bind group packs agrees: has-depth set, and at Surface
+        // Depth On the same bytes as the two-channel slot.
+        use postretro_render_cpu::surface_depth::SurfaceDepthQuality;
+        let material = postretro_render_data::material::Material::Concrete;
+        let (four, two) = (plan_for(material, &rgba), plan_for(material, &rg));
+        assert!(four.specular_is_surface_map);
+        assert!(
+            four.surface_depth_uniform(SurfaceDepthQuality::On)
+                .has_depth
+        );
+        for quality in SurfaceDepthQuality::ALL {
+            assert_eq!(
+                four.uniform_bytes(quality),
+                two.uniform_bytes(quality),
+                "{quality:?}"
+            );
+        }
+    }
+
+    /// Without `_h`, a four-channel slot on a prefix with
+    /// Surface Depth tuning sets has-depth, yet at Surface Depth On (and Off)
+    /// uploads the relief row byte-equal to the same prefix with no height
+    /// map: a single-channel `_s` slot, or no slot at all (the placeholder).
+    /// The stored plane (G = 127 at every mip) measures as an empty band.
+    #[test]
+    fn four_channel_slot_without_height_uploads_the_no_height_relief_row() {
+        use postretro_render_cpu::surface_depth::SurfaceDepthQuality;
+        let material = postretro_render_data::material::Material::Concrete;
+        assert!(
+            material.surface_depth().is_enabled(),
+            "the prefix must carry Surface Depth tuning, or the row is vacuous"
+        );
+        let four = loaded_specular_slot(4, false);
+        let plan = plan_for(material, &four);
+        assert!(
+            plan.specular_is_surface_map,
+            "has-depth comes from the format"
+        );
+        for level in 0..3 {
+            assert!(plan.surface_relief.at(level).is_flat(), "mip {level}");
+        }
+        for no_height in [
+            loaded_specular_slot(1, false),
+            Err(PrmReadError::NotPresent),
+        ] {
+            let no_height = plan_for(material, &no_height);
+            assert!(!no_height.specular_is_surface_map);
+            for quality in SurfaceDepthQuality::ALL {
+                assert_eq!(
+                    plan.uniform_bytes(quality),
+                    no_height.uniform_bytes(quality),
+                    "{quality:?}"
+                );
+            }
+        }
+        // The same slot with `_h` does march, so the equality above is the
+        // empty band's doing, not an unopened gate.
+        let with_height = plan_for(material, &loaded_specular_slot(4, true));
+        assert!(
+            with_height
+                .surface_depth_uniform(SurfaceDepthQuality::On)
+                .has_depth
+        );
+    }
+
     /// A single-channel or unconsumed specular slot has no relief, even when
     /// its bytes would read as maximum raise (stored G = 0).
     #[test]
@@ -297,14 +498,330 @@ mod tests {
             specular_surface_relief(&Ok(r8), true),
             SurfaceReliefLevels::FLAT
         );
-        let unconsumed = slot(PrmFormat::Rg8Unorm, 1, 1, vec![0, 0]);
-        assert_eq!(
-            specular_surface_relief(&Ok(unconsumed), false),
-            SurfaceReliefLevels::FLAT
-        );
+        for unconsumed in [
+            slot(PrmFormat::Rg8Unorm, 1, 1, vec![0, 0]),
+            slot(PrmFormat::Rgba8Unorm, 1, 1, vec![0, 0, 0, 0]),
+        ] {
+            assert_eq!(
+                specular_surface_relief(&Ok(unconsumed), false),
+                SurfaceReliefLevels::FLAT
+            );
+        }
         assert_eq!(
             specular_surface_relief(&Err(PrmReadError::NotPresent), true),
             SurfaceReliefLevels::FLAT
         );
+    }
+
+    /// Reads every texel of every mip of a specular view twice: `textureLoad`,
+    /// and `textureSampleLevel` at the texel centre through the material
+    /// sampler. Two `vec4<f32>` per probe, load first.
+    const SPECULAR_READBACK_WGSL: &str = r#"
+@group(0) @binding(0) var slot_texture: texture_2d<f32>;
+@group(0) @binding(1) var slot_sampler: sampler;
+@group(0) @binding(2) var<storage, read> probes: array<vec4<u32>>;
+@group(0) @binding(3) var<storage, read_write> texels: array<vec4<f32>>;
+
+@compute @workgroup_size(1)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let probe = probes[id.x];
+    let level = i32(probe.z);
+    let dims = vec2<f32>(textureDimensions(slot_texture, level));
+    let uv = (vec2<f32>(probe.xy) + 0.5) / dims;
+    texels[2u * id.x] = textureLoad(slot_texture, vec2<i32>(probe.xy), level);
+    texels[2u * id.x + 1u] = textureSampleLevel(slot_texture, slot_sampler, uv, f32(level));
+}
+"#;
+
+    /// `(load, sample)` per texel of every mip of `view`, in mip then
+    /// row-major order.
+    fn read_specular_texels(
+        ctx: &crate::render::gpu_test_harness::GpuCtx,
+        texture: &wgpu::Texture,
+        view: &wgpu::TextureView,
+        sampler: &wgpu::Sampler,
+    ) -> Vec<([f32; 4], [f32; 4])> {
+        use wgpu::util::DeviceExt;
+        let device = &ctx.device;
+        let mut probes: Vec<u32> = Vec::new();
+        for level in 0..texture.mip_level_count() {
+            let (w, h) = (
+                (texture.width() >> level).max(1),
+                (texture.height() >> level).max(1),
+            );
+            for y in 0..h {
+                for x in 0..w {
+                    probes.extend([x, y, level, 0]);
+                }
+            }
+        }
+        let probe_count = probes.len() / 4;
+        let probe_bytes: Vec<u8> = probes.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let probe_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("specular readback probes"),
+            contents: &probe_bytes,
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let out_size = (probe_count * 2 * 16) as u64;
+        let out = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("specular readback texels"),
+            size: out_size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("specular readback map"),
+            size: out_size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let compute = wgpu::ShaderStages::COMPUTE;
+        let storage = |read_only| wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        };
+        let entry = |binding, ty| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: compute,
+            ty,
+            count: None,
+        };
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("specular readback layout"),
+            entries: &[
+                // The material layout's binding 2 and binding 5 types.
+                entry(
+                    0,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
+                entry(
+                    1,
+                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                ),
+                entry(2, storage(true)),
+                entry(3, storage(false)),
+            ],
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("specular readback bind group"),
+            layout: &layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: probe_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: out.as_entire_binding(),
+                },
+            ],
+        });
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("specular readback shader"),
+            source: wgpu::ShaderSource::Wgsl(SPECULAR_READBACK_WGSL.into()),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("specular readback pipeline layout"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("specular readback pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &module,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(probe_count as u32, 1, 1);
+        }
+        encoder.copy_buffer_to_buffer(&out, 0, &readback, 0, out_size);
+        ctx.queue.submit([encoder.finish()]);
+        let slice = readback.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            tx.send(result).ok();
+        });
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("poll");
+        rx.recv().expect("map channel").expect("map ok");
+        let data = slice.get_mapped_range().expect("readback mapped");
+        let floats: Vec<f32> = data
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|bytes| f32::from_le_bytes(*bytes))
+            .collect();
+        drop(data);
+        readback.unmap();
+        floats
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|pair| {
+                (
+                    [pair[0], pair[1], pair[2], pair[3]],
+                    [pair[4], pair[5], pair[6], pair[7]],
+                )
+            })
+            .collect()
+    }
+
+    /// The specular slot uploads through the real load path in every width
+    /// the bake writes, binds at the material layout's binding 2 beside the
+    /// binding-5 aniso sampler, and reads back as the shader will see it:
+    /// every stored channel is its byte over 255, and a narrower slot (and the
+    /// placeholder) reads a missing G and B as 0 and a missing A as 1 — the
+    /// "no smoothness" and "no tint" markers. The bind group's uniform plan
+    /// carries has-depth from the format and packs rows 32 and 33's bytes.
+    #[test]
+    fn uploaded_specular_slots_read_their_stored_channels_and_widen_narrow_ones_to_the_markers() {
+        use crate::render::gpu_test_harness::gpu_or_skip;
+        use postretro_render_cpu::loaded_texture::{TextureSlotPlan, header_mip_count};
+        use postretro_render_cpu::surface_depth::SurfaceDepthQuality;
+        use postretro_render_cpu::texture_prep::PreparedTexture;
+        let test = "uploaded_specular_slots_read_their_stored_channels_and_widen_narrow_ones_to_the_markers";
+        let Some(ctx) = gpu_or_skip(test) else {
+            return;
+        };
+        let device = &ctx.device;
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let material_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("material layout"),
+            entries: &crate::render::pipeline_layout::material_bind_group_layout_entries(),
+        });
+        let material = postretro_render_data::material::TextureMaterial {
+            material: postretro_render_data::material::Material::Concrete,
+            emissive_strength: 2.0,
+        };
+
+        // (case, channels stored, `_h`, has-depth, expected wgpu format);
+        // channels 0 is the absent slot, which binds the placeholder.
+        let cases = [
+            ("_s", 1, false, false, wgpu::TextureFormat::R8Unorm),
+            ("_s+_h", 2, true, true, wgpu::TextureFormat::Rg8Unorm),
+            ("_p/_t+_h", 4, true, true, wgpu::TextureFormat::Rgba8Unorm),
+            ("_p/_t", 4, false, true, wgpu::TextureFormat::Rgba8Unorm),
+            ("absent", 0, false, false, wgpu::TextureFormat::R8Unorm),
+        ];
+        let mut uniforms = Vec::new();
+        for (case, channels, height, has_depth, format) in cases {
+            let specular = match channels {
+                0 => Err(PrmReadError::NotPresent),
+                channels => loaded_specular_slot(channels, height),
+            };
+            let slots = [
+                Err(PrmReadError::NotPresent),
+                specular,
+                Err(PrmReadError::NotPresent),
+                Err(PrmReadError::NotPresent),
+            ];
+            let plan = TextureSlotPlan {
+                consume: [true; 4],
+                mip_count: header_mip_count(&slots),
+            };
+            let prepared = PreparedTexture::Bundle {
+                name: format!("test/{case}"),
+                slots,
+                plan,
+            };
+            let loaded = upload_prepared_texture(device, &ctx.queue, &prepared);
+            assert_eq!(loaded.specular_texture.format(), format, "{case}");
+            let sampler = crate::render::create_mip_aniso_sampler(device, loaded.mip_count);
+            let binding = crate::render::build_material_bind_group(
+                device,
+                &material_layout,
+                &loaded,
+                &sampler,
+                material,
+                SurfaceDepthQuality::On,
+                case,
+            );
+            assert_eq!(
+                binding.uniform_plan.specular_is_surface_map, has_depth,
+                "{case}"
+            );
+            uniforms.push(binding.uniform_plan.uniform_bytes(SurfaceDepthQuality::On));
+
+            let read = read_specular_texels(
+                &ctx,
+                &loaded.specular_texture,
+                &loaded.specular_view,
+                &sampler,
+            );
+            let mut index = 0;
+            for level in 0..loaded.specular_texture.mip_level_count() as usize {
+                let texels = (loaded.specular_texture.width() as usize >> level)
+                    .max(1)
+                    .pow(2);
+                for texel in 0..texels {
+                    let stored = if channels == 0 {
+                        [0, 0, 0, 0]
+                    } else {
+                        rgba_texel(level, texel, height)
+                    };
+                    let expected: [f32; 4] =
+                        std::array::from_fn(|channel| match (channel < channels.max(1), channel) {
+                            (true, _) => f32::from(stored[channel]) / 255.0,
+                            (false, 3) => 1.0,
+                            (false, _) => 0.0,
+                        });
+                    let (load, sample) = read[index];
+                    index += 1;
+                    for channel in 0..4 {
+                        let what = format!("{case}: mip {level} texel {texel} channel {channel}");
+                        if channel >= channels.max(1) {
+                            // A marker: exact, through the load and the
+                            // filtered sample alike.
+                            assert_eq!(load[channel], expected[channel], "{what} load");
+                            assert_eq!(sample[channel], expected[channel], "{what} sample");
+                        } else {
+                            assert!(
+                                (load[channel] - expected[channel]).abs() <= 1.0e-6,
+                                "{what} load: {load:?} vs {expected:?}"
+                            );
+                            assert!(
+                                (sample[channel] - expected[channel]).abs() <= 0.5 / 255.0,
+                                "{what} sample: {sample:?} vs {expected:?}"
+                            );
+                        }
+                    }
+                }
+            }
+            assert_eq!(index, read.len(), "{case}: every texel was checked");
+        }
+        let error = pollster::block_on(scope.pop());
+        assert!(error.is_none(), "upload or bind raised {error:?}");
+
+        // With `_h`, through the real bind group: a four-channel slot
+        // packs the two-channel slot's bytes. Without `_h`, the
+        // single-channel slot's and the placeholder's.
+        assert_eq!(uniforms[2], uniforms[1]);
+        assert_eq!(uniforms[3], uniforms[0]);
+        assert_eq!(uniforms[3], uniforms[4]);
+        assert_ne!(uniforms[1], uniforms[0], "the `_h` slot marches");
     }
 }

@@ -204,7 +204,12 @@ impl Renderer {
         // `effective_brightness` that gates shadow-pool eligibility, so the pool
         // would shadow lights other than the ones actually lit on screen.
         // Full-ready path only (per-frame uniforms feed the scene render).
-        let Self { queue, full, .. } = self;
+        let Self {
+            queue,
+            full,
+            specular_style,
+            ..
+        } = self;
         let full = full
             .as_mut()
             .expect("update_per_frame_uniforms requires full-ready renderer");
@@ -249,6 +254,10 @@ impl Renderer {
         // post-UI state.
         full.frame_light_term_mask = full.light_term_mask;
         full.frame_indirect_scale = full.indirect_scale;
+        // The style is boot state a frame-loop commit can change at any time.
+        // Snapshot it with the mask so group 0, its planar copy and the mover
+        // pipeline choice (main view and mirror) draw one style this frame.
+        full.frame_specular_style = *specular_style;
         let data = build_uniform_data(&FrameUniforms {
             view_proj,
             camera_position,
@@ -279,6 +288,7 @@ impl Renderer {
                 .map_or(0, |level| level.animated_baked_light_count as u32),
             spec_shadowmask_force_one: full.spec_shadowmask_force_one,
             static_spec_mask_present: level.as_ref().is_some_and(|level| level.shadowmask_present),
+            specular_style: full.frame_specular_style,
         });
         queue.write_buffer(&full.uniform_buffer, 0, &data);
         full.planar_reflection.upload_camera(queue, &data);

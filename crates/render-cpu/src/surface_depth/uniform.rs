@@ -8,7 +8,7 @@ use postretro_render_data::material::{SurfaceDepth, surface_depth_max_authored};
 pub const SURFACE_DEPTH_BASE_MIP_SHIFT: u32 = 8;
 /// Bit width (and therefore ceiling) of the packed base mip level.
 pub const SURFACE_DEPTH_BASE_MIP_MASK: u32 = 0xF;
-/// Packed flag: the bound specular slot really is a two-channel surface map.
+/// Packed flag: the bound specular slot really is a two- or four-channel surface map.
 ///
 /// This bit is the ONLY guard against the R8 placeholder. That placeholder
 /// reads `g = 0`, which under the signed encoding is maximum RAISE, not flat —
@@ -46,7 +46,7 @@ pub struct SurfaceDepthMarch {
     pub max_steps: u32,
     /// Resident base mip the DDA reads the surface map at.
     pub base_mip: u32,
-    /// The bound specular slot really is a two-channel surface map.
+    /// The bound specular slot really is a two- or four-channel surface map.
     pub has_depth: bool,
     /// Per-fragment cap on dynamic-light self-shadow marches. Zero means the
     /// fragment never runs the second (shadow) DDA at all.

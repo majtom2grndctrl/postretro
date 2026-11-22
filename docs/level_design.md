@@ -32,6 +32,7 @@ bin/prl-build <content-root>/maps/input.map \
 | `--lightmap-density <METERS>` | `0.025` | Lightmap pixel size. Higher values = chunkier shadows, faster compile. Try `0.1` for drafts. The worldspawn key `_lightmap_density` (meters per texel, smaller = finer) sets the same thing per map; the flag overrides it. |
 | `--sh-probe-spacing <METERS>` | `1.0` | How dense the indirect lighting probes are. `2.0` is fine for large open areas. |
 | `--bake-fidelity <low\|high>` | `low` | How fully movers re-bake their bounced light in an everyday build. `low` is fast and re-bakes one bounce per pose; `high` re-bakes each mover's `light_bounces`, as a shipped map does. Not allowed beside `--release`, which always bakes `high`. See Movers: Lighting. |
+| `--mover-payload-max-size <SIZE>` | `256MiB` | The most memory the compiler may hold for the movers' baked indirect lighting blocks, counted as it works. Past it the build stops with an error naming the movers; it never drops or coarsens their lighting. The Build Summary reports how much of it the blocks hold. The memory check before baking charges the full cap, three times over while the lighting is assembled, so raising it can make that check refuse instead. Accepts a byte count or a size such as `512MiB`. See Compilation Errors. |
 | `--release` | off | Build the map to ship: every stage bakes fresh, the cache is neither read nor written, and movers bake at `high`. Slow. `bin/postretro-tool dist` passes it for you. |
 | `-v`, `--verbose` | off | Prints each compilation step — useful when something goes wrong |
 
@@ -908,6 +909,92 @@ uv venv && source .venv/bin/activate && uv pip install Pillow
 python3 tools/gen_specular.py --input <content-root>/textures --recursive
 ```
 
+### Highlight Sharpness and Tint
+
+Two more optional siblings shape the highlight texel by texel, so one texture can mix matte stone with polished inlay, or white-glinting marble with bronze trim:
+
+- `{diffuse}_p.png` — **smoothness**: how tight each texel's highlight is.
+- `{diffuse}_t.png` — **tint**: how much each texel's highlight takes the colour of its diffuse.
+
+Example: `metal_panel.png` → diffuse; `metal_panel_s.png` → highlight brightness; `metal_panel_p.png` → sharpness; `metal_panel_t.png` → tint.
+
+Use either on its own or both together. Neither replaces `_s.png`: `_s` still sets how bright the highlight is, and without one the surface draws no highlight at all.
+
+#### Smoothness: `_p.png`
+
+Black is the broadest highlight, white the sharpest. The compiler stores your byte as is, except that 0 is stored as 1 (it shades the same, since bytes 0–24 all give exponent 1). The engine turns the byte into a highlight size:
+
+r = 1 − p/255, exponent = 2/r⁴ − 2, clamped to 1–8192
+
+| `_p` byte | Highlight exponent | Reads as |
+|-----------|--------------------|----------|
+| 0–24 | 1 | Broadest; a soft sheen across the whole face |
+| 64 | about 4 | Rough stone |
+| 128 | about 30 | Satin |
+| 160 | about 100 | Polished |
+| 192 | about 535 | Glossy |
+| 224–255 | 8192 | Mirror-tight pinpoint |
+
+Every byte from 224 up shades at the cap. A highlight that tight is already as small as one texel can show.
+
+Without a `_p.png`, the texture keeps its **prefix's** highlight size, exactly as before. These are the bytes that match each prefix, if you want a `_p` map that starts from the prefix's look:
+
+| Prefix | Exponent without `_p` | Matching `_p` byte |
+|--------|-----------------------|--------------------|
+| `concrete` | 4 | 61 |
+| `grate` | 8 | 84 |
+| `wood` | 16 | 108 |
+| anything else | 32 | 129 |
+| `metal` | 64 | 149 |
+| `glass` | 96 | 159 |
+
+#### Tint: `_t.png`
+
+A texture **without** `_t.png` glints the way it always has: the highlight is multiplied by the diffuse colour, so a dark green marble glints dark green.
+
+A texture **with** `_t.png` takes its highlight colour per texel instead:
+
+- **0 (black)**: a white highlight, as bright as `_s` says, on any diffuse.
+- **255 (white)**: the diffuse's **hue at full brightness**. A dark bronze and a bright bronze glint identically, so you can darken a metal's diffuse without dimming its glint.
+- **In between**: a blend from white to that hue.
+- A grey, white or black diffuse texel has no hue, so it glints white at any tint.
+
+Tint changes only the highlight. The diffuse never changes, however you paint `_t`. That is deliberate: a surface must still read correctly where no reflection is drawn.
+
+A texture with `_t.png` and no `_p.png` keeps its prefix's highlight size.
+
+#### Rules for `_p` and `_t`
+
+Each of these **fails the compile**:
+
+- **Linear color space.** No `sRGB` chunk, no `iCCP` chunk, `gAMA` ≈ 1.0, the same rule as `_s.png`, `_n.png` and `_h.png`. A color PNG compiles: the compiler reads the red channel of any color type. A packed ORM (occlusion, roughness, metallic) export has ambient occlusion in its red channel, not roughness, so split the channels first.
+- **Same dimensions as the diffuse**, and as `_s.png`, `_h.png` and each other when those exist. They are packed into one texture with the specular and height maps, so they have to line up texel for texel.
+
+A texture with `_p` or `_t` compiles a specular texture four bytes per texel instead of one or two. Only textures that use them pay for it. TrenchBroom's texture browser hides `_p` and `_t` files, like the other sibling maps.
+
+Both the compiler and TrenchBroom recognize sibling maps by the end of the file name, ignoring case. So don't give a diffuse texture a name ending in `_p` or `_t` (or `_s`, `_n`, `_e`, `_h`): TrenchBroom hides it from the browser, and the compiler treats it as a sibling map (a colour-tagged `_p` or `_t` file fails the compile).
+
+They apply to world brushes and `kinematic_mover` brushes. `prop_mesh` models load only their diffuse, and sprites and fluids ignore both.
+
+No tool generates either map: sharpness and tint are artistic choices that no prefix rule can guess.
+
+#### Converting from PBR roughness and metallic
+
+If your texture tool exports PBR maps (Material Maker, Substance and most others do), convert them per texel:
+
+- **`_p` is one minus roughness.** Invert the roughness map: `_p` byte = 255 − roughness byte. Unity's *Smoothness* is already this quantity; copy it as is.
+- **`_t` is metallic.** Copy the metallic map unchanged.
+
+The roughness here is the usual glTF "perceptual" roughness, which is what those tools write. Export both as linear grayscale at the diffuse's size. Many editors tag exports as sRGB by default, which fails the compile; turn that off or strip the tag.
+
+There is no metallic darkening of the diffuse. In PBR a fully metallic surface has no diffuse at all. Here it keeps its diffuse, so if a converted metal looks too flat, darken its diffuse by hand: with `_t` its glint keeps its colour. The tint's hue comes from the diffuse's channel ratios (albedo divided by its brightest channel), so a diffuse darkened to a byte or two per channel quantizes the hue, and gold can read yellow. Keep a darkened diffuse comfortably above black.
+
+#### Pixel and smooth highlights
+
+By default, every highlight on world brushes and movers takes its shape from one point at the centre of each texel. Highlights sit still on the texture grid as the camera moves, with the same soft seams between texels that texture reads have. Shadows still cut a highlight on exactly the line they cut the lit surface, even through the middle of a texel. This applies to every texture, including ones without `_p` or `_t`: a glossy prefix such as `metal` shows texel-sized highlight blocks.
+
+A mod can choose `"smooth"` highlights instead, through its `render.specular.style` setting (see [scripting-reference.md](scripting-reference.md), *Render profile*). Smooth evaluates every pixel, so a highlight is a round spot that slides across the surface as the camera moves. With smooth, a very sharp `_p` texel's highlight is a small dot moving inside the texel: author for the style your mod ships with. Players cannot change this; it is the mod's look.
+
 ### Surface Depth (Height Maps)
 
 Add a height map next to any diffuse texture and its surface gets real relief: cobblestones stand proud of their mortar, panel seams sink in, rivets and studs rise, plank gaps read as gaps. The effect is strongest at shallow viewing angles, which is exactly where a flat texture normally gives itself away.
@@ -934,7 +1021,7 @@ Requirements — each of these **fails the compile**. None of them is a warning 
 
 - **Linear color space.** No `sRGB` chunk, no `iCCP` chunk, `gAMA` ≈ 1.0. Same rule as `_s.png` and `_n.png`. A gamma curve on a height map warps the depth. Re-export as linear PNG if your editor tags files by default.
 - **Same dimensions as the diffuse.** No scaling, no half-res height maps.
-- **Same dimensions as `_s.png`, if you have one.** Specular and height are packed into one two-channel texture in the compiled output, so they have to line up texel for texel.
+- **Same dimensions as `_s.png`, if you have one.** Specular and height are packed into one texture in the compiled output (with `_p` and `_t`, when present), so they have to line up texel for texel.
 
 #### How far it reaches
 
@@ -1073,8 +1160,11 @@ A **leak** is a gap in your brush hull. If you have a leak, interior rooms can v
 | `--release` always bakes high fidelity; remove `--bake-fidelity` or `--release` | The build names both flags | Drop `--bake-fidelity` to ship, or drop `--release` for an everyday build |
 | `--bake-fidelity` must be `low` or `high` | Any other value after `--bake-fidelity` | Use `low` or `high`, or leave the flag off for `low` |
 | mover poses' working set refused before the SH base gate … | The poses of every mover with `light_poses` set together, or every mover's placed poses with geometry poses included, need more memory than `--working-set-max-size` allows (16 GiB by default), before the rest of the lighting bake is counted. The error names those movers, the largest first, with each one's pose count and bytes | Lower `light_poses` on the named movers (a set count also places no geometry poses), or raise `--working-set-max-size` if the machine has the memory |
-| SH base working-set gate refused before patch shading: estimated peak … exceeds budget … | The indirect lighting bake, including every pose of every mover, needs more memory than `--working-set-max-size` allows (16 GiB by default) | Raise `--working-set-max-size` if the machine has the memory. Movers with many poses add to it, so a smaller `light_poses` on a long mover also helps |
+| SH base working-set gate refused before patch shading: estimated peak … exceeds budget … | The indirect lighting bake, including every pose of every mover, needs more memory than `--working-set-max-size` allows (16 GiB by default). On a map with movers it charges `--mover-payload-max-size` in full, three times over while the movers' lighting is assembled, and the error says so | Raise `--working-set-max-size` if the machine has the memory. Movers with many poses add to it, so a smaller `light_poses` on a long mover also helps. A `--mover-payload-max-size` raised past what the movers need costs three times the raise here; lower it to the Build Summary's block bytes plus headroom |
+| MoverProbeChannel (id 57): the bounce and depth blocks would hold … past --mover-payload-max-size … | The movers' baked indirect lighting needs more memory than `--mover-payload-max-size` allows (256 MiB by default). The error names the mover whose lighting would pass the cap and the movers before it | Use `light_bounces 0` on the largest movers, fewer or smaller movers, or raise `--mover-payload-max-size`. Everyday builds bake one bounce per pose and `--release` bakes every bounce, so a shipped build can need more than an everyday one. Raising the cap raises the memory the SH base working-set gate predicts by three times the raise |
 | Probes carry closed-pose depth, past the probe depth tile range | Movers reach into the lighting of more probes than the level can track | Use fewer movers, or move them where they block less of the level's light |
-| PNG color-space validation failed | An `_s.png`, `_n.png`, or `_h.png` carries an `sRGB` or `iCCP` chunk, or a `gAMA` that isn't ≈ 1.0 | Re-export the named files as linear PNG with no color-management metadata. The error lists every offending path |
+| PNG color-space validation failed | An `_s.png`, `_n.png`, `_h.png`, `_p.png` or `_t.png` carries an `sRGB` or `iCCP` chunk, or a `gAMA` that isn't ≈ 1.0 | Re-export the named files as linear PNG with no color-management metadata. The error lists every offending path |
 | `_h.png` dimensions must match diffuse | A height map is a different resolution from its diffuse texture | Re-export the height map at the diffuse's exact dimensions |
-| `_h.png` and `_s.png` … must have identical dimensions | A height map and its specular sibling disagree | Match them. The two are packed into one two-channel texture and cannot be resized independently |
+| `_h.png` and `_s.png` share one specular slot and must have identical dimensions | A height map and its specular sibling disagree | Match them. The two are packed into one texture and cannot be resized independently |
+| `_p.png` dimensions must match diffuse / `_t.png` dimensions must match diffuse | A smoothness or tint map is a different resolution from its diffuse texture | Re-export it at the diffuse's exact dimensions |
+| `_p.png` and `_s.png` (or `_h.png`, `_t.png`) share one specular slot and must have identical dimensions | A smoothness or tint map disagrees with another sibling that is packed into the same slot (`_s`, `_h`, or each other) | Match all of them. They are packed into one texture and cannot be resized independently |

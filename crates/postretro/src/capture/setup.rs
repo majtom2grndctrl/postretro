@@ -551,6 +551,16 @@ pub(super) fn capture_camera(
     }
 }
 
+/// The scene file's own specular style, never a mod manifest: capture loads
+/// none. Absent keeps the renderer's default, pixel. Applied before the
+/// level installs, though the style is per-frame state that no install reads.
+pub(super) fn apply_scene_specular(renderer: &mut Renderer, scene: &CaptureScene) {
+    if let Some(style) = scene.specular_style {
+        renderer.set_specular_style(style.renderer());
+    }
+    log::info!("[Capture] Specular style: {:?}", renderer.specular_style());
+}
+
 /// The scene file's own reflection settings, never player options or a mod
 /// manifest: the style, then the tier, then the march overrides over the
 /// tier's preset (steps, divisor, thickness, then the target fraction).

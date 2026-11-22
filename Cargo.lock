@@ -4404,6 +4404,7 @@ dependencies = [
  "notify-debouncer-full",
  "postretro-ai",
  "postretro-audio",
+ "postretro-camera-route",
  "postretro-collision",
  "postretro-combat-model",
  "postretro-entities",
@@ -4467,6 +4468,18 @@ version = "0.1.0"
 dependencies = [
  "kira",
  "log",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "postretro-camera-route"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "glam 0.33.12",
+ "postretro-level-format",
+ "postretro-level-loader",
+ "postretro-visibility",
  "thiserror 2.0.21",
 ]
 
@@ -4859,8 +4872,10 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "glam 0.33.12",
+ "postretro-camera-route",
  "postretro-level-compiler",
  "postretro-level-format",
+ "postretro-level-loader",
  "postretro-model",
  "serde",
  "tempfile",

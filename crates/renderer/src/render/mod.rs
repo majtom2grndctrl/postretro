@@ -98,6 +98,12 @@ pub(crate) mod gpu_test_harness;
 #[cfg(test)]
 pub(crate) mod install_cost_model;
 #[cfg(test)]
+mod kinematic_register_screen_capture;
+#[cfg(test)]
+mod kinematic_specular_harness;
+#[cfg(test)]
+mod kinematic_specular_test;
+#[cfg(test)]
 mod lightmap_residency_test;
 #[cfg(test)]
 mod render_extent_gpu_test;
@@ -115,6 +121,12 @@ mod shadowmask_union_fixtures;
 mod shadowmask_union_harness;
 #[cfg(test)]
 mod shadowmask_union_test;
+#[cfg(test)]
+mod specular_slot_fixtures;
+#[cfg(test)]
+mod specular_style_frame_tests;
+#[cfg(test)]
+mod world_specular_harness;
 #[cfg(test)]
 mod world_specular_test;
 
@@ -158,6 +170,8 @@ mod renderer_light_terms;
 mod renderer_lighting;
 mod renderer_mirror_lights;
 mod renderer_models;
+#[cfg(feature = "dev-tools")]
+mod renderer_playback;
 mod renderer_pre_scene;
 mod renderer_render_frame;
 mod renderer_resources;
@@ -258,6 +272,8 @@ pub use model_cache::{
     ModelEntryIdentity,
 };
 use promoted_depth_cache::{PromotedDepthCache, PromotedDepthCacheFramePlan};
+#[cfg(feature = "dev-tools")]
+pub use renderer_playback::PlaybackDrainCounters;
 pub use renderer_render_frame::{FrameScene, ShDrainFrameResult};
 pub use renderer_splash::PresentationDrawInput;
 pub use residency::{
@@ -279,6 +295,8 @@ pub use sh_streaming::{
 use sh_volume::{ShVolumeResources, ShVolumeSections};
 use smoke::SmokePass;
 pub use smoke::{SpriteCollectionRegistration, sprite_specular_exponent_is_valid};
+#[cfg(feature = "dev-tools")]
+pub use uploads::{PlaybackGpuSample, PlaybackGpuSpan};
 pub(crate) use uploads::{StagedUploads, StagingPool, UploadQueue};
 
 // Cross-crate re-export: these items now live in `postretro_render_cpu`, kept
@@ -322,7 +340,7 @@ pub use renderer_types::{
     CaptureGpuTimingState, CaptureGpuTimingWindow, CapturePromotionPin, CapturePromotionRow,
     CellOverlayState, ClearColor, DEFAULT_AMBIENT_FLOOR, DEFAULT_DYNAMIC_DIRECT_SCALE,
     DEFAULT_INDIRECT_SCALE, GpuTimingSupport, LevelGeometry, LevelGeometryLightmapStreaming,
-    LevelGeometryShStorage, LocatorDiagnostics, PortalOverlayState, PresentHandle,
+    LevelGeometryShStorage, LocatorDiagnostics, PortalOverlayState, PresentChoice, PresentHandle,
     RUNTIME_DYNAMIC_LIGHT_RESERVE, Renderer, SPLASH_CLEAR_COLOR, SpatialCellSetDiagnostics,
     SpatialDiagnostics, WorldWireframeMode,
 };

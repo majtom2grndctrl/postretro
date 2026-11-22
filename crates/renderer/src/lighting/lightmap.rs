@@ -296,6 +296,15 @@ impl LightmapResources {
         self.stream.as_ref().map(LightmapStreamState::counters)
     }
 
+    /// Staging buffers the streamed drain's pool has created; `None` when
+    /// the level does not stream its blocks.
+    #[cfg(feature = "dev-tools")]
+    pub(crate) fn stream_staging_buffers_created(&self) -> Option<u64> {
+        self.stream
+            .as_ref()
+            .map(LightmapStreamState::staging_buffers_created)
+    }
+
     /// Bytes of both pools' grown-out generations awaiting release.
     pub(crate) fn retiring_bytes(&self) -> u64 {
         self.stream

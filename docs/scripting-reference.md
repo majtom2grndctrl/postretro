@@ -104,8 +104,8 @@ the player's character. `persist: "run"` on a per-owner slot is refused when the
 store is declared, because a host never saves a guest's run state. See
 [Characters, runs and checkpoints](#characters-runs-and-checkpoints).
 
-**Render profile.** The optional `render` block picks the mod's bloom and
-water-reflection looks once, for the whole mod:
+**Render profile.** The optional `render` block picks the mod's bloom,
+water-reflection and highlight looks once, for the whole mod:
 
 ```typescript
 export default defineMod({
@@ -118,6 +118,7 @@ export default defineMod({
       pixelated: true,
     },
     reflections: { style: "smooth" },
+    specular: { style: "smooth" },
   },
 });
 ```
@@ -133,6 +134,7 @@ return defineMod({
       pixelated = true,
     },
     reflections = { style = "smooth" },
+    specular = { style = "smooth" },
   },
 })
 ```
@@ -152,19 +154,32 @@ reflects the flat surface: a still mirror. Drift and a declared wave never
 tilt the reflection in either style. How strongly a fluid reflects is its own
 `surfaceReflectivity` (see `defineFluid`).
 
+`specular.style` sets the shape of every highlight on world brushes and
+movers. `"pixel"` (the default) takes each highlight from one point at the
+centre of each texel, so highlights hold still on the texture grid as the
+camera moves, softened only across the seams texture reads already blend.
+`"smooth"` evaluates every pixel: highlights are round spots that slide across
+a surface, and a very sharp texel's highlight moves inside the texel. Shadows
+cut highlights per pixel in both styles. Sprite highlights never change.
+Per-texel sharpness and tint come from a texture's `_p.png` and `_t.png` maps
+(see [level_design.md](level_design.md), *Highlight Sharpness and Tint*). A
+debug staged reload that changes the style applies it on the next frame,
+without reloading the level.
+
 `ghosts` sets how every ghost-link ghost is made translucent: `"blend"` (the
 default) blends it over the scene, `"dither"` draws it as a fine screen-door
-pattern. An unknown value warns and uses `"blend"`, leaving `bloom` and
-`reflections` as written. See [ghost-links.md](ghost-links.md#blend-or-dither).
+pattern. An unknown value warns and uses `"blend"`, leaving `bloom`,
+`reflections` and `specular` as written. See [ghost-links.md](ghost-links.md#blend-or-dither).
 
-Every field — and `render`, `bloom` and `reflections` themselves — is
-optional, and omitting them selects the engine defaults: half-resolution
-smooth bloom, pixel-style reflections and blended (`"blend"`) ghosts. Malformed
-optional values degrade rather than abort: a non-object `render` warns and
-falls back to the complete default profile; a non-object `bloom` or
-`reflections` warns and falls back to that block's default without touching the
-other; an unrecognized `resolution` warns and uses `"half"`, a non-boolean
-`pixelated` warns and uses `false`, and a `style` other than `"pixel"` or
+Every field — and `render`, `bloom`, `reflections` and `specular`
+themselves — is optional, and omitting them selects the engine defaults:
+half-resolution smooth bloom, pixel-style reflections, pixel-style highlights
+and blended (`"blend"`) ghosts. Malformed optional values degrade rather than
+abort: a non-object `render` warns and falls back to the complete default
+profile; a non-object `bloom`, `reflections` or `specular` warns and falls back
+to that block's default without touching the others; an unrecognized
+`resolution` warns and uses `"half"`, a non-boolean `pixelated` warns and uses
+`false`, and a `reflections.style` or `specular.style` other than `"pixel"` or
 `"smooth"` warns and uses `"pixel"`. None of these reject an otherwise valid
 manifest.
 
@@ -172,8 +187,10 @@ The profile is static and mod-wide. It is committed at mod init and reapplied
 by a debug staged reload, so it cannot vary per level, per material, or from a
 reaction. It selects only the bloom *style*: whether bloom runs at all remains
 controlled by the `POSTRETRO_BLOOM` diagnostic override and the dev-tools
-toggle. A capture run loads no manifest, so it always draws pixel-style
-reflections.
+toggle. None of it is a player option: the reflection and highlight styles are
+the mod's look, and players cannot change them. A capture run loads no
+manifest, so it draws the defaults, pixel-style reflections and highlights,
+unless its scene sets `reflection_style` or `specular_style`.
 
 ---
 

@@ -60,6 +60,15 @@ impl<'a> SkipBars<'a> {
     }
 }
 
+impl SkipBars<'_> {
+    /// Heap bytes for the test ledger: the compact slots and the
+    /// mover-absent depth.
+    #[cfg(test)]
+    pub(crate) fn heap_bytes(&self) -> u64 {
+        (self.slots.capacity() * size_of::<u32>()) as u64 + self.depth.heap_bytes()
+    }
+}
+
 /// (probe, mid pose) states one mover keeps and skips, per block.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct SkipCounts {

@@ -13,7 +13,63 @@ struct State {
     window_peak: u64,
     by_kind: BTreeMap<&'static str, u64>,
     at_peak: BTreeMap<&'static str, u64>,
+    high_water: BTreeMap<&'static str, u64>,
+    groups: Vec<Group>,
     phases: Vec<Phase>,
+    /// Guards made so far: a guard's sequence decides which groups count
+    /// it.
+    made: u64,
+}
+
+/// Kinds counted together, with the most they held at once.
+struct Group {
+    name: &'static str,
+    kinds: &'static [&'static str],
+    /// The first guard sequence the group counts: a guard made before it was
+    /// watched never joins it, so its drop never leaves it.
+    since: u64,
+    live: u64,
+    high_water: u64,
+}
+
+impl State {
+    /// Count a new guard of `kind`; its sequence.
+    fn add(&mut self, kind: &'static str, bytes: u64) -> u64 {
+        let seq = self.made;
+        self.made += 1;
+        self.live += bytes;
+        let live = self.by_kind.entry(kind).or_default();
+        *live += bytes;
+        let live = *live;
+        let high = self.high_water.entry(kind).or_default();
+        *high = (*high).max(live);
+        for group in self
+            .groups
+            .iter_mut()
+            .filter(|group| group.kinds.contains(&kind))
+        {
+            group.live += bytes;
+            group.high_water = group.high_water.max(group.live);
+        }
+        if self.live > self.peak {
+            self.peak = self.live;
+            self.at_peak = self.by_kind.clone();
+        }
+        self.window_peak = self.window_peak.max(self.live);
+        seq
+    }
+
+    fn remove(&mut self, kind: &'static str, bytes: u64, seq: u64) {
+        self.live -= bytes;
+        *self.by_kind.entry(kind).or_default() -= bytes;
+        for group in self
+            .groups
+            .iter_mut()
+            .filter(|group| group.since <= seq && group.kinds.contains(&kind))
+        {
+            group.live -= bytes;
+        }
+    }
 }
 
 type Ledger = Arc<Mutex<State>>;
@@ -50,6 +106,10 @@ pub(crate) struct Report {
     pub(crate) phases: Vec<Phase>,
     /// Bytes still held when the run returned: what left it.
     pub(crate) live_at_end: u64,
+    /// The most each kind held at once.
+    pub(crate) high_water: BTreeMap<&'static str, u64>,
+    /// The most each [`watch_group`] group held at once.
+    pub(crate) groups: BTreeMap<&'static str, u64>,
 }
 
 /// One routed allocation, sized by capacity: counted live from creation
@@ -59,24 +119,20 @@ pub(crate) struct Report {
 pub(crate) struct Held {
     kind: &'static str,
     bytes: u64,
+    /// Its sequence on its ledger.
+    seq: u64,
     ledger: Option<Ledger>,
 }
 
 impl Held {
     fn on(ledger: Option<Ledger>, kind: &'static str, bytes: u64) -> Self {
-        if let Some(ledger) = &ledger {
-            let mut state = lock(ledger);
-            state.live += bytes;
-            *state.by_kind.entry(kind).or_default() += bytes;
-            if state.live > state.peak {
-                state.peak = state.live;
-                state.at_peak = state.by_kind.clone();
-            }
-            state.window_peak = state.window_peak.max(state.live);
-        }
+        let seq = ledger
+            .as_ref()
+            .map_or(0, |ledger| lock(ledger).add(kind, bytes));
         Self {
             kind,
             bytes,
+            seq,
             ledger,
         }
     }
@@ -85,9 +141,7 @@ impl Held {
 impl Drop for Held {
     fn drop(&mut self) {
         if let Some(ledger) = &self.ledger {
-            let mut state = lock(ledger);
-            state.live -= self.bytes;
-            *state.by_kind.entry(self.kind).or_default() -= self.bytes;
+            lock(ledger).remove(self.kind, self.bytes, self.seq);
         }
     }
 }
@@ -122,6 +176,23 @@ pub(crate) fn hold_vec<T>(kind: &'static str, vec: &Vec<T>) -> Held {
     hold(kind, (vec.capacity() * size_of::<T>()) as u64)
 }
 
+/// Count `kinds` together on this thread's ledger from now on, reporting
+/// the most they held at once under `name`. Bytes already live are not
+/// counted.
+pub(crate) fn watch_group(name: &'static str, kinds: &'static [&'static str]) {
+    if let Some(ledger) = active() {
+        let mut state = lock(&ledger);
+        let since = state.made;
+        state.groups.push(Group {
+            name,
+            kinds,
+            since,
+            live: 0,
+            high_water: 0,
+        });
+    }
+}
+
 /// Mark a phase boundary on this thread's ledger.
 pub(crate) fn phase(label: &'static str) {
     if let Some(ledger) = active() {
@@ -153,6 +224,12 @@ pub(crate) fn measured<R: Send>(threads: usize, work: impl FnOnce() -> R + Send)
         at_peak: state.at_peak.clone(),
         phases: state.phases.clone(),
         live_at_end: state.live,
+        high_water: state.high_water.clone(),
+        groups: state
+            .groups
+            .iter()
+            .map(|group| (group.name, group.high_water))
+            .collect(),
     };
     (result, report)
 }
@@ -163,6 +240,26 @@ mod tests {
 
     #[test]
     fn the_ledger_tracks_live_bytes_and_the_peak_per_phase() {
+        let ((), grouped) = measured(1, || {
+            watch_group("ab", &["a", "b"]);
+            let a = hold("a", 10);
+            let b = hold("b", 20);
+            drop(a);
+            let _c = hold("c", 99);
+            let _a = hold("a", 5);
+            drop(b);
+        });
+        assert_eq!(grouped.groups, BTreeMap::from([("ab", 30)]));
+        // A guard made before its group is watched never joins it: its drop
+        // leaves the group's count alone.
+        let ((), early) = measured(1, || {
+            let before = hold("a", 7);
+            watch_group("ab", &["a"]);
+            let after = hold("a", 3);
+            drop(before);
+            drop(after);
+        });
+        assert_eq!(early.groups, BTreeMap::from([("ab", 3)]));
         let ((), report) = measured(2, || {
             let a = hold("a", 100);
             phase("start");
@@ -190,6 +287,7 @@ mod tests {
             ]
         );
         assert_eq!(report.live_at_end, 0);
+        assert_eq!(report.high_water, BTreeMap::from([("a", 100), ("b", 100)]));
         // Outside a measured pool nothing is counted.
         let outside = hold("outside", 7);
         assert!(outside.ledger.is_none());

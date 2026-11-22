@@ -93,16 +93,20 @@ Validation follows the fluid policy above: a rule broken drops that fluid with a
 `pixelated: boolean`; omitted fields use half and smooth defaults.
 `reflections.style` accepts `"pixel" | "smooth"`,
 default pixel, and sets the look of every fluid reflection layer
-(`rendering_pipeline.md` §7.3a). `specular.style` (decided, not yet built)
-accepts `"pixel" | "smooth"`, default pixel, and sets whether world and mover
-highlights snap to the texel grid (`rendering_pipeline.md` §4, Texel-centre
-highlight). `ghosts` accepts
+(`rendering_pipeline.md` §7.3a). `specular.style` accepts
+`"pixel" | "smooth"`, default pixel, and sets whether world and mover
+highlights take one point per texel (`rendering_pipeline.md` §4, Texel-centre
+highlight). It applies live: the commit is a per-frame uniform write, with no
+pipeline or bind-group rebuild. Capture loads no manifest and takes it from a
+scene key instead (`rendering_pipeline.md` §7.8). `ghosts` accepts
 `"blend" | "dither"`, default blend, and sets how every ghost draw is made
 translucent (`rendering_pipeline.md` §7.9). Malformed optional profile fields warn and
 degrade to those defaults without rejecting an otherwise valid manifest;
-`bloom`, `reflections`, `specular` and `ghosts` degrade independently. A
-successful staged mod-init replaces the active profile; failed, rejected, and
-stale attempts preserve it. The profile is not a level script, reaction, or
+`bloom`, `reflections`, `specular` and `ghosts` degrade independently, in TS and
+Luau alike. Boot mod init and every committed staged mod-init commit the
+reflection and specular styles together; a committed init with no start script
+restores the defaults. Failed, rejected, and stale attempts preserve the active
+profile. The profile is not a level script, reaction, or
 player setting.
 
 **Map catalog.** `ModManifest.maps` is the mod's pre-load-discoverable home for per-map metadata. Authors may inline it or build it with `defineMapCatalog(entries)`, another pure SDK identity helper that gives `ModMapEntry[]` type hints without changing the wire shape. Each entry has three required v1 fields plus optional classification: `id` is the stable logical handle used by catalog-driven loads and future references; `path` is authored relative to the content root; `name` is the display name; `tags`, when present, are authoritative classification strings for frontend filtering and reaction composition. Missing or `nil`/`null` tags normalize to an empty list. The engine validates and commits the catalog during mod init into `DataRegistry.maps`; it is engine-global, survives level unload and platform suspend, and is available before any level loads. Catalog id loads resolve `id` through this committed snapshot and carry the resolved entry on the in-flight load. Direct raw-path loads bypass the catalog and synthesize non-catalog metadata (`catalog_id = None`, name from file stem, empty tags). A `path` written as a string literal is also what packaging can see — an assembled one ships no level and reports none (`build_pipeline.md` §Shipped level set).
@@ -316,9 +320,13 @@ The TypeScript declaration file declares both SDK module IDs:
 tree/state helpers, UI reactions, game-state refs used by UI, and theme token
 helpers. A third, `"postretro/audio"`, holds audio subsystem APIs:
 `setGhostAudio` first, then music layering. It is not re-exported from
-`"postretro"`. Moving `playSound` there is a later breaking change. Dev script
-`tsconfig.json` files resolve every module ID to the same generated
-declaration file. Luau exposes the same split through literal
+`"postretro"`. Moving `playSound` there is a later breaking change. A mod-root
+`tsconfig.json` covers `start-script.ts` and every script below it, and
+resolves every module ID to the same generated declaration file. The dev mod's
+config is a byte copy of `sdk/templates/tsconfig.json`; a script-compiler test
+fails when they differ or stop resolving the declarations. A config under
+`scripts/` alone leaves the start script in an inferred editor project with no
+SDK types. Luau exposes the same split through literal
 `require("postretro")`, `require("postretro/ui")` and
 `require("postretro/audio")` overloads in `postretro.d.luau`. Each new module
 ID also joins the script compiler's specifier allowlist and build-side Luau

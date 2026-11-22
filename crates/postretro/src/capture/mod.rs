@@ -14,5 +14,7 @@ mod receivers;
 mod report;
 mod scene;
 mod setup;
+#[cfg(test)]
+mod specular_frame_tests;
 
 pub(crate) use driver::run_capture;

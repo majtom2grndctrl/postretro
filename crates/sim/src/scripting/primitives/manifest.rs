@@ -40,6 +40,21 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         )
         .finish();
     registry
+        .register_enum("SpecularStyle")
+        .doc("Shape of every world and mover specular highlight.")
+        .variant("pixel", "One highlight per texel: each texel takes its highlight from one point at its centre, so highlights hold still on the texture grid as the camera moves, softened only across the same seams texture reads blend. This is the default.")
+        .variant("smooth", "Per-pixel highlights. A sharp texel's highlight moves inside it as the camera moves.")
+        .finish();
+    registry
+        .register_type("SpecularRenderProfile")
+        .doc("Static specular presentation preferences for the entire mod. Never a player option.")
+        .field(
+            "style?",
+            "SpecularStyle",
+            "Highlight shape. Optional; defaults to `\"pixel\"`. An unknown value warns and uses `\"pixel\"`.",
+        )
+        .finish();
+    registry
         .register_enum("GhostTransparency")
         .doc("How every ghost-link ghost is made translucent, mod-wide. Projectile billboard ghosts blend under both.")
         .variant("blend", "Alpha-blend each ghost at its presented opacity. This is the default.")
@@ -57,6 +72,11 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
             "reflections?",
             "ReflectionRenderProfile",
             "Fluid reflection presentation preferences. Optional; defaults to pixel-style reflections.",
+        )
+        .field(
+            "specular?",
+            "SpecularRenderProfile",
+            "World and mover specular presentation preferences. Optional; defaults to pixel-style highlights.",
         )
         .field(
             "ghosts?",
@@ -221,7 +241,7 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         .field(
             "render?",
             "RenderProfile",
-            "Static renderer preferences for the entire mod. Optional; defaults to half-resolution smooth bloom, pixel-style fluid reflections and alpha-blended ghosts.",
+            "Static renderer preferences for the entire mod. Optional; defaults to half-resolution smooth bloom, pixel-style fluid reflections, pixel-style specular highlights and alpha-blended ghosts.",
         )
         .field(
             "movers?",
@@ -788,7 +808,7 @@ mod tests {
             ),
             (
                 "RenderProfile",
-                ["bloom?", "reflections?", "ghosts?"].as_slice(),
+                ["bloom?", "reflections?", "specular?", "ghosts?"].as_slice(),
             ),
         ] {
             let registered = registry
@@ -847,6 +867,53 @@ mod tests {
             .expect("ReflectionRenderProfile must be registered");
         let TypeShape::Struct { fields } = &profile.shape else {
             panic!("ReflectionRenderProfile must be a Struct");
+        };
+        let names: Vec<&str> = fields.iter().map(|field| field.name).collect();
+        assert_eq!(names, ["style?"]);
+    }
+
+    // Drift guard: the SDK's `SpecularStyle` union is the runtime enum's
+    // authored names, in order, default first. Each variant maps through an
+    // exhaustive match, so a new runtime style fails to compile until it is
+    // registered.
+    #[test]
+    fn specular_render_profile_sdk_types_derive_from_the_runtime_style() {
+        use postretro_scripting_core::runtime::ModSpecularStyle;
+        let mut registry = PrimitiveRegistry::new();
+        register_sdk_type(&mut registry);
+
+        let style = registry
+            .iter_types()
+            .find(|registered| registered.name == "SpecularStyle")
+            .expect("SpecularStyle must be registered");
+        let TypeShape::StringEnum { variants } = &style.shape else {
+            panic!("SpecularStyle must be a StringEnum, got {:?}", style.shape);
+        };
+        let names: Vec<&str> = variants.iter().map(|variant| variant.name).collect();
+        let expected: Vec<&str> = ModSpecularStyle::ALL
+            .into_iter()
+            .map(|style| {
+                let name = match style {
+                    ModSpecularStyle::Pixel => "pixel",
+                    ModSpecularStyle::Smooth => "smooth",
+                };
+                assert_eq!(style.authored_name(), name);
+                name
+            })
+            .collect();
+        assert_eq!(names, expected);
+        assert_eq!(
+            ModSpecularStyle::default().authored_name(),
+            names[0],
+            "the default is listed first, as its doc says"
+        );
+
+        let profile = registry
+            .iter_types()
+            .find(|registered| registered.name == "SpecularRenderProfile")
+            .expect("SpecularRenderProfile must be registered");
+        let TypeShape::Struct { fields } = &profile.shape else {
+            panic!("SpecularRenderProfile must be a Struct");
         };
         let names: Vec<&str> = fields.iter().map(|field| field.name).collect();
         assert_eq!(names, ["style?"]);

@@ -76,6 +76,9 @@ const SHADER_SOURCE: &str = concat!(
     "\n",
     include_str!("../shaders/light_eval.wgsl"),
     "\n",
+    // `post_retro_texel_uv`, which `sample_post_retro` reconstructs through.
+    include_str!("../shaders/material_shading.wgsl"),
+    "\n",
 );
 
 /// The fragment entry point for `variant`. Each variant is its own entry

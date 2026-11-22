@@ -52,6 +52,9 @@ pub(crate) struct CpuFrameTimer {
     /// Blocking time moved out of each top-level stage into wait.
     blocked: [u64; FrameStage::ALL.len()],
     excluded: bool,
+    /// `record` holds the frame committed last, not an older one: cleared at
+    /// each frame's open, set when its commit composes the record.
+    committed: bool,
     /// Set once a frame was dropped for an impossible record; see `compose`.
     warned_invalid_frame: bool,
 }
@@ -69,6 +72,7 @@ impl CpuFrameTimer {
             wait_sources: [None; 2],
             blocked: [0; FrameStage::ALL.len()],
             excluded: false,
+            committed: false,
             warned_invalid_frame: false,
         }
     }
@@ -80,6 +84,7 @@ impl CpuFrameTimer {
     /// Opens a frame at handler entry, discarding anything a previous,
     /// uncommitted frame staged.
     pub(crate) fn begin_frame(&mut self, start: Instant) {
+        self.committed = false;
         if !self.gate.is_enabled() {
             return;
         }
@@ -140,6 +145,7 @@ impl CpuFrameTimer {
 
     /// Folds the open frame into the window. Returns `true` when it closed one.
     pub(crate) fn commit_frame(&mut self, end: Instant) -> bool {
+        self.committed = false;
         let Some(start) = self.start.take() else {
             return false;
         };
@@ -159,6 +165,7 @@ impl CpuFrameTimer {
             }
             return false;
         }
+        self.committed = true;
         self.window
             .as_mut()
             .expect("window checked above")
@@ -232,6 +239,15 @@ impl CpuFrameTimer {
     #[cfg(test)]
     pub(crate) fn last_record(&self) -> &FrameRecord {
         &self.record
+    }
+
+    /// The record of the frame just committed, read after its commit and
+    /// before the next frame opens. `None` with timing off, and for a frame
+    /// that never counts: excluded (no surface, install, reload commit) or
+    /// returned early.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub(crate) fn committed_record(&self) -> Option<&FrameRecord> {
+        self.committed.then_some(&self.record)
     }
 
     /// The latest closed window. Reading does not consume it.

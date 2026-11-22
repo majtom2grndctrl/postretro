@@ -103,6 +103,11 @@ pub(in crate::render) struct FullRenderer {
     pub(in crate::render) frame_light_term_mask: LightTermMask,
     /// Indirect scale captured with group 0, before diagnostics can change it.
     pub(in crate::render) frame_indirect_scale: f32,
+    /// The boot-state specular style, captured with group 0. Forward's
+    /// group-0 bit and every mover beauty-pipeline choice (main view and
+    /// planar mirror) read this copy, so a commit mid-frame can never split
+    /// them across one frame.
+    pub(in crate::render) frame_specular_style: postretro_render_cpu::frame_uniforms::SpecularStyle,
     /// Camera-PVS-visible kinematic mover instances for the beauty pass.
     pub(in crate::render) kinematic_mover_draws: Vec<kinematic_brush::KinematicMoverInstance>,
     /// Every present kinematic mover transform, including camera-PVS-culled

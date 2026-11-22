@@ -2,6 +2,8 @@
 
 Quick-reference for the engine's diagnostic keyboard chords, plus simulated network lag for co-op testing. All chords use **Alt+Shift** as the modifier. Chords fire on key-down only (no repeat); any extra modifier (Ctrl, Cmd) suppresses the chord.
 
+To fly the camera along a repeatable route and measure how a level streams, see [camera-routes.md](camera-routes.md).
+
 ---
 
 ## Chord table

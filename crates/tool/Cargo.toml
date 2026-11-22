@@ -17,6 +17,10 @@ postretro-level-compiler = { workspace = true }
 postretro-level-format = { workspace = true, features = ["gltf-resolve"] }
 # Rigid weapon-mount solving reads skinned models through the CPU loader.
 postretro-model = { workspace = true }
+# `generate-camera-route`: loads a level's cells and portals and writes the
+# shared route generator's pose file.
+postretro-camera-route = { workspace = true }
+postretro-level-loader = { workspace = true }
 glam = { workspace = true }
 # Keys the entry-script scratch directory by canonical manifest path.
 blake3 = { workspace = true }

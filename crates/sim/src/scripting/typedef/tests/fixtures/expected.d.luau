@@ -1421,6 +1421,19 @@ export type ReflectionRenderProfile = {
   style: ReflectionStyle?,
 }
 
+--- Shape of every world and mover specular highlight. Valid values: `pixel`, `smooth`.
+export type SpecularStyle =
+  --- One highlight per texel: each texel takes its highlight from one point at its centre, so highlights hold still on the texture grid as the camera moves, softened only across the same seams texture reads blend. This is the default.
+  "pixel"
+  --- Per-pixel highlights. A sharp texel's highlight moves inside it as the camera moves.
+  | "smooth"
+
+--- Static specular presentation preferences for the entire mod. Never a player option.
+export type SpecularRenderProfile = {
+  --- Highlight shape. Optional; defaults to `"pixel"`. An unknown value warns and uses `"pixel"`.
+  style: SpecularStyle?,
+}
+
 --- How every ghost-link ghost is made translucent, mod-wide. Projectile billboard ghosts blend under both. Valid values: `blend`, `dither`.
 export type GhostTransparency =
   --- Alpha-blend each ghost at its presented opacity. This is the default.
@@ -1434,6 +1447,8 @@ export type RenderProfile = {
   bloom: BloomRenderProfile?,
   --- Fluid reflection presentation preferences. Optional; defaults to pixel-style reflections.
   reflections: ReflectionRenderProfile?,
+  --- World and mover specular presentation preferences. Optional; defaults to pixel-style highlights.
+  specular: SpecularRenderProfile?,
   --- How ghosts are made translucent. Optional; defaults to `"blend"`. An unknown value warns and uses `"blend"`.
   ghosts: GhostTransparency?,
 }
@@ -1722,7 +1737,7 @@ export type ModManifest = {
   id: string,
   --- Required mod version for display and diagnostics. It is never compared for admission and is not a security mechanism; any non-empty string is valid.
   version: string,
-  --- Static renderer preferences for the entire mod. Optional; defaults to half-resolution smooth bloom, pixel-style fluid reflections and alpha-blended ghosts.
+  --- Static renderer preferences for the entire mod. Optional; defaults to half-resolution smooth bloom, pixel-style fluid reflections, pixel-style specular highlights and alpha-blended ghosts.
   render: RenderProfile?,
   --- Static kinematic-mover defaults. Optional; authored mover auto_close_ms overrides this delay.
   movers: MoverDefaults?,

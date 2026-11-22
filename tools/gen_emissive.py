@@ -89,7 +89,7 @@ def main():
 
     failed = []
     for source in files:
-        if source.stem.lower().endswith(("_s", "_n", "_e")):
+        if source.stem.lower().endswith(("_s", "_n", "_e", "_h", "_p", "_t")):
             continue
         output_path = source.parent / f"{source.stem}_e.png"
         if not process_image(source, output_path, args.cutoff, args.force):

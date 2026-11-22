@@ -216,6 +216,10 @@ pub(crate) struct ShResidencyCounters {
     pub(crate) max_drain_decoded_bytes: u64,
     /// Drains that left eligible ready work behind because of the byte budget.
     pub(crate) budget_limited_drains: u64,
+    /// Clusters the latest frame drew while not Sampleable, whatever their
+    /// episode: a gauge in cluster-frames, where `misses` counts episodes.
+    /// Zero on a frame that counts no misses (full demand).
+    pub(crate) last_frame_drawn_not_resident: u32,
 }
 
 /// Plain controller-owned state for the live SH report. GPU pool figures stay
@@ -582,6 +586,12 @@ impl ShResidencyController {
     #[cfg(test)]
     pub(crate) fn counters(&self) -> ShResidencyCounters {
         self.counters
+    }
+
+    /// Clusters the latest frame drew while not Sampleable.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub(crate) fn last_frame_drawn_not_resident(&self) -> u32 {
+        self.counters.last_frame_drawn_not_resident
     }
 
     /// The latest target update's drawn, not-Sampleable clusters by cause,

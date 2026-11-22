@@ -756,6 +756,8 @@ fn only_the_vertex_entry_samples_the_sh_volume() {
     assert!(uses_of("fs_main_reflecting", "sh_atlas_sampler"));
 }
 
+// The fluid samples its texels as the mover does: the same wrapper, around the
+// one shared reconstruction the fluid pipeline composes rather than copies.
 #[test]
 fn fluid_post_retro_sampling_matches_the_mover_shader() {
     let fluid = code_only(wgsl_fn(FLUID_WGSL, "sample_post_retro"));
@@ -764,6 +766,15 @@ fn fluid_post_retro_sampling_matches_the_mover_shader() {
         "sample_post_retro",
     ));
     assert_eq!(fluid, mover);
+    assert!(fluid.contains("post_retro_texel_uv(uv,dims,ddx,ddy)"));
+    assert!(!FLUID_WGSL.contains("fn post_retro_texel_uv("));
+    assert_eq!(
+        composed_shader_source()
+            .matches("fn post_retro_texel_uv(")
+            .count(),
+        1,
+        "the fluid pipeline composes material_shading.wgsl's reconstruction once"
+    );
 }
 
 #[test]

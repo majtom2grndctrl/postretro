@@ -94,6 +94,43 @@ pub struct ModReflectionProfile {
     pub style: ModReflectionStyle,
 }
 
+/// `render.specular.style`: the shape of every world and mover highlight.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ModSpecularStyle {
+    /// One highlight point per albedo texel. The default.
+    #[default]
+    Pixel,
+    /// Every highlight input per pixel, so sharp texels crawl with the camera.
+    Smooth,
+}
+
+impl ModSpecularStyle {
+    /// Every style, in SDK declaration order.
+    pub const ALL: [Self; 2] = [Self::Pixel, Self::Smooth];
+
+    /// The authored spelling.
+    pub const fn authored_name(self) -> &'static str {
+        match self {
+            Self::Pixel => "pixel",
+            Self::Smooth => "smooth",
+        }
+    }
+
+    /// The style an authored string names, if any.
+    pub fn from_authored(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|style| style.authored_name() == name)
+    }
+}
+
+/// `render.specular`: the authored specular highlight style. Local
+/// presentation: never on the wire, in no digest.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ModSpecularProfile {
+    pub style: ModSpecularStyle,
+}
+
 /// `render.ghosts`: how every ghost draw is made translucent. Local
 /// presentation: never on the wire, in no digest.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -130,6 +167,7 @@ impl ModGhostTransparency {
 pub struct ModRenderProfile {
     pub bloom: ModBloomProfile,
     pub reflections: ModReflectionProfile,
+    pub specular: ModSpecularProfile,
     pub ghosts: ModGhostTransparency,
 }
 

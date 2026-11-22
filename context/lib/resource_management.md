@@ -26,7 +26,7 @@ TrenchBroom requires the collection subdirectory structure for texture browsing.
 
 PRL stores a deduplicated texture name list (`TextureNames` section) plus a parallel `TextureCacheKeys` section — one 32-byte `blake3` hash per name entry, same ordering. No pixel data.
 
-**Compile time.** `prl-build` resolves each `TextureNames` entry to its PNG bundle: `{name}.png` (diffuse), `{name}_s.png` (specular), `{name}_n.png` (normal-map), `{name}_e.png` (emissive), `{name}_h.png` (height, packed into the specular slot — see §4.6), and `{name}_p.png` (smoothness) and `{name}_t.png` (tint), packed likewise (§4.7; decided, not yet built), discovered by suffix via case-insensitive lookup. `TextureNames` entries are stored verbatim from the `.map`, so a name may be **collection-qualified** (`collection/stem`) — TrenchBroom identifies materials by their path relative to the textures root — or a bare stem (hand-authored maps). The resolver indexes each PNG under its collection-relative key (lowercased, forward-slashed, no extension) and also under a **bare-stem alias** when that stem is unique across collections (ambiguous stems get no alias and log a warning). Incoming names are normalized (lowercase, `\`→`/`, leading `textures/` stripped). A qualified base stays selected when any of its sibling forms exists, including sibling-only bundles; only an entirely missing qualified bundle falls back to the bare last segment. All slots then resolve from that selected base. All are optional — a bundle is baked whenever at least one is found; when none are found, a zero key signals the runtime to substitute placeholders without warning. The Mitchell-Netravali baker (B = C = 1/3) produces full mip chains in linear space — sRGB diffuse and emissive color decode to linear before filtering and re-encode on output; R8 specular filters linearly; a two-channel `Rg8Unorm` surface map (specular plus height, §4.6) filters both channels through the same path with per-output-texel clamping, and the four-channel form (§4.7) filters likewise, then clamps B and A at each mip to keep authored values off their absent-map markers; Rgba8 normal filters linearly with per-output-texel renormalization. Output is one `.prm` sidecar per content-addressed bundle under `<baked root>/materials/<blake3-hex>.prm` (runtime-required compiled output, not the disposable `.build-caches/` stage cache — see `build_pipeline.md` §Build Cache). If no PNG is found for a name, the compiler writes a zero key (`[0u8; 32]`) and emits no `.prm`.
+**Compile time.** `prl-build` resolves each `TextureNames` entry to its PNG bundle: `{name}.png` (diffuse), `{name}_s.png` (specular), `{name}_n.png` (normal-map), `{name}_e.png` (emissive), `{name}_h.png` (height, packed into the specular slot — see §4.6), and `{name}_p.png` (smoothness) and `{name}_t.png` (tint), packed likewise (§4.7), discovered by suffix via case-insensitive lookup. `TextureNames` entries are stored verbatim from the `.map`, so a name may be **collection-qualified** (`collection/stem`) — TrenchBroom identifies materials by their path relative to the textures root — or a bare stem (hand-authored maps). The resolver indexes each PNG under its collection-relative key (lowercased, forward-slashed, no extension) and also under a **bare-stem alias** when that stem is unique across collections (ambiguous stems get no alias and log a warning). Incoming names are normalized (lowercase, `\`→`/`, leading `textures/` stripped). A qualified base stays selected when any of its sibling forms exists, including sibling-only bundles; only an entirely missing qualified bundle falls back to the bare last segment. All slots then resolve from that selected base. All are optional — a bundle is baked whenever at least one is found; when none are found, a zero key signals the runtime to substitute placeholders without warning. The Mitchell-Netravali baker (B = C = 1/3) produces full mip chains in linear space — sRGB diffuse and emissive color decode to linear before filtering and re-encode on output; R8 specular filters linearly; a two-channel `Rg8Unorm` surface map (specular plus height, §4.6) filters both channels through the same path with per-output-texel clamping, and the four-channel form (§4.7) filters likewise, then holds B and A at each mip: an authored map's channel off its absent-map marker, an absent map's channel on it; Rgba8 normal filters linearly with per-output-texel renormalization. Output is one `.prm` sidecar per content-addressed bundle under `<baked root>/materials/<blake3-hex>.prm` (runtime-required compiled output, not the disposable `.build-caches/` stage cache — see `build_pipeline.md` §Build Cache). If no PNG is found for a name, the compiler writes a zero key (`[0u8; 32]`) and emits no `.prm`.
 
 **Level load.** For each `TextureCacheKeys[i]`, the engine opens `<hex>.prm` under the materials root it derives from the content root (`build_pipeline.md` §Baked texture mips) and parses it with `PrmFile::from_bytes_partial`. Legacy world and model loaders upload present slot mip chains only from single-layer sidecars. A valid layered sidecar logs a `warn!` and replaces the full material with placeholders until a `D2Array` PRM upload path exists. A zero key produces a silent placeholder. A corrupt or missing single-layer sidecar logs a `warn!` and substitutes per-slot placeholders; cleanly parsed slots from a partially-corrupt file are used. The runtime never opens a PNG for world materials. Model materials use diffuse-only addressing and share sidecars only with diffuse-only world bundles. They consume only diffuse; specular and normal remain neutral and emissive remains black.
 
@@ -81,7 +81,7 @@ The material enum and prefix derivation are implemented. Behavior hooks are plan
 | Behavior | Status |
 |----------|--------|
 | **Emissive surfaces** | Implemented — world and kinematic-brush `_e` texels add self-illumination to HDR scene color, scaled by a strength baked per texture from `materials.toml` (default 1.0 for any texture with an `_e` map, whatever its prefix), and on static world faces by an `emissive_volume`. They never replace or inject into direct/indirect lighting; bright values bloom in the renderer compositor. A `light_area` face's glow follows its light instead (decided, not yet built). See §4.5. |
-| **Shininess** | Implemented (Epic 5) — specular exponent on enum variant. Fallback for materials without a `_p` smoothness map (§4.7, decided, not yet built). |
+| **Shininess** | Implemented (Epic 5) — specular exponent on enum variant. Fallback for texels without a `_p` smoothness map (§4.7). |
 | **Surface Depth** | Implemented — per-prefix depth (each direction), terrace count, march step cap, and fade distance for the signed texel-space parallax march. `glass` resolves to flat by intent, not by omission. See §4.6. |
 | **Footstep sounds** | Planned. |
 | **Bullet impact particles** | Planned. |
@@ -190,7 +190,9 @@ and `_color`, never the emissive map or its strength (decided, not yet built;
     `.prm` caches stay warm.
   - A `light_area` face (decided, not yet built) instead takes its light's
     `_glow` × the light's live colour and brightness, so its glow follows its
-    light frame for frame.
+    light frame for frame. No `emissive_volume` claims it. Reflection capture
+    shows it at `_glow` × the light's reference colour (§5) and counts it in
+    that light's live-lighting share.
 - **Emissive volumes:** an `emissive_volume` brush scales and tints the static
   world faces it holds. Glow = texture strength × (min + brightness × (max −
   min)) × color. Membership is per final face, fixed at compile time
@@ -241,14 +243,15 @@ rides in the **G channel of the specular slot**, which becomes a two-channel
   `_t` is present. With `_h` and no `_s`, R bakes to 0 — the same zero
   specular response the shared black placeholder gives.
 - **Fallback:** no `_h.png` bakes the single-channel `R8Unorm` specular slot,
-  unless `_p` or `_t` widens it (§4.7, decided, not yet built).
+  unless `_p` or `_t` widens it (§4.7).
   Content addressing folds height in only when it is present, so a material
   without one keeps its sidecar key.
 - **Runtime:** the absent-specular placeholder is a 1×1 black `R8Unorm` texel.
   WGSL expands it to `(r, 0, 0, 1)`, whose `.g == 0` would read as maximum
-  raise, so the march runs only when the loaded slot is `Rg8Unorm` (or
-  `Rgba8Unorm`, §4.7, decided, not yet built) — a has-depth bit decided from the
-  slot that actually loaded, never from the prefix. Every slot format binds
+  raise, so the march runs only when the loaded slot is `Rg8Unorm` or
+  `Rgba8Unorm` (§4.7) — a has-depth bit decided from the slot that actually
+  loaded, never from the prefix. The relief reader takes the slot's stride, so
+  it reads G at byte 1 of 2 or of 4. Every slot format binds
   through the same group-1 texture entry (`Float { filterable: true }`), so no
   bind-group layout changes. The surface map costs exactly twice the
   single-channel specular slot it replaces and nothing else; a 1024×1024
@@ -293,7 +296,7 @@ rides in the **G channel of the specular slot**, which becomes a two-channel
   height sibling. The buffers live in the level's `gpu_textures` vector and die
   with the level (§8.2).
 
-### 4.7 Smoothness and Tint Maps (decided, not yet built)
+### 4.7 Smoothness and Tint Maps
 
 Two per-texel highlight inputs, so one texture mixes matte and glossy texels,
 or white-glinting stone and tinted metal. Like height, both ride the specular
@@ -301,42 +304,78 @@ slot rather than slots of their own.
 
 - **Smoothness:** `{name}_p.png`, one minus roughness (Unity's Smoothness).
   With r = 1 − p/255, exponent = 2/r⁴ − 2, clamped to 1–8192. Bytes 0–24 all
-  shade at 1; the cap reads as a mirror. Absolute, not a scale on the prefix.
-  `_g` is taken: dev texture packs name diffuse maps `*_G.png`, and lookup is
-  case-insensitive.
+  shade at 1, and every byte from 224 shades at the cap. The cap sits where
+  neither a pixel-style highlight nor a probe texel can show more, so it reads
+  as a mirror. Absolute, not a scale on the prefix. `_g` is taken: dev texture
+  packs name diffuse maps `*_G.png`, and lookup is case-insensitive.
 - **Tint:** `{name}_t.png`. With `_t`, specular leaves the albedo multiply and
   takes intensity × a mix from white (t = 0) to the albedo's hue at full
-  brightness (t = 1): albedo over its largest channel, white where that is
-  near zero. Hue rather than raw albedo lets an author dim a metal's diffuse
-  without dimming its glint. Without `_t`, specular multiplies raw albedo.
+  brightness (t = 1): albedo over its largest channel, white where that is at
+  or below 1e-4. Hue rather than raw albedo lets an author dim a metal's
+  diffuse without dimming its glint. A grey albedo's hue is white, and the
+  epsilon sits below sRGB byte 1's linear value, so of 8-bit albedos only black
+  takes the white fallback. Without `_t`, specular multiplies raw albedo.
   Diffuse never changes: tint is a metallic map's specular half, without its
   diffuse suppression (`rendering_pipeline.md` §13).
-- **Color space and dimensions:** as for `_h` (§4.6). A `_p` or `_t` that
-  mismatches the diffuse, `_s`, `_h` or each other is a hard bail.
-- **Slot:** `_p` or `_t` widens the specular slot to `Rgba8Unorm`: R specular (0
-  with no `_s`), G inverted height (the mid-gray plane with no `_h`, an empty
-  relief band), B smoothness as max(p, 1), A tint as min(t, 254). B = 0 means
-  no `_p` and A = 255 means no `_t` — the values a one- or two-channel slot
-  and the placeholder already read, so every narrower slot reads as neither.
-  The mip filter overshoots at hard edges, so the bake clamps each mip to keep
-  authored values off the markers. Four bytes per texel, paid only by
-  materials with `_p` or `_t`. Content addressing folds each in only when
-  present.
+- **Color space and dimensions:** as for `_h` (§4.6): an `sRGB` or `iCCP`
+  chunk, or a non-unit `gAMA`, fails the build. `_p` must match the diffuse,
+  `_s` and `_h`; `_t` must match those and `_p`. Each mismatch is a hard bail
+  naming both files. `_s` and `_n` against the diffuse stay unenforced, so a
+  mismatched `_s` still builds when none of `_h`, `_p` or `_t` is present.
+- **Slot encoding:** `_p` or `_t` widens the specular slot to `Rgba8Unorm`:
+  - R: specular, 0 with no `_s`.
+  - G: inverted height, `255 − h`; with no `_h`, the stored mid-gray plane
+    (127), an empty relief band, so the slot uploads the same Surface Depth row
+    as no height map.
+  - B: smoothness as max(p, 1); 0 with no `_p`.
+  - A: tint as min(t, 254); 255 with no `_t`.
+
+  B = 0 and A = 255 are the markers. They are the values a one- or
+  two-channel slot and the placeholder already read (WGSL expands a missing B
+  to 0 and a missing A to 1), so every narrower slot reads as neither.
+- **Per-mip markers:** the Mitchell-Netravali filter's negative lobes ring a
+  hard 0–255 edge, and the [0, 1] clamp can land a texel on a marker. After
+  filtering, each mip holds B at or above 1 for a `_p` material and A at or
+  below 254 for a `_t` material. An absent map's channel is forced onto its
+  marker at every mip.
+- **Runtime read:** one sample of the slot gives R, B and A; G is the march's.
+  - Has-depth comes from the loaded format: any two- or four-channel slot.
+  - Has-sharpness and has-tint come from the sampled bytes: B at or above
+    0.5/255 and A below 254.5/255, half a step inside each marker, so filter
+    rounding never crosses one. No header flag or material-uniform bit carries
+    either, so both are facts of the bundle's bytes, never of the texture's
+    name, and survive content addressing and every Surface Depth state (Off
+    rewrites the material uniform, not the slot).
+  - On the unorm sample the shader decodes r = 1 − B and t = A·255/254 (A/254
+    in bytes), capped at 1: exact for every stored byte.
+  - r⁴ is floored just past the cap before the divide, so byte 255 (r = 0)
+    never divides by zero and an approximate GPU divide still clamps to
+    exactly 8192. No authored byte changes: every r⁴ below the floor already
+    decodes past the cap.
+  - A `_t`-only slot (B = 0) shades at its prefix exponent, so two materials
+    with identical bundles under different prefixes share one sidecar and each
+    shades at its own exponent.
+  - Forward and mover share one decode, mirrored by a GPU-free render-cpu
+    reference. Shading: `rendering_pipeline.md` §4 (Texel-centre highlight).
+- **Content addressing:** each map folds into the bundle hash only when
+  present, as height does, with its own mask bit and tag after height's. A
+  bundle with neither keeps its format, sidecar bytes and key, so existing
+  sidecars stay cache hits. `_p` or `_t` alone gets its own single-input key.
+  Changing either encoding, marker or marker clamp bumps `STAGE_VERSION`
+  (`build_pipeline.md` §Baked texture mips).
+- **Cost:** four bytes per texel at every mip, paid only by materials with
+  `_p` or `_t`: a 1024×1024 slot across 11 mips is 5,592,404 bytes, against
+  2,796,202 for `Rg8Unorm` and 1,398,101 for `R8Unorm`.
 - **Full slot:** all four channels are spent. Emissive alpha is reserved
   (§4.5), so the next per-texel input takes diffuse alpha or a binding
   consolidated out of the forward pass. A mip-aware exponent for specular
   antialiasing still fits, baked into B.
 - **Fallback:** no `_p` keeps the prefix `shininess` (§3, within 1–256); no
   `_t` keeps the raw-albedo highlight; neither keeps the slot's narrower form.
-- **Runtime:** the shader decodes r = 1 − B/255 and t = A/254.
-  A texel has smoothness where B ≥ 1 and tint where A < 255. Both are facts
-  of the bundle's bytes, never of a uniform or the material's name, so they
-  survive content addressing and every Surface Depth state. A `_t`-only slot
-  shades at its prefix exponent.
-  Shading: `rendering_pipeline.md` §4 (Texel-centre highlight).
 - **PBR conversion:** `_p` is one minus roughness and `_t` is metallic, each
-  copied per texel. `docs/` states the rule, so every converter lands on the
-  same bytes. No tool generates either map: both are artistic choices.
+  copied per texel. `docs/level_design.md` states the rule, so every converter
+  lands on the same bytes. No tool generates either map: both are artistic
+  choices.
 
 ---
 

@@ -66,6 +66,10 @@ When testing code that bridges two subsystems, derive mock inputs from the sourc
 
 A test guarding two representations against divergence — a Rust enum vs. its generated SDK union, a registry vs. its committed snapshot — derives its expectation from the source of truth, never a second hand-written copy. Map each variant through an exhaustive `match` (no `_` arm) so a new variant is a compile error, not a silently-passing test. Comparing two hand-maintained lists proves only that someone updated both — not that either is correct.
 
+### Source-scanning tests
+
+A test that walks the source tree — a grep gate, a single-caller check — compares each relative path as its components joined by `/`, never as the host's path string. That string uses `\` on Windows and `/` elsewhere, so a test that compares it passes on one host and fails on the other.
+
 ### Log assertions
 
 Some degradation paths emit nothing but a log record — a refusal that still returns
@@ -194,10 +198,17 @@ field writes those ids in a format the engine refuses. A test comparing against 
 its own side `--whole-load-sh` and upgrades the baseline's PRL with
 `sh_body::pre_flag::upgrade_pre_flag_prl`, or, against checked-in digests from that
 baseline, downgrades its own with `downgrade_to_pre_flag_prl`. Both sit behind
-`postretro-level-format`'s `test-support` feature. The fitting-map comparison needs `POSTRETRO_OVERSIZE_BASELINE_DIR` containing PRLs
+`postretro-level-format`'s `test-support` feature.
+The fitting-map comparison needs `POSTRETRO_OVERSIZE_BASELINE_DIR` containing PRLs
 from its named baseline commit. Old-compiler oracle and reseeding helpers can return
 without comparing anything when their opt-in variables are absent; a green result
 alone does not prove those comparisons ran.
+
+Dev-map frame proofs in the capture tests read a compiled map named by an
+environment variable, and fail rather than skip without it; they need a GPU
+adapter. The specular frame tests (`capture/specular_frame_tests.rs`) take the
+`specular-texel-sharpness` dev map, compiled per its README beside its source:
+`SPECULAR_TEXEL_PRL=<absolute .prl path> POSTRETRO_SH_STREAMING=sync-proof cargo test -p postretro --bins --features capture -- --ignored specular_frame_tests --test-threads=1`.
 
 **Keep `GATE_FIXTURES` cheap, and profile before adding to it.** Bake cost tracks probe and texel counts, not `.map` file size. One large fixture can dwarf the rest of the list combined — dropping `occlusion-test` cut the gates 7× (1812s → 260s) while the animated-weight-map fixtures are sub-second each. A full-compile timing is a poor proxy for a gate's share, because the gates bake every fixture twice and weight large texel counts far more heavily.
 

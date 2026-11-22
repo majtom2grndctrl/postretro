@@ -602,6 +602,8 @@ mod pose_inputs;
 mod status_stage;
 mod tick;
 pub use pose_inputs::*;
+mod rider_feet;
+pub use rider_feet::{PresentedMoverPoses, RiderFeet, update_rider_foot_probes};
 pub use tick::*;
 
 mod host_movement;

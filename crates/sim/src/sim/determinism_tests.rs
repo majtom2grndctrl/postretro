@@ -3307,6 +3307,7 @@ fn probe_leg_entity_in(
             remote_heading_yaws: &HashMap::new(),
             remote_network_ids: &HashMap::new(),
             local_pawn_owns_direction: false,
+            riders: crate::sim::RiderFeet::Skip,
         },
     );
 
@@ -3361,6 +3362,7 @@ fn presentation_pass_seats_a_player_mesh_on_its_live_capsule_sole() {
                 remote_heading_yaws: &HashMap::new(),
                 remote_network_ids: &HashMap::new(),
                 local_pawn_owns_direction: false,
+                riders: crate::sim::RiderFeet::Skip,
             },
         );
         let position = registry
@@ -3402,7 +3404,10 @@ fn presentation_pass_seats_a_player_mesh_on_its_live_capsule_sole() {
     );
 }
 
-fn leg_probe_fixture(position: Vec3, yaw: f32) -> (EntityRegistry, EntityId, HitZoneStore) {
+pub(super) fn leg_probe_fixture(
+    position: Vec3,
+    yaw: f32,
+) -> (EntityRegistry, EntityId, HitZoneStore) {
     let mut registry = EntityRegistry::new();
     let mut states = std::collections::HashMap::new();
     states.insert(
@@ -3531,6 +3536,7 @@ fn connected_client_presentation_probes_freshly_displayed_remote_transform() {
             remote_heading_yaws: &HashMap::new(),
             remote_network_ids: &HashMap::new(),
             local_pawn_owns_direction: false,
+            riders: crate::sim::RiderFeet::Skip,
         },
     );
 
@@ -3567,6 +3573,7 @@ fn unavailable_probe_inputs_clear_stale_feet_and_publish_zero_count() {
                 remote_heading_yaws: &HashMap::new(),
                 remote_network_ids: &HashMap::new(),
                 local_pawn_owns_direction: false,
+                riders: crate::sim::RiderFeet::Skip,
             },
         );
     };

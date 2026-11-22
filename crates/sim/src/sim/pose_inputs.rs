@@ -277,6 +277,8 @@ pub struct PresentationPoseInputs<'a> {
     /// pawn's forward/backward memory. Elsewhere the fixed tick's selector owns
     /// that memory and this pass only reads it.
     pub local_pawn_owns_direction: bool,
+    /// How this pass treats feet standing on a mover.
+    pub riders: super::RiderFeet<'a>,
 }
 
 pub fn update_presentation_pose_inputs(
@@ -295,6 +297,7 @@ pub fn update_presentation_pose_inputs(
         remote_heading_yaws,
         remote_network_ids,
         local_pawn_owns_direction,
+        riders,
     } = presentation;
     sync_player_mesh_origin_offsets(registry);
     update_pose_inputs(
@@ -313,6 +316,7 @@ pub fn update_presentation_pose_inputs(
         mover_poses,
         hit_zone_store,
         anim_time,
+        riders,
     );
 }
 
@@ -618,6 +622,7 @@ pub(super) fn update_foot_ground_probes(
     mover_poses: &dyn MoverPoseSource,
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
+    riders: super::RiderFeet<'_>,
 ) {
     let mut candidates = hit_zone_store.foot_probe_candidates();
     candidates.clear();
@@ -633,6 +638,31 @@ pub(super) fn update_foot_ground_probes(
     );
 
     for &id in candidates.iter() {
+        // Feet on a mover probe the pose the mover is drawn at, from the pose
+        // the rider is drawn at, so a planted foot stays on the drawn deck.
+        match riders {
+            super::RiderFeet::Skip if super::rider_feet::rides_mover(registry, id, &[]) => {
+                continue;
+            }
+            super::RiderFeet::Presented {
+                poses,
+                alpha,
+                remote_riders,
+            } if super::rider_feet::rides_mover(registry, id, remote_riders) => {
+                super::rider_feet::probe_rider(
+                    registry,
+                    id,
+                    collision_world,
+                    mover_colliders,
+                    poses,
+                    hit_zone_store,
+                    anim_time,
+                    alpha,
+                );
+                continue;
+            }
+            _ => {}
+        }
         let transform = registry
             .get_component::<postretro_entities::Transform>(id)
             .ok()

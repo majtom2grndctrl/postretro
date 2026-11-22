@@ -586,6 +586,7 @@ where
                 remote_heading_yaws: &HashMap::new(),
                 remote_network_ids: &HashMap::new(),
                 local_pawn_owns_direction: false,
+                riders: RiderFeet::Skip,
             },
         );
         drop(substage);

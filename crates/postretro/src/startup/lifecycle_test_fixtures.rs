@@ -213,6 +213,7 @@ pub(crate) fn test_app() -> App {
         fluid_surface_drift: Vec::new(),
         kinematic_mover_colliders: Vec::new(),
         kinematic_mover_tick_states: crate::kinematic_mover::MoverTickStateTable::default(),
+        presented_mover_poses: Default::default(),
         mover_yaw_carry_ground: postretro_foundation::GroundRef::Airborne,
         kinematic_mover_render: crate::runtime_movers::KinematicMoverRenderCollector::new(),
         fluid_surface_render: postretro_render_cpu::fluid_surface::FluidSurfaceRenderCollector::new(

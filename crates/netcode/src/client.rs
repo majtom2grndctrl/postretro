@@ -533,6 +533,9 @@ pub struct ClientReplication {
     /// Off-by-default remote-interpolation continuity diagnostics (see `netdiag`).
     /// Inert unless `postretro::netdiag=debug`; pure observability, never gameplay.
     netdiag: crate::netcode::netdiag::RemoteInterpDiag,
+    /// Remotes this frame's presentation placed on a mover, for their foot
+    /// probes. Rebuilt each sample pass; reuses its storage.
+    rebased_riders: Vec<EntityId>,
     /// Test A/B switch: write a mover correction to the current pose only, as
     /// before smoothing, so the drawn mover steps. Off in production.
     legacy_mover_corrections: bool,
@@ -2467,6 +2470,11 @@ impl ClientReplication {
     #[cfg(test)]
     pub(crate) fn set_legacy_mover_corrections(&mut self, legacy: bool) {
         self.legacy_mover_corrections = legacy;
+    }
+
+    /// Remotes this frame's presentation placed on a mover.
+    pub fn rebased_riders(&self) -> &[EntityId] {
+        &self.rebased_riders
     }
 
     /// Draw every remote at its sampled world pose; see

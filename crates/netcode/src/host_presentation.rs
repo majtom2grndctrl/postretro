@@ -1312,6 +1312,7 @@ mod tests {
                 remote_heading_yaws: &empty,
                 remote_network_ids: &HashMap::new(),
                 local_pawn_owns_direction: false,
+                riders: crate::sim::RiderFeet::Skip,
             },
         );
         let foot = |registry: &EntityRegistry| {

@@ -1294,6 +1294,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // Before the first reader of a mover's presented pose: the aim's yaw
     // residual, remote riders, foot probes, audio and the render collectors.
     app.advance_mover_correction_glides(frame_dt);
+    app.present_rider_feet(frame_result.alpha, frame_anim_time);
 
     // Regression: a turntable's transform slerps through this tick while
     // carry_yaw previously held the local view until the next input seam.
@@ -1313,7 +1314,11 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // generate renderer-facing pose inputs here from the freshly
     // interpolated displayed transforms. These transient mesh fields
     // are client presentation only and never enter replication.
-    app.update_client_presentation_pose_inputs(frame_anim_time, render_camera_yaw);
+    app.update_client_presentation_pose_inputs(
+        frame_anim_time,
+        render_camera_yaw,
+        frame_result.alpha,
+    );
     app.update_client_overlay_anchors(&script_ctx, frame_anim_time);
     app.update_client_revive_markers(frame_anim_time);
     app.run_client_fire_path_post_loop(

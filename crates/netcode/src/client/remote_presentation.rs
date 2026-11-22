@@ -48,6 +48,7 @@ impl ClientReplication {
         self.presented_player_inputs.aim_pitches.clear();
         self.presented_player_inputs.heading_yaws.clear();
         self.presented_state_ticks.clear();
+        self.rebased_riders.clear();
         // Collect (network_id, entity_id) first to avoid borrowing `self.map` while
         // writing back through the registry.
         let mapped: Vec<(NetworkId, EntityId)> = self.map.iter().map(|(&n, &e)| (n, e)).collect();
@@ -89,6 +90,7 @@ impl ClientReplication {
                 pose.intrinsic_velocity = pose
                     .intrinsic_velocity
                     .map(|velocity| rebased.turn(velocity));
+                self.rebased_riders.push(entity_id);
             }
             let mut transform = pose.transform;
             if let Some(facts) = self.projectile_presentations.get(&network_id)

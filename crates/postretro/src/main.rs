@@ -1105,6 +1105,9 @@ pub(crate) struct App {
     /// Live fixed-tick mover poses, published before player movement consumes
     /// the combined collision query.
     kinematic_mover_tick_states: kinematic_mover::MoverTickStateTable,
+    /// Each mover's tick state at the pose this frame draws it, for rider
+    /// foot probes on every seat. Refreshed once per frame.
+    presented_mover_poses: sim::PresentedMoverPoses,
     /// Owning pawn ground reference captured at the start of the exact tick
     /// that consumed the pending mover pose delta. The next Input stage uses
     /// it to gate that delta's yaw carry.
@@ -5117,6 +5120,33 @@ impl App {
     /// Runs after the catch-up tick loop so the stage-0 `snapshot_transforms` cannot
     /// clobber the presented pose, and before the render stage reads entities.
     /// No-op for single-player and the host (no client interpolation buffers).
+    /// Refresh each mover's presented pose for this frame's rider foot probes,
+    /// then, on single-player and the host, probe every rider's feet from its
+    /// presented pose. A connected client probes its riders in its own
+    /// presentation pose pass; the host seat re-probes client pawns after it
+    /// presents them.
+    fn present_rider_feet(&mut self, alpha: f32, anim_time: f64) {
+        let connected_client = self.is_connected_client();
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let mut registry = session.scripting.script_ctx.registry.borrow_mut();
+        self.presented_mover_poses
+            .refresh(&self.kinematic_mover_tick_states, &registry, alpha);
+        if connected_client {
+            return;
+        }
+        sim::update_rider_foot_probes(
+            &mut registry,
+            &self.collision_world,
+            &self.kinematic_mover_colliders,
+            &self.presented_mover_poses,
+            &session.hit_zone_store,
+            anim_time,
+            alpha,
+        );
+    }
+
     /// Advance connected-client mover correction glides by this frame's
     /// presented time. Runs once per frame, after the fixed ticks and before the
     /// first reader of a mover's presented pose. A no-op without glides, which
@@ -5205,6 +5235,7 @@ impl App {
         &mut self,
         frame_anim_time: f64,
         render_camera_yaw: f32,
+        alpha: f32,
     ) {
         if !self.is_connected_client() {
             return;
@@ -5212,16 +5243,17 @@ impl App {
         let Some(session) = self.session.as_ref() else {
             return;
         };
-        let remote_network_ids = session
+        let replication = session
             .net_endpoint
             .as_ref()
             .and_then(|endpoint| match endpoint {
-                netcode::NetEndpoint::Client { replication, .. } => {
-                    Some(replication.entity_network_ids())
-                }
+                netcode::NetEndpoint::Client { replication, .. } => Some(replication),
                 netcode::NetEndpoint::Host { .. } => None,
-            })
+            });
+        let remote_network_ids = replication
+            .map(|replication| replication.entity_network_ids())
             .unwrap_or_default();
+        let remote_riders = replication.map_or(&[][..], |replication| replication.rebased_riders());
         let camera_aim = (self.camera.pitch, render_camera_yaw);
         let mut registry = session.scripting.script_ctx.registry.borrow_mut();
         sim::update_presentation_pose_inputs(
@@ -5238,6 +5270,11 @@ impl App {
                 remote_heading_yaws: &self.remote_player_presentation.heading_yaws,
                 remote_network_ids: &remote_network_ids,
                 local_pawn_owns_direction: true,
+                riders: sim::RiderFeet::Presented {
+                    poses: &self.presented_mover_poses,
+                    alpha,
+                    remote_riders,
+                },
             },
         );
     }
@@ -5383,7 +5420,7 @@ impl App {
             &mut registry,
             &self.collision_world,
             &self.kinematic_mover_colliders,
-            &self.kinematic_mover_tick_states,
+            &self.presented_mover_poses,
             &session.hit_zone_store,
             anim_time,
         );

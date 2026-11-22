@@ -99,6 +99,13 @@ impl MoverTickStateTable {
         self.states.insert(mover_id, state);
     }
 
+    /// Every published mover's state for this tick, in no particular order.
+    pub fn iter(&self) -> impl Iterator<Item = (u32, &MoverTickState)> + '_ {
+        self.states
+            .iter()
+            .map(|(mover_id, state)| (*mover_id, state))
+    }
+
     pub fn get(&self, mover_id: u32) -> Option<&MoverTickState> {
         self.states.get(&mover_id)
     }

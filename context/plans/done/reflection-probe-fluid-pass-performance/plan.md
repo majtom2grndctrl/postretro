@@ -1,7 +1,7 @@
 # reflection-probe-fluid-pass-performance — plan of record
 
 mode: compact
-status: active
+status: done
 read at: e761fb131
 
 ## Corrections

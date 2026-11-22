@@ -200,6 +200,23 @@ impl MoverPoseSource for MoverTickStateTable {
     }
 }
 
+/// The world-up twist of `rotation`, in radians wrapped to [-π, π): the yaw a
+/// rider's facing or view carries from a mover, which never takes its pitch or
+/// roll (`movement.md` §6). Zero for a non-finite, degenerate or pure
+/// pitch/roll rotation.
+pub fn world_up_yaw(rotation: Quat) -> f32 {
+    if !rotation.is_finite() || rotation.length_squared() <= 1.0e-12 {
+        return 0.0;
+    }
+    let rotation = rotation.normalize();
+    let twist_length = (rotation.w * rotation.w + rotation.y * rotation.y).sqrt();
+    if twist_length <= 1.0e-6 {
+        return 0.0;
+    }
+    let yaw = 2.0 * (rotation.y / twist_length).atan2(rotation.w / twist_length);
+    (yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
+}
+
 /// Run every active `KinematicMover` component once and republish the live
 /// side-table. Callers wire this after `snapshot_transforms` and before any
 /// collision consumer for the tick.

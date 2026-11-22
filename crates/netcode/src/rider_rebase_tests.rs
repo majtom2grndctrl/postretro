@@ -2,7 +2,7 @@ use glam::{Quat, Vec3};
 use postretro_entities::Transform;
 use postretro_foundation::GroundRef;
 
-use super::rebase_rider;
+use super::{PresentedMover, rebase_rider};
 use crate::interpolation::{RiderBracket, RiderSample};
 
 const MOVER: u32 = 7;
@@ -72,8 +72,27 @@ const PRESENTED: Transform = Transform {
     scale: Vec3::ONE,
 };
 
-fn presented(mover_id: u32) -> Option<Transform> {
-    (mover_id == MOVER).then_some(PRESENTED)
+fn presented(mover_id: u32) -> Option<PresentedMover> {
+    (mover_id == MOVER).then_some(PresentedMover {
+        transform: PRESENTED,
+        carry_yaw: false,
+    })
+}
+
+fn carrying(mover_id: u32) -> Option<PresentedMover> {
+    presented(mover_id).map(|mover| PresentedMover {
+        carry_yaw: true,
+        ..mover
+    })
+}
+
+fn as_presented(transform: Transform) -> impl Fn(u32) -> Option<PresentedMover> {
+    move |_| {
+        Some(PresentedMover {
+            transform,
+            carry_yaw: false,
+        })
+    }
 }
 
 #[test]
@@ -85,9 +104,9 @@ fn rebase_places_planted_rider_at_its_point_on_the_presented_mover() {
         .expect("both samples stand on one mover");
     let expected = point_on(&PRESENTED, LOCAL_POINT);
     assert!(
-        (placed.position - expected).length() < 1.0e-5,
+        (placed.transform.position - expected).length() < 1.0e-5,
         "placed {:?} expected {expected:?}",
-        placed.position
+        placed.transform.position
     );
     // Sanity: the world blend is elsewhere (the delay and the chord both show).
     assert!((world.position - expected).length() > 0.1);
@@ -99,8 +118,8 @@ fn rebase_keeps_blended_orientation_and_scale() {
     let bracket = bracket(on, on);
     let world = blended(&bracket);
     let placed = rebase_rider(&bracket, &world, authoritative, presented).unwrap();
-    assert_eq!(placed.rotation, world.rotation);
-    assert_eq!(placed.scale, world.scale);
+    assert_eq!(placed.transform.rotation, world.rotation);
+    assert_eq!(placed.transform.scale, world.scale);
 }
 
 #[test]
@@ -169,7 +188,7 @@ fn rebase_falls_back_on_non_finite_or_collapsed_mover_frames() {
     ];
     for frame in broken {
         assert_eq!(
-            rebase_rider(&bracket, &world, authoritative, |_| Some(frame)),
+            rebase_rider(&bracket, &world, authoritative, as_presented(frame)),
             None,
             "presented {frame:?} must fall back"
         );
@@ -191,7 +210,7 @@ fn held_bracket_rides_the_presented_mover() {
         alpha: 0.0,
     };
     let placed = rebase_rider(&bracket, &held.transform, authoritative, presented).unwrap();
-    assert!((placed.position - point_on(&PRESENTED, LOCAL_POINT)).length() < 1.0e-5);
+    assert!((placed.transform.position - point_on(&PRESENTED, LOCAL_POINT)).length() < 1.0e-5);
 }
 
 mod host_mover_poses {
@@ -226,5 +245,130 @@ mod host_mover_poses {
         assert_eq!(poses.pose_at(4, newest), None);
         assert_eq!(poses.entity(3), Some(entity));
         assert_eq!(poses.entity(4), None);
+    }
+}
+
+mod carry_yaw {
+    use glam::{EulerRot, Quat, Vec3};
+    use postretro_entities::Transform;
+    use postretro_foundation::GroundRef;
+
+    use super::{LOCAL_POINT, MOVER, mover_at, point_on};
+    use crate::interpolation::{RiderBracket, RiderSample};
+    use crate::rider_rebase::{PresentedMover, rebase_rider};
+
+    const PITCH: f32 = 0.2;
+    const ROLL: f32 = -0.1;
+
+    /// A rider at mover yaw + `relative`, with its own aim pitch and a roll.
+    fn sample(tick: u32, mover_yaw: f32, relative: f32) -> RiderSample {
+        let mover = mover_at(mover_yaw, 0.0);
+        RiderSample {
+            server_tick: tick,
+            transform: Transform {
+                position: point_on(&mover, LOCAL_POINT),
+                rotation: Quat::from_euler(EulerRot::YXZ, mover_yaw + relative, PITCH, ROLL),
+                scale: Vec3::ONE,
+            },
+            ground: Some(GroundRef::Mover(MOVER)),
+        }
+    }
+
+    fn bracket() -> RiderBracket {
+        RiderBracket {
+            // The mover turns half a radian; the rider turns 0.1 on it.
+            from: sample(10, 0.0, 0.3),
+            to: sample(12, 0.5, 0.4),
+            alpha: 0.5,
+        }
+    }
+
+    fn mover_yaw_at(tick: u32) -> f32 {
+        if tick == 10 { 0.0 } else { 0.5 }
+    }
+
+    fn blended(bracket: &RiderBracket) -> Transform {
+        Transform {
+            position: Vec3::ZERO,
+            rotation: bracket
+                .from
+                .transform
+                .rotation
+                .slerp(bracket.to.transform.rotation, bracket.alpha),
+            scale: Vec3::ONE,
+        }
+    }
+
+    fn rebase(drawn: Quat, carry_yaw: bool) -> crate::rider_rebase::RebasedRider {
+        let bracket = bracket();
+        rebase_rider(
+            &bracket,
+            &blended(&bracket),
+            |_, tick| Some(mover_at(mover_yaw_at(tick), 0.0)),
+            |_| {
+                Some(PresentedMover {
+                    transform: Transform {
+                        position: Vec3::new(0.2, 0.0, 0.0),
+                        rotation: drawn,
+                        scale: Vec3::ONE,
+                    },
+                    carry_yaw,
+                })
+            },
+        )
+        .expect("both samples stand on the mover")
+    }
+
+    fn yaw_pitch_roll(rotation: Quat) -> (f32, f32, f32) {
+        rotation.to_euler(EulerRot::YXZ)
+    }
+
+    #[test]
+    fn carried_yaw_is_relative_blend_plus_drawn_mover_yaw_exactly_once() {
+        let rebased = rebase(Quat::from_rotation_y(1.0), true);
+        let (yaw, pitch, roll) = yaw_pitch_roll(rebased.transform.rotation);
+        assert!((yaw - 1.35).abs() < 1.0e-5, "yaw {yaw}");
+        let (_, blended_pitch, blended_roll) = yaw_pitch_roll(blended(&bracket()).rotation);
+        assert!((pitch - blended_pitch).abs() < 1.0e-5 && (roll - blended_roll).abs() < 1.0e-5);
+        // The same frame sampled twice gives the same yaw.
+        assert_eq!(rebase(Quat::from_rotation_y(1.0), true), rebased);
+    }
+
+    #[test]
+    fn mover_pitch_or_roll_never_enters_rider_orientation() {
+        for tilt in [Quat::from_rotation_x(0.4), Quat::from_rotation_z(0.3)] {
+            let tilted = Quat::from_rotation_y(1.0) * tilt;
+            let carried = rebase(tilted, true);
+            let (yaw, pitch, roll) = yaw_pitch_roll(carried.transform.rotation);
+            let (_, blended_pitch, blended_roll) = yaw_pitch_roll(blended(&bracket()).rotation);
+            assert!((yaw - 1.35).abs() < 1.0e-5, "world-up yaw only: {yaw}");
+            assert!((pitch - blended_pitch).abs() < 1.0e-5 && (roll - blended_roll).abs() < 1.0e-5);
+
+            let uncarried = rebase(tilted, false);
+            assert_eq!(uncarried.transform.rotation, blended(&bracket()).rotation);
+            assert_eq!(uncarried.yaw_turn, 0.0);
+        }
+    }
+
+    #[test]
+    fn without_carry_yaw_mover_rotation_adds_no_yaw() {
+        let rebased = rebase(Quat::from_rotation_y(2.5), false);
+        assert_eq!(rebased.transform.rotation, blended(&bracket()).rotation);
+        assert_eq!(rebased.yaw_turn, 0.0);
+        assert_eq!(rebased.turn(Vec3::X), Vec3::X);
+    }
+
+    #[test]
+    fn legs_turn_with_the_body_so_heading_relative_to_aim_is_kept() {
+        let rebased = rebase(Quat::from_rotation_y(1.0), true);
+        let velocity = Vec3::new(0.3, 0.0, -1.2);
+        let heading = |v: Vec3| v.x.atan2(v.z);
+        let (blended_yaw, _, _) = yaw_pitch_roll(blended(&bracket()).rotation);
+        let (aim, _, _) = yaw_pitch_roll(rebased.transform.rotation);
+        let before = heading(velocity) - blended_yaw;
+        let after = heading(rebased.turn(velocity)) - aim;
+        let wrap = |a: f32| (a + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU);
+        assert!((wrap(before) - wrap(after)).abs() < 1.0e-5);
+        assert!((rebased.turn(velocity).length() - velocity.length()).abs() < 1.0e-6);
     }
 }

@@ -5,17 +5,7 @@
 use super::*;
 
 pub(crate) fn world_up_yaw_delta(tick_rotation_delta: Quat) -> f32 {
-    if !tick_rotation_delta.is_finite() || tick_rotation_delta.length_squared() <= 1.0e-12 {
-        return 0.0;
-    }
-    let rotation = tick_rotation_delta.normalize();
-    let twist_length = (rotation.w * rotation.w + rotation.y * rotation.y).sqrt();
-    if twist_length <= 1.0e-6 {
-        return 0.0;
-    }
-
-    let yaw = 2.0 * (rotation.y / twist_length).atan2(rotation.w / twist_length);
-    (yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
+    kinematic_mover::world_up_yaw(tick_rotation_delta)
 }
 
 pub(crate) fn yaw_after_mover_carry(

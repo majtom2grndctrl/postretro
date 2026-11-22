@@ -71,23 +71,26 @@ impl ClientReplication {
             };
             self.presented_state_ticks
                 .insert(network_id, pose.state_tick);
-            let mut transform = pose
-                .rider_bracket
-                .and_then(|bracket| {
-                    crate::rider_rebase::rebase_rider(
-                        &bracket,
-                        &pose.transform,
-                        |mover_id, tick| {
-                            self.mover_history
-                                .authoritative_transform_at_or_before(mover_id, tick)
-                        },
-                        |mover_id| {
-                            let mover = bindings::find_loaded_mover_entity(registry, mover_id)?;
-                            registry.interpolated_transform(mover, mover_alpha).ok()
-                        },
-                    )
-                })
-                .unwrap_or(pose.transform);
+            let mut pose = pose;
+            if let Some(rebased) = pose.rider_bracket.and_then(|bracket| {
+                crate::rider_rebase::rebase_rider(
+                    &bracket,
+                    &pose.transform,
+                    |mover_id, tick| {
+                        self.mover_history
+                            .authoritative_transform_at_or_before(mover_id, tick)
+                    },
+                    |mover_id| {
+                        crate::rider_rebase::presented_mover(registry, mover_id, mover_alpha)
+                    },
+                )
+            }) {
+                pose.transform = rebased.transform;
+                pose.intrinsic_velocity = pose
+                    .intrinsic_velocity
+                    .map(|velocity| rebased.turn(velocity));
+            }
+            let mut transform = pose.transform;
             if let Some(facts) = self.projectile_presentations.get(&network_id)
                 && facts.sprite_size.is_none()
             {

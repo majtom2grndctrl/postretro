@@ -209,18 +209,21 @@ pub fn present_client_pawns(
         let Some(mut pose) = buffer.presented_pose(network_id, target) else {
             continue;
         };
-        if let Some(placed) = pose.rider_bracket.and_then(|bracket| {
+        if let Some(rebased) = pose.rider_bracket.and_then(|bracket| {
             crate::rider_rebase::rebase_rider(
                 &bracket,
                 &pose.transform,
                 |mover_id, tick| buffer.host_mover_poses.pose_at(mover_id, tick),
                 |mover_id| {
                     let mover = buffer.host_mover_poses.entity(mover_id)?;
-                    registry.interpolated_transform(mover, alpha).ok()
+                    crate::rider_rebase::presented_entity_mover(registry, mover, alpha)
                 },
             )
         }) {
-            pose.transform = placed;
+            pose.transform = rebased.transform;
+            pose.intrinsic_velocity = pose
+                .intrinsic_velocity
+                .map(|velocity| rebased.turn(velocity));
         }
         let _ = registry.set_presentation_transform(pawn, pose.transform);
         // The drawn transform is the delayed capsule centre, so the feet-authored
@@ -377,6 +380,10 @@ pub fn presented_client_pawn_transform(
 #[cfg(test)]
 #[path = "host_presentation_discontinuity_tests.rs"]
 mod discontinuity_tests;
+
+#[cfg(test)]
+#[path = "host_presentation_rider_tests.rs"]
+mod rider_tests;
 
 #[cfg(test)]
 mod tests {

@@ -4,15 +4,44 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use glam::Affine3A;
-use postretro_entities::{EntityId, Transform};
+use glam::{Affine3A, EulerRot, Quat, Vec3};
+use postretro_entities::{
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, KinematicMoverComponent, Transform,
+};
 use postretro_foundation::GroundRef;
 
 use crate::interpolation::RiderBracket;
+use crate::kinematic_mover::world_up_yaw;
 
 /// Smallest scale component a mover frame may carry and still be inverted. A
 /// frame below it falls back to the sampled world pose.
 const MIN_FRAME_SCALE: f32 = 1.0e-6;
+
+/// A mover as drawn this frame, and whether its riders' facing rides its yaw.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct PresentedMover {
+    pub(crate) transform: Transform,
+    pub(crate) carry_yaw: bool,
+}
+
+/// A rider placed on its mover, and the world-up yaw the placement turned it by
+/// (zero without `carry_yaw`). Its legs turn by the same amount, so they keep
+/// the heading relative to the body that the sample had.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct RebasedRider {
+    pub(crate) transform: Transform,
+    pub(crate) yaw_turn: f32,
+}
+
+impl RebasedRider {
+    /// `velocity` turned with the body about world-up.
+    pub(crate) fn turn(&self, velocity: Vec3) -> Vec3 {
+        if self.yaw_turn == 0.0 {
+            return velocity;
+        }
+        Quat::from_rotation_y(self.yaw_turn) * velocity
+    }
+}
 
 /// Place a delayed rider relative to the mover both of its bracketing samples
 /// stand on. Each sample moves into that mover's frame at its own tick, through
@@ -22,18 +51,22 @@ const MIN_FRAME_SCALE: f32 = 1.0e-6;
 /// Returns `None` whenever the interval does not attach. That covers samples
 /// naming different movers or no mover, a missing ground or mover pose, and a
 /// non-finite or non-invertible frame. The caller then draws the sampled world
-/// pose, as before. Orientation and scale keep the world blend; only position
-/// rides the mover.
+/// pose, as before. Scale, pitch and roll keep the world blend. Yaw keeps it
+/// too unless the mover carries yaw: then the rider's yaw relative to the
+/// mover's world-up yaw blends, and the drawn mover's yaw is added back once.
 pub(crate) fn rebase_rider(
     bracket: &RiderBracket,
     blended: &Transform,
     authoritative: impl Fn(u32, u32) -> Option<Transform>,
-    presented: impl Fn(u32) -> Option<Transform>,
-) -> Option<Transform> {
+    presented: impl Fn(u32) -> Option<PresentedMover>,
+) -> Option<RebasedRider> {
     let mover_id = shared_mover(bracket)?;
-    let from_frame = mover_frame(&authoritative(mover_id, bracket.from.server_tick)?)?;
-    let to_frame = mover_frame(&authoritative(mover_id, bracket.to.server_tick)?)?;
-    let now_frame = mover_frame(&presented(mover_id)?)?;
+    let from_mover = authoritative(mover_id, bracket.from.server_tick)?;
+    let to_mover = authoritative(mover_id, bracket.to.server_tick)?;
+    let now = presented(mover_id)?;
+    let from_frame = mover_frame(&from_mover)?;
+    let to_frame = mover_frame(&to_mover)?;
+    let now_frame = mover_frame(&now.transform)?;
     let from_local = from_frame
         .inverse()
         .transform_point3(bracket.from.transform.position);
@@ -42,9 +75,76 @@ pub(crate) fn rebase_rider(
         .transform_point3(bracket.to.transform.position);
     let local = from_local.lerp(to_local, bracket.alpha);
     let position = now_frame.transform_point3(local);
-    position.is_finite().then_some(Transform {
+    if !position.is_finite() {
+        return None;
+    }
+    let mut transform = Transform {
         position,
         ..*blended
+    };
+    let mut yaw_turn = 0.0;
+    if now.carry_yaw {
+        let relative = |rider: &Transform, mover: &Transform| {
+            wrap_angle(rider_yaw(rider) - world_up_yaw(mover.rotation))
+        };
+        let from = relative(&bracket.from.transform, &from_mover);
+        let to = relative(&bracket.to.transform, &to_mover);
+        let carried = wrap_angle(
+            from + wrap_angle(to - from) * bracket.alpha + world_up_yaw(now.transform.rotation),
+        );
+        let (blended_yaw, pitch, roll) = blended.rotation.to_euler(EulerRot::YXZ);
+        let rotation = Quat::from_euler(EulerRot::YXZ, carried, pitch, roll);
+        if !rotation.is_finite() {
+            return None;
+        }
+        transform.rotation = rotation;
+        yaw_turn = wrap_angle(carried - blended_yaw);
+    }
+    Some(RebasedRider {
+        transform,
+        yaw_turn,
+    })
+}
+
+/// A rider's facing yaw, the yaw term of its YXZ rotation.
+fn rider_yaw(rider: &Transform) -> f32 {
+    rider.rotation.to_euler(EulerRot::YXZ).0
+}
+
+fn wrap_angle(angle: f32) -> f32 {
+    (angle + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
+}
+
+/// The loaded mover `mover_id` as drawn at `alpha`, with its `carry_yaw`.
+/// A client finds it by its stable mover id.
+pub(crate) fn presented_mover(
+    registry: &EntityRegistry,
+    mover_id: u32,
+    alpha: f32,
+) -> Option<PresentedMover> {
+    let entity = registry
+        .iter_with_kind(ComponentKind::KinematicMover)
+        .find_map(|(id, value)| match value {
+            ComponentValue::KinematicMover(mover) if mover.mover_id == mover_id => Some(id),
+            _ => None,
+        })?;
+    presented_entity_mover(registry, entity, alpha)
+}
+
+/// Mover `entity` as drawn at `alpha`, with its `carry_yaw`. `None` once the
+/// entity is gone or is no mover.
+pub(crate) fn presented_entity_mover(
+    registry: &EntityRegistry,
+    entity: EntityId,
+    alpha: f32,
+) -> Option<PresentedMover> {
+    let carry_yaw = registry
+        .get_component::<KinematicMoverComponent>(entity)
+        .ok()?
+        .carry_yaw;
+    Some(PresentedMover {
+        transform: registry.interpolated_transform(entity, alpha).ok()?,
+        carry_yaw,
     })
 }
 

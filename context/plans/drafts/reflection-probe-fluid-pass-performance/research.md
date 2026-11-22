@@ -1,6 +1,6 @@
 # reflection-probe-fluid-pass-performance — research
 
-Derivation behind the brief's decisions. Read at `c0dfd54b`. The cell path's derivation, early-out and spike tables live in `../reflection-probe-cell-path/research.md`. IP: `ip-check.md` here, §Lever A.
+Derivation behind the brief's decisions. Read at `c0dfd54b`; re-checked at `e36ea2d92` after `area-lights` merged, which changes no fluid shader, frame order, budget or share layout. The cell path's derivation, early-out and spike tables live in `../reflection-probe-cell-path/research.md`. IP: `ip-check.md` here, §Lever A.
 
 ## Evidence
 
@@ -29,7 +29,7 @@ The reflection is now most of the reflecting pass. Before the landing the reflec
 - `fluid_reflection_light_value` reads `anim_descriptors` and `uniforms.time`, through the shared `curve_eval.wgsl` helpers, which read `anim_samples`.
 - Script-driven samples reach `anim_samples` through `upload_light_bridge_snapshot`, a queue write before recording.
 - Descriptors flush once per frame in `update_per_frame_uniforms` (`upload_descriptors_if_dirty`), before `record_scene_passes`.
-- Group 3's descriptor and sample bindings are fragment- and compute-visible. The light-value function is duplicated across the SH composes, the scatter compose and the fluid shader, each pinned by text against `animated_light_scale`.
+- Group 3's descriptor and sample bindings are fragment- and compute-visible. The light-value function is duplicated across the SH composes, the scatter compose and the fluid shader, each pinned by text against `animated_light_scale`. `area-lights` adds a forward copy, `area_glow_factor`, which evaluates an area light's descriptor per fragment for its glass glow.
 
 **Why GPU.**
 - The renderer mirrors descriptors and activity on the CPU. It keeps no copy of bridge samples: the light bridge stages them and the renderer uploads them without retaining one. A CPU precompute therefore needs a samples mirror.
@@ -49,6 +49,8 @@ The reflection is now most of the reflecting pass. Before the landing the reflec
 - `glossy-world-reflections` reads the sums for world faces. It appends a sixth lobe and extends the dispatch condition to overlay draws.
 - `reflection-probe-streaming` indexes probe data by pool slot. Whichever lands second re-keys the sums.
 - `dynamic-reflection-layer` research names the sums as where an aggregated glow term would join.
+- `area-lights` stores an area light like any other animated light: its glass glow is in that light's share, and its value comes from its compose descriptor. One as-built limitation (owner call, its `plan.md` row 47): a `light 0` area light's reflected glass holds its reference glow even while dark. The sums match the per-fragment ratio, so they keep that behaviour; a fix belongs to a later brief.
+- Forward's area glow evaluates a per-light, per-frame value per fragment. The per-light rival (Path) would serve it too; the per-probe sums do not.
 
 ## Measurement
 

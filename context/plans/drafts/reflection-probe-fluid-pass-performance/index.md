@@ -1,6 +1,6 @@
 # reflection-probe-fluid-pass-performance
 
-Brief · compact · reads: `context/lib/rendering_pipeline.md` §7.3a (Live lighting, Two pipelines, References), §10; `context/lib/resource_management.md` §5.3; `context/lib/development_guide.md` §2.1 · read at c0dfd54b
+Brief · compact · reads: `context/lib/rendering_pipeline.md` §7.3a (Live lighting, Two pipelines, References), §10; `context/lib/resource_management.md` §5.3; `context/lib/development_guide.md` §2.1 · read at e36ea2d92
 
 ## Problem
 Developer-raised, from the blend-cost and cell-rate spikes and the `fluid-base-pass-cost` landing runs. Reflecting water costs well over reflection-free on the Radeon Pro 5300M, the Mac perf target (§10) (`research.md` §Evidence). Part of the cause is live lighting. Each reflecting fragment re-evaluates every stored light's curve and sums its lobe shares, though those sums vary only by probe and frame. The cost grows with every consumer that samples a probe: the seams blend, glossy world faces, and a cell path. Done means live lighting is evaluated once per probe per frame on the GPU, every reflecting fragment reads the result, and the image is unchanged.
@@ -32,7 +32,7 @@ Developer-raised, from the blend-cost and cell-rate spikes and the `fluid-base-p
 ## Acceptance
 Orderings cite `research.md` §Pins.
 ### Automated
-- [ ] The ratio blended from the sums matches today's per-fragment ratio within 1e-4 of the larger of 1 and the summed terms' magnitude, across random probes, lights, lobes and directions. Cases include a slot holding no light, a light past the descriptor table, a zero reference channel, and a ratio that clamps at zero.
+- [ ] The ratio blended from the sums matches today's per-fragment ratio within 1e-4 of the larger of 1 and the summed terms' magnitude, across random probes, lights, lobes and directions. Cases include an area light among a probe's stored lights, a slot holding no light, a light past the descriptor table, a zero reference channel, and a ratio that clamps at zero.
 - [ ] Within a frame, in the game and in capture alike: script light writes, the descriptor flush, the sums pass, then the fluid pass. The game's frame loop commits the light bridge before the uniform upload, and both before the frame render. Capture's forced descriptors precede its first uniform upload. The sums pass records into the frame's encoder, after the timing prefill and before the fluid pass, and no command recorded between them writes a descriptor or sample buffer. Source-order gates in the app and the renderer pin it (P1).
 - [ ] Entry globals, pinned the way the reflection-free entry's are, by global use rather than by function name: neither fluid fragment entry uses the animated-light descriptor buffer or reaches the per-fragment ratio; the reflecting entry declares the sums; the reflection-free entry declares none of them.
 - [ ] The dispatch condition takes the frame's one mask snapshot and tier value, the ones the fluid pass's draws take. A mask set between a frame's uniform upload and its render moves neither the variants nor the dispatch until the next upload. A source gate and a GPU frame pin it (P6).

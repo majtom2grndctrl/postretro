@@ -33,7 +33,10 @@ fn try_main<I>(args: I) -> Result<(), String>
 where
     I: IntoIterator<Item = OsString>,
 {
-    let mod_root = parse_mod_root(args)?;
+    let Some(mod_root) = parse_mod_root(args)? else {
+        print!("{HELP}");
+        return Ok(());
+    };
     let added = mint_identity(&mod_root)?;
     println!(
         "mint-identity: added {added} durable slot {} to {}",
@@ -43,19 +46,47 @@ where
     Ok(())
 }
 
-fn parse_mod_root<I>(args: I) -> Result<PathBuf, String>
+const USAGE: &str = "usage: mint-identity <mod-root> (run `mint-identity --help` for details)";
+
+const HELP: &str = "\
+mint-identity — assign durable identities to a mod's declared state slots
+
+USAGE:
+    mint-identity <mod-root>
+
+ARGS:
+    <mod-root>    The mod's directory (the folder holding its start script)
+
+OPTIONS:
+    -h, --help    Print this help and exit
+
+Runs the mod's declarations and appends an identity for each durable slot
+missing one to the ledger in <mod-root>. Existing entries are never changed.
+";
+
+/// `None` asks for help. A `-`-prefixed token other than help is a usage error,
+/// never a mod root: a mistyped flag must not run a mod's declarations.
+fn parse_mod_root<I>(args: I) -> Result<Option<PathBuf>, String>
 where
     I: IntoIterator<Item = OsString>,
 {
-    let mut args = args.into_iter();
-    let _program = args.next();
-    let Some(mod_root) = args.next() else {
-        return Err("usage: mint-identity <mod-root>".to_string());
-    };
-    if args.next().is_some() {
-        return Err("usage: mint-identity <mod-root>".to_string());
+    let args: Vec<OsString> = args.into_iter().skip(1).collect();
+    if args.iter().any(|arg| arg == "-h" || arg == "--help") {
+        return Ok(None);
     }
-    Ok(PathBuf::from(mod_root))
+    if let Some(flag) = args
+        .iter()
+        .find(|arg| arg.to_string_lossy().starts_with('-'))
+    {
+        return Err(format!(
+            "unknown flag `{}`\n{USAGE}",
+            flag.to_string_lossy()
+        ));
+    }
+    match args.as_slice() {
+        [mod_root] => Ok(Some(PathBuf::from(mod_root))),
+        _ => Err(USAGE.to_string()),
+    }
 }
 
 /// Execute a mod's real declaration path, then append missing durable-slot
@@ -683,24 +714,37 @@ mod tests {
         assert!(!temp.path().join(IDENTITY_FILE_NAME).exists());
     }
 
+    fn parse(args: &[&str]) -> Result<Option<PathBuf>, String> {
+        parse_mod_root(
+            std::iter::once("mint-identity")
+                .chain(args.iter().copied())
+                .map(OsString::from),
+        )
+    }
+
     #[test]
     fn parse_mod_root_requires_exactly_one_argument() {
         assert_eq!(
-            parse_mod_root([
-                OsString::from("mint-identity"),
-                OsString::from("content/mod")
-            ])
-            .expect("one path is valid"),
-            PathBuf::from("content/mod"),
+            parse(&["content/mod"]).expect("one path is valid"),
+            Some(PathBuf::from("content/mod")),
         );
-        assert!(parse_mod_root([OsString::from("mint-identity")]).is_err());
-        assert!(
-            parse_mod_root([
-                OsString::from("mint-identity"),
-                OsString::from("one"),
-                OsString::from("two"),
-            ])
-            .is_err()
-        );
+        assert!(parse(&[]).is_err());
+        assert!(parse(&["one", "two"]).is_err());
+    }
+
+    #[test]
+    fn help_flags_ask_for_help_wherever_they_appear() {
+        for args in [&["--help"][..], &["-h"], &["content/mod", "--help"]] {
+            assert_eq!(parse(args), Ok(None), "{args:?}");
+        }
+        assert!(HELP.contains("<mod-root>") && HELP.contains("--help"));
+    }
+
+    #[test]
+    fn an_unknown_flag_is_rejected_rather_than_taken_as_the_mod_root() {
+        for args in [&["--hepl"][..], &["--version"], &["-x", "content/mod"]] {
+            let error = parse(args).expect_err("a flag is never a mod root");
+            assert!(error.contains("unknown flag"), "{error}");
+        }
     }
 }

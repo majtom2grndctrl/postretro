@@ -1,8 +1,12 @@
-// Reflection capture's per-face emissive volume factor: each member face's no-script reference state, max × colour.
+// Reflection capture's per-face emissive factors: a volume member's no-script reference state, max × colour, and an area light's glow.
 // See: context/lib/resource_management.md §4.5, §5.2
 
 use glam::Vec3;
+use postretro_level_format::area_glow::{AreaGlowLight, AreaGlowSection};
 use postretro_level_format::emissive::EmissiveVolumeRecord;
+use postretro_level_format::sh_volume::AnimationDescriptor;
+
+use super::reference::reference_value;
 
 /// The factor reflection capture multiplies a face's emissive term by: its
 /// volume's `max × colour`, the glow the face shows with no script (brightness
@@ -71,4 +75,92 @@ impl EmissiveFaceFactors {
         }
         bytes
     }
+}
+
+/// How reflection capture shades one `light_area` face: its `_e` texel,
+/// whatever its texture's strength, times its light's glow at the light's
+/// reference state, exactly as the forward pass's area entry draws it
+/// (render-cpu `emissive_volume::area_glow_entry`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum AreaGlowTerm {
+    /// Static radiance. A light with no compose slot: `_glow × _color`. A
+    /// slotted light at intensity 0 (`light 0`): `_glow ×` its reference
+    /// value with `_color` in place of the descriptor's zero base colour.
+    /// Its reference value is 0, so no share could scale its glass: the
+    /// glass holds its reference in reflections, as a light past a probe's
+    /// stored few does.
+    Static(Vec3),
+    /// A light with a compose slot: `_glow / intensity` per unit of the
+    /// light's reference value, which carries colour × intensity × its
+    /// cycle-mean brightness. The glow therefore joins the light's
+    /// live-lighting share, and never scales with `light`.
+    Animated { light: u32, unit: f32 },
+}
+
+/// Each Geometry face's area glow term, from id 62.
+pub(crate) struct AreaGlowFaces {
+    /// Per face; empty when the map has no area light.
+    terms: Vec<Option<AreaGlowTerm>>,
+}
+
+impl AreaGlowFaces {
+    /// `descriptors` are id 34's animation descriptors, in compose slot order.
+    pub(crate) fn new(
+        section: Option<&AreaGlowSection>,
+        descriptors: &[AnimationDescriptor],
+        face_count: usize,
+    ) -> Self {
+        let mut terms = Vec::new();
+        if let Some(section) = section.filter(|section| section.face_count() > 0) {
+            terms = vec![None; face_count];
+            for (face, light) in section.entries() {
+                let term = match light.compose_slot {
+                    Some(slot) if light.intensity > 0.0 => AreaGlowTerm::Animated {
+                        light: slot,
+                        unit: light.glow / light.intensity,
+                    },
+                    Some(slot) => AreaGlowTerm::Static(unlit_reference_glow(
+                        light,
+                        descriptors.get(slot as usize),
+                    )),
+                    None => AreaGlowTerm::Static(Vec3::from(light.color) * light.glow),
+                };
+                if let Some(entry) = terms.get_mut(face as usize) {
+                    *entry = Some(term);
+                }
+            }
+        }
+        Self { terms }
+    }
+
+    pub(crate) fn of(&self, face: u32) -> Option<AreaGlowTerm> {
+        self.terms.get(face as usize).copied().flatten()
+    }
+
+    /// The capture cache key's share: the whole section, which is what the
+    /// capture reads besides the descriptors, which the key already holds.
+    /// A map with no area light adds nothing, so its key is what it was
+    /// before area glow existed.
+    pub(crate) fn key_bytes(section: &AreaGlowSection) -> Vec<u8> {
+        section.to_bytes()
+    }
+}
+
+/// A `light 0` area light's glow at its reference state: the cycle mean of
+/// the forward pass's `light 0` entry, `_glow ×` brightness × `_color`, or ×
+/// the colour curve while one is authored. A slot past the descriptors draws
+/// nothing at runtime, so it captures nothing.
+fn unlit_reference_glow(light: &AreaGlowLight, descriptor: Option<&AnimationDescriptor>) -> Vec3 {
+    let Some(descriptor) = descriptor else {
+        return Vec3::ZERO;
+    };
+    let own = AnimationDescriptor {
+        base_color: if descriptor.color.is_empty() {
+            light.color
+        } else {
+            [1.0; 3]
+        },
+        ..descriptor.clone()
+    };
+    Vec3::from(reference_value(&own)) * light.glow
 }

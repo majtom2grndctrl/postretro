@@ -115,7 +115,7 @@ struct Worst {
 fn worst_excursion(chart: &Chart, light: &MapLight, penumbra_floor: bool) -> Worst {
     let frame = ChartFrame::new(chart, penumbra_floor).expect("an orthonormal frame");
     assert!(
-        frame.emitter_clears(Emitter::of(light)),
+        frame.emitter_clears(Emitter::of(light).expect("a point light")),
         "the emitter clears the slab"
     );
     let offsets = if penumbra_floor {

@@ -221,6 +221,11 @@ fn run_after_parsing(
             &map_data.brush_volumes,
             &map_data.kinematic_movers,
         )?;
+    // The full tree's exterior flood over its own portals. It runs here, not
+    // with the runtime cells it also feeds (Visibility), because area-light
+    // exposure below drops the faces only exterior leaves hold.
+    let (full_exterior_leaves, full_tree_portal_count) =
+        runtime_cells::full_exterior_flood(&result.tree);
     finish_stage(
         &mut timings,
         reporter.as_ref(),
@@ -230,6 +235,22 @@ fn run_after_parsing(
     );
     if args.verbose {
         partition::log_stats(&result.tree, &result.faces);
+    }
+
+    // Area lights take their polygons from the faces that survived the BSP
+    // and that an interior leaf draws, before buried classification, the
+    // script's light table and every bake read their origin and reach
+    // (research.md O11, O18, O22).
+    if !map_data.area_lights.is_empty() {
+        let has_emissive_map =
+            crate::texture_mips::emissive_map_lookup(&resolve_texture_root(&args.input));
+        crate::area_light::resolve_area_lights(
+            &mut map_data,
+            &result.faces,
+            &result.tree,
+            &full_exterior_leaves,
+            has_emissive_map,
+        )?;
     }
 
     // Classify buried lights before the data script runs, so the script's
@@ -354,13 +375,17 @@ fn run_after_parsing(
     }
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::Visibility);
-    // The full tree's portals feed only the exterior flood. Every later stage
-    // that reads cell ids reads the runtime cells: the cell view of the tree,
-    // its exterior cells, and the portals between occluder-tier cells. The
-    // exterior set lets the cell encoder emit `face_count = 0` for
-    // outside-the-map cells in lockstep with the geometry section.
-    let (runtime, full_exterior_leaves) =
-        runtime_cells::RuntimeCells::of_partition(&result.tree, &tier);
+    // Every later stage that reads cell ids reads the runtime cells: the cell
+    // view of the tree, its exterior cells, and the portals between
+    // occluder-tier cells. The exterior set lets the cell encoder emit
+    // `face_count = 0` for outside-the-map cells in lockstep with the
+    // geometry section.
+    let runtime = runtime_cells::RuntimeCells::build(
+        &result.tree,
+        &tier,
+        &full_exterior_leaves,
+        full_tree_portal_count,
+    );
     let portal_count = runtime.portals.len();
     if portal_count == 0 {
         log::warn!(
@@ -2131,6 +2156,8 @@ fn run_after_parsing(
     // It precedes reflection capture, which shades each member face at its
     // volume's reference state.
     let membership_start = Instant::now();
+    // `light_area` faces glow with their light alone: membership skips them.
+    let area_faces = crate::area_light::area_light_faces(&map_data.area_lights, &face_brushes);
     let emissive_section = postretro_level_format::emissive::EmissiveSection {
         textures: emissive_textures,
         volumes: crate::emissive_membership::resolve_emissive_volume_records(
@@ -2138,6 +2165,7 @@ fn run_after_parsing(
             &geo_result,
             &fragment_centroids,
             &has_emissive_map,
+            &area_faces,
         ),
     };
     crate::emissive_membership::refuse_members_beside_a_triangle_less_face(
@@ -2145,6 +2173,18 @@ fn run_after_parsing(
         &emissive_section.volumes,
         &geo_result,
         &face_brushes,
+    )?;
+    // Area glow (id 62) stamps final faces after the light namespaces are
+    // fixed, so each light names its own compose slot (research.md O4); it
+    // precedes reflection capture, which shades area faces at their light's
+    // reference state. `None` for a map with no area light.
+    let area_glow_section = crate::area_light::build_area_glow_section(
+        &map_data.area_lights,
+        &map_data.lights,
+        &raw_slot_for_map_light,
+        &geo_result,
+        &face_brushes,
+        &has_emissive_map,
     )?;
     // Listed alone, not a stage: it runs uncached on every build.
     timings.push((
@@ -2185,6 +2225,7 @@ fn run_after_parsing(
             texture_keys: &name_to_key,
             emissive_textures: &emissive_section.textures,
             emissive_volumes: &emissive_section.volumes,
+            area_glow: area_glow_section.as_ref(),
             prm_root: &prm_root,
         },
         stage_cache.as_ref(),
@@ -2255,6 +2296,7 @@ fn run_after_parsing(
         fog_volumes: &fog_volumes_section,
         fog_cell_masks: fog_cell_masks_section.as_ref(),
         emissive: &emissive_section,
+        area_glow: area_glow_section.as_ref(),
         sdf_atlas: sdf_atlas_section.as_ref(),
         navmesh: navmesh_section.as_ref(),
         kinematic_geometry: kinematic_geometry_section.as_ref(),

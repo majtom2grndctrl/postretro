@@ -127,6 +127,28 @@ impl<'a> SurfaceMaterials<'a> {
         uv: [f32; 2],
         footprint_texels: f32,
     ) -> MaterialSample {
+        self.sample_at_strength(texture_index, uv, footprint_texels, None)
+    }
+
+    /// [`Self::sample`] with the emissive term at strength 1, whatever the
+    /// texture's baked strength (0 included): the raw `_e` texel a
+    /// `light_area` face multiplies by its light's glow.
+    pub(crate) fn sample_unscaled_emissive(
+        &self,
+        texture_index: u32,
+        uv: [f32; 2],
+        footprint_texels: f32,
+    ) -> MaterialSample {
+        self.sample_at_strength(texture_index, uv, footprint_texels, Some(1.0))
+    }
+
+    fn sample_at_strength(
+        &self,
+        texture_index: u32,
+        uv: [f32; 2],
+        footprint_texels: f32,
+        strength_override: Option<f32>,
+    ) -> MaterialSample {
         let material = self
             .loaded
             .get(texture_index as usize)
@@ -147,14 +169,15 @@ impl<'a> SurfaceMaterials<'a> {
             }
             None => (self.placeholder(uv), [PLACEHOLDER_EDGE as f32; 2]),
         };
-        let emissive = match (&material.emissive, material.emissive_strength > 0.0) {
+        let strength = strength_override.unwrap_or(material.emissive_strength);
+        let emissive = match (&material.emissive, strength > 0.0) {
             (Some(chain), true) => {
                 let normalized = [uv[0] / raw_extent[0], uv[1] / raw_extent[1]];
                 // The footprint in emissive texels, along its coarser axis.
                 let scale =
                     (chain.width as f32 / raw_extent[0]).max(chain.height as f32 / raw_extent[1]);
                 let lod = footprint_lod(footprint_texels * scale);
-                self.linear(chain.texel(normalized, lod)) * material.emissive_strength
+                self.linear(chain.texel(normalized, lod)) * strength
             }
             _ => Vec3::ZERO,
         };

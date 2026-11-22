@@ -162,6 +162,7 @@ fn point_light_above() -> MapLight {
         is_animated: false,
         tags: vec![],
         shadow_type: crate::map_data::ShadowType::StaticLightMap,
+        area: None,
     }
 }
 
@@ -2072,6 +2073,7 @@ fn occluder_produces_dark_texel() {
         is_animated: false,
         tags: vec![],
         shadow_type: crate::map_data::ShadowType::StaticLightMap,
+        area: None,
     };
     let lights = vec![light];
     let static_lights = StaticBakedLights::from_lights(&lights);

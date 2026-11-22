@@ -112,6 +112,7 @@ impl World {
             &self.geometry,
             &fragment_centroids(&self.geometry),
             &self.has_emissive_map(),
+            &crate::area_light::area_light_faces(&self.map.area_lights, &self.face_brushes),
         )
     }
 
@@ -338,6 +339,7 @@ fn atlas_sub_faces_share_their_fragment_membership() {
         &cut,
         &remap_per_face(&before_cut, &remap),
         &world.has_emissive_map(),
+        &[],
     );
     assert_eq!(
         records[0].faces, pieces,
@@ -350,6 +352,7 @@ fn atlas_sub_faces_share_their_fragment_membership() {
         &cut,
         &fragment_centroids(&cut),
         &world.has_emissive_map(),
+        &[],
     );
     assert!(own[0].faces.is_empty(), "{:?}", own[0].faces);
 }
@@ -373,6 +376,7 @@ fn a_face_with_no_triangle_joins_nothing() {
             &geometry,
             &points,
             &world.has_emissive_map(),
+            &[],
         );
         let faces = &records[0].faces;
         assert!(!faces.contains(&emptied), "{faces:?}");
@@ -405,6 +409,7 @@ fn members_beside_a_triangle_less_face_fail_naming_volume_face_and_brush() {
         &geometry,
         &fragment_centroids(&geometry),
         &world.has_emissive_map(),
+        &[],
     );
     assert!(records.iter().all(|record| !record.faces.is_empty()));
     let brush = world.face_brushes[emptied].expect("a floor face has its brush");
@@ -437,6 +442,7 @@ fn members_beside_a_triangle_less_face_fail_naming_volume_face_and_brush() {
         &geometry,
         &fragment_centroids(&geometry),
         &world.has_emissive_map(),
+        &[],
     );
     assert!(records[0].faces.is_empty());
     refuse_members_beside_a_triangle_less_face(
@@ -542,6 +548,75 @@ fn a_volume_with_no_glowing_face_warns_naming_it() {
         "entity 1 'emissive_volume' (tags: lobby sign) at (2.794, 0.051, 2.794) m holds no face \
          with an `_e` map; it glows nothing",
     );
+}
+
+/// A `light_area` whose frame (`wall`) and glowing glass sit in the room's
+/// free corner, map units −96..−64 on x and y.
+fn corner_area_light() -> String {
+    format!(
+        "{{
+\"classname\" \"light_area\"
+\"light\" \"300\"
+{}
+{}
+}}",
+        box_brush([-96, -96, 0], [-88, -64, 8], "wall"),
+        box_brush([-88, -96, 0], [-64, -64, 8], GLOW)
+    )
+}
+
+// Acceptance row 46: a volume enclosing an area light's frame and glass and
+// a worldspawn `_e` panel lists the panel alone; the glass keeps its light's
+// glow whatever the volume does.
+#[test]
+fn a_volume_around_an_area_light_and_a_panel_lists_only_the_panel() {
+    let world = World::new(&room(&[
+        corner_area_light(),
+        volume([-112, -112, -8], [24, 24, 32]),
+    ]));
+    let glass = world.faces_within(GLOW, [-88.0, -96.0, 0.0], [-64.0, -64.0, 8.0]);
+    assert!(
+        glass.len() >= 4,
+        "the glass glows on its four exposed sides: {glass:?}"
+    );
+    let capture = LogCapture::start();
+    let records = world.records();
+    let glowing: Vec<u32> = records[0]
+        .faces
+        .iter()
+        .copied()
+        .filter(|&face| {
+            let texture = world.geometry.geometry.faces[face as usize].texture_index;
+            world.geometry.texture_names.names[texture as usize] == GLOW
+        })
+        .collect();
+    assert_eq!(glowing, panel_one(&world), "the panel's glow alone");
+    for face in &glass {
+        assert!(!records[0].faces.contains(face), "glass face {face}");
+    }
+    capture.assert_nothing_above(Level::Info);
+}
+
+// Acceptance row 46: a volume enclosing only an area light's faces holds
+// none, and warns as empty, saying why.
+#[test]
+fn a_volume_holding_only_area_light_faces_warns_as_empty() {
+    let world = World::new(&room(&[
+        corner_area_light(),
+        volume([-100, -100, -4], [-60, -60, 16]),
+    ]));
+    let capture = LogCapture::start();
+    let records = world.records();
+    let glass = world.faces_within(GLOW, [-88.0, -96.0, 0.0], [-64.0, -64.0, 8.0]);
+    assert!(!glass.is_empty());
+    for face in &glass {
+        assert!(!records[0].faces.contains(face), "glass face {face}");
+    }
+    capture.assert_logged_once(
+        Level::Warn,
+        "holds no face with an `_e` map outside `light_area` entities, whose",
+    );
+    capture.assert_logged_once(Level::Warn, "glow with their light; it glows nothing");
 }
 
 // Acceptance A5: a volume enclosing a mover brush and a fluid lists neither;

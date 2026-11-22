@@ -15,9 +15,10 @@ use shambler::face::{FaceWinding, face_centers, face_indices, face_vertices};
 use crate::format::quake_map;
 use crate::map_data::{
     BrushPlane, BrushSide, BrushVolume, EntityInfo, EntityShadowParams, KinematicMoveMode,
-    LightType, MapAssembly, MapData, MapEntityRecord, MapFogVolume, MapKinematicMover,
-    MapKinematicWaypoint, MapLight, MapLightmapScaleRegion, MapStreamingHintRegion,
-    MapStreamingPriorityRegion, MapTriggerVolume, NavParams, TextureProjection,
+    LightType, MapAreaLight, MapAssembly, MapData, MapEntityRecord, MapFogVolume,
+    MapKinematicMover, MapKinematicWaypoint, MapLight, MapLightmapScaleRegion,
+    MapStreamingHintRegion, MapStreamingPriorityRegion, MapTriggerVolume, NavParams,
+    TextureProjection,
 };
 use crate::map_format::MapFormat;
 use crate::mover_light_gate::MAX_POSES;
@@ -972,6 +973,9 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     let mut lights: Vec<MapLight> = Vec::new();
     let mut light_start_active_defaults = Vec::new();
     let mut light_source_labels: Vec<String> = Vec::new();
+    // Area lights with their authored brush ids, which map to retained
+    // `brush_volumes` indices once the world hulls are built.
+    let mut pending_area_lights: Vec<(MapAreaLight, Vec<BrushId>)> = Vec::new();
     // Generic map entities for runtime classname dispatch — non-light point
     // entities only. Brush entities (those with brushes attached) are resolved
     // separately by their dedicated subsystems (e.g. `fog_volume`).
@@ -1296,6 +1300,50 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                     ));
                 }
             }
+            continue;
+        }
+
+        // An area light is a brush entity: its brushes join the static world
+        // (they render, collide and cast shadows like `func_group`'s), and
+        // its light enters the list here, at its entity position (research.md
+        // O11). Its polygons resolve from the BSP's surviving faces later.
+        if quake_map::is_area_light_classname(&classname) {
+            let label = quake_map::area_light_source_label(entities.len() - 1);
+            let brush_ids = geo_map
+                .entity_brushes
+                .get(entity_id)
+                .cloned()
+                .unwrap_or_default();
+            if brush_ids.is_empty() {
+                anyhow::bail!(
+                    "{label} has no brushes — an area light emits from its brushes' faces"
+                );
+            }
+            let props = collect_entity_properties(&geo_map, entity_id);
+            // Every area-light error already names the light.
+            let (light, keys) = quake_map::translate_area_light(&props, &label)?;
+            let light_index = lights.len();
+            light_start_active_defaults.push(
+                quake_map::authored_light_start_active(&props)
+                    .map_err(|error| anyhow::anyhow!("failed to translate {label}: {error}"))?,
+            );
+            lights.push(light);
+            light_source_labels.push(label);
+            if let Some(assembly_index) = sibling_assembly_index {
+                assembly_members[assembly_index]
+                    .light_indices
+                    .push(light_index);
+            }
+            world_brush_ids.extend(brush_ids.iter().copied());
+            pending_area_lights.push((
+                MapAreaLight {
+                    light_index,
+                    brush_indices: Vec::new(),
+                    reach_override: keys.reach_override,
+                    glow: keys.glow,
+                },
+                brush_ids,
+            ));
             continue;
         }
 
@@ -1849,6 +1897,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     // brush list position. `Face::brush_index` is this resulting vector's
     // enumerate index.
     let brush_assembly = brush_assembly_for_retained_hulls(&world_hulls, &assembly_by_brush_id);
+    let area_lights = area_lights_for_retained_hulls(&world_hulls, pending_area_lights);
     let brush_capture_override = reflection_capture_overrides.for_retained_hulls(&world_hulls);
     let brush_volumes: Vec<BrushVolume> =
         world_hulls.into_iter().map(|(_, volume)| volume).collect();
@@ -1906,6 +1955,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         carried_light_links,
         light_start_active_defaults,
         light_source_labels,
+        area_lights,
         data_script,
         map_entities,
         kinematic_movers,
@@ -1933,6 +1983,33 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         nav_params,
         entity_shadow_params,
     })
+}
+
+/// Each area light's brushes as indices into the retained world hulls, the
+/// index `Face::brush_index` carries. A brush the hull build dropped as
+/// degenerate has no faces, so it simply drops out here.
+fn area_lights_for_retained_hulls(
+    world_hulls: &[(BrushId, BrushVolume)],
+    pending: Vec<(MapAreaLight, Vec<BrushId>)>,
+) -> Vec<MapAreaLight> {
+    if pending.is_empty() {
+        return Vec::new();
+    }
+    let retained: HashMap<BrushId, usize> = world_hulls
+        .iter()
+        .enumerate()
+        .map(|(index, (brush_id, _))| (*brush_id, index))
+        .collect();
+    pending
+        .into_iter()
+        .map(|(mut area, brush_ids)| {
+            area.brush_indices = brush_ids
+                .iter()
+                .filter_map(|brush_id| retained.get(brush_id).copied())
+                .collect();
+            area
+        })
+        .collect()
 }
 
 /// Fill eligible dynamic-light carrier names from unambiguous editor assemblies.

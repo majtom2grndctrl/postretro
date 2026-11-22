@@ -48,8 +48,15 @@ fn reach_flood_seeds_both_leaves_an_emitter_sphere_straddles() {
     assert!(near != far && [portal.front_leaf, portal.back_leaf].contains(&near));
 
     let flood = |size: f64| {
-        ball_flood(tree, &closed, &graph, Emitter { centre, size }, 0.01)
-            .expect("the centre's leaf is open")
+        ball_flood(
+            tree,
+            &closed,
+            &graph,
+            Emitter { centre, size },
+            &[centre],
+            0.01,
+        )
+        .expect("the centre's leaf is open")
     };
     let straddling = flood(0.1);
     assert!(straddling.contains(near) && straddling.contains(far));

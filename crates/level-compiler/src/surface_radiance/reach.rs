@@ -105,8 +105,12 @@ impl<'a> PatchReachIndex<'a> {
             (0..self.patches.len() as u32).for_each(visit);
             return;
         }
-        let range = f64::from(light.falloff_range.max(1.0e-4));
-        let origin = light.origin;
+        // An area light reaches from its polygons: its reach sphere
+        // (centroid, circumradius + reach) holds every point it lights.
+        let (origin, range) = match light.light_type {
+            LightType::Area => light.reach_sphere(),
+            _ => (light.origin, f64::from(light.falloff_range.max(1.0e-4))),
+        };
         if !origin.is_finite() || !range.is_finite() {
             // No box bounds the reach: test every patch.
             (0..self.patches.len() as u32)

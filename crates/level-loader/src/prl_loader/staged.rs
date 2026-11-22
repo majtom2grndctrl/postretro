@@ -11,6 +11,7 @@ use postretro_level_format::animated_billboard_direct_scatter_delta_volumes::Ani
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
+use postretro_level_format::area_glow::AreaGlowSection;
 use postretro_level_format::billboard_direct_scatter_volume::BillboardDirectScatterVolumeSection;
 use postretro_level_format::cell_residency_set::CellResidencySetSection;
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
@@ -242,6 +243,8 @@ pub struct GeometryHandOut {
     /// Id 60: per-texture glow strength, parallel to `texture_names`, and
     /// the emissive volumes.
     pub emissive: EmissiveSection,
+    /// Id 62: each area light's glow and emitting faces; empty when absent.
+    pub area_glow: AreaGlowSection,
 }
 
 /// Hand-out 3: BVH, cells, visibility, residency set and locator. The portal
@@ -594,6 +597,7 @@ pub fn assemble(hand_outs: CompleteHandOuts) -> LevelWorld {
         texture_names,
         texture_cache_keys,
         emissive,
+        area_glow,
     } = unshare(geometry);
     let SpatialHandOut {
         bvh,
@@ -683,6 +687,7 @@ pub fn assemble(hand_outs: CompleteHandOuts) -> LevelWorld {
         texture_names,
         texture_cache_keys,
         emissive,
+        area_glow,
         bvh,
         lights,
         light_influences,

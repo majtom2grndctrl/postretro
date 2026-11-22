@@ -4,11 +4,14 @@
 use std::sync::Mutex;
 
 use bvh::bvh::Bvh;
-use glam::{Quat, Vec3};
+use glam::{DVec2, DVec3, Quat, Vec3};
 use postretro_level_format::coded_plane::BlockCodec;
 use postretro_level_format::lightmap::{LIGHTMAP_POOL_LAYER_EDGE, LightmapSection};
 use rayon::prelude::*;
 
+use crate::area_light::{
+    AreaSampler, area_lattice_point, area_probe_indices, one_sample_visibility, weighted_visibility,
+};
 use crate::bake_control::BakeControl;
 use crate::texel_footprint::ProbeEarlyOut;
 use thiserror::Error;
@@ -693,6 +696,26 @@ pub(crate) fn light_contribution_and_direction(
             }
             (Vec3::from(light.color) * (light.intensity * ndotl), l)
         }
+        LightType::Area => {
+            // The windowed polygon term, in f64 like the rest of the polygon
+            // maths; its direction is the clipped irradiance vector.
+            let Some(emitter) = light.area.as_ref() else {
+                return (Vec3::ZERO, Vec3::ZERO);
+            };
+            let (irradiance, vector) = emitter.windowed_irradiance(
+                surface_point.as_dvec3(),
+                surface_normal.as_dvec3(),
+                f64::from(light.falloff_range),
+            );
+            if irradiance <= 0.0 {
+                return (Vec3::ZERO, Vec3::ZERO);
+            }
+            let direction = vector.normalize_or_zero().as_vec3();
+            (
+                Vec3::from(light.color) * (light.intensity * irradiance as f32),
+                direction,
+            )
+        }
     }
 }
 
@@ -986,7 +1009,11 @@ fn probe_indices(light: &MapLight, full_samples: u32) -> [u32; SOFT_PROBE_SAMPLE
 /// relies on it too.
 pub(crate) fn probe_sample_direction(light: &MapLight, i: u32, count: u32) -> Vec3 {
     match light.light_type {
-        LightType::Point | LightType::Spot => fibonacci_sphere_sample(i, count, 0),
+        // An area light never reads this lattice: its samples come from
+        // the polygon lattice through `AreaSampler`, per receiver.
+        LightType::Point | LightType::Spot | LightType::Area => {
+            fibonacci_sphere_sample(i, count, 0)
+        }
         LightType::Directional => {
             let aim = Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0]));
             let to_light = (-aim).normalize_or_zero();
@@ -1107,6 +1134,10 @@ impl SoftProbes {
                 probes
             }),
             LightType::Directional => probe_indices(light, full_samples),
+            // An area light's lattice is the polygon lattice, whose probe
+            // subset depends on the count alone, but it never reads or writes
+            // the count-keyed point/spot memo (research.md O9).
+            LightType::Area => area_probe_indices(full_samples),
         };
         Self {
             full_samples,
@@ -1143,6 +1174,19 @@ pub(crate) fn soft_visibility_with(
     early_out: ProbeEarlyOut,
     trace: impl Fn(Vec3, Vec3) -> bool,
 ) -> f32 {
+    // An area light weighs each sample by its share of the unshadowed light.
+    if light.light_type == LightType::Area {
+        return area_soft_visibility(
+            surface_point,
+            surface_normal,
+            light,
+            seed,
+            probes(),
+            early_out,
+            trace,
+        );
+    }
+
     let origin = surface_point + surface_normal * RAY_EPSILON;
 
     // An author's explicit `0` is a hard edge: collapse to the single hard ray so
@@ -1197,6 +1241,178 @@ pub(crate) fn soft_visibility_with(
     clear as f32 / full_samples as f32
 }
 
+/// The centre-point sampler's area-light arm: the Heitz–Hill–McGuire ratio
+/// estimator Σ w·V / Σ w over the polygon lattice
+/// ([`area_lattice_point`]) that [`AreaSampler`] maps uniformly in solid
+/// angle onto the polygons whose front half-space holds the receiver, each
+/// sample weighted by its cosθ at the receiver (research.md §2). Every
+/// target lies on a faced polygon, lifted off it by the tracer tolerance, so
+/// no ray aims at the light's origin or ends on the face it targets.
+///
+/// The probe subset is traced first. Agreeing probes end the trace as for a
+/// sphere, all blocked storing 0 and all clear 1, but agreement counts only
+/// the probes that carry weight ([`ProbeEarlyOut::ends_weighted`]): the
+/// lattice is not clipped to the receiver's horizon, so where the receiver's
+/// plane cuts a polygon every probe can lie below it, blocked by the receiver
+/// itself, on a lit texel. Probes with no weight between them escalate. A
+/// texel no polygon faces, and one whose every lattice sample carries weight
+/// 0, stores 0 (research.md O8). [`area_clear_visibility`] is what this
+/// returns when every segment is clear.
+fn area_soft_visibility(
+    surface_point: Vec3,
+    surface_normal: Vec3,
+    light: &MapLight,
+    seed: u64,
+    probes: SoftProbes,
+    early_out: ProbeEarlyOut,
+    trace: impl Fn(Vec3, Vec3) -> bool,
+) -> f32 {
+    let Some(sampler) = area_sampler(light, surface_point, surface_normal) else {
+        return 0.0;
+    };
+    let origin = surface_point + surface_normal * RAY_EPSILON;
+    let SoftProbes {
+        full_samples,
+        probes,
+    } = probes;
+    // (weight, clear) per traced sample, probes first.
+    let trace_sample = |i: u32| -> (f64, bool) {
+        let sample = sampler.sample(area_lattice_point(i, full_samples, seed));
+        (sample.weight, trace(origin, sample.target.as_vec3()))
+    };
+    let mut traced: Vec<(f64, bool)> = Vec::with_capacity(full_samples as usize);
+    traced.extend(probes.iter().map(|&i| trace_sample(i)));
+    if early_out.ends_weighted(&traced) {
+        return weighted_visibility(traced) as f32;
+    }
+    traced.extend(
+        (0..full_samples)
+            .filter(|i| !probes.contains(i))
+            .map(trace_sample),
+    );
+    weighted_visibility(traced) as f32
+}
+
+/// The solid-angle sampler over `light`'s polygons as a texel at
+/// `surface_point` facing `surface_normal` sees them; `None` for a light
+/// that is not a resolved area light, or a receiver no polygon faces.
+pub(crate) fn area_sampler(
+    light: &MapLight,
+    surface_point: Vec3,
+    surface_normal: Vec3,
+) -> Option<AreaSampler<'_>> {
+    let emitter = light.area.as_ref()?;
+    AreaSampler::new(
+        emitter,
+        surface_point.as_dvec3(),
+        Some(surface_normal.as_dvec3()),
+    )
+}
+
+/// What an area light's texel sampler stores when every segment it would
+/// trace is clear: 1 when any of its `full_samples` lattice samples carries
+/// weight, else 0 (research.md O8). The tile shaft cull stores this, so a
+/// clear tile matches the traced walk byte for byte.
+pub(crate) fn area_clear_visibility(
+    light: &MapLight,
+    surface_point: Vec3,
+    surface_normal: Vec3,
+    seed: u64,
+    full_samples: u32,
+) -> f32 {
+    let Some(sampler) = area_sampler(light, surface_point, surface_normal) else {
+        return 0.0;
+    };
+    let lit = (0..full_samples).any(|i| {
+        sampler
+            .sample(area_lattice_point(i, full_samples, seed))
+            .weight
+            > 0.0
+    });
+    if lit { 1.0 } else { 0.0 }
+}
+
+/// One shadow sample of an area light at a probe point: the unit direction
+/// toward the sampled (unlifted) point and whether its segment is clear.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct AreaProbeSample {
+    pub(crate) direction: DVec3,
+    pub(crate) clear: bool,
+}
+
+/// An area light's shadow samples at a probe point, as the probe-point bakes
+/// read them.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum AreaProbeVisibility {
+    /// Every traced sample is clear: the unshadowed term, exactly.
+    Clear,
+    /// Every traced sample is blocked: nothing.
+    Blocked,
+    /// The full lattice, clear and blocked mixed, in lattice order.
+    Partial(Vec<AreaProbeSample>),
+}
+
+/// The probe-point twin of `area_soft_visibility`: an area light's polygon
+/// lattice mapped uniformly in solid angle onto the polygons whose front
+/// half-space holds `point`, every sample weighing alike, since a probe has
+/// no receiver normal. Each segment leaves `point` lifted along `lift` (the
+/// light's probe direction,
+/// [`AreaEmitter::probe_direction`](crate::area_light::AreaEmitter::probe_direction)) and ends on a
+/// polygon, lifted off it by the tracer tolerance. The probe subset
+/// ([`area_probe_indices`]) is traced first and ends the trace where
+/// `early_out` says, as for a sphere; otherwise the full set is traced.
+/// `None` for a light that is not a resolved area light, or a point no
+/// polygon faces.
+pub(crate) fn area_probe_visibility(
+    point: Vec3,
+    lift: Vec3,
+    light: &MapLight,
+    seed: u64,
+    full_samples: u32,
+    early_out: ProbeEarlyOut,
+    trace: impl Fn(Vec3, Vec3) -> bool,
+) -> Option<AreaProbeVisibility> {
+    if light.light_type != LightType::Area {
+        return None;
+    }
+    let emitter = light.area.as_ref()?;
+    let sampler = AreaSampler::new(emitter, point.as_dvec3(), None)?;
+    let origin = point + lift * RAY_EPSILON;
+    let SoftProbes {
+        full_samples,
+        probes,
+    } = SoftProbes::new(light, full_samples);
+    let trace_sample = |i: u32| {
+        let sample = sampler.sample(area_lattice_point(i, full_samples, seed));
+        AreaProbeSample {
+            direction: sample.direction,
+            clear: trace(origin, sample.target.as_vec3()),
+        }
+    };
+    let probe_samples = probes.map(trace_sample);
+    let clear = probe_samples.iter().filter(|sample| sample.clear).count() as u32;
+    if early_out.ends(clear, SOFT_PROBE_SAMPLES) {
+        return Some(if clear == 0 {
+            AreaProbeVisibility::Blocked
+        } else {
+            AreaProbeVisibility::Clear
+        });
+    }
+    let samples: Vec<AreaProbeSample> = (0..full_samples)
+        .map(|i| match probes.iter().position(|&probe| probe == i) {
+            Some(k) => probe_samples[k],
+            None => trace_sample(i),
+        })
+        .collect();
+    Some(if samples.iter().all(|sample| sample.clear) {
+        AreaProbeVisibility::Clear
+    } else if samples.iter().all(|sample| !sample.clear) {
+        AreaProbeVisibility::Blocked
+    } else {
+        AreaProbeVisibility::Partial(samples)
+    })
+}
+
 /// One-ray twin of `soft_visibility` for an estimator that averages many
 /// receivers, such as the SH bounce over a probe's gather rays: returns 1.0
 /// when its single shadow ray is clear, 0.0 when occluded. A hard emitter
@@ -1208,6 +1424,10 @@ pub(crate) fn soft_visibility_with(
 /// mean over every index is the whole lattice's clear fraction, which
 /// `soft_visibility` returns whenever it escalates; its 4-probe early-out can
 /// differ. Choosing the index is the caller's stratification.
+///
+/// An area light takes the polygon arm instead
+/// ([`area_visibility_one_sample`]): its value is an unbiased one-sample
+/// estimate of the weighted visibility, not 0 or 1, and can exceed 1.
 pub(crate) fn soft_visibility_one_sample(
     surface_point: Vec3,
     surface_normal: Vec3,
@@ -1218,6 +1438,18 @@ pub(crate) fn soft_visibility_one_sample(
     trace: impl Fn(Vec3, Vec3) -> bool,
 ) -> f32 {
     let origin = surface_point + surface_normal * RAY_EPSILON;
+    if light.light_type == LightType::Area {
+        // Same clamp as `SoftProbes::new`, so the lattice matches the full set's.
+        let full_samples = full_samples.max(SOFT_PROBE_SAMPLES);
+        let index = sample_index(full_samples) % full_samples;
+        return area_visibility_one_sample(
+            surface_point,
+            surface_normal,
+            light,
+            area_lattice_point(index, full_samples, seed),
+            |target| trace(origin, target),
+        );
+    }
     let target = if emitter_radius(light) <= 0.0 {
         hard_ray_target(surface_point, light)
     } else {
@@ -1229,20 +1461,68 @@ pub(crate) fn soft_visibility_one_sample(
     if trace(origin, target) { 1.0 } else { 0.0 }
 }
 
+/// The animated bounce's polygon arm (research.md O23): one solid-angle
+/// sample at lattice point `u` on the polygons whose front half-space holds
+/// the receiver, its visibility w·V·Ω / ∫w dω. w is the sample's cosθ at the
+/// receiver, Ω the faced polygons' solid angle and ∫w dω their clipped
+/// projected solid angle, the unwindowed irradiance per unit radiance. Given
+/// a uniformly random `u`, the sample is uniform in solid angle, so the
+/// expectation is Σ w·V / Σ w over the polygons: the ratio of the shadowed
+/// to the unshadowed term, 1 when open, whatever the receiver. A sample
+/// with no weight traces nothing; a receiver no polygon faces reads 0.
+fn area_visibility_one_sample(
+    surface_point: Vec3,
+    surface_normal: Vec3,
+    light: &MapLight,
+    u: DVec2,
+    trace: impl FnOnce(Vec3) -> bool,
+) -> f32 {
+    let Some(sampler) = area_sampler(light, surface_point, surface_normal) else {
+        return 0.0;
+    };
+    let sample = sampler.sample(u);
+    if sample.weight <= 0.0 || !trace(sample.target.as_vec3()) {
+        return 0.0;
+    }
+    let Some(emitter) = light.area.as_ref() else {
+        return 0.0;
+    };
+    let (projected, _) = emitter.irradiance(surface_point.as_dvec3(), surface_normal.as_dvec3());
+    one_sample_visibility(sample.weight, true, sampler.total_solid_angle(), projected) as f32
+}
+
 /// The emitter extent soft visibility samples: the sphere radius of a point or
 /// spot light, the angular diameter of a sun. `<= 0` is an authored hard edge.
 pub(crate) fn emitter_radius(light: &MapLight) -> f32 {
     match light.light_type {
         LightType::Point | LightType::Spot => light.light_size,
         LightType::Directional => light.angular_diameter,
+        // Translation normalises `light_size` to 0. An area light's samples
+        // come from its polygon lattice, never this radius, and its emitter
+        // sphere is `MapLight::emitter_sphere`. A reader that takes one
+        // target for a zero radius gets `hard_ray_target`'s, on a polygon.
+        LightType::Area => 0.0,
     }
 }
 
 /// Single hard-ray target for the `radius <= 0` hard edge (see the note in
 /// `soft_visibility` on the removed `shadow_visible`): the light origin for
 /// Point/Spot, or a far point along `-cone_direction` for Directional.
+///
+/// An area light's origin is its centroid, which can sit inside a pillar or
+/// on the glass, so its one target is the solid-angle median of the
+/// polygons whose front half-space holds `surface_point`
+/// ([`AREA_MEDIAN_SAMPLE`]), lifted off its polygon; the centroid only when
+/// no polygon faces the point, where the light has no term.
 pub(crate) fn hard_ray_target(surface_point: Vec3, light: &MapLight) -> Vec3 {
     match light.light_type {
+        LightType::Area => light
+            .area
+            .as_ref()
+            .and_then(|emitter| AreaSampler::new(emitter, surface_point.as_dvec3(), None))
+            .map_or(light.origin.as_vec3(), |sampler| {
+                sampler.sample(AREA_MEDIAN_SAMPLE).target.as_vec3()
+            }),
         LightType::Point | LightType::Spot => Vec3::new(
             light.origin.x as f32,
             light.origin.y as f32,
@@ -1255,6 +1535,10 @@ pub(crate) fn hard_ray_target(surface_point: Vec3, light: &MapLight) -> Vec3 {
         }
     }
 }
+
+/// The lattice point an area light's single target maps from: the middle of
+/// both axes, the median of the faced polygons' solid angle.
+const AREA_MEDIAN_SAMPLE: DVec2 = DVec2::new(0.5, 0.5);
 
 /// Stratified area-sample target for sample index `i` of `full_samples` (the
 /// area-sample-count knob; the lattice's stratification denominator).
@@ -1271,7 +1555,10 @@ pub(crate) fn area_sample_target(
     full_samples: u32,
 ) -> Vec3 {
     match light.light_type {
-        LightType::Point | LightType::Spot => {
+        // An area light samples its polygon lattice instead
+        // (`area_soft_visibility`, `texel_footprint`'s area arm); its
+        // `light_size` is 0, so this would read its centroid.
+        LightType::Point | LightType::Spot | LightType::Area => {
             let center = Vec3::new(
                 light.origin.x as f32,
                 light.origin.y as f32,
@@ -1303,8 +1590,9 @@ pub(crate) fn emitter_lattice_spin(light: &MapLight, seed: u64) -> Quat {
     let angle = (lattice_seed_turn(seed) - lattice_seed_turn(0)) * std::f32::consts::TAU;
     match light.light_type {
         // `fibonacci_sphere_sample` adds the angle to an azimuth that runs
-        // from +X toward +Z: a negative turn about +Y.
-        LightType::Point | LightType::Spot => Quat::from_rotation_y(-angle),
+        // from +X toward +Z: a negative turn about +Y. An area light's
+        // lattice shifts by its own seed (`area_lattice_point`), never this.
+        LightType::Point | LightType::Spot | LightType::Area => Quat::from_rotation_y(-angle),
         LightType::Directional => {
             let aim = Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0]));
             Quat::from_axis_angle((-aim).normalize_or_zero(), angle)

@@ -63,22 +63,70 @@ pub(crate) fn incident_radiance_at_point(light: &MapLight, point: Vec3) -> Optio
             let radiance = Vec3::from(light.color) * light.intensity;
             Some((radiance, l))
         }
+        // No single direction carries a polygon's light. A probe treated as
+        // a receiver facing the light's probe direction
+        // (`AreaEmitter::probe_direction`) takes the windowed
+        // polygon term, which is I/d² in the far limit and never more than a
+        // card facing the light receives: billboard scatter's value. Direct
+        // SH projects over the polygons instead (`area_probe`), and the
+        // Lambert term clips to the receiver's own horizon.
+        LightType::Area => area_facing_radiance(light, point),
     }
+}
+
+/// An area light's windowed polygon term at `point` as a receiver facing
+/// the light's probe direction receives it, times colour × radiance, and
+/// that direction: Φ̂, or a faced polygon's reversed normal where Φ cancels
+/// ([`AreaEmitter::probe_direction`](crate::area_light::AreaEmitter::probe_direction)),
+/// the lift direct SH takes. `None` where no polygon faces the point or the
+/// term is zero.
+fn area_facing_radiance(light: &MapLight, point: Vec3) -> Option<(Vec3, Vec3)> {
+    let emitter = light.area.as_ref()?;
+    let p = point.as_dvec3();
+    let facing = emitter.probe_direction(p)?;
+    let (irradiance, _) = emitter.windowed_irradiance(p, facing, f64::from(light.falloff_range));
+    if irradiance <= 0.0 {
+        return None;
+    }
+    let radiance = Vec3::from(light.color) * (f64::from(light.intensity) * irradiance) as f32;
+    Some((radiance, facing.as_vec3()))
 }
 
 /// Lambert contribution without visibility — caller handles shadow testing.
 /// Exactly `incident_radiance_at_point × max(n·l, 0)`, the surface-cosine the
-/// probe bake omits.
+/// probe bake omits, for every light but an area light, whose term is the
+/// windowed polygon irradiance clipped to the receiver's own horizon.
 pub(super) fn light_contribution_lambert(
     light: &MapLight,
     surface_point: Vec3,
     surface_normal: Vec3,
 ) -> Vec3 {
+    if light.light_type == LightType::Area {
+        return area_lambert(light, surface_point, surface_normal);
+    }
     let Some((radiance, l)) = incident_radiance_at_point(light, surface_point) else {
         return Vec3::ZERO;
     };
     let n_dot_l = surface_normal.dot(l).max(0.0);
     radiance * n_dot_l
+}
+
+/// An area light's windowed polygon term at a receiver `(point, normal)`,
+/// clipped to its horizon, times colour × radiance: the lightmap texel's
+/// unshadowed term (`lightmap_bake::light_contribution_and_direction`).
+fn area_lambert(light: &MapLight, point: Vec3, normal: Vec3) -> Vec3 {
+    let Some(emitter) = light.area.as_ref() else {
+        return Vec3::ZERO;
+    };
+    let (irradiance, _) = emitter.windowed_irradiance(
+        point.as_dvec3(),
+        normal.as_dvec3(),
+        f64::from(light.falloff_range),
+    );
+    if irradiance <= 0.0 {
+        return Vec3::ZERO;
+    }
+    Vec3::from(light.color) * (f64::from(light.intensity) * irradiance) as f32
 }
 
 /// Must match `falloff` in `forward.wgsl` exactly — divergence produces "ghost glow"
@@ -117,6 +165,10 @@ pub(crate) fn light_reaches_point(light: &MapLight, point: Vec3) -> bool {
                 light.origin.z as f32,
             );
             point.distance(light_origin) <= light.falloff_range.max(1.0e-4)
+        }
+        LightType::Area => {
+            let (centre, radius) = light.reach_sphere();
+            point.as_dvec3().distance(centre) <= radius.max(1.0e-4)
         }
     }
 }

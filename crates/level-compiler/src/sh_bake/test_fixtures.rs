@@ -30,6 +30,7 @@ pub(super) fn point_light_with_falloff(model: FalloffModel, range: f32) -> MapLi
         is_animated: false,
         tags: vec![],
         shadow_type: crate::map_data::ShadowType::StaticLightMap,
+        area: None,
     }
 }
 
@@ -175,6 +176,7 @@ pub(super) fn point_light_colored(
         is_animated: false,
         tags: vec![],
         shadow_type: crate::map_data::ShadowType::StaticLightMap,
+        area: None,
     }
 }
 
@@ -202,5 +204,6 @@ pub(super) fn soft_point_light(origin: DVec3, light_size: f32) -> MapLight {
         is_animated: false,
         tags: vec![],
         shadow_type: crate::map_data::ShadowType::StaticLightMap,
+        area: None,
     }
 }

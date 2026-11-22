@@ -4,7 +4,6 @@
 use glam::{DVec3, Vec3};
 
 use super::bounce::*;
-use super::sh_math::*;
 use super::trace::*;
 use super::*;
 use crate::bvh_build::build_bvh;

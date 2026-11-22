@@ -1565,6 +1565,13 @@ fn collect_membership(
                     )
                 }
             })?;
+            if runtime_refuses_step_for_light(step, light) {
+                // The runtime refuses this step for this light with
+                // InvalidArgument, so it never animates the light and never
+                // sets its start state; reserving or starting from it here
+                // would make the bake disagree with the run (research.md O15).
+                continue;
+            }
             let record = records
                 .entry(light.index)
                 .or_insert_with(|| LightMembershipRecord {
@@ -1593,6 +1600,22 @@ fn collect_membership(
         }
     }
     Ok(records.into_values().collect())
+}
+
+/// Whether the runtime `setLightAnimation` validator refuses `step` for
+/// `light` by its kind alone: a direction channel (`sweep`) on an area light.
+/// Mirrors `postretro-lighting` `script_primitives::validate_and_normalize`,
+/// which reads a non-null `direction` as a present channel.
+fn runtime_refuses_step_for_light(
+    step: &JsonMap<String, JsonValue>,
+    light: &LightTableLight,
+) -> bool {
+    light.component.light_type == "Area"
+        && step
+            .get("args")
+            .and_then(JsonValue::as_object)
+            .and_then(|args| args.get("direction"))
+            .is_some_and(|direction| !direction.is_null())
 }
 
 fn runtime_sequence_step_shape_is_valid(step: &JsonValue) -> bool {
@@ -2154,6 +2177,116 @@ mod tests {
         assert_eq!(manifest.lights.len(), 1);
         assert_eq!(manifest.lights[0].start_active, Some(true));
         assert!(manifest.lights[0].start_active_conflict);
+    }
+
+    /// An area light at index 4 tagged `panel`, beside the default table's
+    /// point lights.
+    fn table_with_area_light() -> LightTable {
+        let mut area = light(4, "panel", false);
+        area.component.light_type = "Area".to_string();
+        LightTable::new(vec![
+            light(2, "wave", false),
+            area,
+            light(9, "dynamic", true),
+        ])
+    }
+
+    // Acceptance row 56 (research.md O15): a `levelLoad` step that carries a
+    // direction channel is refused by the runtime on an area light, so it
+    // contributes no start state there, in both hosts. The same sweep on a
+    // point light still counts, and a brightness step on the area light still
+    // starts it lit (row 55's script side).
+    #[test]
+    fn a_sweep_step_contributes_no_start_state_to_an_area_light_in_both_hosts() {
+        let quickjs = |body: &str| {
+            format!(
+                r#"
+                function setupLevel() {{
+                  const panel = getMapEntities("light", {{ tag: "panel" }})[0];
+                  const wave = getMapEntities("light", {{ tag: "wave" }})[0];
+                  const up = [{{ x: 0, y: 1, z: 0 }}, {{ x: 1, y: 0, z: 0 }}];
+                  return {{ reactions: [ {body} ] }};
+                }}
+                "#
+            )
+        };
+        let luau = |body: &str| {
+            format!(
+                r#"
+                function setupLevel(_)
+                  local panel = getMapEntities("light", {{ tag = "panel" }})[1]
+                  local wave = getMapEntities("light", {{ tag = "wave" }})[1]
+                  local up = {{ {{ x = 0, y = 1, z = 0 }}, {{ x = 1, y = 0, z = 0 }} }}
+                  return {{ reactions = {{ {body} }} }}
+                end
+                "#
+            )
+        };
+        let membership = |ts_body: &str, luau_body: &str| {
+            let quickjs = emit_light_membership_manifest(
+                &quickjs(ts_body),
+                Path::new("fixture.ts"),
+                Path::new("."),
+                &table_with_area_light(),
+            )
+            .expect("QuickJS fixture evaluates");
+            let luau = emit_light_membership_manifest(
+                &luau(luau_body),
+                Path::new("fixture.luau"),
+                Path::new("."),
+                &table_with_area_light(),
+            )
+            .expect("Luau fixture evaluates");
+            assert_eq!(quickjs.lights, luau.lights, "the hosts agree");
+            quickjs.lights
+        };
+
+        // Sweep alone: no record for the area light, so its authored
+        // `_start_inactive` start stands; the point light it also sweeps keeps
+        // its start-active record.
+        let swept = membership(
+            r#"defineReaction("levelLoad", { sequence: [
+                 ...panel.sweep({ values: up, periodMs: 1000 }),
+                 ...wave.sweep({ values: up, periodMs: 1000 }),
+               ] })"#,
+            r#"defineReaction("levelLoad", { sequence = {
+                 panel:sweep({ values = up, periodMs = 1000 })[1],
+                 wave:sweep({ values = up, periodMs = 1000 })[1],
+               } })"#,
+        );
+        assert_eq!(
+            swept.iter().map(|record| record.index).collect::<Vec<_>>(),
+            [2],
+            "only the point light's sweep counts: {swept:?}"
+        );
+        assert_eq!(swept[0].start_active, Some(true));
+
+        // A raw step carrying brightness and direction together is refused
+        // whole, so it counts for nothing either.
+        let mixed = membership(
+            r#"defineReaction("levelLoad", { sequence: [{ id: panel.id, primitive: "setLightAnimation",
+                 args: { periodMs: 1000, brightness: [0.2, 1.0], direction: up } }] })"#,
+            r#"defineReaction("levelLoad", { sequence = { { id = panel.id, primitive = "setLightAnimation",
+                 args = { periodMs = 1000, brightness = { 0.2, 1.0 }, direction = up } } } })"#,
+        );
+        assert!(mixed.is_empty(), "{mixed:?}");
+
+        // A pulse beside the refused sweep still starts the area light lit,
+        // with no conflict from the sweep.
+        let pulsed = membership(
+            r#"defineReaction("levelLoad", { sequence: [
+                 ...panel.sweep({ values: up, periodMs: 1000 }),
+                 ...panel.pulse({ min: 0.3, max: 1.0, periodMs: 900 }),
+               ] })"#,
+            r#"defineReaction("levelLoad", { sequence = {
+                 panel:sweep({ values = up, periodMs = 1000 })[1],
+                 panel:pulse({ min = 0.3, max = 1.0, periodMs = 900 })[1],
+               } })"#,
+        );
+        assert_eq!(pulsed.len(), 1, "{pulsed:?}");
+        assert_eq!(pulsed[0].index, 4);
+        assert_eq!(pulsed[0].start_active, Some(true));
+        assert!(!pulsed[0].start_active_conflict);
     }
 
     #[test]

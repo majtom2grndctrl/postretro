@@ -134,6 +134,7 @@ pub fn encode_alpha_lights(lights: &AlphaLightsNs<'_>, tree: &BspTree) -> AlphaL
                 LightType::Point => AlphaLightType::Point,
                 LightType::Spot => AlphaLightType::Spot,
                 LightType::Directional => AlphaLightType::Directional,
+                LightType::Area => AlphaLightType::Area,
             };
             let falloff_model = match l.falloff_model {
                 FalloffModel::Linear => AlphaFalloffModel::Linear,
@@ -145,7 +146,12 @@ pub fn encode_alpha_lights(lights: &AlphaLightsNs<'_>, tree: &BspTree) -> AlphaL
                 ALPHA_LIGHT_LEAF_UNASSIGNED
             } else {
                 let idx = find_leaf_for_point(tree, l.origin);
-                if tree.leaves[idx].is_solid {
+                if tree.leaves[idx].is_solid && l.light_type == LightType::Area {
+                    // An area light's centroid may sit inside a pillar its
+                    // faces wrap. Only promotion reads the leaf at runtime,
+                    // and an area light never promotes.
+                    ALPHA_LIGHT_LEAF_UNASSIGNED
+                } else if tree.leaves[idx].is_solid {
                     log::warn!(
                         "[Compiler] AlphaLights: light {src_index} at origin ({:.3}, {:.3}, {:.3}) is inside a solid leaf; marking unassigned",
                         l.origin.x,
@@ -213,6 +219,10 @@ pub fn encode_light_influence(lights: &AlphaLightsNs<'_>) -> LightInfluenceSecti
                     let cy = l.origin.y as f32;
                     let cz = l.origin.z as f32;
                     ([cx, cy, cz], l.falloff_range)
+                }
+                LightType::Area => {
+                    let (center, radius) = l.reach_sphere();
+                    (center.as_vec3().to_array(), radius as f32)
                 }
             };
             InfluenceRecord { center, radius }
@@ -501,6 +511,7 @@ pub fn pack_and_write_portals_with_billboard_scatter(
         fog_volumes,
         fog_cell_masks,
         &emissive,
+        None,
         sdf_atlas,
         navmesh,
         kinematic_geometry,
@@ -559,6 +570,8 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
     fog_cell_masks: Option<&FogCellMasksSection>,
     // Emissive (id 60), written for every map.
     emissive: &EmissiveSection,
+    // AreaGlow (id 62); written only when the map has an area light.
+    area_glow: Option<&postretro_level_format::area_glow::AreaGlowSection>,
     sdf_atlas: Option<&SdfAtlasSection>,
     navmesh: Option<&NavMeshSection>,
     kinematic_geometry: Option<&KinematicGeometrySection>,
@@ -734,6 +747,7 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
         fog_volumes,
         fog_cell_masks,
         emissive,
+        area_glow,
         sdf_atlas,
         navmesh,
         kinematic_geometry,
@@ -2958,6 +2972,7 @@ mod tests {
                 is_animated: false,
                 tags: vec![],
                 shadow_type: crate::map_data::ShadowType::StaticLightMap,
+                area: None,
             },
             MapLight {
                 origin: DVec3::new(-4.0, 1.0, 0.5),
@@ -2979,6 +2994,7 @@ mod tests {
                 is_animated: false,
                 tags: vec![],
                 shadow_type: crate::map_data::ShadowType::StaticLightMap,
+                area: None,
             },
             MapLight {
                 origin: DVec3::new(0.0, 100.0, 0.0),
@@ -3000,6 +3016,7 @@ mod tests {
                 is_animated: false,
                 tags: vec![],
                 shadow_type: crate::map_data::ShadowType::StaticLightMap,
+                area: None,
             },
         ];
 
@@ -3073,6 +3090,7 @@ mod tests {
             is_animated: false,
             tags: vec![],
             shadow_type: crate::map_data::ShadowType::StaticLightMap,
+            area: None,
         };
 
         let lights = vec![
@@ -3081,6 +3099,7 @@ mod tests {
         ];
 
         let alpha_ns = crate::light_namespaces::AlphaLightsNs::from_lights(&lights);
+        let capture = postretro_test_log_capture::LogCapture::start();
         let section = encode_alpha_lights(&alpha_ns, &tree);
         assert_eq!(section.lights.len(), 2);
         assert_eq!(section.lights[0].leaf_index, 0);
@@ -3088,5 +3107,79 @@ mod tests {
             section.lights[1].leaf_index,
             postretro_level_format::alpha_lights::ALPHA_LIGHT_LEAF_UNASSIGNED
         );
+        capture.assert_logged_once(
+            log::Level::Warn,
+            "light 1 at origin (5.000, 0.000, 0.000) is inside a solid leaf",
+        );
+    }
+
+    // An area light whose centroid sits in solid (inside the pillar its faces
+    // wrap) is marked unassigned without a warning; one in open space keeps
+    // its leaf. Its record is the v5 area record: type 3, centroid origin,
+    // reach as range, InverseSquared, zero cone fields, baked lightmap shadow.
+    #[test]
+    fn encode_alpha_lights_marks_an_area_light_in_solid_unassigned_silently() {
+        use crate::area_light::test_lights::{area_light, ceiling_panel};
+        use crate::partition::{Aabb, BspChild, BspLeaf, BspNode, BspTree};
+        use glam::DVec3;
+        use postretro_level_format::alpha_lights::{
+            ALPHA_LIGHT_LEAF_UNASSIGNED, AlphaFalloffModel, AlphaLightType, AlphaShadowType,
+        };
+
+        // Split on X = 0: back leaf (0) open, front leaf (1) solid.
+        let leaf = |is_solid| BspLeaf {
+            face_indices: vec![],
+            bounds: Aabb::empty(),
+            is_solid,
+            defining_planes: Vec::new(),
+        };
+        let tree = BspTree {
+            nodes: vec![BspNode {
+                plane_normal: DVec3::X,
+                plane_distance: 0.0,
+                front: BspChild::Leaf(1),
+                back: BspChild::Leaf(0),
+                parent: None,
+            }],
+            leaves: vec![leaf(false), leaf(true)],
+        };
+        let in_solid = area_light(
+            vec![ceiling_panel([4.0, 6.0], [-1.0, 1.0], 2.0)],
+            300.0,
+            None,
+        );
+        let in_open = area_light(
+            vec![ceiling_panel([-6.0, -4.0], [-1.0, 1.0], 2.0)],
+            300.0,
+            Some(7.5),
+        );
+        let lights = vec![in_solid.clone(), in_open];
+        let alpha_ns = crate::light_namespaces::AlphaLightsNs::from_lights(&lights);
+
+        let capture = postretro_test_log_capture::LogCapture::start();
+        let section = encode_alpha_lights(&alpha_ns, &tree);
+        capture.assert_not_logged(log::Level::Warn, "inside a solid leaf");
+
+        assert_eq!(section.lights[0].leaf_index, ALPHA_LIGHT_LEAF_UNASSIGNED);
+        assert_eq!(section.lights[1].leaf_index, 0);
+        let record = &section.lights[0];
+        assert_eq!(record.light_type, AlphaLightType::Area);
+        assert_eq!(
+            record.origin,
+            [in_solid.origin.x, in_solid.origin.y, in_solid.origin.z]
+        );
+        assert_eq!(record.falloff_range, in_solid.falloff_range);
+        assert_eq!(record.falloff_model, AlphaFalloffModel::InverseSquared);
+        assert_eq!(
+            (
+                record.cone_angle_inner,
+                record.cone_angle_outer,
+                record.cone_direction
+            ),
+            (0.0, 0.0, [0.0; 3])
+        );
+        assert_eq!(record.shadow_type, AlphaShadowType::StaticLightMap);
+        assert!(!record.is_dynamic && !record.casts_entity_shadows);
+        assert_eq!(section.lights[1].falloff_range, 7.5);
     }
 }

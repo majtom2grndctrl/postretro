@@ -8,7 +8,7 @@ use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::shadowmask_atlas::SHADOWMASK_OWNER_EMPTY;
 
 use crate::light_namespaces::{AlphaLightsNs, StaticBakedLights};
-use crate::map_data::{MapLight, ShadowType};
+use crate::map_data::{LightType, MapLight, ShadowType};
 
 /// Most compact static spec lights an owner entry can name: indices are u16 and
 /// `0xFFFF` marks an empty channel.
@@ -39,8 +39,10 @@ pub(crate) fn static_spec_light_count(alpha_lights: &AlphaLightsNs<'_>) -> usize
 }
 
 /// Every owner-eligible light, in ascending spec index: non-dynamic,
-/// non-animated, not bake-only, `StaticLightMap`, of any light type. Id 40 marks
-/// the promotion tier only; it never decides eligibility.
+/// non-animated, not bake-only, `StaticLightMap`, of any light type but
+/// `Area`, which draws no specular: its placeholder spec record keeps its
+/// index and owns no texel. Id 40 marks the promotion tier only; it never
+/// decides eligibility.
 pub(crate) fn owner_eligible_lights<'a>(
     static_lights: &StaticBakedLights<'a>,
     alpha_lights: &AlphaLightsNs<'a>,
@@ -64,6 +66,7 @@ pub(crate) fn owner_eligible_lights<'a>(
         .entries()
         .iter()
         .filter(|entry| entry.light.shadow_type == ShadowType::StaticLightMap)
+        .filter(|entry| entry.light.light_type != LightType::Area)
         .filter_map(|entry| {
             let &(spec_index, alpha_index) = spec_by_source.get(&entry.source_index)?;
             Some(EligibleLight {

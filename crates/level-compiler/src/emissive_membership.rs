@@ -63,14 +63,21 @@ pub(crate) fn fragment_centroids(geometry: &GeometryResult) -> Vec<Option<DVec3>
 /// `reflection_volume` tie to the earlier; this rule is emissive's own, so a
 /// volume placed later over an equal one takes its faces.
 ///
+/// `light_area` faces (`area_faces[face]`, empty when the map has none) are
+/// skipped before the smallest-volume rule runs, as movers and fluids are
+/// absent: their glow has one owner, their light, so no volume, nested or not,
+/// ever wins one.
+///
 /// `has_emissive_map[texture]` says whether a texture has an `_e` map. A volume
 /// left with no member face on one warns once, including one another volume
-/// empties; it keeps its record, index and origin.
+/// empties or one that holds only `light_area` faces; it keeps its record,
+/// index and origin.
 pub(crate) fn resolve_emissive_volume_records(
     volumes: &[MapEmissiveVolume],
     geometry: &GeometryResult,
     fragment_centroids: &[Option<DVec3>],
     has_emissive_map: &[bool],
+    area_faces: &[bool],
 ) -> Vec<EmissiveVolumeRecord> {
     if volumes.is_empty() {
         return Vec::new();
@@ -87,6 +94,7 @@ pub(crate) fn resolve_emissive_volume_records(
     let mut faces_of: Vec<Vec<u32>> = vec![Vec::new(); volumes.len()];
     let mut glowing_members = vec![0usize; volumes.len()];
     let mut glowing_inside = vec![0usize; volumes.len()];
+    let mut area_glowing_inside = vec![0usize; volumes.len()];
 
     for face in 0..geometry.geometry.faces.len() {
         // The runtime reaches a face's vertices through its BVH leaf, and a
@@ -104,6 +112,15 @@ pub(crate) fn resolve_emissive_volume_records(
             continue;
         };
         let containing = containing_volumes(volumes, point);
+        if area_faces.get(face).copied().unwrap_or(false) {
+            let texture = geometry.geometry.faces[face].texture_index as usize;
+            if has_emissive_map.get(texture).copied().unwrap_or(false) {
+                for &index in &containing {
+                    area_glowing_inside[index] += 1;
+                }
+            }
+            continue;
+        }
         // Smallest wins; on an equal size key the later (higher index) wins.
         let Some(&winner) = containing
             .iter()
@@ -131,6 +148,13 @@ pub(crate) fn resolve_emissive_volume_records(
                 "[Compiler] {name} holds no face with an `_e` map: smaller or later emissive \
                  volumes take all {} glowing face(s) inside it; it glows nothing",
                 glowing_inside[index]
+            );
+        } else if area_glowing_inside[index] > 0 {
+            log::warn!(
+                "[Compiler] {name} holds no face with an `_e` map outside `light_area` \
+                 entities, whose {} glowing face(s) inside it glow with their light; it glows \
+                 nothing",
+                area_glowing_inside[index]
             );
         } else {
             log::warn!("[Compiler] {name} holds no face with an `_e` map; it glows nothing");

@@ -226,6 +226,7 @@ fn animated(origin: [f64; 3], range: f32) -> MapLight {
         is_animated: false,
         tags: Vec::new(),
         shadow_type: ShadowType::StaticLightMap,
+        area: None,
     }
 }
 

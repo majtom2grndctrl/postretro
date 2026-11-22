@@ -39,7 +39,7 @@ pub(super) fn accumulate_sh_rgb(acc: &mut [f32; 27], dir: Vec3, value: Vec3, wei
     }
 }
 
-pub(super) fn evaluate_sh_rgb(coefficients: &[f32; 27], dir: Vec3) -> Vec3 {
+pub(crate) fn evaluate_sh_rgb(coefficients: &[f32; 27], dir: Vec3) -> Vec3 {
     let basis = sh_basis_l2(dir);
     let mut out = Vec3::ZERO;
     for (band, b) in basis.iter().enumerate() {

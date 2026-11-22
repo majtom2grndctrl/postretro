@@ -70,6 +70,8 @@ pub(super) struct FinalizedSectionPlanInputs<'a> {
     pub(super) fog_cell_masks: Option<&'a FogCellMasksSection>,
     /// Id 60, written for every map.
     pub(super) emissive: &'a EmissiveSection,
+    /// Id 62, written only when the map has an area light.
+    pub(super) area_glow: Option<&'a postretro_level_format::area_glow::AreaGlowSection>,
     pub(super) sdf_atlas: Option<&'a SdfAtlasSection>,
     pub(super) navmesh: Option<&'a NavMeshSection>,
     pub(super) kinematic_geometry: Option<&'a KinematicGeometrySection>,
@@ -207,6 +209,7 @@ pub(super) fn build_finalized_section_plan<'a>(
         fog_volumes,
         fog_cell_masks,
         emissive,
+        area_glow,
         sdf_atlas,
         navmesh,
         kinematic_geometry,
@@ -529,6 +532,18 @@ pub(super) fn build_finalized_section_plan<'a>(
         emissive.byte_len(),
         || Ok(emissive.to_bytes()),
     ));
+    // Absent means no area light; a map without one writes no id 62, so its
+    // bytes stay what they were before area glow existed. Its face cap and
+    // triangle check run where the compiler builds it, before reflection
+    // capture.
+    if let Some(section) = area_glow {
+        sections.push(PlannedSection::new(
+            SectionId::AreaGlow as u32,
+            postretro_level_format::area_glow::AREA_GLOW_VERSION,
+            section.byte_len(),
+            || Ok(section.to_bytes()),
+        ));
+    }
     if let Some(section) = sdf_atlas {
         sections.push(PlannedSection::new(
             SectionId::SdfAtlas as u32,

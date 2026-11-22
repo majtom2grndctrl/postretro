@@ -155,6 +155,7 @@ pub(super) fn point_light(origin: Vec3) -> MapLight {
         is_animated: false,
         tags: vec![],
         shadow_type: ShadowType::StaticLightMap,
+        area: None,
     }
 }
 

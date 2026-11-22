@@ -30,19 +30,21 @@ const CAPTURE_ENV: &str = "POSTRETRO_CAPTURE_MOVER_GOLDENS";
 
 /// Captured at 10df2fcb (1a66523a plus this brief's plan), before production
 /// edits. One digest per (fixture, fidelity): cache mode and worker count
-/// never change the bytes.
+/// never change the bytes. Recaptured on `area-lights` for AlphaLights (id 18)
+/// v5. Its version word was the only byte that moved: the closet's low build,
+/// with that word patched back to 4, reproduced the original digest.
 fn golden(fixture: &str, fidelity: &str) -> &'static str {
     match (fixture, fidelity) {
-        ("closet", "low") => "bfff43ec20bbe1f403c5d6041330d30b399099c481c1d70ae267bf34e29bc82a",
-        ("closet", "high") => "928bf15df8182cd30a1dc5a53a92f2ae70968d2c10655cd225e9363781d1b880",
+        ("closet", "low") => "a9d2a5476472929f2a29f52dfeae427fb23ba1cf226ef38987d6f4f6ffa01494",
+        ("closet", "high") => "906a1c9cc803f209f7b7f3ca6553ced19d007c657277aed94e0860eb13f0d74a",
         ("closet-two-doors", "low") => {
-            "53120e41eeb9237008b8ace9cb4f6940c8d335bb4cdcea96aed598cbc310d83c"
+            "1e2820007cae82196d2444ced937ae170767a2dac8e14e49a42fce837dbf9224"
         }
         ("closet-two-doors", "high") => {
-            "c6c8d4dc7a76a47fd565fcde033ad918062fdd12fb454eab4242df5e28da34b1"
+            "fd1c46fafde0e3a6bd55e4a073ac50ba62ff9345b52e91daa39884ddec486d9d"
         }
         ("closet-two-doors-corrupt-high", "low") => {
-            "ffe77cbbb8cfaeef08072e745745a9493873e3c5ff856b26526e1c8d6e912d8e"
+            "46151af9e5f6a64cae33a88ce40672274b9b69b7068fb4c4e16afccb4163660c"
         }
         _ => panic!("no golden for {fixture} at {fidelity}"),
     }

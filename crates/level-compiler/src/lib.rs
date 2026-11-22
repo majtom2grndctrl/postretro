@@ -1,6 +1,13 @@
 // Public compiler helpers used by workspace tools and cross-crate bake tests.
 // The compiler pipeline itself remains owned by the `prl-build` binary target.
 
+/// Only the area-light emitter shape, which `map_data::MapLight` carries; the
+/// maths that bakes it needs ray traversal, which only the binary builds.
+// The library compiles the type but runs no stage that builds or reads one.
+#[allow(dead_code)]
+pub(crate) mod area_light {
+    pub(crate) mod emitter;
+}
 pub mod bc5;
 /// BC6H block decode, so cross-bake tests read the colour tiles a build emits.
 pub mod bc6h;

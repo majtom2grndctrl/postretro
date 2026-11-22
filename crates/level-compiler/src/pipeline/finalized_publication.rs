@@ -161,6 +161,8 @@ pub(super) struct FinalizedPrlPackInputs<'a> {
     pub(super) fog_cell_masks: Option<&'a FogCellMasksSection>,
     /// Emissive (id 60): written for every map.
     pub(super) emissive: &'a EmissiveSection,
+    /// AreaGlow (id 62): written only when the map has an area light.
+    pub(super) area_glow: Option<&'a postretro_level_format::area_glow::AreaGlowSection>,
     pub(super) sdf_atlas: Option<&'a SdfAtlasSection>,
     pub(super) navmesh: Option<&'a NavMeshSection>,
     pub(super) kinematic_geometry: Option<&'a KinematicGeometrySection>,
@@ -224,6 +226,7 @@ pub(super) fn write_finalized_prl(
         fog_volumes,
         fog_cell_masks,
         emissive,
+        area_glow,
         sdf_atlas,
         navmesh,
         kinematic_geometry,
@@ -280,6 +283,7 @@ pub(super) fn write_finalized_prl(
         fog_volumes,
         fog_cell_masks,
         emissive,
+        area_glow,
         sdf_atlas,
         navmesh,
         kinematic_geometry,

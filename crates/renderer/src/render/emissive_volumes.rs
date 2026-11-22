@@ -4,7 +4,7 @@
 
 use postretro_render_cpu::emissive_volume::{
     EMISSIVE_TABLE_BYTES, EMISSIVE_TABLE_ENTRIES, EMISSIVE_TABLE_ENTRY_BYTES, EmissiveTableUpload,
-    authored_table_bytes,
+    area_glow_entries, glow_table_bytes,
 };
 
 use super::Renderer;
@@ -20,7 +20,8 @@ pub(crate) const EMISSIVE_VOLUME_SHADER_LOCATION: u32 = 8;
 pub(crate) struct EmissiveVolumeBuffers {
     /// Slot 2 of the forward pass: one volume id per world vertex.
     pub(crate) vertex: wgpu::Buffer,
-    /// Group 4's volume table: entry 0 "no volume", entry `i + 1` volume `i`.
+    /// Group 4's glow table: entry 0 "no volume", entry `i + 1` volume `i`,
+    /// then one entry per area-light face from `AREA_GLOW_FIRST_ENTRY`.
     pub(crate) table: wgpu::Buffer,
 }
 
@@ -51,7 +52,8 @@ pub(crate) fn emissive_volume_vertex_bytes(stream: &[u32], vertex_count: usize) 
 
 /// Upload the level's volume-id stream and seed its table with every volume's
 /// no-script glow, so a frame drawn before the volume bridge's first write
-/// already presents the authored look.
+/// already presents the authored look, and with every area-light face's
+/// entry, which no frame rewrites: the shader evaluates its light live.
 pub(crate) fn install_emissive_volume_buffers(
     device: &wgpu::Device,
     geometry: &LevelGeometry<'_>,
@@ -66,7 +68,10 @@ pub(crate) fn install_emissive_volume_buffers(
     });
     let table = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Emissive Volume Table"),
-        contents: &authored_table_bytes(geometry.emissive_volumes),
+        contents: &glow_table_bytes(
+            geometry.emissive_volumes,
+            &area_glow_entries(geometry.area_glow_lights),
+        ),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
     EmissiveVolumeBuffers { vertex, table }

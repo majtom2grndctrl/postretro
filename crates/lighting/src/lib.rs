@@ -161,6 +161,9 @@ fn light_type_u32(ty: LightType) -> u32 {
         LightType::Point => 0,
         LightType::Spot => 1,
         LightType::Directional => 2,
+        // An area light's light is baked; `pack_light_with_slot` zeroes its
+        // colour, so the point branch it takes adds nothing.
+        LightType::Area => 0,
     }
 }
 
@@ -197,9 +200,16 @@ pub fn pack_light_with_slot(light: &MapLight, slot_index: u32) -> [u8; GPU_LIGHT
     write_u32_as_f32(&mut bytes, 12, type_bits);
 
     // slot 1: color_and_falloff_model — color × intensity + bitcast<f32>(u32 falloff_model)
-    let cr = light.color[0] * light.intensity;
-    let cg = light.color[1] * light.intensity;
-    let cb = light.color[2] * light.intensity;
+    // An area light is never dynamic or promoted, so no runtime loop should
+    // meet one; if one does, its record adds nothing.
+    let scale = if light.light_type == LightType::Area {
+        0.0
+    } else {
+        light.intensity
+    };
+    let cr = light.color[0] * scale;
+    let cg = light.color[1] * scale;
+    let cb = light.color[2] * scale;
     let falloff_bits = falloff_model_code(light.falloff_model);
     write_f32(&mut bytes, 16, cr);
     write_f32(&mut bytes, 20, cg);
@@ -445,6 +455,19 @@ mod tests {
             entity_occluder_eligible(&light, true),
             "a promoted baked light renders entity occluders unconditionally"
         );
+    }
+
+    /// An area light's runtime record adds nothing: zero colour, point type.
+    #[test]
+    fn pack_area_light_carries_no_colour() {
+        let mut light = sample_point();
+        light.light_type = LightType::Area;
+        let bytes = pack_light(&light);
+        assert_eq!(read_u32(&bytes, 12), 0);
+        for offset in [16, 20, 24] {
+            assert_eq!(read_f32(&bytes, offset), 0.0);
+        }
+        assert_eq!(read_f32(&bytes, 0), 1.0, "the record keeps its position");
     }
 
     #[test]

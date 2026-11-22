@@ -192,7 +192,7 @@ fn bc6h_round_trip_tiles(section: &OctahedralShVolumeSection) -> Tiles {
 }
 
 /// Every probe tile of a delta section, in sub-block order.
-fn delta_tiles(section: &DeltaShVolumesSection) -> Tiles {
+pub(crate) fn delta_tiles(section: &DeltaShVolumesSection) -> Tiles {
     section
         .delta_subblocks
         .chunks(DEFAULT_DELTA_PROBE_F16_STRIDE)
@@ -214,7 +214,7 @@ fn delta_tiles(section: &DeltaShVolumesSection) -> Tiles {
 /// linear index is x-fastest over `grid_dimensions`, and the compact atlas
 /// numbers valid probes in linear order. `None` past the grid or on an invalid
 /// base probe.
-fn delta_base_slots(
+pub(crate) fn delta_base_slots(
     delta: &DeltaShVolumesSection,
     base: &OctahedralShVolumeSection,
 ) -> Vec<Option<usize>> {

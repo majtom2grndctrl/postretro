@@ -7,10 +7,12 @@ use std::sync::Arc;
 use glam::{DVec3, Vec3};
 
 use super::posed_solid::PosedSolid;
+use crate::area_light::{AreaSampler, area_lattice_point};
 use crate::lightmap_bake::{
     RAY_EPSILON, SOFT_PROBE_SAMPLES, SoftProbes, area_sample_target, emitter_radius,
     hard_ray_target,
 };
+use crate::lightmap_layer::EMITTER_SLACK;
 use crate::map_data::{LightType, MapLight};
 use crate::mover_light_gate::{BOX_SLACK_M, Pose};
 use crate::partition::Aabb;
@@ -63,18 +65,25 @@ impl PosedOccluder {
     /// about its direction, so they can meet the pose only where that cone
     /// meets the sphere around its bounds.
     pub(crate) fn may_meet(&self, probe: Vec3, light: &MapLight) -> bool {
-        match light.light_type {
-            LightType::Directional => self.sun_cone_may_meet(probe, light),
+        let (centre, radius) = match light.light_type {
+            LightType::Directional => return self.sun_cone_may_meet(probe, light),
             LightType::Point | LightType::Spot => {
-                let reach = DVec3::splat(f64::from(emitter_radius(light).max(0.0)));
-                let probe = probe.as_dvec3();
-                let span = Aabb {
-                    min: probe.min(light.origin - reach),
-                    max: probe.max(light.origin + reach),
-                };
-                crate::mover_light_gate::boxes_may_touch(&span, self.solid.bounds())
+                (light.origin, f64::from(emitter_radius(light).max(0.0)))
             }
-        }
+            // Its targets lie on its polygons, lifted by the tracer
+            // tolerance: inside the emitter sphere with its 1 mm slack.
+            LightType::Area => {
+                let (centre, radius) = light.emitter_sphere();
+                (centre, radius + EMITTER_SLACK)
+            }
+        };
+        let reach = DVec3::splat(radius);
+        let probe = probe.as_dvec3();
+        let span = Aabb {
+            min: probe.min(centre - reach),
+            max: probe.max(centre + reach),
+        };
+        crate::mover_light_gate::boxes_may_touch(&span, self.solid.bounds())
     }
 
     /// The cone test for a sun: every sample direction lies within half the
@@ -175,6 +184,18 @@ pub(crate) fn joint_soft_visibility(
     static_clear: impl Fn(Vec3, Vec3) -> bool,
     posed_blocks: impl Fn(Vec3, Vec3) -> bool,
 ) -> JointVisibility {
+    if light.light_type == LightType::Area {
+        return area_joint_visibility(
+            surface_point,
+            surface_normal,
+            light,
+            seed,
+            full_samples,
+            early_out,
+            static_clear,
+            posed_blocks,
+        );
+    }
     let origin = surface_point + surface_normal * RAY_EPSILON;
     let mut tally = JointVisibility::default();
     let sample = |tally: &mut JointVisibility, target: Vec3| {
@@ -210,6 +231,63 @@ pub(crate) fn joint_soft_visibility(
             &mut tally,
             area_sample_target(surface_point, light, seed, i, full_samples),
         );
+    }
+    tally
+}
+
+/// [`joint_soft_visibility`]'s area-light arm, on the probe-point bakes' own
+/// samples ([`crate::lightmap_bake::area_probe_visibility`]): the polygon
+/// lattice mapped uniformly in solid angle onto the polygons whose front
+/// half-space holds the probe, every sample weighing alike, so the counts are
+/// the solid-angle shares q divides. `surface_normal` is only `lift`, the
+/// light's probe direction
+/// ([`AreaEmitter::probe_direction`](crate::area_light::AreaEmitter::probe_direction)).
+/// A probe no polygon faces traces nothing.
+#[allow(clippy::too_many_arguments)]
+fn area_joint_visibility(
+    surface_point: Vec3,
+    lift: Vec3,
+    light: &MapLight,
+    seed: u64,
+    full_samples: u32,
+    early_out: ProbeEarlyOut,
+    static_clear: impl Fn(Vec3, Vec3) -> bool,
+    posed_blocks: impl Fn(Vec3, Vec3) -> bool,
+) -> JointVisibility {
+    let mut tally = JointVisibility::default();
+    let Some(sampler) = light
+        .area
+        .as_ref()
+        .and_then(|emitter| AreaSampler::new(emitter, surface_point.as_dvec3(), None))
+    else {
+        return tally;
+    };
+    let origin = surface_point + lift * RAY_EPSILON;
+    let probes = SoftProbes::new(light, full_samples);
+    let full_samples = probes.full_samples();
+    let sample = |tally: &mut JointVisibility, i: u32| {
+        let target = sampler
+            .sample(area_lattice_point(i, full_samples, seed))
+            .target
+            .as_vec3();
+        tally.samples += 1;
+        if static_clear(origin, target) {
+            tally.static_clear += 1;
+            if !posed_blocks(origin, target) {
+                tally.posed_clear += 1;
+            }
+        }
+    };
+    for &i in probes.indices() {
+        sample(&mut tally, i);
+    }
+    if early_out.ends(tally.static_clear, SOFT_PROBE_SAMPLES)
+        && early_out.ends(tally.posed_clear, SOFT_PROBE_SAMPLES)
+    {
+        return tally;
+    }
+    for i in (0..full_samples).filter(|i| !probes.indices().contains(i)) {
+        sample(&mut tally, i);
     }
     tally
 }

@@ -48,3 +48,5 @@ Read at e761fb13. Findings that inform the brief; the brief carries the conclusi
 
 ## Validation history input
 The first `/validate-plan` returned Reshape: set identity as runtime state forecloses single-weapon changes. The owner chose held weapons as the state (2026-11-22). The second `/validate-plan` returned Reshape on layers: replacing the whole stack diverged from `grantLayer`'s existing-layers-only rule and the reload path. The owner chose literal capacity overrides on declared layers, and kept the selection rule specific to equipment rather than a general variant pattern (2026-11-22).
+
+The third `/validate-plan` returned Reshape: weapon mounts in sets ignored per-rig bakes. The owner chose archetype-owned weapon mounts, noting that the player avatar mount does not seat weapons correctly today, so this is a new NPC path rather than a copy of it. The owner also allowed weight-0 sets, renamed the state "carried" with the guard `carries(weapon)`, and required weapons referenced by identity rather than by string (2026-11-22). The owner will personally review the API and the brief before promotion.

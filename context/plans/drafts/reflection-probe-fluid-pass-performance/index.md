@@ -11,6 +11,7 @@ Developer-raised, from the blend-cost and cell-rate spikes and the `fluid-base-p
   - It writes, per probe and per §7.3a lobe, the RGB sum the ratio is linear in: `Σ_l share_{l,k} · (current_l / ref_l − 1)`.
   - The fragment blends those sums by its lobe weights and clamps, as the ratio does today. No fragment entry evaluates a probe's stored lights.
   - GPU, not CPU. The pass reads the descriptor and sample buffers that script writes land in, so scripted lights never read stale. A CPU form needs a mirror of bridge samples the renderer does not keep (`research.md` §Precompute).
+  - All backends, not Metal-only (§10): the lever removes fragment work everywhere, and the GTX 1660 floor is measured beside the 5300M.
 - **Every installed probe, not the drawn set.** Freshness holds by construction for a face first drawn this frame, with no CPU set build. This diverges from the blend spike's drawn-probes recommendation, which priced a CPU loop, not one dispatch (`research.md` §Precompute).
 - **Level-scoped storage, read as a uniform.**
   - The sums live in one buffer at the probe cap, created at fluid install beside the share table (`resource_management.md` §5.3) and released with it.
@@ -60,7 +61,11 @@ Orderings cite `research.md` §Pins.
   - `FluidProbeResources` and `fluid_probe_bind_group_layout_entries` for the level-scoped group.
   - `record_pre_scene_compute` / `record_direct_sh_pre_scene_compute` for compute placement.
   - The tests `fluid_reflection_live_lighting_wgsl_bodies_match_the_cpu_reference`, `the_reflection_free_entry_declares_none_of_the_reflection_globals` and `fluid_pass_declares_no_history_or_precomputed_intersection_binding`, and `pipeline_budget_tests.rs`.
-- **Shape:** a compute shader over installed probes, reusing the ratio's light-value and share helpers, writing one RGB sum per lobe per probe. Rival: a CPU precompute uploaded each frame (the blend spike's), which needs a bridge-sample mirror.
+- **Shape:** a compute shader over installed probes, reusing the ratio's light-value and share helpers, writing one RGB sum per lobe per probe.
+- **Rivals:**
+  - A CPU precompute uploaded each frame (the blend spike's). It needs a bridge-sample mirror.
+  - Per-light values once per frame, Quake's lightstyle shape: each light's `current / ref − 1` in a buffer, with the share × value sum kept per fragment. No per-probe, per-direction state exists, so it is the IP fallback if counsel reads '451 claim 6 onto the sums (`ip-check.md` §Lever A). It loses on cost: fragments still read shares and loop lights × lobes, and each seams neighbour repeats that loop.
+- **Keep the per-fragment ratio:** `fluid_reflection_ratio` and its render-cpu reference stay, unreachable from any entry, as the sums' parity oracle and as the fallback for a reflector the IP fences send back to per-fragment (`glossy-world-reflections` Sequencing).
 - **Buffer usage:** one buffer bound as storage to the sums pass and as a uniform to the fluid fragment, or a copy into a uniform. Delegated. Check the usage combination on Metal, Vulkan and DX12.
 - **Compute group:** the share table is fragment-visible today. The sums pass needs it with compute visibility, through its own layout over the same buffer, or a widened one.
 - **First slice:** the sums pass and blend behind the parity test, then one 5300M A/B at probes 4K. The ratio cost there was largest pre-landing.

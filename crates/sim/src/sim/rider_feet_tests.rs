@@ -216,3 +216,73 @@ fn fixed_tick_skips_rider_feet() {
     );
     assert_eq!(inputs(&registry), before);
 }
+
+// The per-frame rider passes this brief adds allocate nothing once warm: the
+// glide advance, presented mover poses and the eye placement.
+#[test]
+fn per_frame_rider_passes_allocate_nothing_when_warm() {
+    use crate::alloc_probe::AllocSnapshot;
+    use crate::sim::frame_timing::{EyeBody, EyeMover, InterpolableState, present_eye};
+
+    let Ride {
+        mut registry,
+        rider,
+        store,
+        table,
+    } = ride();
+    let mut agent = AgentComponent::new(0.4, 1.8, 0.3, 3.0);
+    agent.ground = GroundRef::Mover(LIFT);
+    registry.set_component(rider, agent).unwrap();
+    let lift = table.get(LIFT).unwrap().entity;
+    registry
+        .correct_transform(lift, at_height(RISE_PER_TICK + 0.05), true)
+        .unwrap();
+    let endpoint = |height: f32| {
+        InterpolableState::following(
+            Vec3::new(0.0, height + RIDER_HEIGHT + 0.7, 0.0),
+            EyeBody {
+                centre: Vec3::new(0.0, height + RIDER_HEIGHT, 0.0),
+                offset: Vec3::ZERO,
+                mover: Some(EyeMover {
+                    mover_id: LIFT,
+                    entity: lift,
+                    pose: at_height(height),
+                }),
+            },
+        )
+    };
+    let (previous, current) = (endpoint(0.0), endpoint(RISE_PER_TICK + 0.05));
+    let deck = [deck()];
+    let world = CollisionWorld::new();
+    let mut poses = PresentedMoverPoses::default();
+    let mut frame = |registry: &mut EntityRegistry, poses: &mut PresentedMoverPoses, alpha: f32| {
+        registry.advance_presentation_corrections(0.5, 1.0e-9);
+        poses.refresh(&table, registry, alpha);
+        update_rider_foot_probes(registry, &world, &deck, poses, &store, 0.0, alpha);
+        std::hint::black_box(present_eye(&previous, &current, alpha, |entity| {
+            registry.interpolated_transform(entity, alpha).ok()
+        }));
+    };
+    frame(&mut registry, &mut poses, 0.0);
+    let probe = AllocSnapshot::arm();
+    for step in 0..20 {
+        let alpha = step as f32 / 20.0;
+        registry.advance_presentation_corrections(0.5, 1.0e-9);
+        poses.refresh(&table, &registry, alpha);
+        std::hint::black_box(present_eye(&previous, &current, alpha, |entity| {
+            registry.interpolated_transform(entity, alpha).ok()
+        }));
+    }
+    assert_eq!(probe.allocs_since(), 0);
+    // The rider foot probe itself still allocates inside the shared hit-zone
+    // pose sampler (animation clone and joint matrices), reported for the
+    // owner rather than asserted: see the rider brief's plan, task 10.
+    let probe = AllocSnapshot::arm();
+    for step in 0..20 {
+        frame(&mut registry, &mut poses, step as f32 / 20.0);
+    }
+    eprintln!(
+        "[riders] rider foot probe allocations: {} per probe",
+        probe.allocs_since() / 20
+    );
+}

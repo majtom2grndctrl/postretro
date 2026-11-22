@@ -365,3 +365,95 @@ mod carry_yaw {
         assert!((rebased.turn(velocity).length() - velocity.length()).abs() < 1.0e-6);
     }
 }
+
+mod hot_path {
+    use std::time::Instant;
+
+    use glam::{Quat, Vec3};
+    use postretro_entities::Transform;
+    use postretro_foundation::GroundRef;
+    use postretro_sim::alloc_probe::AllocSnapshot;
+
+    use crate::interpolation::{RiderBracket, RiderSample};
+    use crate::rider_rebase::{PresentedMover, RiderMoverPoses, rebase_rider};
+
+    // The counting allocator is this binary's global allocator: a real heap
+    // allocation is counted (positive control for the proofs below).
+    #[test]
+    fn counting_allocator_counts_a_real_allocation() {
+        let probe = AllocSnapshot::arm();
+        let boxed = std::hint::black_box(Box::new([0u8; 64]));
+        drop(boxed);
+        assert!(probe.allocs_since() > 0);
+    }
+
+    const RIDERS: u32 = 32;
+    const MOVERS: u32 = 8;
+
+    // Every remote riding, across several movers: placing them allocates
+    // nothing once the host's mover poses are warm, and costs well under a
+    // microsecond each.
+    #[test]
+    fn rebasing_every_rider_allocates_nothing_per_frame() {
+        let mut poses = RiderMoverPoses::default();
+        let registry_entity = {
+            let mut registry = postretro_entities::EntityRegistry::new();
+            registry.spawn(Transform::default())
+        };
+        let pose = |mover: u32, tick: u32| Transform {
+            position: Vec3::new(mover as f32, 0.0, tick as f32 * 0.01),
+            rotation: Quat::from_rotation_y(tick as f32 * 0.02 + mover as f32),
+            scale: Vec3::ONE,
+        };
+        for tick in 0..20 {
+            for mover in 0..MOVERS {
+                poses.record(mover, registry_entity, tick, pose(mover, tick));
+            }
+        }
+        let brackets: Vec<RiderBracket> = (0..RIDERS)
+            .map(|rider| {
+                let mover = rider % MOVERS;
+                let sample = |tick: u32| RiderSample {
+                    server_tick: tick,
+                    transform: pose(mover, tick),
+                    ground: Some(GroundRef::Mover(mover)),
+                };
+                RiderBracket {
+                    from: sample(16),
+                    to: sample(18),
+                    alpha: 0.4,
+                }
+            })
+            .collect();
+        let place = |bracket: &RiderBracket| {
+            rebase_rider(
+                bracket,
+                &bracket.from.transform,
+                |mover, tick| poses.pose_at(mover, tick),
+                |mover| {
+                    poses.entity(mover).map(|_| PresentedMover {
+                        transform: pose(mover, 19),
+                        carry_yaw: true,
+                    })
+                },
+            )
+        };
+        for bracket in &brackets {
+            assert!(place(bracket).is_some());
+        }
+        let probe = AllocSnapshot::arm();
+        const FRAMES: u32 = 200;
+        let started = Instant::now();
+        for _ in 0..FRAMES {
+            for bracket in &brackets {
+                std::hint::black_box(place(bracket));
+            }
+        }
+        let elapsed = started.elapsed();
+        assert_eq!(probe.allocs_since(), 0, "rebasing allocated");
+        eprintln!(
+            "[riders] rebase cost: {:.2} µs per frame for {RIDERS} riders on {MOVERS} movers",
+            elapsed.as_secs_f64() * 1.0e6 / f64::from(FRAMES)
+        );
+    }
+}

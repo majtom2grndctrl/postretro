@@ -97,6 +97,13 @@ mod reconcile;
 mod remote_materialize;
 mod replication;
 mod rider_rebase;
+
+// Counts this test binary's allocations for the rider hot-path zero-allocation
+// proofs. See: context/lib/testing_guide.md §Resource bounds
+#[cfg(test)]
+#[global_allocator]
+static ALLOCATOR: postretro_sim::alloc_probe::CountingAllocator =
+    postretro_sim::alloc_probe::CountingAllocator;
 mod seat;
 pub mod session_players;
 mod snapshot_apply;

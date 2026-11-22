@@ -782,11 +782,13 @@ pub(super) fn write_foot_ground_probes(
     if mesh.pose_inputs == Some(new_inputs) {
         return;
     }
-    let Ok(mut mesh) = registry.get_component::<MeshComponent>(id).cloned() else {
-        return;
-    };
-    mesh.pose_inputs = Some(new_inputs);
-    let _ = registry.set_component(id, mesh);
+    // In place: cloning the mesh would allocate its model name and animation
+    // states on every probe that moves a foot.
+    if let Ok(postretro_entities::ComponentValue::Mesh(mesh)) =
+        registry.get_component_value_mut(id, postretro_entities::ComponentKind::Mesh)
+    {
+        mesh.pose_inputs = Some(new_inputs);
+    }
 }
 
 /// Probe one foot: transform its animated model-space origin to world, cast a

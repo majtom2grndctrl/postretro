@@ -1921,6 +1921,123 @@ pub(crate) mod tests {
     // draws (cell 0 here; the main view draws cell 1) records for the beauty
     // pass and SH sampling, while a ghost culled at the same pose through
     // `visible_at` reads the main view's cells alone and is not collected.
+    // Pins P2 and row 31 of the rider brief: on a frame a mover glides onto
+    // a correction, every reader of its pose draws the one presented pose:
+    // beauty, shadow, occluder and SH region, ghost, sound anchor, the rider
+    // foot-probe source, and the local eye and pawn mesh riding it. (Attached
+    // lights and the remote rider rebase read the same accessor:
+    // `light_bridge::follow_transform_position`, `rider_rebase::presented_mover`.)
+    #[test]
+    fn every_reader_draws_a_gliding_mover_at_its_one_presented_pose() {
+        use crate::frame_timing::{EyeBody, EyeMover, InterpolableState, present_eye};
+        let mut registry = EntityRegistry::new();
+        let geometry = geometry(0);
+        let mover = spawn_from_geometry(&mut registry, &geometry).unwrap()[0];
+        let world = single_cell_world(geometry);
+        let start = *registry.get_component::<Transform>(mover).unwrap();
+        registry.snapshot_transforms();
+        let moved = Transform {
+            position: start.position + Vec3::new(0.2, 0.0, 0.0),
+            rotation: Quat::from_rotation_y(0.05),
+            ..start
+        };
+        registry.set_component(mover, moved).unwrap();
+        let corrected = Transform {
+            position: moved.position + Vec3::new(0.3, 0.1, 0.0),
+            rotation: Quat::from_rotation_y(0.2),
+            ..moved
+        };
+        registry.correct_transform(mover, corrected, true).unwrap();
+        let alpha = 0.4;
+        let presented = registry.interpolated_transform(mover, alpha).unwrap();
+        assert!(registry.presentation_correction(mover).is_some());
+        let matrix = transform_matrix(presented);
+
+        let mut collector = KinematicMoverRenderCollector::new();
+        collector.collect(&registry, &world, &VisibleCells::DrawAll, alpha);
+        assert_eq!(collector.instances()[0].transform, matrix, "beauty");
+        assert_eq!(collector.shadow_instances()[0].transform, matrix, "shadow");
+        let bounds = collector.mover_bounds.get(&7).copied().unwrap();
+        let drawn_aabb = bounds.transformed(&matrix);
+        assert_eq!(
+            collector.occluder_aabbs()[0].world_aabb,
+            drawn_aabb,
+            "occluder"
+        );
+        let region = collector.sh_sample_regions()[0];
+        assert!(region.min.cmple(drawn_aabb.min).all() && region.max.cmpge(drawn_aabb.max).all());
+
+        let ghost = crate::scripting_systems::billboard_ghost_render::ghost_presented_transform(
+            &registry, mover, alpha,
+        );
+        assert_eq!(ghost, Some(presented), "ghost");
+
+        let mut anchors = KinematicMoverRenderCollector::new();
+        let mut scene = crate::sound_events::AnchorScene {
+            registry: &registry,
+            world: Some(&world),
+            movers: &mut anchors,
+        };
+        let center = scene
+            .presented_point(crate::sound_events::entity_key(mover), alpha)
+            .unwrap();
+        let expected = (drawn_aabb.min + drawn_aabb.max) * 0.5;
+        assert!(
+            (Vec3::from(center) - expected).length() < 1.0e-5,
+            "sound anchor"
+        );
+
+        let mut table = crate::kinematic_mover::MoverTickStateTable::default();
+        table.publish(
+            7,
+            crate::kinematic_mover::MoverTickState {
+                entity: mover,
+                transform: corrected,
+                linear_velocity: Vec3::ZERO,
+                tick_delta: Vec3::ZERO,
+                angular_velocity: Vec3::ZERO,
+                tick_rotation_delta: Quat::IDENTITY,
+                carry_yaw: false,
+                tick_dt: 1.0 / 60.0,
+            },
+        );
+        let mut probe_poses = crate::sim::PresentedMoverPoses::default();
+        probe_poses.refresh(&table, &registry, alpha);
+        use crate::collision::moving::MoverPoseSource;
+        assert_eq!(
+            probe_poses.pose(7).unwrap().transform,
+            presented,
+            "foot probe"
+        );
+
+        // A pawn planted on the deck through the interval rides it.
+        let local = Vec3::new(0.5, 1.0, 0.0);
+        let endpoint = |pose: Transform| {
+            let centre = pose.position + pose.rotation * local;
+            InterpolableState::following(
+                centre + Vec3::Y * 0.7,
+                EyeBody {
+                    centre,
+                    offset: Vec3::ZERO,
+                    mover: Some(EyeMover {
+                        mover_id: 7,
+                        entity: mover,
+                        pose,
+                    }),
+                },
+            )
+        };
+        let eye = present_eye(&endpoint(start), &endpoint(moved), alpha, |entity| {
+            registry.interpolated_transform(entity, alpha).ok()
+        });
+        let on_deck = presented.position + presented.rotation * local;
+        assert!((eye.body.unwrap() - on_deck).length() < 1.0e-5, "pawn mesh");
+        assert!(
+            (eye.eye - (on_deck + Vec3::Y * 0.7)).length() < 1.0e-5,
+            "eye"
+        );
+    }
+
     // A connected client gliding a mover onto a correction draws it at its
     // presented pose: in view there, it draws though its corrected pose is not,
     // and its SH sample region covers where it is drawn.

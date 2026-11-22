@@ -272,3 +272,82 @@ fn mover_correction_holds_the_drawn_deck_on_the_frame_it_lands() {
         "{after_m} m {after_rad} rad"
     );
 }
+
+/// Everything authoritative a frame leaves behind, formatted bit-exactly:
+/// host pawns' poses and movement, the host mover's phase and pose, the client
+/// pawn's predicted pose and movement, the client mover's phase and current
+/// pose, the client's mover history, and the host's sent snapshot sequence.
+fn authority_digest(h: &LoopbackHarness) -> String {
+    use postretro_foundation::PlayerMovementComponent;
+    let body = |registry: &postretro_entities::EntityRegistry, id| {
+        format!(
+            "{:?} {:?}",
+            registry.get_component::<Transform>(id).ok(),
+            registry.get_component::<PlayerMovementComponent>(id).ok()
+        )
+    };
+    let mover = |registry: &postretro_entities::EntityRegistry, id| {
+        format!(
+            "{:?} {:?}",
+            registry.get_component::<Transform>(id).ok(),
+            registry.get_component::<KinematicMoverComponent>(id).ok()
+        )
+    };
+    format!(
+        "{} {} {} {} {} {} {:?} {:?} {}",
+        body(&h.host_registry, h.host_pawn),
+        body(&h.host_registry, h.host_second_rider.unwrap()),
+        mover(&h.host_registry, h.host_mover.unwrap()),
+        h.client_pawn
+            .map_or(String::new(), |pawn| body(&h.client_registry, pawn)),
+        mover(&h.client_registry, h.client_mover.unwrap()),
+        format!("{:?}", h.client_replication.mover_history()),
+        h.last_sent_client_tick,
+        h.client_replication.latest_sequence(),
+        h.server_tick,
+    )
+}
+
+// Presentation never writes authority: with rebasing and smoothing on or off,
+// every authoritative pose, phase, ground, command tick, mover history entry
+// and snapshot sequence is bit-equal frame by frame.
+#[test]
+fn rider_presentation_leaves_authority_bit_equal() {
+    let run = |presentation_on: bool| {
+        let mut h =
+            LoopbackHarness::with_spinning_travelling_platform(mandated_link(), SPIN_RATE_RAD_S);
+        h.client_replication
+            .set_world_space_riders(!presentation_on);
+        h.client_replication
+            .set_legacy_mover_corrections(!presentation_on);
+        h.host_seat
+            .as_mut()
+            .unwrap()
+            .set_world_space_riders(!presentation_on);
+        let host_mover = h.host_mover.unwrap();
+        let commands = [(200, 0.0), (300, -171.9), (420, 171.9)];
+        let mut digests = Vec::new();
+        for index in 0..520 {
+            for &(_, rate_deg_s) in commands.iter().filter(|(at, _)| *at == index) {
+                let mut mover = h
+                    .host_registry
+                    .get_component::<KinematicMoverComponent>(host_mover)
+                    .unwrap()
+                    .clone();
+                apply_mover_command(&mut mover, &MoverCommand::SetSpinRate(rate_deg_s));
+                h.host_registry.set_component(host_mover, mover).unwrap();
+            }
+            h.step(&idle_command());
+            crate::advance_mover_correction_glides(&mut h.client_registry, DT);
+            // Authority as serialization reads it, before the host seat
+            // presents (the next host frame restores it).
+            digests.push(authority_digest(&h));
+            h.host_present(0.5);
+        }
+        digests
+    };
+    let (on, off) = (run(true), run(false));
+    for (frame, (on, off)) in on.iter().zip(&off).enumerate() {
+        assert_eq!(on, off, "frame {frame}");
+    }
+}

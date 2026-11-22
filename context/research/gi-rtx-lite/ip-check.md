@@ -233,7 +233,7 @@ Read 2026-11-03 from the granted B2 PDF (scanned page images) and USPTO ppubs fu
 
 - **Risky:** per-light unit response × runtime scalar or RGB, per probe (cl. 5–6) or per texel (cl. 3–4); today's id 27. A crossfade weight that represents a light's intensity.
 - **In:** runtime basis projection of a light against baked transfer, including SH sun rotation (cl. 2, 7, 8). Do not build.
-- **Not levers:** per-frame vs event-triggered evaluation; RGB vs scalar; probe vs pixel.
+- **Not levers:** per-frame vs event-triggered evaluation; RGB vs scalar; probe vs pixel, for claim 1 only. Claim 6 (on claim 5's dynamic-object pixel) names a per-direction update "on the light probe", then interpolation: per-probe, per-direction state reads nearer it than the same sum per pixel (`plans/drafts/reflection-probe-fluid-pass-performance/ip-check.md` §Lever A).
 - **Mover work (owner decision):** drive recomputation by mover state, never light state. Mover bounce is stored absolute at each light's fixed intensity, sums static lights only, and never covers a light that also carries a curve.
 
 | Technique | Reading |

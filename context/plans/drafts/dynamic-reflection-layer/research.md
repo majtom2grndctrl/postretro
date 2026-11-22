@@ -43,7 +43,7 @@ A rival to the deferred limit (§Volume glow share) for glow that changes at run
 - **IP.**
   - A compose pass that writes base + Σ deltas into a live tile on a source change is out. It updates stored probe lighting on a light change, which is what Tencent WO2026113651A1 claims 10–14 and 19 describe (`plans/done/reflection-probes/ip-check.md` §4).
   - Summing at sample time rewrites nothing and appears to stay outside WO claims 10–14 and 19, with claim 10 the closest element.
-  - The nearest risk is Tencent US12293451B2 claim 1(c): a fixed per-probe, per-source delta × a runtime coefficient reads like its "radiance transfer parameter". This is the same open question as the shipped animated SH deltas (id 27). The shipped water share ratio has the same shape at lobe resolution and has no claim-level chart yet.
+  - The nearest risk is Tencent US12293451B2 claim 1(c): a fixed per-probe, per-source delta × a runtime coefficient reads like its "radiance transfer parameter". This is the same open question as the shipped animated SH deltas (id 27). The shipped water share ratio has the same shape at lobe resolution; `plans/drafts/reflection-probe-fluid-pass-performance/ip-check.md` §Lever A charts it.
   - Fences: write tiles once at compile, keep deltas glow-only, and store them at base resolution (`ip-delta-tiles.md` §7).
 - **Open.**
   - Per-fragment cost on the 5300M near a large glossy floor with several glow sources.

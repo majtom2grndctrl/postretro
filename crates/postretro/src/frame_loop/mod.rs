@@ -1291,6 +1291,9 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     nested_cpu.extend_from(&prediction_cpu, fixed_step_label);
     drop(stage_scope);
     let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::Presentation);
+    // Before the first reader of a mover's presented pose: the aim's yaw
+    // residual, remote riders, foot probes, audio and the render collectors.
+    app.advance_mover_correction_glides(frame_dt);
 
     // Regression: a turntable's transform slerps through this tick while
     // carry_yaw previously held the local view until the next input seam.

@@ -5112,6 +5112,18 @@ impl App {
     /// Runs after the catch-up tick loop so the stage-0 `snapshot_transforms` cannot
     /// clobber the presented pose, and before the render stage reads entities.
     /// No-op for single-player and the host (no client interpolation buffers).
+    /// Advance connected-client mover correction glides by this frame's
+    /// presented time. Runs once per frame, after the fixed ticks and before the
+    /// first reader of a mover's presented pose. A no-op without glides, which
+    /// single-player and the host never seed.
+    fn advance_mover_correction_glides(&mut self, frame_dt: f32) {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let mut registry = session.scripting.script_ctx.registry.borrow_mut();
+        netcode::advance_mover_correction_glides(&mut registry, frame_dt);
+    }
+
     fn net_sample_remote_interpolation(&mut self, frame_dt: f32, frame_anim_time: f64, alpha: f32) {
         let Some(script_ctx) = self
             .session

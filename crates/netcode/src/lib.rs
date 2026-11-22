@@ -80,6 +80,8 @@ pub use loadout_wire::{
 mod lag_seed;
 mod lifecycle;
 mod movement_state;
+mod mover_glide;
+pub use mover_glide::advance_mover_correction_glides;
 mod netdiag;
 mod prediction;
 mod presentation;

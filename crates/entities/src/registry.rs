@@ -42,6 +42,7 @@ use crate::components::teleporter::TeleporterComponent;
 use crate::components::touchable::TouchableComponent;
 use crate::components::trigger_volume::TriggerVolumeComponent;
 use crate::components::weapon::WeaponComponent;
+use crate::presentation_correction::PoseCorrection;
 use crate::provenance::DescriptorProvenance;
 use postretro_foundation::{
     ImpactParticleRequest, MAX_PENDING_IMPACT_PARTICLE_REQUESTS, MAX_PENDING_PRESENTATION_SPAWNS,
@@ -907,6 +908,14 @@ struct Slot {
     retired: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PresentationCorrectionEntry {
+    entity: EntityId,
+    correction: PoseCorrection,
+    /// Seeded since the last advance.
+    fresh: bool,
+}
+
 pub struct EntityRegistry {
     slots: Vec<Slot>,
     free_list: Vec<u16>,
@@ -920,6 +929,12 @@ pub struct EntityRegistry {
     /// scripting component surface. `None` mirrors a dead/uninitialized slot.
     /// See: context/lib/entity_model.md §5.
     previous_transforms: Vec<Option<Transform>>,
+    /// Sparse render-only pose corrections, applied by
+    /// [`interpolated_transform`](Self::interpolated_transform) after its blend.
+    /// Simulation reads of `Transform` never see them. Empty except while a
+    /// connected client glides a mover onto a correction, so an entity without
+    /// one pays a single empty check. See: context/lib/entity_model.md §5.
+    presentation_corrections: Vec<PresentationCorrectionEntry>,
     /// Presentation-only projectile timing, kept outside `ComponentValue` so it
     /// never grows the replicated component vocabulary. The remote materializer
     /// stamps it from the local shared-content clock and the billboard collector
@@ -1017,6 +1032,7 @@ impl EntityRegistry {
             free_list: Vec::new(),
             components: std::array::from_fn(|_| Vec::new()),
             previous_transforms: Vec::new(),
+            presentation_corrections: Vec::new(),
             projectile_presentation_ages: Vec::new(),
             light_membership_generation: 0,
             tags: Vec::new(),
@@ -1404,6 +1420,8 @@ impl EntityRegistry {
             self.light_membership_generation = self.light_membership_generation.wrapping_add(1);
         }
         self.previous_transforms[index] = None;
+        self.presentation_corrections
+            .retain(|entry| entry.entity != id);
         self.projectile_presentation_ages[index] = None;
         self.tags[index].clear();
         self.kvp_table.remove(&id);
@@ -2034,11 +2052,102 @@ impl EntityRegistry {
         // live entity with a Transform always has one. Fall back to current if
         // it is somehow absent rather than failing the render read.
         let previous = self.previous_transforms[index].as_ref().unwrap_or(current);
-        Ok(Transform {
+        let blended = Transform {
             position: previous.position.lerp(current.position, alpha),
             rotation: previous.rotation.slerp(current.rotation, alpha),
             scale: previous.scale.lerp(current.scale, alpha),
-        })
+        };
+        if self.presentation_corrections.is_empty() {
+            return Ok(blended);
+        }
+        Ok(self
+            .presentation_correction(id)
+            .map_or(blended, |correction| correction.apply(&blended)))
+    }
+
+    /// The render-only correction [`interpolated_transform`](Self::interpolated_transform)
+    /// applies to `id`, if one is in flight.
+    pub fn presentation_correction(&self, id: EntityId) -> Option<PoseCorrection> {
+        self.presentation_corrections
+            .iter()
+            .find(|entry| entry.entity == id)
+            .map(|entry| entry.correction)
+    }
+
+    /// Correct `id`'s current `Transform` to `corrected`, carrying its previous
+    /// slot by the same rigid correction so the blend between them keeps its
+    /// own motion. With `glide`, the inverse composes into its presentation
+    /// correction, so the presented pose stays where it was at every alpha and
+    /// across the next tick; without, the presented pose lands whole on the
+    /// corrected one and any glide in flight is dropped. A non-finite
+    /// correction writes nothing and drops the glide. Returns the correction.
+    ///
+    /// Presentation-only in its glide; the `Transform` write is the caller's
+    /// authoritative correction.
+    pub fn correct_transform(
+        &mut self,
+        id: EntityId,
+        corrected: Transform,
+        glide: bool,
+    ) -> Result<PoseCorrection, RegistryError> {
+        let index = self.validate(id)?;
+        let current = *self.get_component::<Transform>(id)?;
+        let correction = PoseCorrection::between(&current, &corrected);
+        if !correction.is_finite() || !corrected.position.is_finite() {
+            self.clear_presentation_correction(id);
+            return Ok(correction);
+        }
+        self.components[ComponentKind::Transform as usize][index] =
+            Some(ComponentValue::Transform(corrected));
+        if let Some(previous) = self.previous_transforms[index].as_mut() {
+            *previous = correction.apply(previous);
+        }
+        if !glide {
+            self.clear_presentation_correction(id);
+            return Ok(correction);
+        }
+        // Undo the correction, then the glide already in flight: the
+        // presented pose is unchanged by this call.
+        let residual = correction.inverse().then(
+            &self
+                .presentation_correction(id)
+                .unwrap_or(PoseCorrection::IDENTITY),
+        );
+        self.clear_presentation_correction(id);
+        if residual.is_finite() {
+            self.presentation_corrections
+                .push(PresentationCorrectionEntry {
+                    entity: id,
+                    correction: residual,
+                    fresh: true,
+                });
+        }
+        Ok(correction)
+    }
+
+    /// Drop `id`'s presentation correction: it presents its blended pose.
+    pub fn clear_presentation_correction(&mut self, id: EntityId) {
+        self.presentation_corrections
+            .retain(|entry| entry.entity != id);
+    }
+
+    /// Shrink every presentation correction to `remaining` of itself, dropping
+    /// any that falls within `settled` (metres and radians) or stops being
+    /// finite. A correction seeded since the last advance is kept whole this
+    /// once, so the frame it lands on draws all of it. Allocates nothing.
+    pub fn advance_presentation_corrections(&mut self, remaining: f32, settled: f32) {
+        self.presentation_corrections.retain_mut(|entry| {
+            if entry.fresh {
+                entry.fresh = false;
+                return true;
+            }
+            entry.correction = entry.correction.scaled(remaining);
+            entry.correction.is_finite() && !entry.correction.is_within(settled)
+        });
+    }
+
+    pub fn has_presentation_corrections(&self) -> bool {
+        !self.presentation_corrections.is_empty()
     }
 }
 

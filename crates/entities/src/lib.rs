@@ -11,6 +11,7 @@ pub mod engine_state_catalog;
 pub mod engine_state_collections;
 mod life_state_table;
 pub mod presentation_binding;
+pub mod presentation_correction;
 pub mod presentation_overrides;
 pub mod provenance;
 pub mod reactions;

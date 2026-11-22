@@ -220,6 +220,16 @@ pub struct HitZoneStore {
     /// with the model store avoids allocating one for every simulation tick or
     /// connected-client presentation frame.
     foot_probe_candidates: RefCell<Vec<EntityId>>,
+    /// Reused joint and snapshot storage for foot-probe pose sampling, which
+    /// runs per frame for every rider on a mover.
+    foot_probe_pose: RefCell<FootProbePose>,
+}
+
+/// Reused storage for [`sample_world_pose_for_probe_into`].
+#[derive(Debug, Default)]
+pub(crate) struct FootProbePose {
+    pub(crate) joints: Vec<Mat4>,
+    snapshot: Vec<LocalTrs>,
 }
 
 impl HitZoneStore {
@@ -230,6 +240,7 @@ impl HitZoneStore {
             model_load_warnings: HashSet::new(),
             pose_modified_models: HashSet::new(),
             foot_probe_candidates: RefCell::new(Vec::new()),
+            foot_probe_pose: RefCell::new(FootProbePose::default()),
         }
     }
 
@@ -438,6 +449,10 @@ impl HitZoneStore {
 
     pub(crate) fn foot_probe_candidates(&self) -> RefMut<'_, Vec<EntityId>> {
         self.foot_probe_candidates.borrow_mut()
+    }
+
+    pub(crate) fn foot_probe_pose(&self) -> RefMut<'_, FootProbePose> {
+        self.foot_probe_pose.borrow_mut()
     }
 }
 
@@ -1425,19 +1440,48 @@ pub(crate) fn sample_world_pose_for_probe(
     anim_time: f64,
     seed: u32,
 ) -> Option<Vec<Mat4>> {
+    let mut pose = FootProbePose::default();
+    sample_world_pose_for_probe_into(zones, animation, anim_time, seed, &mut pose)
+        .then_some(pose.joints)
+}
+
+/// [`sample_world_pose_for_probe`] into reused storage: `pose.joints` holds the
+/// sample when this returns true. Clones the animation only on the tick a state
+/// is entered, when its stamps still need resolving, so a steady rider's probe
+/// allocates nothing once `pose` is warm.
+pub(crate) fn sample_world_pose_for_probe_into(
+    zones: &ModelHitZones,
+    animation: Option<&MeshAnimation>,
+    anim_time: f64,
+    seed: u32,
+    pose: &mut FootProbePose,
+) -> bool {
     // An animated mesh with an unresolved current state has no trustworthy
     // sample. In particular, do not silently pose clip 0: that would plant feet
     // from a different animation while the renderer shows its fallback pose.
     if let Some(animation) = animation {
-        let state = animation.states.get(&animation.current_state)?;
-        let clip_index = state.clip_index?;
-        zones.clips.get(clip_index)?;
+        let Some(state) = animation.states.get(&animation.current_state) else {
+            return false;
+        };
+        let Some(clip_index) = state.clip_index else {
+            return false;
+        };
+        if zones.clips.get(clip_index).is_none() {
+            return false;
+        }
     }
-    let animation = animation.cloned().map(|mut anim| {
-        resolve_animation_stamps_for_sampling(&mut anim, anim_time);
-        anim
+    let unresolved = animation.is_some_and(|anim| {
+        anim.entered_at.is_none()
+            || (anim.previous_state.is_some() && anim.previous_entered_at.is_none())
     });
-    pose_world_joints(zones, animation.as_ref(), anim_time, seed)
+    if unresolved {
+        let resolved = animation.cloned().map(|mut anim| {
+            resolve_animation_stamps_for_sampling(&mut anim, anim_time);
+            anim
+        });
+        return pose_world_joints_into(zones, resolved.as_ref(), anim_time, seed, pose);
+    }
+    pose_world_joints_into(zones, animation, anim_time, seed, pose)
 }
 
 /// Pose the model's skeleton at `anim_time` into per-joint MODEL-space world
@@ -1472,7 +1516,20 @@ fn pose_world_joints(
     anim_time: f64,
     seed: u32,
 ) -> Option<Vec<Mat4>> {
-    let mut out = Vec::new();
+    let mut pose = FootProbePose::default();
+    pose_world_joints_into(zones, animation, anim_time, seed, &mut pose).then_some(pose.joints)
+}
+
+/// [`pose_world_joints`] into reused storage; false where it returns `None`.
+fn pose_world_joints_into(
+    zones: &ModelHitZones,
+    animation: Option<&MeshAnimation>,
+    anim_time: f64,
+    seed: u32,
+    pose: &mut FootProbePose,
+) -> bool {
+    pose.joints.clear();
+    pose.snapshot.clear();
     let skeleton = zones.skeleton.as_ref();
     let clips = zones.clips.as_ref();
 
@@ -1485,25 +1542,21 @@ fn pose_world_joints(
     if let Some(anim) = animation {
         let phase = current_state_phase(anim, clips, seed);
         if let Some(result) = super::mesh_anim::animate_entity(anim, anim_time, phase) {
-            let mut snapshot = Vec::new();
-            if pose_from_params(
+            return pose_from_params(
                 skeleton,
                 clips,
                 &result.sample,
                 result.capture.as_ref(),
-                &mut snapshot,
-                &mut out,
-            ) {
-                return Some(out);
-            }
-            return None;
+                &mut pose.snapshot,
+                &mut pose.joints,
+            );
         }
     }
 
     // Stateless consumers share the renderer and attachment policy: authored
     // rest pose, even when the model also carries animation clips.
-    pose_rest(skeleton, &mut out);
-    Some(out)
+    pose_rest(skeleton, &mut pose.joints);
+    true
 }
 
 /// The per-instance phase offset for an entity's CURRENT animation state, derived

@@ -756,9 +756,16 @@ pub(super) fn write_foot_ground_probes(
         && let Some(model_to_world) = model_matrix(&transform, mesh.origin_offset)
         && let Some(world_to_model) = foot_probe_inverse(&transform, &model_to_world)
     {
-        let world_joints =
-            sample_world_pose_for_probe(zones, mesh.animation.as_ref(), anim_time, id.to_raw());
-        if let Some(world_joints) = world_joints.as_ref() {
+        let mut pose = hit_zone_store.foot_probe_pose();
+        let sampled = crate::scripting_systems::hit_zones::sample_world_pose_for_probe_into(
+            zones,
+            mesh.animation.as_ref(),
+            anim_time,
+            id.to_raw(),
+            &mut pose,
+        );
+        if sampled {
+            let world_joints = pose.joints.as_slice();
             foot_count = zones.legs.len().min(MAX_FEET);
             let downward_reach = FOOT_PLANTING_REACH * transform.scale.y;
             let upward_allowance = FOOT_PENETRATION_ALLOWANCE * transform.scale.y;

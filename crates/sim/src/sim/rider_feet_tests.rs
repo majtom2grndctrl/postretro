@@ -217,8 +217,8 @@ fn fixed_tick_skips_rider_feet() {
     assert_eq!(inputs(&registry), before);
 }
 
-// The per-frame rider passes this brief adds allocate nothing once warm: the
-// glide advance, presented mover poses and the eye placement.
+// The per-frame rider passes allocate nothing once warm: the glide advance,
+// presented mover poses, the eye placement and the rider foot probes.
 #[test]
 fn per_frame_rider_passes_allocate_nothing_when_warm() {
     use crate::alloc_probe::AllocSnapshot;
@@ -237,6 +237,13 @@ fn per_frame_rider_passes_allocate_nothing_when_warm() {
     registry
         .correct_transform(lift, at_height(RISE_PER_TICK + 0.05), true)
         .unwrap();
+    // A ticking game has resolved the current state's entry stamp by now.
+    if let Ok(postretro_entities::ComponentValue::Mesh(mesh)) =
+        registry.get_component_value_mut(rider, postretro_entities::ComponentKind::Mesh)
+        && let Some(animation) = mesh.animation.as_mut()
+    {
+        animation.entered_at = Some(0.0);
+    }
     let endpoint = |height: f32| {
         InterpolableState::following(
             Vec3::new(0.0, height + RIDER_HEIGHT + 0.7, 0.0),
@@ -274,15 +281,11 @@ fn per_frame_rider_passes_allocate_nothing_when_warm() {
         }));
     }
     assert_eq!(probe.allocs_since(), 0);
-    // The rider foot probe itself still allocates inside the shared hit-zone
-    // pose sampler (animation clone and joint matrices), reported for the
-    // owner rather than asserted: see the rider brief's plan, task 10.
+    // The rider foot probe too: its pose sampler reuses the store's storage
+    // and clones the animation only on the tick a state is entered.
     let probe = AllocSnapshot::arm();
     for step in 0..20 {
         frame(&mut registry, &mut poses, step as f32 / 20.0);
     }
-    eprintln!(
-        "[riders] rider foot probe allocations: {} per probe",
-        probe.allocs_since() / 20
-    );
+    assert_eq!(probe.allocs_since(), 0, "rider foot probes allocated");
 }

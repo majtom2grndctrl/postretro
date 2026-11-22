@@ -83,9 +83,7 @@ use crate::kinematic_mover::{self, MoverTickStateTable};
 use crate::movement::MovementInput;
 use crate::nav::NavGraph;
 use crate::scripting_systems;
-use crate::scripting_systems::hit_zones::{
-    HitZoneStore, model_matrix, sample_world_pose_for_probe,
-};
+use crate::scripting_systems::hit_zones::{HitZoneStore, model_matrix};
 use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
 use crate::sim::touch::TouchSystem;
 use crate::trigger_bindings::{TriggerBindingTable, TriggerResidualHandle};

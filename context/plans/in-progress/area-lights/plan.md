@@ -211,73 +211,85 @@ Row 11 now reads, in the brief and here:
 
 ## AC-to-proof
 
-| AC | Proof | Status |
-|---|---|---|
-| 1 §1 table, 1e-5 | `area_light::polygon` unit tests vs §1 oracle values | achievable |
-| 2 coplanar/behind/own face 0; 1 mm → π | same module | achievable |
-| 3 small limit; reach 16 m; 0.972 at 4 m | same module (window, reach) | achievable |
-| 4 f32 corners at 1 km | same module | achievable |
-| 5 open/occluded texel exactly 1/0 | `lightmap_bake` area-arm test on a flush panel scene | achievable |
-| 6 near vs far half occluder ordered | same, weighted vs unweighted | achievable |
-| 7 probe L0/L1 analytic | `sh_bake` area projection test | achievable |
-| 8 side 0.781 ±5%, down 0 ±0.05 | same | achievable |
-| 9 pillar/flush facing 1; post > 0 (O19) | `texel_footprint` area tests | achievable |
-| 10 north of pillar 1, 1% (O20) | same | achievable |
-| 11 scatter + mover channel over polygon | scatter and mover-channel tests | achievable (restated) |
-| 12 frame + glass: glass emits; brushes solid | parse test + compiled fixture collision/shadow check | achievable |
-| 13 `_falloff_range` override; √2 reach (O22) | translation + window tests | achievable |
-| 14 half reach 0.879 across six consumers | one cross-consumer test per consumer | achievable |
-| 15 corner-reach wall lit (O21) | lightmap, direct-SH, patch tests | achievable |
-| 16 pillar not buried/embedded; point still dropped | `buried_lights`, `embedded_emitter` tests | achievable |
-| 17 flush edge texel V = 1, 1% | `texel_footprint` area test | achievable |
-| 18 targets inside emitter sphere | sampler property test over three shapes | achievable |
-| 19 flush/pillar SH, patch, scatter, mover 1% | per-consumer tests | achievable |
-| 20 door mover gated | `mover_light_gate` area test | achievable |
-| 21 exact skips byte-identical; shaft cull clears | skip on/off fixture test, cleared-tile count | achievable |
-| 22 vertex move re-keys; unrelated stable | cache-key tests | achievable |
-| 23 four brushes = one (O6) | exposure + term test | achievable |
-| 24 overlap once; buried half (O7) | exposure test | achievable |
-| 25 slivers dropped; no NaN (O8) | exposure + sampler tests | achievable |
-| 26 corner-reach wall move re-keys; warm = cold (O10) | layer-key + warm/cold test | achievable |
-| 27 entity-order position (O11) | parse + namespace test | achievable |
-| 28 split side glows; frame no glow id (O12) | glow stamping test | achievable |
-| 29 probe set order independence (O9) | `SoftProbes` same-thread test | achievable |
-| 30 fail/warn naming light + key | translation tests with log capture | achievable |
-| 31 inert keys re-key nothing | warm-rebuild cache test | achievable |
-| 32 no promotion; never id-42 owner; no specular | `light_selection`, `eligibility`, chunk-list tests | achievable |
-| 33 weight map at curve 1 = static | `animated_light_weight_maps` test | achievable |
-| 34 `_bounce_fill 0` delta within 2% | `delta_sh_bake` area test | achievable |
-| 35 one-sample arm averages (O23) | `soft_visibility_one_sample` area test | achievable |
-| 36 `_falloff_range 3` affinity cells (O24) | `affinity_grid`/delta test | achievable |
-| 37 `--soft-shadow-samples` re-keys texel paths only | warm-rebuild cache test | achievable |
-| 38 AlphaLights v5 round trip; v4/unknown rejected | `level-format` tests | achievable |
-| 39 no-area map byte-identical | every bake section vs `main` build on fixtures | achievable |
-| 40 area fixture in `GATE_FIXTURES` | profiled fixture, determinism gate | achievable |
-| 41 scripting example on `content/dev` | dev-map script test + TS/Luau checks | achievable |
-| 42 `sweep` refused; spot still works | `script_primitives` test | achievable |
-| 43 tagged sweep S1, A, S2 unchanged (O14) | host + client replication test | achievable |
-| 44 inert-key snapshots identical (O18) | bake-time vs runtime snapshot test | achievable |
-| 45 glow by strength; `_glow` scaling; 100 → 64 warns; < 0 fails | glow table + byte-identity + log tests | achievable |
-| 46 `emissive_volume` vs area faces | membership test + empty warning | achievable |
-| 47 capture at reference; `_start_inactive` reflected dark then lit together | capture test + share/bridge test (GPU-gated part under `POSTRETRO_REQUIRE_GPU`) | achievable |
-| 48 L vs 2L glass unchanged; cycle mean 0.5 (O2) | reflection capture test | achievable |
-| 49 `colorShift` moves glow and room | descriptor + glow evaluation test | achievable |
-| 50 2L doubles light, glow unchanged | bake + glow entry test | achievable |
-| 51 strength-4 white vs red `_e` byte-identical lighting | fixture byte compare | achievable |
-| 52 `_glow` edit misses only reflection capture | warm-rebuild cache test | achievable |
-| 53 fade settles at 0.25 (O1) | bridge settle test with glow evaluation | achievable |
-| 54 colour settles amber (O17) | same | achievable |
-| 55 `_start_inactive` reservation; pulse starts lit (O3) | membership + start-state test | achievable |
-| 56 sweep-only `levelLoad` starts dark (O15) | script-compiler membership test | achievable |
-| 57 static point `_start_inactive` unchanged | existing `main.rs:3578` test extended | achievable |
-| 58 compose slot per area light (O4) | glow table vs namespaces test | achievable |
-| 59 static before animated keeps steady glow (O16) | glow evaluation test | achievable |
-| 60 no area → no entries; cap fails; loader rejects (O5) | compiler + loader tests | achievable |
-| M1 hallway cold/warm bake vs 4 × 4 grid | owner run, recorded here | manual |
-| M2 penumbra RMS at 32/64 vs 256 | measurement run + owner A/B | manual |
-| M3 skylight vs template grid A/B | owner, in-engine | manual |
-| M4 scripted flicker in step | owner, in-engine | manual |
-| M5 entities under skylight | owner, in-engine | manual |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| 1 §1 table, 1e-5 | `area_light::polygon` unit tests vs §1 oracle values | achievable | pass |
+| 2 coplanar/behind/own face 0; 1 mm → π | same module | achievable | pass |
+| 3 small limit; reach 16 m; 0.972 at 4 m | same module (window, reach) | achievable | pass |
+| 4 f32 corners at 1 km | same module | achievable | pass |
+| 5 open/occluded texel exactly 1/0 | `lightmap_bake` area-arm test on a flush panel scene | achievable | pass |
+| 6 near vs far half occluder ordered | same, weighted vs unweighted | achievable | pass |
+| 7 probe L0/L1 analytic | `sh_bake` area projection test | achievable | pass |
+| 8 side 0.781 ±5%, down 0 ±0.05 | same | achievable | pass |
+| 9 pillar/flush facing 1; post > 0 (O19) | `texel_footprint` area tests | achievable | pass (review fix: zero-weight probes no longer end a cut-horizon texel at 0) |
+| 10 north of pillar 1, 1% (O20) | same | achievable | pass |
+| 11 scatter + mover channel over polygon | scatter and mover-channel tests | achievable (restated) | pass |
+| 12 frame + glass: glass emits; brushes solid | parse test + compiled fixture collision/shadow check | achievable | pass |
+| 13 `_falloff_range` override; √2 reach (O22) | translation + window tests | achievable | pass |
+| 14 half reach 0.879 across six consumers | one cross-consumer test per consumer | achievable | pass |
+| 15 corner-reach wall lit (O21) | lightmap, direct-SH, patch tests | achievable | pass |
+| 16 pillar not buried/embedded; point still dropped | `buried_lights`, `embedded_emitter` tests | achievable | pass |
+| 17 flush edge texel V = 1, 1% | `texel_footprint` area test | achievable | pass |
+| 18 targets inside emitter sphere | sampler property test over three shapes | achievable | pass |
+| 19 flush/pillar SH, patch, scatter, mover 1% | per-consumer tests | achievable | pass (review fix: zero-Φ probes keep the light via `probe_direction`) |
+| 20 door mover gated | `mover_light_gate` area test | achievable | pass |
+| 21 exact skips byte-identical; shaft cull clears | skip on/off fixture test, cleared-tile count | achievable | pass |
+| 22 vertex move re-keys; unrelated stable | cache-key tests | achievable | pass |
+| 23 four brushes = one (O6) | exposure + term test | achievable | pass |
+| 24 overlap once; buried half (O7) | exposure test | achievable | pass (review fix: only drawn faces emit; void-facing sides excluded) |
+| 25 slivers dropped; no NaN (O8) | exposure + sampler tests | achievable | pass |
+| 26 corner-reach wall move re-keys; warm = cold (O10) | layer-key + warm/cold test | achievable | pass |
+| 27 entity-order position (O11) | parse + namespace test | achievable | pass |
+| 28 split side glows; frame no glow id (O12) | glow stamping test | achievable | pass |
+| 29 probe set order independence (O9) | `SoftProbes` same-thread test | achievable | pass |
+| 30 fail/warn naming light + key | translation tests with log capture | achievable | pass (review: negative `light` and `_bake_only`+`_start_inactive` fail; more inert keys warn; light named once) |
+| 31 inert keys re-key nothing | warm-rebuild cache test | achievable | pass (`area_light_warm_rebuild`) |
+| 32 no promotion; never id-42 owner; no specular | `light_selection`, `eligibility`, chunk-list tests | achievable | pass |
+| 33 weight map at curve 1 = static | `animated_light_weight_maps` test | achievable | pass |
+| 34 `_bounce_fill 0` delta within 2% | `delta_sh_bake` area test | achievable | pass |
+| 35 one-sample arm averages (O23) | `soft_visibility_one_sample` area test | achievable | pass |
+| 36 `_falloff_range 3` affinity cells (O24) | `affinity_grid`/delta test | achievable | pass |
+| 37 `--soft-shadow-samples` re-keys texel paths only | warm-rebuild cache test | achievable | pass (`area_light_warm_rebuild`, now also vs a cold 16-sample build) |
+| 38 AlphaLights v5 round trip; v4/unknown rejected | `level-format` tests | achievable | pass |
+| 39 no-area map byte-identical | every bake section vs `main` build on fixtures | achievable | pass (opt-in gate vs `11f27aaa9` binaries, rerun after review fixes: only id 18 version word differs) |
+| 40 area fixture in `GATE_FIXTURES` | profiled fixture, determinism gate | achievable | pass (determinism gate; budget gate stale on `main` itself, not this branch) |
+| 41 scripting example on `content/dev` | dev-map script test + TS/Luau checks | achievable | pass, except TS and Luau type checks outstanding (`tsc`, `luau-analyze` not installed) |
+| 42 `sweep` refused; spot still works | `script_primitives` test | achievable | pass |
+| 43 tagged sweep S1, A, S2 unchanged (O14) | host + client replication test | achievable | pass |
+| 44 inert-key snapshots identical (O18) | bake-time vs runtime snapshot test | achievable | pass |
+| 45 glow by strength; `_glow` scaling; 100 → 64 warns; < 0 fails | glow table + byte-identity + log tests | achievable | pass |
+| 46 `emissive_volume` vs area faces | membership test + empty warning | achievable | pass |
+| 47 capture at reference; `_start_inactive` reflected dark then lit together | capture test + share/bridge test (GPU-gated part under `POSTRETRO_REQUIRE_GPU`) | achievable | pass for lit lights; a `light 0` light's reflected glass stays at its reference glow (as-built limitation, owner call) |
+| 48 L vs 2L glass unchanged; cycle mean 0.5 (O2) | reflection capture test | achievable | pass |
+| 49 `colorShift` moves glow and room | descriptor + glow evaluation test | achievable | pass |
+| 50 2L doubles light, glow unchanged | bake + glow entry test | achievable | pass |
+| 51 strength-4 white vs red `_e` byte-identical lighting | fixture byte compare | achievable | pass |
+| 52 `_glow` edit misses only reflection capture | warm-rebuild cache test | achievable | pass |
+| 53 fade settles at 0.25 (O1) | bridge settle test with glow evaluation | achievable | pass (plus `light 0` variants: settles held) |
+| 54 colour settles amber (O17) | same | achievable | pass (plus `light 0` variant) |
+| 55 `_start_inactive` reservation; pulse starts lit (O3) | membership + start-state test | achievable | pass |
+| 56 sweep-only `levelLoad` starts dark (O15) | script-compiler membership test | achievable | pass |
+| 57 static point `_start_inactive` unchanged | existing `main.rs:3578` test extended | achievable | pass |
+| 58 compose slot per area light (O4) | glow table vs namespaces test | achievable | pass |
+| 59 static before animated keeps steady glow (O16) | glow evaluation test | achievable | pass |
+| 60 no area → no entries; cap fails; loader rejects (O5) | compiler + loader tests | achievable | pass |
+| M1 hallway cold/warm bake vs 4 × 4 grid | owner run, recorded here | manual | outstanding: owner manual check |
+| M2 penumbra RMS at 32/64 vs 256 | measurement run + owner A/B | manual | outstanding: owner manual check |
+| M3 skylight vs template grid A/B | owner, in-engine | manual | outstanding: owner manual check |
+| M4 scripted flicker in step | owner, in-engine | manual | outstanding: owner manual check |
+| M5 entities under skylight | owner, in-engine | manual | outstanding: owner manual check |
+
+Gate (`a5fadf4e9`, workspace): fmt, clippy `-D warnings`, `cargo check --release`, crate-graph and both reducers pass; `cargo test --workspace --no-fail-fast` passes 16260 tests. Failures, none from this branch: `smooth_specular_matches_the_frozen_pre_change_function` (6 ulp, identical shaders on `main`); xtask `mover_shot_gates` ×2 (Windows path separators in files this branch never touches); `telemetry_run` ×2 (windowed run stalled on a sleeping display; passed the run before).
+
+Review loop: three passes. Pass 1 (11 reviewers) found 3 🔴, 6 🟡 and ~20 🟢; pass 2 (3 reviewers) 1 🔴, 3 🟡; pass 3 (1 reviewer) 1 🟡 needing an owner call. All acted on except the deliberately left items below.
+
+Left deliberately or for the owner:
+- `light 0` area light: a second animation starts from `_glow × _color`, not from the first one-shot's held value (a lit light keeps its settled value). Documented in `rendering_pipeline.md` §7.3, `docs/level_design.md`, `docs/scripting-reference.md`.
+- `light 0` reflections hold the reference glow, even while the light is dark (row 47 above).
+- No stage cache versions were bumped: `main` holds no area-light entries, so only caches built on this branch can be stale. Bake area-light maps with `--no-cache` for the manual checks.
+- `research.md O#` and acceptance-row pointers in comments; they resolve once the brief moves to `done/`.
+- Trimmed sides emit BSP-leaf pieces, so an unrelated split can re-key a light (follow-on); hand-made-file-only gaps (falloff model on type 3, client-side direction); capture's 64 cap with curves above 1; f32 lift beyond 8 km; the mover-gate estimate ray.
+
 
 ## Tasks
 

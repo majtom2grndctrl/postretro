@@ -256,7 +256,7 @@ impl Renderer {
         full.frame_indirect_scale = full.indirect_scale;
         // The style is boot state a frame-loop commit can change at any time.
         // Snapshot it with the mask so group 0, its planar copy and the mover
-        // params draw one style this frame.
+        // pipeline choice (main view and mirror) draw one style this frame.
         full.frame_specular_style = *specular_style;
         let data = build_uniform_data(&FrameUniforms {
             view_proj,

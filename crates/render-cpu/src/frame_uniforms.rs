@@ -27,15 +27,12 @@ pub const SPEC_SHADOWMASK_FLAG_MASK_PRESENT: u32 = 1 << 1;
 /// is the default pixel style, one highlight point per albedo texel
 /// (`rendering_pipeline.md` §4, Texel-centre highlight).
 pub const SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH: u32 = 1 << 2;
-/// The mover pass's per-frame `KinematicLightParams.specular_style` word
-/// (bytes 28..32), shared by the main view and the planar mirror: set for the
-/// smooth specular style. Zero is the default pixel style.
-pub const KINEMATIC_SPECULAR_STYLE_SMOOTH: u32 = 1;
 
 /// The mod's specular style (`render.specular.style`), renderer vocabulary.
 /// The app maps the mod profile onto it at one chokepoint; the renderer keeps
-/// it in boot state and writes it into the forward and mover per-frame
-/// uniforms every frame (`rendering_pipeline.md` §4, Texel-centre highlight).
+/// it in boot state, and every frame writes it into forward's per-frame
+/// uniform and picks the mover's beauty pipeline by it
+/// (`rendering_pipeline.md` §4, Texel-centre highlight).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum SpecularStyle {
     /// One highlight point per albedo texel. The default, and frame
@@ -55,14 +52,6 @@ impl SpecularStyle {
         match self {
             Self::Pixel => 0,
             Self::Smooth => SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH,
-        }
-    }
-
-    /// This style's `KinematicLightParams.specular_style` word.
-    pub const fn kinematic_word(self) -> u32 {
-        match self {
-            Self::Pixel => 0,
-            Self::Smooth => KINEMATIC_SPECULAR_STYLE_SMOOTH,
         }
     }
 }
@@ -653,20 +642,16 @@ mod tests {
         );
     }
 
-    // Each style's two transports agree: pixel is zero in both the forward
-    // word and the mover word, smooth sets each pass's smooth marker.
+    // Pixel is a zero forward word, so a zeroed group 0 reads the default;
+    // smooth sets forward's smooth marker.
     #[test]
-    fn every_specular_style_encodes_its_forward_bit_and_mover_word() {
+    fn every_specular_style_encodes_its_forward_bit() {
         for style in SpecularStyle::ALL {
-            let (forward, mover) = match style {
-                SpecularStyle::Pixel => (0, 0),
-                SpecularStyle::Smooth => (
-                    SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH,
-                    KINEMATIC_SPECULAR_STYLE_SMOOTH,
-                ),
+            let forward = match style {
+                SpecularStyle::Pixel => 0,
+                SpecularStyle::Smooth => SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH,
             };
             assert_eq!(style.forward_flag_bits(), forward, "{style:?}");
-            assert_eq!(style.kinematic_word(), mover, "{style:?}");
         }
     }
 

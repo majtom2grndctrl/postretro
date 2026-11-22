@@ -51,11 +51,12 @@ Run with `python3 tools/gen_fluid_textures.py --out content/dev/textures/fluids`
 
 ### `metal_register_screen/`
 
-Reads the VGPR and SGPR counts AMD's Metal compiler gives the mover pipeline's
-fragment shader, which sits near a register cliff on the Mac target. Run
-`tools/metal_register_screen/screen_mover.sh <out dir>` on a Mac with an AMD RDNA
-GPU after any edit to `kinematic_brush.wgsl` or a snippet it composes. Its README
-gives the method and the recorded counts.
+Reads the VGPR and SGPR counts AMD's Metal compiler gives each mover beauty
+pipeline's fragment entry (`fs_pixel`, `fs_smooth`), which sit near a register
+cliff on the Mac target. Run `tools/metal_register_screen/screen_mover.sh <out dir>
+[fragment entry...]` on a Mac with an AMD RDNA GPU after any edit to
+`kinematic_brush.wgsl` or a snippet it composes; it screens both entries by
+default. Its README gives the method and the recorded counts.
 
 ### `gen_specular_texel_fixtures.py`
 

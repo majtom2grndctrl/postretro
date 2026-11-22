@@ -13,7 +13,7 @@ Judge in-engine. What decides the default: shadowed fill reads right, no hot spo
 
 ## Built PRLs
 
-Already built with the `--release` after binary at HEAD 194113525: `content/dev/maps/ab-campaign-fill-{0,0.5,1}.prl` (~312 MB each) and `content/dev/maps/ab-whiteroom-fill-{0,1}.prl` (~17 MB each). `*.prl` is gitignored, so they are local only. Rebuild with:
+Already built with the `--release` after binary at HEAD 194113525: `content/dev/maps/ab-campaign-fill-{0,0.5,1}.prl` (~312 MB each) and `content/dev/maps/ab-whiteroom-fill-{0,1}.prl` (~17 MB each). `*.prl` is gitignored, so they are local only. The whiteroom PRLs predate the switch to `player_spawn`; rebuild them to start a player pawn. Rebuild with:
 
 ```bash
 cargo build --release -p postretro-level-compiler
@@ -35,7 +35,7 @@ target/release/postretro-tool run --install-root . maps/ab-whiteroom-fill-0.prl
 target/release/postretro-tool run --install-root . maps/ab-whiteroom-fill-1.prl
 ```
 
-Map arguments are relative to the mod folder (`content/dev`). Not verified here: launching the windowed engine (this run had no display session). Use the same stations and `--start-pose=x,y,z,yaw,pitch` (as in `content/dev/maps/stress-warren.README.md`) for every variant so the frames compare.
+Map arguments are relative to the mod folder (`content/dev`). Not verified here: launching the windowed engine (this run had no display session). Use the same stations and `--start-pose=x,y,z,yaw,pitch` (as in `content/dev/maps/stress-warren.README.md`) for every variant so the frames compare. The whiteroom maps start a player pawn at their `player_spawn`, so `--start-pose` places that pawn, which falls under gravity, not a free-fly camera.
 
 ## What to look at
 

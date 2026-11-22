@@ -138,6 +138,10 @@ pub(crate) struct WorldInstallHandles<'a> {
     /// (single-player, listen host, headless).
     pub(crate) suppress_host_replicated: bool,
     pub(crate) suppress_boot_pawn: bool,
+    /// The frontend menu is on the stack: this install is a menu backdrop,
+    /// held at the menu camera pose, so a map without a `player_spawn` is
+    /// expected rather than warned.
+    pub(crate) frontend_backdrop: bool,
     /// Seat-zero carried record, resolved by the caller before descriptor spawn. The
     /// world installer remains seat-table agnostic.
     pub(crate) local_carried_loadout: Option<postretro_combat_model::CarriedState>,

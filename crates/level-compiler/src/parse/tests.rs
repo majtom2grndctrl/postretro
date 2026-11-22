@@ -82,6 +82,12 @@ fn parse_inline_map(map_text: &str) -> anyhow::Result<MapData> {
     result
 }
 
+/// The missing-`player_spawn` warning, which every inline fixture without a
+/// spawn logs; a test asserting some other silence skips it.
+fn is_missing_spawn_warning(record: &postretro_test_log_capture::CapturedRecord) -> bool {
+    record.message.contains("map has no `player_spawn`")
+}
+
 fn kinematic_test_map(path_next: &str) -> String {
     kinematic_test_map_with_nexts(path_next, "")
 }
@@ -1911,7 +1917,7 @@ fn blank_or_cleared_dynamic_light_carrier_is_silent_and_unbound() {
         capture
             .records()
             .iter()
-            .all(|record| record.level != Level::Warn),
+            .all(|record| record.level != Level::Warn || is_missing_spawn_warning(record)),
         "absent and cleared carriers must not produce a warning"
     );
 }
@@ -1960,7 +1966,7 @@ fn grouped_named_mover_synthesizes_carriers_and_resolves_every_eligible_light() 
         capture
             .records()
             .iter()
-            .all(|record| record.level != Level::Warn),
+            .all(|record| record.level != Level::Warn || is_missing_spawn_warning(record)),
         "an unambiguous named grouped carrier must not warn"
     );
 }
@@ -2126,7 +2132,7 @@ fn grouped_movers_without_eligible_lights_are_silent() {
         capture
             .records()
             .iter()
-            .all(|record| record.level != Level::Warn),
+            .all(|record| record.level != Level::Warn || is_missing_spawn_warning(record)),
         "mover-only groups are ordinary authoring and must not warn"
     );
 }
@@ -2155,7 +2161,7 @@ fn grouped_baked_and_bake_only_lights_are_ineligible_and_silent() {
         capture
             .records()
             .iter()
-            .all(|record| record.level != Level::Warn),
+            .all(|record| record.level != Level::Warn || is_missing_spawn_warning(record)),
         "baked and bake-only lights must not make grouped carry ambiguous"
     );
 }
@@ -2178,7 +2184,7 @@ fn grouped_explicit_carrier_for_its_mover_is_silent() {
         capture
             .records()
             .iter()
-            .all(|record| record.level != Level::Warn),
+            .all(|record| record.level != Level::Warn || is_missing_spawn_warning(record)),
         "an explicit carrier matching the grouped mover is not contradictory"
     );
 }

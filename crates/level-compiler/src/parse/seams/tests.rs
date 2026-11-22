@@ -259,13 +259,13 @@ fn seam_in_a_map_without_player_spawn_warns_once() {
         seam("\"name\" \"hatch\"\n\"target\" \"next\""),
     ]);
     parse(&map_text).expect("a missing player_spawn only warns");
-    capture.assert_logged_once(Level::Warn, "no player_spawn");
+    capture.assert_logged_once(Level::Warn, "level_seam but no player_spawn");
     capture.assert_logged_once(Level::Warn, "[Compiler] entity 1 'level_seam' `door`");
 
     capture.clear();
     parse(&fixture("\"name\" \"door\"\n\"target\" \"next\"")).unwrap();
     parse(&map(&[])).unwrap();
-    capture.assert_not_logged(Level::Warn, "no player_spawn");
+    capture.assert_not_logged(Level::Warn, "level_seam but no player_spawn");
 }
 
 #[test]

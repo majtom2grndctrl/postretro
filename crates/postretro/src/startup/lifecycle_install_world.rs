@@ -105,6 +105,9 @@ impl App {
         // Cloned so the segment-B handles do not alias a `self.content_root`
         // borrow held across the call.
         let install_content_root = self.content_root.clone();
+        // `install_level_identity` recorded whether this install sits under
+        // the frontend menu.
+        let frontend_backdrop = self.backdrop_installed;
         let renderer = self
             .renderer
             .as_mut()
@@ -154,6 +157,7 @@ impl App {
             trigger_pool_policy: self.session_boot_config.windowed_trigger_pool_policy(),
             suppress_host_replicated: suppress,
             suppress_boot_pawn: suppress,
+            frontend_backdrop,
             local_carried_loadout: session
                 .seat_table
                 .as_ref()

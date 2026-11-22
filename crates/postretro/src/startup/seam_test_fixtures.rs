@@ -228,6 +228,7 @@ pub(super) fn install(app: &mut App, catalog_id: &str, world: postretro_level_lo
             trigger_pool_policy: crate::trigger_pools::TriggerPoolSeedPolicy::ArmAll,
             suppress_host_replicated: false,
             suppress_boot_pawn: false,
+            frontend_backdrop: app.backdrop_installed,
             local_carried_loadout: session
                 .seat_table
                 .as_ref()

@@ -50,6 +50,21 @@ pub fn is_light_classname(classname: &str) -> bool {
     LIGHT_CLASSNAMES.contains(&classname)
 }
 
+/// Quake's player-start classnames. The engine starts players only at a
+/// `player_spawn`, so the compiler warns on each of these: Quake-trained
+/// authors write them out of habit, and without a `player_spawn` the map
+/// starts in the free-fly camera.
+pub const QUAKE_PLAYER_START_CLASSNAMES: &[&str] = &[
+    "info_player_start",
+    "info_player_start2",
+    "info_player_deathmatch",
+    "info_player_coop",
+];
+
+pub fn is_quake_player_start_classname(classname: &str) -> bool {
+    QUAKE_PLAYER_START_CLASSNAMES.contains(&classname)
+}
+
 /// Matches every `func_group` classname: TrenchBroom groups, layers and
 /// authored `func_group` brush entities alike. In the Quake-family adapter none
 /// is a runtime entity: their brushes participate in the static world exactly

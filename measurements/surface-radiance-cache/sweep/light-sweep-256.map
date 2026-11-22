@@ -3203,6 +3203,6 @@
 }
 // entity 257
 {
-"classname" "info_player_start"
-"origin" "1365 1365 32"
+"classname" "player_spawn"
+"origin" "1365 1365 24"
 }

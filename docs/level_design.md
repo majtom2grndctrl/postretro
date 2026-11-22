@@ -59,7 +59,9 @@ ignores roll. Lights use `angles` as a direction instead; see their keys below.
 ## Player Spawns
 
 A `player_spawn` is a place a player can start, not a player by itself. However
-many a map has, one player gets one body.
+many a map has, one player gets one body. Quake's `info_player_start` (and its
+other `info_player_*` variants) is not read; use `player_spawn`, or the player
+starts in the free-fly camera.
 
 - **Where the player stands.** Rest the spawn's box on the floor, as
   TrenchBroom does when you drop it there. The bottom of the box is where the

@@ -498,6 +498,7 @@ fn predict_and_sweep_dev_map(
         trigger_pool_policy: crate::trigger_pools::TriggerPoolSeedPolicy::ArmAll,
         suppress_host_replicated: connected_client,
         suppress_boot_pawn: connected_client,
+        frontend_backdrop: false,
         local_carried_loadout: None,
         spawn_checkpoint: None,
         spawn_checkpoint_seam: false,

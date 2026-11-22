@@ -239,6 +239,7 @@ fn run_headless_inner(
             trigger_pool_policy,
             suppress_host_replicated: false,
             suppress_boot_pawn: false,
+            frontend_backdrop: false,
             local_carried_loadout: None,
             spawn_checkpoint: None,
             spawn_checkpoint_seam: false,

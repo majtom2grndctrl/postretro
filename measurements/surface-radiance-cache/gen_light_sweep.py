@@ -74,8 +74,16 @@ def main():
                     '"_bake_only" "0"', '"delay" "0"', '"light" "%d"' % a.intensity,
                     '"_shadow_type" "static_light_map"', "}"]
             k += 1
-    out += ["// entity %d" % (k + 1), "{", '"classname" "info_player_start"',
-            '"origin" "%d %d 32"' % (S // 6, S // 6), "}"]
+    # The engine starts the player only at a `player_spawn`, whose origin
+    # stands 24 units above its feet; the floor top is z = 0. Step it along x
+    # off any pillar (with --pillars 3 the first sits at S // 6).
+    sx, sy = S // 6, S // 6
+    clear = pw // 2 + 16  # pillar half-width plus the player hull's half-width
+    centres = [int(S * (i + 0.5) / p) for i in range(p)]
+    while any(abs(sx - c) < clear for c in centres) and any(abs(sy - c) < clear for c in centres):
+        sx += pw
+    out += ["// entity %d" % (k + 1), "{", '"classname" "player_spawn"',
+            '"origin" "%d %d 24"' % (sx, sy), "}"]
     open(a.out, "w").write("\n".join(out) + "\n")
     print("%s: %d lights, %d brushes" % (a.out, k, len(brushes)))
 

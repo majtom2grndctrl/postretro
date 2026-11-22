@@ -43,6 +43,8 @@ mod fog_volumes;
 mod ghost_links;
 #[path = "parse/map_source.rs"]
 mod map_source;
+#[path = "parse/player_starts.rs"]
+mod player_starts;
 #[path = "parse/reflection_capture.rs"]
 mod reflection_capture;
 #[cfg(test)]
@@ -1237,6 +1239,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             classname: classname.clone(),
             origin,
         });
+        player_starts::warn_quake_player_start(entities.len() - 1, &classname);
 
         // Sibling members identify a marker through `_tb_group`; capture that
         // source relation before the branches below translate or strip their
@@ -1892,6 +1895,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     log::info!("Reflection volumes: {}", reflection_volumes.len());
     log::info!("Emissive volumes: {}", emissive_volumes.len());
     let ghost_links = ghost_links.finish(teleporters.destinations())?;
+    player_starts::warn_without_player_spawn(&map_entities);
     seams.warn_without_player_spawn(&map_entities);
     let seams = seams.finish(teleporters.destinations())?;
 

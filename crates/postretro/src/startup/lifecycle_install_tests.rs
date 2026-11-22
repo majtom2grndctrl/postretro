@@ -963,6 +963,7 @@ fn windowed_install_assigns_light_entity_ids_before_fog_entity_ids() {
             trigger_pool_policy: TriggerPoolSeedPolicy::ArmAll,
             suppress_host_replicated: false,
             suppress_boot_pawn: false,
+            frontend_backdrop: false,
             local_carried_loadout: None,
             spawn_checkpoint: None,
             spawn_checkpoint_seam: false,

@@ -95,6 +95,6 @@
 }
 // entity 3
 {
-"classname" "info_player_start"
-"origin" "170 170 32"
+"classname" "player_spawn"
+"origin" "170 170 24"
 }

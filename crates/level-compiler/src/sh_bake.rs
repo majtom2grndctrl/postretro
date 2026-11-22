@@ -2,6 +2,7 @@
 // See: context/lib/build_pipeline.md
 
 mod animation;
+mod area_probe;
 mod bounce;
 mod depth_tiles;
 mod grid;
@@ -12,6 +13,8 @@ mod sh_math;
 mod trace;
 
 pub use animation::validate_light_animations;
+#[cfg(test)]
+pub(crate) use area_probe::area_sh_projection;
 #[cfg(test)]
 pub(crate) use bounce::bounce_sample_index;
 pub(crate) use bounce::{reflected_radiance, soft_visibility_seed};
@@ -41,6 +44,8 @@ pub(crate) use section::{
     compact_section_from_dense_atlas, encode_sh_volume_section_bc6h, f16_bits_to_f32,
     sh_atlas_array_layout,
 };
+#[cfg(test)]
+pub(crate) use sh_math::evaluate_sh_rgb;
 pub(crate) use sh_math::pack_octahedral_irradiance_tile;
 pub(crate) use trace::{Hit, bounce_hit, gather_hit, segment_clear};
 

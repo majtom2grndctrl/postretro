@@ -9,8 +9,8 @@ use glam::Vec3;
 
 use crate::chart_raster::chart_grid;
 use crate::lightmap_bake::{
-    Chart, RAY_EPSILON, SoftProbes, area_sample_target, hard_ray_target, probe_sample_direction,
-    soft_visibility_with,
+    Chart, RAY_EPSILON, SoftProbes, area_clear_visibility, area_sample_target, hard_ray_target,
+    probe_sample_direction, soft_visibility_with,
 };
 use crate::map_data::{LightType, MapLight};
 
@@ -21,7 +21,9 @@ pub(crate) const PENUMBRA_FLOOR_DEFAULT: bool = true;
 /// Footprint samples traced before escalating: the texel centre plus an
 /// eight-point ring. The centre catches a strip thinner than half a texel that
 /// runs through the texel; its ray runs to the emitter's centre, so it is the
-/// texel's own centre ray for soft lights too. The ring catches an edge
+/// texel's own centre ray for soft lights too. An area light's centre ray
+/// runs to the lifted lattice sample nearest its centre instead
+/// (`texel_footprint/area.rs`), never to its origin. The ring catches an edge
 /// anywhere within the kernel's reach, so agreeing probes never snap a texel
 /// the kernel would filter to a fraction. A four-point ring lets such a strip
 /// slip between its points.
@@ -121,18 +123,23 @@ impl TexelFootprint {
             offsets.push(polar(radius(stratum), GOLDEN_ANGLE * stratum as f32));
         }
 
-        let lattice = (0..full_samples)
-            .map(|index| {
-                let direction = probe_sample_direction(light, index, full_samples);
-                match light.light_type {
-                    LightType::Point | LightType::Spot => direction,
-                    LightType::Directional => {
+        // An area light's lattice depends on the receiver, so each texel
+        // builds its own (`texel_footprint/area.rs`); its footprint keeps
+        // only the offsets.
+        let lattice = match light.light_type {
+            LightType::Area => Vec::new(),
+            LightType::Point | LightType::Spot | LightType::Directional => (0..full_samples)
+                .map(|index| {
+                    let direction = probe_sample_direction(light, index, full_samples);
+                    if light.light_type == LightType::Directional {
                         let axis = sun_axis(light);
                         direction - axis * axis.dot(direction)
+                    } else {
+                        direction
                     }
-                }
-            })
-            .collect();
+                })
+                .collect(),
+        };
         let off_ring = count - FOOTPRINT_PROBES;
         let counter_len = COUNTER_RING_SAMPLES.min(off_ring);
         Self {
@@ -202,16 +209,20 @@ enum EmitterKey {
     },
 }
 
-fn emitter_key(light: &MapLight) -> EmitterKey {
+/// `None` for an area light, whose lattice depends on each receiver: it is
+/// never memoized, so it never moves a point or spot light's footprint
+/// (research.md O9).
+fn emitter_key(light: &MapLight) -> Option<EmitterKey> {
     match light.light_type {
-        LightType::Point | LightType::Spot => EmitterKey::Sphere,
-        LightType::Directional => EmitterKey::Cone {
+        LightType::Point | LightType::Spot => Some(EmitterKey::Sphere),
+        LightType::Directional => Some(EmitterKey::Cone {
             angular_diameter: light.angular_diameter.to_bits(),
             direction: light
                 .cone_direction
                 .unwrap_or([0.0, -1.0, 0.0])
                 .map(f32::to_bits),
-        },
+        }),
+        LightType::Area => None,
     }
 }
 
@@ -225,7 +236,9 @@ thread_local! {
 
 fn footprint_for(light: &MapLight, area_sample_count: u32) -> Arc<TexelFootprint> {
     let full_samples = area_sample_count.max(FOOTPRINT_PROBES as u32);
-    let key = emitter_key(light);
+    let Some(key) = emitter_key(light) else {
+        return Arc::new(TexelFootprint::build(light, area_sample_count));
+    };
     FOOTPRINT_MEMO.with(|memo| {
         if let Some((count, memo_key, footprint)) = memo.borrow().as_ref()
             && *count == full_samples
@@ -320,7 +333,11 @@ pub(crate) enum ProbeEarlyOut {
     /// not mean an open texel. The cap can only lower visibility, though,
     /// and the centre probe aims at the emitter's centre, in open air: with
     /// it and the ring all blocked, a real occluder stands in the way, and
-    /// the texel stores 0 as an ordinary light's does.
+    /// the texel stores 0 as an ordinary light's does. An area light is
+    /// never flagged, since its centroid may sit in solid by design; its
+    /// centre probe traces a lifted lattice sample on a polygon the texel
+    /// faces, which is in open air for the same reason, so the rule would
+    /// hold for it too (`texel_footprint/area.rs`).
     Blocked,
     /// None: every sample traced. A probe-point bake's rule for a flagged
     /// light ([`ProbeEarlyOut::for_probe_point`]), and the texel tests'
@@ -374,6 +391,22 @@ impl ProbeEarlyOut {
             Self::Blocked => clear == 0,
             Self::Off => false,
         }
+    }
+
+    /// [`Self::ends`] for an area light's ratio-estimator probes, each a
+    /// `(weight, clear)` pair, judged only among the probes that carry
+    /// weight. A zero-weight probe lies below the receiver's horizon: it
+    /// holds no light, and its ray mostly dives into the receiver's own
+    /// solid, so counting it would end a lit texel at 0. With no weighted
+    /// probe nothing is judged and the full set is traced.
+    pub(crate) fn ends_weighted(self, probes: &[(f64, bool)]) -> bool {
+        let (weighted, clear) = probes
+            .iter()
+            .filter(|&&(weight, _)| weight.is_finite() && weight > 0.0)
+            .fold((0u32, 0u32), |(weighted, clear), &(_, is_clear)| {
+                (weighted + 1, clear + u32::from(is_clear))
+            });
+        weighted > 0 && self.ends(clear, weighted)
     }
 }
 
@@ -455,6 +488,24 @@ impl TexelSampler {
     }
 }
 
+impl TexelSampler {
+    /// What [`TexelSampler::visibility`] returns at `site` when every
+    /// segment it would trace is clear: the tile shaft cull's value for a
+    /// clear tile. 1 for every light but an area light, whose ratio
+    /// estimator stores 0 when no lattice sample carries weight
+    /// ([`area_clear_visibility`]).
+    pub(crate) fn clear_visibility(&self, light: &MapLight, site: &TexelSite) -> f32 {
+        if light.light_type != LightType::Area {
+            return 1.0;
+        }
+        let full_samples = match self {
+            Self::Centre(probes) => probes.full_samples(),
+            Self::Footprint { footprint, .. } => footprint.full_samples,
+        };
+        area_clear_visibility(light, site.world_p, site.normal, site.seed, full_samples)
+    }
+}
+
 /// One texel's footprint result, with how it was reached.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct FootprintOutcome {
@@ -532,35 +583,21 @@ fn footprint_visibility(
     lead_in: impl Fn(Vec3, Vec3) -> bool,
     early_out: ProbeEarlyOut,
 ) -> FootprintOutcome {
-    let lift = site.normal * RAY_EPSILON;
-    let centre_origin = site.world_p + lift;
     let hard = match light.light_type {
         LightType::Point | LightType::Spot => light.light_size <= 0.0,
         LightType::Directional => light.angular_diameter <= 0.0,
+        LightType::Area => {
+            return area::footprint_visibility(
+                light, site, footprint, trace, reach, lead_in, early_out,
+            );
+        }
     };
     let rotation = footprint_rotation(site.seed);
     // A hard emitter traces one target from every point, so it pairs nothing.
     let mut pairing = (!hard).then(|| footprint.emitter_pairing(light, site, rotation));
     // `None` when the sample is clipped, else whether its ray is clear.
     let sample = |k: usize, pairing: Option<&EmitterPairing>| -> Option<bool> {
-        let point = if k == 0 {
-            site.world_p
-        } else {
-            let offset = site.frame.offset(footprint.offsets[k], rotation);
-            let point = site.world_p + offset;
-            // Started `RAY_EPSILON` behind the centre, `reach` skips exactly
-            // the stretch behind it and tests the clip segment from the
-            // centre on.
-            if site.may_clip
-                && !reach(
-                    centre_origin - offset.normalize_or_zero() * RAY_EPSILON,
-                    point + lift,
-                )
-            {
-                return None;
-            }
-            point
-        };
+        let point = footprint_point(site, footprint, k, rotation, &reach)?;
         // The centre probe's ray runs to the emitter's centre, soft or hard.
         let target = match pairing {
             Some(pairing) if k > 0 => area_sample_target(
@@ -572,19 +609,7 @@ fn footprint_visibility(
             ),
             _ => hard_ray_target(point, light),
         };
-        let origin = point + lift;
-        let clear = trace(origin, target);
-        if clear && k > 0 && site.may_clip {
-            let along = (target - origin).normalize_or_zero();
-            let lead_in_clear = lead_in(
-                origin - along * LEAD_IN_OVERLAP,
-                origin + along * (RAY_EPSILON + LEAD_IN_OVERLAP),
-            );
-            if !lead_in_clear {
-                return None;
-            }
-        }
-        Some(clear)
+        trace_footprint_sample(site, k, point, target, &trace, &lead_in)
     };
 
     let mut clear = 0u32;
@@ -623,6 +648,65 @@ fn footprint_visibility(
     }
 }
 
+/// Footprint sample `k`'s point on the receiver, or `None` when the centre
+/// cannot reach it: `reach` blocked its clip segment. The centre itself is
+/// never clipped.
+#[inline]
+fn footprint_point(
+    site: &TexelSite,
+    footprint: &TexelFootprint,
+    k: usize,
+    rotation: (f32, f32),
+    reach: impl Fn(Vec3, Vec3) -> bool,
+) -> Option<Vec3> {
+    if k == 0 {
+        return Some(site.world_p);
+    }
+    let lift = site.normal * RAY_EPSILON;
+    let centre_origin = site.world_p + lift;
+    let offset = site.frame.offset(footprint.offsets[k], rotation);
+    let point = site.world_p + offset;
+    // Started `RAY_EPSILON` behind the centre, `reach` skips exactly the
+    // stretch behind it and tests the clip segment from the centre on.
+    if site.may_clip
+        && !reach(
+            centre_origin - offset.normalize_or_zero() * RAY_EPSILON,
+            point + lift,
+        )
+    {
+        return None;
+    }
+    Some(point)
+}
+
+/// Whether footprint sample `k`'s ray from its lifted `point` to `target` is
+/// clear, or `None` when it is clear but its lead-in enters a wall, which
+/// drops the sample as a clip does. The centre's ray needs no lead-in.
+#[inline]
+fn trace_footprint_sample(
+    site: &TexelSite,
+    k: usize,
+    point: Vec3,
+    target: Vec3,
+    trace: impl Fn(Vec3, Vec3) -> bool,
+    lead_in: impl Fn(Vec3, Vec3) -> bool,
+) -> Option<bool> {
+    let origin = point + site.normal * RAY_EPSILON;
+    let clear = trace(origin, target);
+    if clear && k > 0 && site.may_clip {
+        let along = (target - origin).normalize_or_zero();
+        let lead_in_clear = lead_in(
+            origin - along * LEAD_IN_OVERLAP,
+            origin + along * (RAY_EPSILON + LEAD_IN_OVERLAP),
+        );
+        if !lead_in_clear {
+            return None;
+        }
+    }
+    Some(clear)
+}
+
+mod area;
 mod clip_reach;
 mod embedded_emitter;
 mod pairing;
@@ -636,6 +720,8 @@ pub(crate) use embedded_emitter::{EmbeddedEmitters, has_emitter_sphere};
 pub(crate) use embedded_emitter::{NO_EMBEDDED_EMITTERS, embedded_emitter_fraction};
 use pairing::EmitterPairing;
 
+#[cfg(test)]
+mod area_tests;
 #[cfg(test)]
 mod front_face_parity_tests;
 #[cfg(test)]

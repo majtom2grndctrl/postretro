@@ -3605,7 +3605,7 @@ Returned by `getMapEntities("light")`.
 | Field | Type | Description |
 |-------|------|-------------|
 | `id` | `EntityId` | Stable entity id. Pass to `setLightAnimation` steps. |
-| `position` | `{ x, y, z }` | Light origin in world space at query time. |
+| `position` | `{ x, y, z }` | Light origin in world space at query time. For an area light (`light_area`), the centre of its glowing faces, weighted by their area. |
 | `isDynamic` | `boolean` | Whether the light is runtime-dynamic. Dynamic lights participate in the per-fragment GPU light loop and the shadow-slot scheduler. This is not a color-animation eligibility flag. |
 | `tags` | `string[]` | The entity's tags at query time. Empty array if untagged. |
 | `component` | `LightComponent` | Full component snapshot at query time. See [LightComponent](#lightcomponent) below. |
@@ -3820,7 +3820,7 @@ A `LightAnimation` describes one looping (or finite) animation cycle. All fields
 | `periodMs` | `number` | required | Total duration of one cycle, in milliseconds. |
 | `brightness` | `number[]` | `null` | Brightness multiplier samples. The GPU interpolates via Catmull-Rom over the period. `0` = off, `1` = full intensity. Values above `1` are valid. |
 | `color` | `Vec3[]` | `null` | RGB color samples (`{ x, y, z }`). Accepted on dynamic and animated-baked static lights; the curve recolors their direct and baked-indirect contributions while preserving authored intensity. |
-| `direction` | `Vec3[]` | `null` | Unit-vector direction samples for spot lights. Non-unit samples are silently normalized. Zero-length samples are rejected with `InvalidArgument`. |
+| `direction` | `Vec3[]` | `null` | Unit-vector direction samples for spot lights. Non-unit samples are silently normalized. Zero-length samples are rejected with `InvalidArgument`. Refused on Area lights. |
 | `phase` | `number` | `null` | Offset into the cycle where this light starts, in `[0, 1)`. Use to stagger lights in a sequence. Values outside `[0, 1)` are normalized automatically. |
 | `playCount` | `number` | `null` | Number of complete cycles to play, then stop. `null` loops forever. |
 | `startActive` | `boolean` | `null` (true) | `false` defers the animation until an event activates the entity. Mirrors the FGD `_start_inactive` flag. |
@@ -3833,16 +3833,41 @@ The full component state returned in `LightEntity.component`. All fields are rea
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `lightType` | `"Point" \| "Spot" \| "Directional"` | Light shape. |
+| `lightType` | `"Point" \| "Spot" \| "Directional" \| "Area"` | Light shape. `"Area"` is a `light_area`: a baked light that emits from its glowing faces (see [Area lights](#area-lights) below). |
 | `intensity` | `number` | Brightness multiplier (linear, unbounded). |
 | `color` | `{ x, y, z }` | Linear RGB base color, nominally `[0, 1]`. |
-| `falloffModel` | `"Linear" \| "InverseDistance" \| "InverseSquared"` | Attenuation model. |
-| `falloffRange` | `number` | Attenuation radius, in meters. |
+| `falloffModel` | `"Linear" \| "InverseDistance" \| "InverseSquared"` | Attenuation model. Always `"InverseSquared"` for an area light. |
+| `falloffRange` | `number` | Attenuation radius, in meters. For an area light, its reach: the authored `_falloff_range`, or the reach the compiler worked out from its brightness and size. |
 | `coneAngleInner` | `number \| null` | Inner cone half-angle in radians. `null` for non-Spot lights. |
 | `coneAngleOuter` | `number \| null` | Outer cone half-angle in radians. `null` for non-Spot lights. |
-| `coneDirection` | `{ x, y, z } \| null` | Normalized aim vector. `null` for Point lights. |
+| `coneDirection` | `{ x, y, z } \| null` | Normalized aim vector. `null` for Point and Area lights. |
 | `isDynamic` | `boolean` | Same as `LightEntity.isDynamic`. |
 | `animation` | `LightAnimation \| null` | Active animation, or `null` if none. Reflects the last executed `setLightAnimation` step. |
+
+### Area lights
+
+An area light (`lightType` `"Area"`) is an ordinary member of `getMapEntities("light")`, in its map order among the other lights. Its snapshot reads `position` at the centre of its glowing faces, `falloffModel` `"InverseSquared"`, `falloffRange` its reach, and no cone. Its glowing faces follow its animation: they brighten, dim and change colour with the room on the same frame.
+
+- **Brightness and colour animate.** `pulse`, `fade`, `flicker`, `colorShift` and a raw `setLightAnimation` with `brightness` or `color` work as on any baked light. A map script that animates one reserves its animated bake, as for any static light (see [Baked-light membership](#baked-light-membership)).
+- **Direction does not.** An area light has no aim, so `sweep`, or any `setLightAnimation` carrying `direction`, fails with `InvalidArgument` and leaves the light's animation unchanged.
+- **A refused target stops the whole step.** A tagged or group `setLightAnimation` checks every target before it writes any. If one target refuses, for example a `sweep` over spot lights and an area light, no target changes, and nothing reaches co-op clients.
+- **A refused `levelLoad` step never runs.** It does not start the light or reserve its animated bake. An area light with `_start_inactive 1` whose only `levelLoad` step is a `sweep` starts dark.
+- **A `light 0` area light holds its last one-shot value.** It lights nothing, so a finished `fade` or one-shot colour change cannot be folded into its brightness. Its `animation` instead becomes a looping one-key hold at the final brightness and colour, with `playCount` `null`. Clearing that animation, or setting another one, replaces the hold, so the next animation starts from `_glow` × `_color` rather than the held value. On a lit light, a second shot starts where the first one settled.
+
+```typescript
+import { defineReaction, getMapEntities } from "postretro";
+
+export function setupLevel(_ctx: unknown) {
+  const panels = getMapEntities("light", { tag: "skylight" });
+  return {
+    reactions: [
+      defineReaction("levelLoad", {
+        sequence: panels.flatMap((p) => p.pulse({ min: 0.3, max: 1.0, periodMs: 900 })),
+      }),
+    ],
+  };
+}
+```
 
 ---
 
@@ -3908,7 +3933,7 @@ defineReaction("shift", { sequence: light.colorShift({ values: [{ x: 1, y: 0, z:
 light.sweep(opts: { values: Vec3[]; periodMs: number }): SequenceStep[]
 ```
 
-Builds one `setLightAnimation` step that sweeps a spot light's direction through the given unit vectors over `periodMs`. Samples are normalized; zero-length vectors error at the primitive.
+Builds one `setLightAnimation` step that sweeps a spot light's direction through the given unit vectors over `periodMs`. Samples are normalized; zero-length vectors error at the primitive. An area light refuses it with `InvalidArgument` (see [Area lights](#area-lights)).
 
 ```typescript
 defineReaction("sweep", { sequence: light.sweep({ values: [{ x: 1, y: 0, z: 0 }, { x: 0, y: 0, z: -1 }, { x: -1, y: 0, z: 0 }], periodMs: 4000 }) });
@@ -4906,6 +4931,7 @@ it never opens.
 | Empty `color` or `brightness` animation channel | Rejected by `setLightAnimation` with `InvalidArgument`; use `null` to omit a channel. |
 | Zero-length vector in `direction` samples | Rejected by `setLightAnimation` with `InvalidArgument`. |
 | Non-unit direction vectors | Silently normalized by the engine. |
+| `direction` samples (`sweep`) on an area light | Rejected by `setLightAnimation` with `InvalidArgument`; the light keeps its animation. A tagged or group step with any such target changes no target. |
 | Fog reaction primitive targets a tag with no matching entities | Debug-log no-op. |
 | Fog reaction primitive targets an entity lacking `FogVolumeComponent` | Skipped with `log::warn!` (tag-typo guard). |
 | `applyDamage` `amount` is negative or non-finite | The whole dispatch is a `log::warn!` no-op — no target takes damage (healing is out of scope). |

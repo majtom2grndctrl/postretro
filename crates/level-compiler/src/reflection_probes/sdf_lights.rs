@@ -51,12 +51,21 @@ impl SpecLight {
                 1.0,
                 -1.0,
             ),
-            AlphaLightType::Point => (Vec3::ZERO, 0, 1.0, -1.0),
+            // An area light's placeholder record keeps its spec index and
+            // adds nothing: zero colour below, as `pack_spec_lights` packs
+            // it. Its cast light is baked, which capture reads as it does
+            // any static light's; its glow is not a spec-light term.
+            AlphaLightType::Point | AlphaLightType::Area => (Vec3::ZERO, 0, 1.0, -1.0),
+        };
+        let color = if r.light_type == AlphaLightType::Area {
+            Vec3::ZERO
+        } else {
+            Vec3::from(r.color) * r.intensity
         };
         Self {
             position: Vec3::new(r.origin[0] as f32, r.origin[1] as f32, r.origin[2] as f32),
             range: r.falloff_range,
-            color: Vec3::from(r.color) * r.intensity,
+            color,
             sdf: r.shadow_type == AlphaShadowType::Sdf,
             aim,
             light_type,

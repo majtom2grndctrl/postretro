@@ -264,6 +264,13 @@ fn derive_influence(light: &MapLight) -> InfluenceRecord {
             ],
             radius: light.falloff_range,
         },
+        LightType::Area => {
+            let (center, radius) = light.reach_sphere();
+            InfluenceRecord {
+                center: center.as_vec3().to_array(),
+                radius: radius as f32,
+            }
+        }
     }
 }
 
@@ -304,6 +311,7 @@ mod tests {
             is_animated: false,
             tags: vec![],
             shadow_type,
+            area: None,
         }
     }
 

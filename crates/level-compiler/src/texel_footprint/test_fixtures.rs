@@ -237,6 +237,7 @@ pub(super) fn point_light(origin: [f64; 3], light_size: f32) -> MapLight {
         is_animated: false,
         tags: Vec::new(),
         shadow_type: ShadowType::StaticLightMap,
+        area: None,
     }
 }
 
@@ -271,7 +272,9 @@ pub(super) fn hard_sun(aim: [f32; 3]) -> MapLight {
 pub(super) fn toward_light(light: &MapLight, at: Vec3) -> Vec3 {
     match light.light_type {
         LightType::Directional => -Vec3::from(light.cone_direction.unwrap()).normalize(),
-        LightType::Point | LightType::Spot => (light.origin.as_vec3() - at).normalize(),
+        LightType::Point | LightType::Spot | LightType::Area => {
+            (light.origin.as_vec3() - at).normalize()
+        }
     }
 }
 
@@ -402,7 +405,7 @@ impl Fixture {
     }
 
     /// The receiver's one-chart atlas.
-    fn with_atlas<R>(&self, walk: impl FnOnce(&SharedAtlas<'_>) -> R) -> R {
+    pub(super) fn with_atlas<R>(&self, walk: impl FnOnce(&SharedAtlas<'_>) -> R) -> R {
         let chart = self.receiver.chart();
         let charts = [chart];
         let placements = [ChartPlacement {
@@ -443,6 +446,27 @@ impl Fixture {
         light: &MapLight,
         area_sample_count: u32,
         floor: bool,
+    ) -> VisibilityGrid {
+        self.weight_map_grid(light, area_sample_count, floor, true)
+    }
+
+    /// [`Fixture::bake_weight_map`]'s stored weights themselves, curve 1:
+    /// 0 where a texel above the epsilon has no entry.
+    pub(super) fn bake_weights(
+        &self,
+        light: &MapLight,
+        area_sample_count: u32,
+        floor: bool,
+    ) -> VisibilityGrid {
+        self.weight_map_grid(light, area_sample_count, floor, false)
+    }
+
+    fn weight_map_grid(
+        &self,
+        light: &MapLight,
+        area_sample_count: u32,
+        floor: bool,
+        as_visibility: bool,
     ) -> VisibilityGrid {
         use crate::animated_light_weight_maps::{
             WEIGHT_EPSILON, WeightMapInputs, bake_animated_light_weight_maps,
@@ -516,11 +540,19 @@ impl Fixture {
                 let y = ty + CHART_PADDING_TEXELS - rect.compact_y;
                 let entry =
                     section.offset_counts[(rect.texel_offset + y * rect.width + x) as usize];
-                let visibility = match entry.count {
+                let weight = match entry.count {
                     0 => 0.0,
-                    _ => section.texel_lights[entry.offset as usize].weight / unshadowed,
+                    _ => section.texel_lights[entry.offset as usize].weight,
                 };
-                grid.set(tx, ty, visibility);
+                grid.set(
+                    tx,
+                    ty,
+                    if as_visibility {
+                        weight / unshadowed
+                    } else {
+                        weight
+                    },
+                );
             }
         }
         grid

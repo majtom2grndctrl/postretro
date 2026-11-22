@@ -99,6 +99,7 @@ fn point_light(origin: [f64; 3], range: f32) -> MapLight {
         is_animated: false,
         tags: vec![],
         shadow_type: ShadowType::StaticLightMap,
+        area: None,
     }
 }
 

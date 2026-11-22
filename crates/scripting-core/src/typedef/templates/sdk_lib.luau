@@ -39,6 +39,7 @@ export type LightEntityHandle = {
   fade: (self: LightEntityHandle, opts: { from: number, to: number, periodMs: number }) -> {SetLightAnimationStep},
   flicker: (self: LightEntityHandle, opts: { min: number, max: number, rate: number }) -> {SetLightAnimationStep},
   colorShift: (self: LightEntityHandle, opts: { values: {Vec3}, periodMs: number }) -> {SetLightAnimationStep},
+  --- Sweep the `direction` channel through unit vectors over `periodMs`. Refused with InvalidArgument on an area light (`lightType` `"Area"`), which has no direction.
   sweep: (self: LightEntityHandle, opts: { values: {Vec3}, periodMs: number }) -> {SetLightAnimationStep},
 }
 

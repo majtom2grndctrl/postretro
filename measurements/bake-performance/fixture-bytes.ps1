@@ -32,6 +32,7 @@ $fixtures = @(
     @{ Map = 'test_animated_weight_maps_mixed'; Args = @() }
     @{ Map = 'test_animated_weight_maps_occluded'; Args = @() }
     @{ Map = 'test_animated_weight_maps_single'; Args = @() }
+    @{ Map = 'area-light-panel'; Args = @() }
     @{ Map = 'shadowmask-groups-capture'; Args = @() }
     @{ Map = 'specular-shadowmask-capture'; Args = @() }
     @{ Map = 'animated-layer-spill'; Args = @() }

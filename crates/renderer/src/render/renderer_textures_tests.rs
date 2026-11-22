@@ -170,6 +170,7 @@ pub(in crate::render) fn with_one_triangle<R>(
         vertex_spec_owners: &[],
         vertex_emissive_volumes: &[],
         emissive_volumes: &[],
+        area_glow_lights: &[],
         indices: &indices,
         bvh: &bvh,
         lights,

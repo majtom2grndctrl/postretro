@@ -5,6 +5,7 @@ use glam::Vec3;
 use postretro_level_format::lightmap::f32_to_f16_bits;
 use postretro_level_format::sh_volume::OctahedralShProbe;
 
+use super::area_probe::accumulate_area_direct;
 use super::bounce::{sample_radiance_rgb, soft_visibility_seed};
 use super::light_eval::incident_radiance_at_point;
 use super::sh_math::{accumulate_sh_rgb, apply_cosine_lobe_rgb};
@@ -14,7 +15,7 @@ use super::{
     SAMPLING_LATTICE_OFFSET, ShBakeCtx,
 };
 use crate::lightmap_bake::soft_visibility_early_out;
-use crate::map_data::MapLight;
+use crate::map_data::{LightType, MapLight};
 use crate::mover_probe_channel::{JointVisibility, PosedOccluder, joint_soft_visibility};
 use crate::texel_footprint::ProbeEarlyOut;
 
@@ -77,6 +78,10 @@ pub(crate) fn bake_probe_indirect_rgb(
 /// light is provably zero-contribution at this probe, so the seed indexing keeps
 /// the output byte-identical to an unculled bake.
 ///
+/// An area light projects over its polygons instead of along one direction
+/// (`area_probe::accumulate_area_direct`): analytic L0–L2, shadowed by a
+/// control variate on its solid-angle samples.
+///
 /// The probe is a point in air with no surface normal, so soft visibility
 /// (`soft_visibility_early_out`) uses the incident direction `l` as the offset
 /// normal (matching the Task 0 D3 harness); the hard-shadow case routes through
@@ -123,13 +128,27 @@ pub(crate) fn bake_probe_direct_rgb_posed(
     debug_assert_eq!(lights.len(), early_outs.len());
     let mut acc = [0f32; 27];
     for (light_index, light) in lights.iter().enumerate() {
-        let Some((radiance, l)) = incident_radiance_at_point(light, probe_pos) else {
-            continue;
-        };
         let global_index = light_global_indices[light_index];
         // No per-ray axis here (direct is a single shadow query per light, not a
         // sphere of rays), so the ray-index seed axis is fixed at 0.
         let seed = soft_visibility_seed(probe_index, 0, global_index);
+        // No single direction carries a polygon's light: it projects over
+        // the polygons instead.
+        if light.light_type == LightType::Area {
+            accumulate_area_direct(
+                &mut acc,
+                ctx,
+                probe_pos,
+                light,
+                seed,
+                early_outs[light_index],
+                posed,
+            );
+            continue;
+        }
+        let Some((radiance, l)) = incident_radiance_at_point(light, probe_pos) else {
+            continue;
+        };
         let mut v = soft_visibility_early_out(
             probe_pos,
             l,

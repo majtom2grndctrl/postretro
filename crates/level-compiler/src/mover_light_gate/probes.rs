@@ -162,28 +162,29 @@ fn gate_light_probes(
 }
 
 /// Grid index ranges, per axis, of the probes inside the box around the
-/// light's falloff sphere; the whole grid for a sun. Only a loop bound,
+/// light's falloff sphere (an area light's reach sphere); the whole grid for a sun. Only a loop bound,
 /// so it takes the falloff exactly: `light_reaches_point` then tests each
 /// probe as the SH bake does, and no probe past the falloff is reached. The
 /// slack the mover prefilter adds bounds segments against grown brushes,
 /// not probes.
 fn influence_ranges(light: &MapLight, layout: &ProbeGridLayout) -> [Range<usize>; 3] {
     let whole = layout.dims.map(|count| 0..count as usize);
-    match light.light_type {
-        LightType::Directional => whole,
+    let (centre, reach) = match light.light_type {
+        LightType::Directional => return whole,
         LightType::Point | LightType::Spot => {
-            let reach = f64::from(light.falloff_range.max(1.0e-4));
-            std::array::from_fn(|axis| {
-                let spacing = f64::from(layout.cell_size[axis]);
-                let from = layout.world_min[axis];
-                let low = ((light.origin[axis] - reach - from) / spacing).floor();
-                let high = ((light.origin[axis] + reach - from) / spacing).ceil();
-                let last = whole[axis].end as f64 - 1.0;
-                if low.is_nan() || high.is_nan() || low > last || high < 0.0 {
-                    return 0..0;
-                }
-                low.max(0.0) as usize..high.min(last) as usize + 1
-            })
+            (light.origin, f64::from(light.falloff_range.max(1.0e-4)))
         }
-    }
+        LightType::Area => light.reach_sphere(),
+    };
+    std::array::from_fn(|axis| {
+        let spacing = f64::from(layout.cell_size[axis]);
+        let from = layout.world_min[axis];
+        let low = ((centre[axis] - reach - from) / spacing).floor();
+        let high = ((centre[axis] + reach - from) / spacing).ceil();
+        let last = whole[axis].end as f64 - 1.0;
+        if low.is_nan() || high.is_nan() || low > last || high < 0.0 {
+            return 0..0;
+        }
+        low.max(0.0) as usize..high.min(last) as usize + 1
+    })
 }

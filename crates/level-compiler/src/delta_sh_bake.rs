@@ -518,6 +518,12 @@ fn light_aabb(light: &MapLight, world_aabb: (DVec3, DVec3)) -> (DVec3, DVec3) {
             let center = DVec3::new(light.origin.x, light.origin.y, light.origin.z);
             (center - DVec3::splat(r), center + DVec3::splat(r))
         }
+        // The reach sphere holds every point within reach of a polygon.
+        LightType::Area => {
+            let (center, radius) = light.reach_sphere();
+            let r = (radius + AABB_PADDING_METERS).max(0.01);
+            (center - DVec3::splat(r), center + DVec3::splat(r))
+        }
     }
 }
 
@@ -688,6 +694,7 @@ mod tests {
             is_animated: false,
             tags: vec![],
             shadow_type: crate::map_data::ShadowType::StaticLightMap,
+            area: None,
         }
     }
 

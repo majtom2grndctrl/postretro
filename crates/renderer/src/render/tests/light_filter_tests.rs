@@ -381,6 +381,54 @@ fn animated_baked_candidates_keep_section_45_roster_indices_not_descriptor_slots
     assert_f32_near(candidates.influences[2].radius, 2.0);
 }
 
+// AC 32: promotion selects no area light on either path. An animated area
+// light in section 45's direct-delta set is refused while the animated spot
+// beside it is selected at its own roster index; a selected-static entry
+// naming an area light never becomes a candidate.
+#[test]
+fn promotion_selects_no_area_light_on_either_path() {
+    let mut animated_area = mk_light(1.0, false);
+    animated_area.light_type = postretro_level_loader::LightType::Area;
+    animated_area.animated_slot = Some(0);
+    let mut animated_spot = mk_light(1.0, false);
+    animated_spot.light_type = postretro_level_loader::LightType::Spot;
+    animated_spot.animated_slot = Some(1);
+    let mut static_area = mk_light(1.0, false);
+    static_area.light_type = postretro_level_loader::LightType::Area;
+    let static_point = mk_light(1.0, false);
+    let lights = vec![animated_area, animated_spot, static_area, static_point];
+    let influences = vec![
+        LightInfluence {
+            center: Vec3::ZERO,
+            radius: 4.0,
+        };
+        4
+    ];
+
+    // Both roster rows own direct-delta blocks.
+    let roster =
+        animated_baked_shadow_candidates_with_direct_delta(&lights, &influences, &[0, 1], &[0, 1]);
+    assert_eq!(
+        roster
+            .iter()
+            .map(|candidate| (candidate.animated_baked_index, candidate.source_index))
+            .collect::<Vec<_>>(),
+        vec![(1, 1)],
+        "the area light's row is a hole; the spot keeps roster index 1"
+    );
+
+    let candidates =
+        filter_entity_shadow_candidates_with_selection(&lights, &influences, &[2, 3], &roster);
+    assert_eq!(candidates.source_indices, vec![3, 1]);
+    assert_eq!(candidates.selection_indices, vec![Some(1), None]);
+    assert_eq!(candidates.animated_baked_indices, vec![None, Some(1)]);
+
+    // The selected-static vectors stay raw-length; the area entry is the
+    // sentinel no candidate references.
+    let selected = filter_selected_static_entity_shadow_lights(&lights, &influences, &[2, 3]);
+    assert_eq!(selected.source_indices, vec![usize::MAX, 3]);
+}
+
 #[test]
 fn fog_candidate_filter_identifies_selected_static_candidates() {
     let selection_indices = [None, Some(0), None, Some(3)];

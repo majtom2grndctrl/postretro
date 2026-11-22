@@ -476,6 +476,7 @@ mod tests {
             is_animated: false,
             tags: Vec::new(),
             shadow_type: ShadowType::StaticLightMap,
+            area: None,
         }
     }
 

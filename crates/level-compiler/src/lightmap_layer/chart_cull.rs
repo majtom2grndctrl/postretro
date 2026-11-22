@@ -6,6 +6,7 @@ use std::f32::consts::FRAC_PI_2;
 
 use glam::{DVec3, Vec3};
 
+use crate::area_light::AreaEmitter;
 use crate::chart_raster::{ChartGrid, chart_grid, chart_interior_dims};
 use crate::lightmap_bake::{Chart, directional_light_direction, spot_cone_angles};
 use crate::map_data::{LightType, MapLight};
@@ -126,13 +127,19 @@ const DISTANCE_SLACK: f64 = 4.0e-6;
 /// Whether `light`'s direct term can be non-zero at any interior texel of
 /// `chart`. `false` is exact: the bake's own expressions give every texel the
 /// walk visits (`for_each_light_layer_chart_texel`) a zero contribution, so it
-/// would record none. The direct term reads the light centre only, never
-/// `light_size`, so neither does this.
+/// would record none. A point or spot light's direct term reads the light
+/// centre only, never `light_size`, so neither does this.
 ///
 /// A point or spot light is ruled out by any one of three tests, each bounding
 /// an affine or monotone quantity over the texel-centre rectangle at its
 /// extremes, with margins above the rounding of the texel centres and of the
 /// bake's `f32` term. Non-finite input keeps the pair.
+///
+/// An area light's windowed polygon term reads its polygons, never its
+/// centroid alone, and is ruled out by either of two tests: every texel
+/// centre lies outside its reach sphere, where the window is exactly zero,
+/// or every polygon is behind every centre or wholly below every centre's
+/// horizon, where the clipped term is exactly zero.
 pub(crate) fn chart_may_cover(light: &MapLight, chart: &Chart) -> bool {
     if chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
         // The walk visits no texel.
@@ -147,6 +154,18 @@ pub(crate) fn chart_may_cover(light: &MapLight, chart: &Chart) -> bool {
                 .dot(directional_light_direction(light))
                 .max(0.0)
                 > 0.0
+        }
+        LightType::Area => {
+            let Some(emitter) = light.area.as_ref() else {
+                return true;
+            };
+            let Some(rect) = TexelRect::of(chart) else {
+                return true;
+            };
+            if !chart.normal.is_finite() {
+                return true;
+            }
+            !(rect.beyond_reach_sphere(light) || rect.faces_no_polygon(emitter, chart.normal))
         }
         LightType::Point | LightType::Spot => {
             // The bake measures from the light's `f32` origin.
@@ -290,6 +309,57 @@ impl TexelRect {
         let max_cos = (along * (distance * distance - radius * radius).sqrt() + across * radius)
             / (distance * distance);
         max_cos <= f64::from(outer.cos()) - COS_SLACK
+    }
+
+    /// Whether every texel centre lies outside an area light's reach sphere
+    /// (centroid, circumradius + reach): then every centre is farther than
+    /// the reach from every polygon point, where the bake's window is exactly
+    /// zero. The margin covers `slack` and [`DISTANCE_SLACK`] on the bake's
+    /// `f64` polygon distance.
+    fn beyond_reach_sphere(&self, light: &MapLight) -> bool {
+        let (centre, radius) = light.reach_sphere();
+        if !centre.is_finite() || !radius.is_finite() {
+            return false;
+        }
+        self.distance_to(centre) - self.slack > radius * (1.0 + DISTANCE_SLACK)
+    }
+
+    /// Whether every polygon of `emitter` contributes nothing at any texel
+    /// centre: each lies wholly behind the receiver's horizon there, or the
+    /// centre lies behind its plane. Both quantities are affine in the centre
+    /// (and the first in the vertex too), so the rectangle's four corners
+    /// bound them, with margins over `slack` and the bake's `f64` rounding.
+    /// Below the horizon the polygon term clips every vertex away; behind
+    /// the plane it is zero by the one-sided rule.
+    fn faces_no_polygon(&self, emitter: &AreaEmitter, normal: Vec3) -> bool {
+        let normal = normal.as_dvec3();
+        let corners = self.corners();
+        let centre = self.centre();
+        emitter.polygons.iter().all(|poly| {
+            let finite = poly.vertices.iter().all(|v| v.is_finite()) && poly.normal.is_finite();
+            if !finite || poly.vertices.is_empty() {
+                return false;
+            }
+            let farthest = poly
+                .vertices
+                .iter()
+                .map(|v| v.distance(centre))
+                .fold(0.0, f64::max)
+                + self.radius();
+            let horizon_margin = normal.length() * self.slack + COS_SLACK * farthest;
+            let below_horizon = poly.vertices.iter().all(|&v| {
+                corners
+                    .iter()
+                    .all(|&corner| normal.dot(v - corner) < -horizon_margin)
+            });
+            // `signed_distance` is relative to the first vertex along a unit
+            // normal, so the centres' own drift bounds it.
+            let plane_margin = poly.normal.length() * self.slack + COS_SLACK * farthest;
+            let behind = corners
+                .iter()
+                .all(|&corner| poly.signed_distance(corner) < -plane_margin);
+            below_horizon || behind
+        })
     }
 
     /// Exact distance from `p` to the rectangle.

@@ -348,6 +348,7 @@ fn light_type_name(light_type: LightType) -> &'static str {
         LightType::Point => "Point",
         LightType::Spot => "Spot",
         LightType::Directional => "Directional",
+        LightType::Area => "Area",
     }
 }
 
@@ -396,6 +397,7 @@ mod tests {
             is_animated: false,
             tags: vec![if dynamic { "dynamic" } else { "wave" }.to_owned()],
             shadow_type: ShadowType::StaticLightMap,
+            area: None,
         }
     }
 

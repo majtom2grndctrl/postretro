@@ -208,9 +208,11 @@ Shadows and probes:
 - [ ] A texel north of a light wrapping all four sides of a pillar, with nothing
   between, stores visibility exactly 1 and matches the unoccluded polygon term
   within 1% (research.md O20).
-- [ ] Billboard scatter and the mover probe channel each project a 4 × 4 m panel
-  over the polygon: at a probe 1 m below, the side-facing value is within 5% of
-  0.781.
+- [ ] Billboard scatter and the mover probe channel each integrate a 4 × 4 m panel
+  over the polygon. At a probe 1 m below its centre, the mover probe channel's
+  side-facing reconstruction is within 5% of 0.781, and billboard scatter stores
+  the polygon term facing the panel within 1% of 2.611, the floor's value there,
+  not the centroid point value L·A/d² (16).
 
 Placement, culls and keys:
 - [ ] In one entity holding a frame brush and an `_e` glass brush, only the

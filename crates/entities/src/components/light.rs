@@ -22,6 +22,11 @@ pub enum LightKind {
     Point,
     Spot,
     Directional,
+    /// A polygon area light (`light_area`). Its light is baked; at runtime it
+    /// is a light member with brightness and colour animation only. `origin`
+    /// is the emitting faces' area-weighted centroid and `falloff_range` the
+    /// resolved reach. A direction channel is refused.
+    Area,
 }
 
 /// Per-light animation curve set.

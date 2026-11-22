@@ -1206,6 +1206,13 @@ pub(crate) fn validate_entity_shadow_light_selection(
                 format!("light index {index} references a directional light"),
             ));
         }
+        // Promotion shadows from a point; an area light is not one.
+        if light.light_type == LightType::Area {
+            return Err(section_validation(
+                "EntityShadowLights",
+                format!("light index {index} references an area light"),
+            ));
+        }
         if light.shadow_type != ShadowType::StaticLightMap {
             return Err(section_validation(
                 "EntityShadowLights",

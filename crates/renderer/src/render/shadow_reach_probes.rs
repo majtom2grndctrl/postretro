@@ -289,7 +289,8 @@ impl<'a> ReachProbe<'a> {
                     outcome
                 })
                 .collect(),
-            LightType::Directional => Vec::new(),
+            // Neither holds a pool slot: an area light never promotes.
+            LightType::Directional | LightType::Area => Vec::new(),
         }
     }
 }
@@ -588,6 +589,7 @@ fn stress_maps_shadow_reach_walk_matches_brute_force() {
         let mut map_spots = Tally::default();
         let mut map_points = Tally::default();
         let mut directional = 0;
+        let mut area = 0;
         for (i, light) in map.lights.iter().enumerate() {
             let label = || {
                 format!(
@@ -603,12 +605,16 @@ fn stress_maps_shadow_reach_walk_matches_brute_force() {
                     probe.check_light(&label, light, &mut map_points);
                 }
                 LightType::Directional => directional += 1,
+                LightType::Area => area += 1,
             }
         }
         map_spots.report(&map, "map spot lights");
         map_points.report(&map, "map point-light cube faces");
         if directional > 0 {
             println!("   {directional} directional lights: no pool region, not probed");
+        }
+        if area > 0 {
+            println!("   {area} area lights: never promoted, not probed");
         }
 
         let mut carried = Tally::default();

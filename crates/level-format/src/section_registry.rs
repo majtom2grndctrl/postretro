@@ -280,6 +280,11 @@ pub enum SectionId {
     /// means no seams.
     /// See `seams::SeamsSection`.
     Seams = 61,
+    /// Optional area glow: per `light_area`, its `_glow`, colour, intensity
+    /// and compose descriptor slot, and the Geometry faces that draw it.
+    /// Written only when the map has an area light; absent means none.
+    /// See `area_glow::AreaGlowSection`.
+    AreaGlow = 62,
 }
 
 impl SectionId {
@@ -334,6 +339,7 @@ impl SectionId {
             59 => Some(Self::ProbeDepthTiles),
             60 => Some(Self::Emissive),
             61 => Some(Self::Seams),
+            62 => Some(Self::AreaGlow),
             _ => None,
         }
     }
@@ -395,6 +401,7 @@ mod tests {
             SectionId::ProbeDepthTiles,
             SectionId::Emissive,
             SectionId::Seams,
+            SectionId::AreaGlow,
         ];
 
         for section_id in registered {
@@ -402,6 +409,6 @@ mod tests {
         }
 
         assert_eq!(SectionId::from_u32(14), None);
-        assert_eq!(SectionId::from_u32(62), None);
+        assert_eq!(SectionId::from_u32(63), None);
     }
 }

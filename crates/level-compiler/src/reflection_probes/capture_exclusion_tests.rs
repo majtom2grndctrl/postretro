@@ -546,6 +546,7 @@ fn oversize_cut_remaps_each_sub_face_to_its_parent_brush_and_the_mask_follows() 
         is_animated: false,
         tags: Vec::new(),
         shadow_type: ShadowType::StaticLightMap,
+        area: None,
     }];
     // A small pool edge forces the cut: 3.25 m at 0.1 m per texel passes 32.
     let cut = crate::lightmap_bake::plan_cut_charts(

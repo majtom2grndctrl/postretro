@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use glam::{DVec3, Vec3};
 
+use crate::area_light::target_lift_meters;
 use crate::light_namespaces::AnimatedBakedLights;
 use crate::map_data::{LightType, MapLight};
 use crate::partition::{BspTree, find_leaf_for_point};
@@ -246,10 +247,11 @@ pub(crate) fn portal_adjacency(portals: &[Portal]) -> HashMap<usize, Vec<usize>>
 }
 
 /// The cells a light's portal flood reaches: from the cell its origin
-/// locates to, through `adjacency`, never into an exterior cell. The seed and
-/// the portals must share one id space (runtime cells). `None` means the
-/// portal filter is bypassed (directional source, or origin in a solid or
-/// exterior cell) — every overlapping cell is kept.
+/// locates to (an area light: each cell in front of a polygon's centroid),
+/// through `adjacency`, never into an exterior cell. The seeds and the
+/// portals must share one id space (runtime cells). `None` means the portal
+/// filter is bypassed (directional source, or a seed in a solid or exterior
+/// cell) — every overlapping cell is kept.
 pub(crate) fn light_portal_reach(
     light: &MapLight,
     tree: &BspTree,
@@ -259,17 +261,39 @@ pub(crate) fn light_portal_reach(
     if matches!(light.light_type, LightType::Directional) {
         return None;
     }
-    let source = find_leaf_for_point(tree, light.origin);
-    if source >= tree.leaves.len() {
-        return None;
+    // An area light's centroid may sit in a pillar or on its glass, so it
+    // floods from the leaf in front of each polygon instead. Any source in
+    // a solid, exterior or missing leaf bypasses the filter, which keeps
+    // every cell: conservative, so exact.
+    let points = match &light.area {
+        Some(emitter) if light.light_type == LightType::Area => emitter
+            .polygons
+            .iter()
+            .map(|poly| poly.centroid() + poly.normal * target_lift_meters())
+            .collect(),
+        _ => vec![light.origin],
+    };
+    let mut sources = Vec::with_capacity(points.len());
+    for point in points {
+        let source = find_leaf_for_point(tree, point);
+        if source >= tree.leaves.len() {
+            return None;
+        }
+        if tree.leaves[source].is_solid || exterior_leaves.contains(&source) {
+            return None;
+        }
+        sources.push(source);
     }
-    if tree.leaves[source].is_solid || exterior_leaves.contains(&source) {
+    if sources.is_empty() {
         return None;
     }
     let mut reachable: HashSet<usize> = HashSet::new();
-    reachable.insert(source);
     let mut queue: VecDeque<usize> = VecDeque::new();
-    queue.push_back(source);
+    for source in sources {
+        if reachable.insert(source) {
+            queue.push_back(source);
+        }
+    }
     while let Some(leaf) = queue.pop_front() {
         if let Some(neighbors) = adjacency.get(&leaf) {
             for &n in neighbors {
@@ -490,6 +514,12 @@ pub(crate) fn light_aabb(light: &MapLight, world_aabb: (DVec3, DVec3)) -> (DVec3
             let center = DVec3::new(light.origin.x, light.origin.y, light.origin.z);
             (center - DVec3::splat(r), center + DVec3::splat(r))
         }
+        // The reach sphere holds every point within reach of a polygon.
+        LightType::Area => {
+            let (center, radius) = light.reach_sphere();
+            let r = (radius + f64::from(AABB_PADDING_METERS)).max(0.01);
+            (center - DVec3::splat(r), center + DVec3::splat(r))
+        }
     }
 }
 
@@ -632,6 +662,7 @@ mod tests {
             is_animated: false,
             tags: vec![],
             shadow_type: crate::map_data::ShadowType::StaticLightMap,
+            area: None,
         }
     }
 

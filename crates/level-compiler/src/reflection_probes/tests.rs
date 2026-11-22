@@ -129,6 +129,8 @@ pub(super) struct Extras {
     /// Id 60's volume records; empty leaves every face at its texture's
     /// strength.
     pub emissive_volumes: Vec<postretro_level_format::emissive::EmissiveVolumeRecord>,
+    /// Id 62, when the room has an area light.
+    pub area_glow: Option<postretro_level_format::area_glow::AreaGlowSection>,
 }
 
 impl Default for Extras {
@@ -144,6 +146,7 @@ impl Default for Extras {
             authored: Vec::new(),
             emissive: Vec::new(),
             emissive_volumes: Vec::new(),
+            area_glow: None,
         }
     }
 }
@@ -244,6 +247,7 @@ pub(super) fn with_inputs<R>(
         texture_keys: &room.keys,
         emissive_textures: &extras.emissive,
         emissive_volumes: &extras.emissive_volumes,
+        area_glow: extras.area_glow.as_ref(),
         prm_root: room.prm_dir.path(),
     })
 }
@@ -943,7 +947,7 @@ fn a_non_identity_descriptor_table_in_either_delta_section_refuses_the_build() {
 }
 
 /// A 4×4 `.prm` of one sRGB diffuse and one sRGB emissive colour, at `key`.
-fn write_glowing_prm(dir: &Path, key: [u8; 32], diffuse: [u8; 4], emissive: [u8; 4]) {
+pub(super) fn write_glowing_prm(dir: &Path, key: [u8; 32], diffuse: [u8; 4], emissive: [u8; 4]) {
     let slot = |rgba: [u8; 4]| {
         let mut payload = Vec::new();
         for texels in [16, 4, 1] {

@@ -47,6 +47,9 @@ pub struct LevelGeometry<'a> {
     /// Id 60's volumes, whose no-script glow seeds the volume table at
     /// install; the frame's volume bridge owns every later write.
     pub emissive_volumes: &'a [postretro_level_format::emissive::EmissiveVolumeRecord],
+    /// Id 62's lights, whose faces' glow entries fill the glow table past the
+    /// volumes at install. Empty for a level with no area light.
+    pub area_glow_lights: &'a [postretro_level_format::area_glow::AreaGlowLight],
     pub indices: &'a [u32],
     pub bvh: &'a BvhTree,
     pub lights: &'a [MapLight],

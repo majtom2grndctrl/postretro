@@ -7,6 +7,7 @@ pub mod animated_direct_sh_delta_volumes;
 pub mod animated_light_chunks;
 pub mod animated_light_weight_maps;
 pub mod animated_lightmap_atlas;
+pub mod area_glow;
 pub mod billboard_direct_scatter_volume;
 pub mod bsp;
 pub mod bvh;

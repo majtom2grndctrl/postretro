@@ -55,4 +55,14 @@ Read at 956a929b.
 | P2 | Hot reload stages a `weaponMounts` edit, then the pawn switches weapons in the same level | Edit deferred → switch → next level load | The switch mounts the pre-edit entry. The edited entry first mounts after the next level load. |
 | P3 | A pawn with a base attachment on a socket some entry covers has no active weapon: at install, or after dropping its active weapon | The writer runs with no active archetype | The base attachment is present. |
 | P4 | A switch from entry {hand_r: M, back: S} to entry {hand_r: M} | Same model on the shared socket; the old entry has an extra socket | `hand_r` keeps M; `back` returns to its base attachment, or empties. |
-| P5 | A level transition where `player_spawn` names a different player class and the pawn carries its active weapon | New class installed → sync → first frame | The pawn mounts the new class's entry for that weapon, or nothing plus its missing-entry warning. |
+| P5 | A level transition where `player_spawn` names a different player class and the pawn carries its active weapon | New class installed → sync → first frame | The pawn mounts the new class's entry for that weapon, or nothing plus its missing-entry warning. A class without `mesh.weaponMounts` shows only its base attachments, with no warning. |
+
+## Review findings (round 2)
+- `MeshDescriptor` is not a serde type. Both bridges read `mesh` key by key and silently ignore unknown keys (`scripting-core/src/data_descriptors/js/entity.rs`, `lua/entity.rs`), so a misspelled `weaponMounts` opts out silently.
+- The mesh deferral compares the whole `mesh` value (`runtime/core.rs`), so a nested table is covered.
+- The `ar_4_trooper` and `ar_4_warrior` glTFs both reference `model.bin`, and `ar_4/model.bin` differs from both. Moving them into `ar_4/` means renaming their buffers. Their textures are byte-identical to `ar_4`'s.
+- `prop_to_gltf.py` exports glTF Separate into the output folder, images included, so a bake can rewrite a viewmodel's textures in a shared folder.
+- `ar_4/model.gltf` is itself the limitator's fit (`docs/weapon-mounts.md`), and its raw source is outside the repo.
+- The loadout lowering rewrites the authored array in place (`sdk/lib/data_script.ts`, `.luau`), so a shared or spread table seen by a second `defineEntity` holds names, not handles.
+- Load rules run on the incoming manifest, apart from the deferred active set (`runtime/core.rs` commit).
+- The writer is stateless and already holds `hit_zone_store`, whose warn-once set clears per level load (`hit_zones.rs`).

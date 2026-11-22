@@ -1,6 +1,6 @@
 # E21--character-weapon-mounts
 
-Brief · compact · draft, validated (Direction sound), detail review round 1 and owner answers applied; owner API review pending · Epic 21 · reads: `context/lib/entity_model.md` §2 (Weapon vocabulary) · `context/lib/resource_management.md` §7 (Sockets, Socket-mounted weapons) · `context/lib/networking.md` §Weapon placement is content · `done/E21--coop-avatar-weapon-presentation/` · `done/E21--bone-sockets-attachments/` · read at 956a929b
+Brief · compact · draft, validated (Direction sound), detail review rounds 1–2 and owner answers applied; owner API review pending · Epic 21 · reads: `context/lib/entity_model.md` §2 (Weapon vocabulary) · `context/lib/resource_management.md` §7 (Sockets, Socket-mounted weapons) · `context/lib/networking.md` §Weapon placement is content · `done/E21--coop-avatar-weapon-presentation/` · `done/E21--bone-sockets-attachments/` · read at 956a929b
 
 ## Problem
 Owner-observed defect (2026-11-22): the player avatar exo_red holds its third-person weapons at the wrong angle and at a cartoonish size. The cause: a pawn's third-person weapon is the weapon descriptor's single `thirdPersonModel`, mounted at a hard-coded `hand_r` with no fit to the holder's rig. Every dev weapon points that field at its first-person viewmodel asset, which is camera-shaped and was never fitted to any hand (`research.md` §Assets). One weapon-owned model fits only the rigs whose hand frames match its bake. The shared `ar_4` already failed `--check` on both enemy rigs it was tried on (`done/character-clip-library/`). `drafts/E10--npc-equipment-sets/` needs one weapon seated on mixed rigs. A mod with several player characters (`player_spawn` `entity_class`) hits the same wall. When done, a character descriptor declares the mount fitted to its own rig for each weapon it may wield. A pawn mounts its active weapon from its own descriptor, and exo_red holds every dev weapon seated in its hand.
@@ -89,25 +89,31 @@ Both runtimes ship.
 - [ ] A pawn with no active weapon, at install or after dropping it, shows every base attachment, including one on a socket a table entry covers (P3).
 - [ ] A second weapon switch on the same tick leaves only the final weapon's entry mounted.
 - [ ] A connected client's own pawn of a non-default player class mounts that class's entry on its arming snapshot (P1).
-- [ ] A pawn whose class changes at a level transition while it carries its active weapon mounts the new class's entry, on the host and on a connected client (P5).
+- [ ] A pawn whose class changes at a level transition while it carries its active weapon mounts the new class's entry, on the host and on a connected client. A new class without `mesh.weaponMounts` shows only its base attachments, with no warning (P5).
 - [ ] No wire record gains a field. Each peer resolves the mount from `active_weapon_archetype` and the pawn's class alone.
 - [ ] Fire origin and hit tests are identical with and without a `weaponMounts` table on the firing pawn's descriptor.
 
 **Missing data**
 - [ ] For a character that declares the table: a loadout weapon it lacks warns once at load, naming both, and a picked-up weapon it lacks warns once at first wield. A character without `mesh.weaponMounts` wields every weapon, mounts nothing and logs nothing.
-- [ ] An entry naming a socket the rig lacks warns once, naming the character, weapon and socket, and draws nothing on that socket. The entry's other sockets still mount.
+- [ ] A loadout weapon the table lacks warns at load and does not warn again when first wielded.
+- [ ] A missing-entry warning fires once per character and weapon per level load on each peer that resolves it. A respawn or a repeat switch in the same level does not repeat it; the next level load may warn again.
+- [ ] A character without `mesh.weaponMounts` keeps every base attachment, including one on `hand_r`, with no active weapon and through every weapon switch.
+- [ ] An entry naming a socket the rig lacks warns once, naming the character, weapon and socket; the generic holder-socket warning does not also fire for a mount. It draws nothing on that socket, and the entry's other sockets still mount.
 - [ ] Every model a table lists is in the level-install sweep and the predicted-model set. A listed model that fails to load warns once, however often its weapon is switched to, and the entry's other sockets still mount.
 
 **Load rules and retirement**
 - [ ] Each load rule in Decisions rejects load in both runtimes.
 - [ ] `thirdPersonModel` on a weapon is rejected as an unknown field in both runtimes, and no `content/` descriptor carries it.
+- [ ] Load rules check the incoming descriptors, not the deferred table: a hot reload that renames a weapon and its entry commits. A loadout weapon added with its entry in the same reload mounts nothing until the next level load, and warns once.
+- [ ] One `weaponMounts` list shared by two `defineEntity` calls, directly or through a spread `mesh`, loads in both runtimes and lowers to the same names for both.
 - [ ] A table edit under hot reload keeps the live mounts and logs the visual-asset deferral warning. A weapon switch before the next level load mounts the pre-edit entry (P2). The next level load applies the edit.
 
 **Content**
-- [ ] Every model exo_red's `weaponMounts` lists carries `extras.mount`. For each, `postretro-tool solve-weapon-mount content/dev/models/exo_red/model.gltf --weapon <model> --mount-joint hand_r --check` reports `VERIFIED: mount check passed.` from the declared `extras.mount` axes, never the UNVERIFIED geometric assist. Each listed model sits in its weapon's folder, named for exo_red. No listed model is any weapon's `viewmodel` path, and no viewmodel asset changes. This runs as an automated test over the table, not over a directory. So a re-export that drops the fit fails, and so does an entry repointed at a viewmodel.
+- [ ] Every model exo_red's `weaponMounts` lists carries `extras.mount`. For each, `postretro-tool solve-weapon-mount content/dev/models/exo_red/model.gltf --weapon <model> --mount-joint hand_r --check` reports `VERIFIED: mount check passed.` from the declared `extras.mount` axes, never the UNVERIFIED geometric assist. Each listed model sits in the folder of its entry weapon's `viewmodel`, named for exo_red. No listed model is any weapon's `viewmodel` path, and no viewmodel asset changes. This runs as an automated test over the table, not over a directory. So a re-export that drops the fit fails, and so does an entry repointed at a viewmodel.
 - [ ] exo_red's table has an entry for each of: reference shotgun, pistol, rifle, plasma rifle, rocket launcher, `incendiary_rifle`, `wieldable_fixture_auto`, `wieldable_fixture_press`, `coop_health_weapon`, `coop_heat_test`. Loading the dev player logs no missing-entry warning.
-
-- [ ] The rifle squads' bakes live in `models/ar_4/`, named for their characters, and each squad still mounts its own rifle. No `models/ar_4_*` folder remains.
+- [ ] Each weapon folder's viewmodel glTF, its buffer and every texture it references are byte-identical to 956a929b; a bake adds only its own `.gltf` and `.bin`.
+- [ ] The rifle squads' bakes live in `models/ar_4/`, and each squad still mounts its own rifle. No `models/ar_4_*` folder remains.
+- [ ] Each moved ar_4 bake references only its own buffer, named after its glTF, and `solve-weapon-mount <its rig> --weapon <moved bake> --mount-joint hand_r --check` still reports `VERIFIED: mount check passed.`
 
 **Surface**
 - [ ] The Scripting surface example, as a fixture descriptor, loads in both runtimes and lowers to the same descriptor.

@@ -9,6 +9,8 @@ read at: e761fb131
 - "Against the build before" (GPU rows) → the oracle is the reflecting pipeline rebuilt from the same composed source with `fluid_reflection_ratio_from_sums(` textually restored to the kept per-fragment `fluid_reflection_ratio(`, installed through a test-only seam. That is the build before's fragment exactly: the only fragment change this brief makes. Same frame, same pose, same clock, so no clock-phase confound. A second binary from the merge-base stays the manual rows' method.
 - `fluid_reflection_light_value` and its helpers move from `fluid_reflection.wgsl` into a new `fluid_reflection_lights.wgsl`, concatenated into both the fluid module and the sums module, so the sums pass reuses them by text. The kept per-fragment `fluid_reflection_ratio` stays in `fluid_reflection.wgsl`, unreachable. Existing pins retarget to the file each function now lives in; bodies unchanged.
 
+- Row 24 (owner ruling, 2026-11-22) → "No view is slower beyond run-to-run spread" now judges whole-frame GPU time, and the report adds the sums pass's overlap. Fluid + sums double-counts the sums pass where it runs beside other GPU work (e24, which stores no animated light); see Results.
+
 ## Delegated answers
 - Non-finite live values (review finding) — the sums pass caps each light's change at 65504 (f16 max, the capture and target format). An infinite change would otherwise turn a zero share or lobe weight into NaN and blank the probe, where the per-fragment form blew out only shared directions. The coefficient stays `current / ref − 1`; the per-fragment oracle is unchanged.
 - "Behind a wall" (row 15) — the face is absent from the previous frame's draw list, which is what the collector hands the renderer for a hidden face; no wall geometry is needed for the renderer-side contract.
@@ -45,7 +47,7 @@ read at: e761fb131
 | 21 level A re-publish (P7) | `a_level_published_again_reads_its_lights_changed_while_resident_and_builds_nothing` | achievable as stated | pass on Metal (5300M): renderer `fluid` filter 126 passed with POSTRETRO_REQUIRE_GPU=1; render-cpu `reflection` 89 passed |
 | 22 reflection-free and Off unchanged | `the_reflection_free_variant_and_every_off_case_draw_exactly_as_the_build_before` | achievable as stated | pass on Metal (5300M): renderer `fluid` filter 126 passed with POSTRETRO_REQUIRE_GPU=1; render-cpu `reflection` 89 passed |
 | 23 DX12 FXC | `dx12_fxc_compiles_every_full_init_pipeline` on a Windows DX12 adapter | Windows machine; outstanding here | outstanding: needs a Windows DX12 adapter |
-| 24 5300M A/B | owner machine, Metal System Trace kit | manual | measured (see Results below); probes map faster, e24 views slower by the sums pass's own cost: owner decision |
+| 24 5300M A/B | owner machine, Metal System Trace kit | manual | pass (owner-reworded, see Corrections): whole-frame GPU time −3.0 ms probes 4K, −0.47 ms probes Auto, e24 views within run-to-run spread; see Results |
 | 25 GTX 1660 A/B | owner, Windows | manual | outstanding: owner, Windows |
 
 ## Tasks

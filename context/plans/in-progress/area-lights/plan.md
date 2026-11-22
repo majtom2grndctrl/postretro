@@ -253,7 +253,7 @@ Row 11 now reads, in the brief and here:
 | 38 AlphaLights v5 round trip; v4/unknown rejected | `level-format` tests | achievable | pass |
 | 39 no-area map byte-identical | every bake section vs `main` build on fixtures | achievable | pass (opt-in gate vs `11f27aaa9` binaries, rerun after review fixes: only id 18 version word differs) |
 | 40 area fixture in `GATE_FIXTURES` | profiled fixture, determinism gate | achievable | pass (determinism gate; budget gate stale on `main` itself, not this branch). After the `player_spawn` fix (2026-11-22), the budget gate run on `area-light-panel` alone matches both its id 22 and id 42 goldens |
-| 41 scripting example on `content/dev` | dev-map script test + TS/Luau checks | achievable | pass, except TS and Luau type checks outstanding (`tsc`, `luau-analyze` not installed) |
+| 41 scripting example on `content/dev` | dev-map script test + TS/Luau checks | achievable | pass. TypeScript (`tsc` 6.0.3, 2026-11-22): `sdk/type-tests/area-lights.ts` and `content/dev` accept `"Area"` and reject `"Rect"`; the only errors (`e10-typed-attacks.ts`, two faction scripts, `reactive-ui-fixture.ts`, `stress-warren.ts`) appear identically on `origin/main`. Luau: outstanding, `luau-analyze` not available here; the generated `postretro.d.luau` `LightKind` carries `"Area"`, pinned by the sim crate's `expected.d.luau` fixture |
 | 42 `sweep` refused; spot still works | `script_primitives` test | achievable | pass |
 | 43 tagged sweep S1, A, S2 unchanged (O14) | host + client replication test | achievable | pass |
 | 44 inert-key snapshots identical (O18) | bake-time vs runtime snapshot test | achievable | pass |

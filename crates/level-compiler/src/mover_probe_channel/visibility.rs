@@ -239,8 +239,10 @@ pub(crate) fn joint_soft_visibility(
 /// samples ([`crate::lightmap_bake::area_probe_visibility`]): the polygon
 /// lattice mapped uniformly in solid angle onto the polygons whose front
 /// half-space holds the probe, every sample weighing alike, so the counts are
-/// the solid-angle shares q divides. `surface_normal` is only the lift
-/// direction, Φ̂. A probe no polygon faces traces nothing.
+/// the solid-angle shares q divides. `surface_normal` is only `lift`, the
+/// light's probe direction
+/// ([`AreaEmitter::probe_direction`](crate::area_light::AreaEmitter::probe_direction)).
+/// A probe no polygon faces traces nothing.
 #[allow(clippy::too_many_arguments)]
 fn area_joint_visibility(
     surface_point: Vec3,

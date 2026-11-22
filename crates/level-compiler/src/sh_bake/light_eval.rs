@@ -64,8 +64,8 @@ pub(crate) fn incident_radiance_at_point(light: &MapLight, point: Vec3) -> Optio
             Some((radiance, l))
         }
         // No single direction carries a polygon's light. A probe treated as
-        // a receiver facing the light's net direction Φ̂ (the normalised
-        // irradiance vector of the polygons it faces) takes the windowed
+        // a receiver facing the light's probe direction
+        // (`AreaEmitter::probe_direction`) takes the windowed
         // polygon term, which is I/d² in the far limit and never more than a
         // card facing the light receives: billboard scatter's value. Direct
         // SH projects over the polygons instead (`area_probe`), and the

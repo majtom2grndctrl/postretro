@@ -435,15 +435,85 @@ fn a_hull_forming_pane_emits_only_its_side_facing_the_room() {
 }
 
 // Regression: a hull-forming `light_area` whose only `_e` side faces the
-// void compiled silently dark; it fails, naming the entity, as one with no
-// `_e` face does.
+// void compiled silently dark; it fails, naming the entity and saying its
+// `_e` faces were culled, not that it has none.
 #[test]
 fn a_hull_forming_light_whose_only_e_side_faces_the_void_fails_naming_it() {
     let error = resolve(&hull_ceiling_map([WALL, WALL, WALL, WALL, WALL, GLASS]))
         .expect_err("the `_e` side faces the void")
         .to_string();
     assert!(
-        error.contains("entity 1 'light_area' has no face with an `_e` map"),
+        error.contains(
+            "entity 1 'light_area' has `_e` faces, but all are culled as exterior: \
+             they face the void, or the map leaks"
+        ),
+        "{error}"
+    );
+}
+
+/// [`ceiling_panel`]'s map with the room's +y wall left out: the room opens
+/// on the void.
+fn leaking_panel_map() -> String {
+    let shell = [
+        brush([-16, -16, -16], [272, 272, 0], WALL),
+        brush([-16, -16, 128], [272, 272, 144], WALL),
+        brush([-16, -16, 0], [0, 272, 128], WALL),
+        brush([256, -16, 0], [272, 272, 128], WALL),
+        brush([0, -16, 0], [256, 0, 128], WALL),
+    ]
+    .concat();
+    let panel = area_entity("", &brush([96, 96, 120], [160, 160, 128], GLASS));
+    format!(
+        "{{\n\"classname\" \"worldspawn\"\n{shell}}}\n{panel}\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"32 32 24\"\n}}\n"
+    )
+}
+
+// On a leaking map the flood reaches every empty leaf and geometry draws no
+// face, so exposure, which keeps what geometry draws, keeps none: the light
+// fails saying its `_e` faces were culled, not that it has none.
+#[test]
+fn a_light_in_a_leaking_map_fails_saying_its_e_faces_were_culled() {
+    let content = content(&leaking_panel_map());
+    let mut map = parse_map_file(&content.map, MapFormat::IdTech2).unwrap();
+    let OccluderPartition { result, .. } =
+        partition_with_occluders(&map.brush_volumes, &map.kinematic_movers).unwrap();
+    let (exterior, _) = full_exterior_flood(&result.tree);
+    let area = map.area_lights[0].clone();
+    assert!(
+        result
+            .faces
+            .iter()
+            .any(|face| area.brush_indices.contains(&face.brush_index) && face.texture == GLASS),
+        "the BSP keeps the panel's `_e` faces"
+    );
+    assert!(
+        result
+            .tree
+            .leaves
+            .iter()
+            .enumerate()
+            .all(|(index, leaf)| leaf.is_solid || exterior.contains(&index)),
+        "the flood reaches every empty leaf"
+    );
+    let (geometry, _) =
+        crate::geometry::extract_geometry_with_brushes(&result.faces, &result.tree, &exterior);
+    assert!(geometry.geometry.faces.is_empty(), "geometry draws no face");
+
+    let error = resolve_area_lights(
+        &mut map,
+        &result.faces,
+        &result.tree,
+        &exterior,
+        |texture: &str| texture == GLASS,
+    )
+    .expect_err("no `_e` face is drawn")
+    .to_string();
+    assert!(
+        error.contains(
+            "entity 1 'light_area' has `_e` faces, but all are culled as exterior: \
+             they face the void, or the map leaks"
+        ),
         "{error}"
     );
 }

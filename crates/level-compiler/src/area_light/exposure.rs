@@ -26,7 +26,10 @@ const UNSPLIT_SIDE_RELATIVE_TOLERANCE: f64 = 1.0e-6;
 /// `origin` to the area-weighted centroid and its `falloff_range` to the
 /// authored override or the derived reach (O22), and appends the centroid to
 /// its diagnostic label. Fails, naming the light, when one is left with no
-/// emitting polygon.
+/// emitting polygon, saying apart a light whose `_e` faces all lie in
+/// exterior leaves from one with no `_e` face. On a leaking map the flood
+/// reaches every empty leaf, so geometry draws nothing and every area light
+/// fails the first way.
 pub(crate) fn resolve_area_lights(
     map_data: &mut MapData,
     faces: &[Face],
@@ -48,6 +51,12 @@ pub(crate) fn resolve_area_lights(
         );
         let label = &mut map_data.light_source_labels[area.light_index];
         let Some(emitter) = AreaEmitter::new(polygons) else {
+            if e_faces_all_culled(faces, &drawn, &area.brush_indices, &has_emissive_map) {
+                anyhow::bail!(
+                    "{label} has `_e` faces, but all are culled as exterior: \
+                     they face the void, or the map leaks"
+                );
+            }
             anyhow::bail!("{label} has no face with an `_e` map");
         };
         let light = &mut map_data.lights[area.light_index];
@@ -82,6 +91,25 @@ fn drawn_faces(face_count: usize, tree: &BspTree, exterior_leaves: &HashSet<usiz
         }
     }
     drawn
+}
+
+/// Whether the light owns `_e` faces and `drawn` holds none of them. A light
+/// with a drawn `_e` face that still has no emitter lost it to the sliver
+/// floor, and fails as having no `_e` face (research.md O8).
+fn e_faces_all_culled(
+    faces: &[Face],
+    drawn: &[bool],
+    brush_indices: &[usize],
+    has_emissive_map: &impl Fn(&str) -> bool,
+) -> bool {
+    let mut own_e_faces = faces
+        .iter()
+        .zip(drawn)
+        .filter(|(face, _)| {
+            brush_indices.contains(&face.brush_index) && has_emissive_map(&face.texture)
+        })
+        .peekable();
+    own_e_faces.peek().is_some() && own_e_faces.all(|(_, &is_drawn)| !is_drawn)
 }
 
 /// The light's emitting polygons: per source side, its unsplit winding when

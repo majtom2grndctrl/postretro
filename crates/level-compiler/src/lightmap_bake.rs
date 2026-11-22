@@ -1356,7 +1356,8 @@ pub(crate) enum AreaProbeVisibility {
 /// lattice mapped uniformly in solid angle onto the polygons whose front
 /// half-space holds `point`, every sample weighing alike, since a probe has
 /// no receiver normal. Each segment leaves `point` lifted along `lift` (the
-/// light's net direction, the normalised irradiance vector) and ends on a
+/// light's probe direction,
+/// [`AreaEmitter::probe_direction`](crate::area_light::AreaEmitter::probe_direction)) and ends on a
 /// polygon, lifted off it by the tracer tolerance. The probe subset
 /// ([`area_probe_indices`]) is traced first and ends the trace where
 /// `early_out` says, as for a sphere; otherwise the full set is traced.

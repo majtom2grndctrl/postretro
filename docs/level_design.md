@@ -207,7 +207,7 @@ A glowing surface that lights the room as one soft panel: a ceiling skylight, a 
 
 **Keys that stop the compile.** Each names the entity and the key: `_shadow_type sdf`, `direction_curve`, any `style` other than `0` (use `brightness_curve` instead), a negative `light`, and `_bake_only 1` together with `_start_inactive 1`.
 
-**`light 0`.** The light lights nothing, and the compile warns so. Its faces still glow at `_glow` × `_color` and follow the light: they start dark with `_start_inactive 1`, and brighten, dim and change colour when a script animates it. A fade or colour change that runs once and stops returns them to `_glow` × `_color`. Water reflections show them at their average glow, even while the light is dark.
+**`light 0`.** The light lights nothing, and the compile warns so. Its faces still glow at `_glow` × `_color` and follow the light: they start dark with `_start_inactive 1`, and brighten, dim and change colour when a script animates it. A fade or colour change that runs once and stops leaves them at its last brightness and colour, as it leaves a lit light's room; clearing the animation afterwards returns them to `_glow` × `_color`. Water reflections show them at their average glow, even while the light is dark.
 
 **Scripts** see an area light as a light of type `"Area"`, at the centre of its glowing faces. `pulse`, `fade`, `flicker` and `colorShift` work; `sweep` has no direction to turn and is refused. See [LightComponent](scripting-reference.md#lightcomponent).
 

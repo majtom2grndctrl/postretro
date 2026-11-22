@@ -33,7 +33,6 @@ pub(crate) use visibility::{one_sample_visibility, weighted_visibility};
 impl AreaEmitter {
     /// Horizon-clipped irradiance per unit radiance at a receiver `(p, n)`,
     /// summed over the polygons, with the summed clipped irradiance vector.
-    #[allow(dead_code)] // Reference evaluator for tests; the bakes call the per-polygon terms.
     pub(crate) fn irradiance(&self, p: DVec3, n: DVec3) -> (f64, DVec3) {
         self.polygons.iter().fold((0.0, DVec3::ZERO), |acc, poly| {
             let (e, phi) = polygon_irradiance(poly, p, n);
@@ -43,7 +42,6 @@ impl AreaEmitter {
 
     /// [`Self::irradiance`] scaled by the reach window at the distance to the
     /// nearest polygon: the term every area-light consumer evaluates.
-    #[allow(dead_code)] // Reference evaluator for tests; the bakes window the term themselves.
     pub(crate) fn windowed_irradiance(&self, p: DVec3, n: DVec3, reach: f64) -> (f64, DVec3) {
         let window = reach_window(self.nearest_distance(p), reach);
         if window == 0.0 {

@@ -195,7 +195,9 @@ and `_color`, never the emissive map or its strength (`build_pipeline.md`
     carries each light's faces (`rendering_pipeline.md` §7.3, Area glow). No
     `emissive_volume` claims it. Reflection capture shows it at `_glow` × the
     light's reference colour (§5) and counts it in that light's
-    live-lighting share. A `_glow` edit re-runs only reflection capture.
+    live-lighting share. A `light 0` light keeps its slot, so its glow
+    follows its state in `_color`; capture shows it static at its reference
+    glow (§5.2). A `_glow` edit re-runs only reflection capture.
 - **Emissive volumes:** an `emissive_volume` brush scales and tints the static
   world faces it holds. Glow = texture strength × (min + brightness × (max −
   min)) × color. Membership is per final face, fixed at compile time

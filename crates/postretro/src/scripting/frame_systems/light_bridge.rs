@@ -27,7 +27,8 @@ use postretro_entities::registry::{ComponentKind, EntityId, EntityRegistry};
 /// `animation_cycle_index` identifies the finite period currently packed for
 /// endpoint-clamped GPU sampling.
 /// When `current_time − t` reaches `play_count × period_ms / 1000.0`, the bridge
-/// samples the final keyframe, writes a static `LightComponent` back to the registry,
+/// samples the final keyframe, writes a static `LightComponent` back to the registry
+/// (a `light 0` area light keeps a one-key hold: `check_play_count_completion`),
 /// and clears the timing state. A component change observed between frames resets
 /// `animation_start_time` to the current sample time. Identical rewrites and
 /// same-frame restoration keep the running clock.
@@ -183,6 +184,13 @@ struct MapLightShape {
     /// Raw section-45 rows joined to this authored map light. Built once when
     /// the promotion roster is installed so per-frame packing never scans it.
     animated_baked_raw_indices: Vec<usize>,
+    /// An area light authored at `light 0` with a compose slot. Its faces'
+    /// glow entries take the `light 0` form, which reads brightness and colour
+    /// from the compose descriptor's curves alone, so a settle must keep them
+    /// there (`check_play_count_completion`). Keyed on the authored
+    /// intensity, the one the glow entry was compiled from, so a lit light a
+    /// fade settled at 0 keeps folding.
+    light_zero_area: bool,
     /// Runtime tombstones are reclaimed exactly once after their entity
     /// disappears. Reuse resets this marker for the new entity.
     reclaimed: bool,
@@ -492,6 +500,9 @@ impl LightBridge {
                 animated_slot: light.animated_slot,
                 authored_rest_direction: light.cone_direction,
                 animated_baked_raw_indices: Vec::new(),
+                light_zero_area: matches!(light.light_type, LightType::Area)
+                    && light.intensity == 0.0
+                    && light.animated_slot.is_some(),
                 reclaimed: false,
             });
             self.cached_origins_f64.push(light.origin);
@@ -620,6 +631,7 @@ impl LightBridge {
                 animated_slot: None,
                 authored_rest_direction: [0.0, 0.0, 0.0],
                 animated_baked_raw_indices: Vec::new(),
+                light_zero_area: false,
                 reclaimed: false,
             };
             if let Some(slot) = self.free_slots.pop() {
@@ -741,6 +753,7 @@ impl LightBridge {
                     (!shape.animated_baked_raw_indices.is_empty()
                         && !matches!(current.light_type, LightKind::Area))
                     .then_some(shape.authored_rest_direction),
+                    shape.light_zero_area,
                 )
             {
                 let had_radius_animation = current
@@ -810,7 +823,8 @@ impl LightBridge {
         }
 
         // Commit settled components so a subsequent `getMapEntities` observes
-        // post-animation static state.
+        // post-animation state: static, or a `light 0` area light's one-key
+        // hold (`check_play_count_completion`).
         for (map_idx, id, settled_component, had_radius_animation) in settled {
             // Stale-id error means the entity was despawned between read and write; ignore.
             let _ = registry.set_component(id, settled_component.clone());
@@ -1671,8 +1685,10 @@ fn sample_light_animation_curve(
 /// **`play_count` is stripped:** the GPU never sees completion bounds. The
 /// CPU-side bridge resets finite descriptors once per period and handles
 /// completion by writing final radiance back as static `intensity`/`color`
-/// before clearing `animation`. A negative packed period selects the shared
-/// endpoint-clamped curve mode; positive periods remain closed loops.
+/// before clearing `animation` (a `light 0` area light instead holds it in a
+/// one-key loop: `check_play_count_completion`). A negative packed period
+/// selects the shared endpoint-clamped curve mode; positive periods remain
+/// closed loops.
 ///
 /// Sample payloads live in a separate `anim_samples` storage buffer addressed
 /// by per-descriptor offsets.
@@ -1804,11 +1820,30 @@ pub(crate) fn pack_animation_descriptor(
 /// If `current` carries a `play_count`-bounded animation that has elapsed,
 /// sample the final keyframe and return the settled static `LightComponent`.
 /// Decoupled from mutation so `update`'s diff pass can hold a shared borrow.
+///
+/// `light_zero_area` (an area light authored at `light 0`, with a compose
+/// slot) settles to a looping one-key hold of the final brightness and colour
+/// instead of folding them into `intensity` and `color`.
+///
+/// Why: the fold multiplies the final brightness into an intensity of 0,
+/// which loses it, and its glow entry's `light 0` form reads brightness and
+/// colour from the compose curves alone, never `intensity` or the component
+/// colour (`forward.wgsl` `area_glow_factor`). Folded, a fade or colour shot
+/// would snap the faces back to `_glow × _color` on the settle frame. The hold
+/// lives in the registry component, as a lit light's folded intensity does, so
+/// every peer reaches it the same way: a replicated one-shot settles to the
+/// same hold on host, client and late joiner, and a later captured write
+/// replaces it as it replaces any animation. Scripts see it as the light's
+/// `animation`: `playCount` null, one key per channel the shot carried.
+/// Clearing it returns the faces to `_glow × _color`, the light's rest state,
+/// where clearing a lit light's settled fold keeps the folded brightness.
+/// Lit lights fold as before, byte for byte.
 fn check_play_count_completion(
     current: &LightComponent,
     snapshot: Option<&LightSnapshot>,
     current_time: f32,
     baked_rest_direction: Option<[f32; 3]>,
+    light_zero_area: bool,
 ) -> Option<LightComponent> {
     let anim = current.animation.as_ref()?;
     if !anim.start_active.unwrap_or(true) {
@@ -1826,16 +1861,31 @@ fn check_play_count_completion(
     }
 
     let mut settled = current.clone();
-    if let Some(brightness) = &anim.brightness
-        && let Some(&final_brightness) = brightness.last()
-    {
-        settled.intensity *= final_brightness;
-    }
-    if let Some(color) = &anim.color
-        && let Some(final_color) = color.last()
-    {
-        settled.color = final_color.as_f32_3();
-    }
+    let final_brightness = anim
+        .brightness
+        .as_ref()
+        .and_then(|brightness| brightness.last().copied());
+    let final_color = anim.color.as_ref().and_then(|color| color.last().copied());
+    let hold = if light_zero_area {
+        (final_brightness.is_some() || final_color.is_some()).then(|| LightAnimation {
+            period_ms: anim.period_ms,
+            phase: None,
+            play_count: None,
+            start_active: None,
+            brightness: final_brightness.map(|brightness| vec![brightness]),
+            color: final_color.map(|color| vec![color]),
+            direction: None,
+            radius: None,
+        })
+    } else {
+        if let Some(final_brightness) = final_brightness {
+            settled.intensity *= final_brightness;
+        }
+        if let Some(final_color) = final_color {
+            settled.color = final_color.as_f32_3();
+        }
+        None
+    };
     if let Some(rest_direction) = baked_rest_direction {
         settled.cone_direction = Some(rest_direction);
     } else if let Some(direction) = &anim.direction
@@ -1848,7 +1898,7 @@ fn check_play_count_completion(
     {
         settled.falloff_range = final_radius;
     }
-    settled.animation = None;
+    settled.animation = hold;
     Some(settled)
 }
 
@@ -3446,6 +3496,191 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// One `light 0` area light at compose slot 0 with its glow entry:
+    /// `_glow` 4, `(glow, 0, packed _color, slot)`.
+    fn light_zero_area_light_with_glow(color: [f32; 3]) -> (MapLight, [f32; 4]) {
+        let (mut light, _) = area_light_with_glow(color);
+        light.intensity = 0.0;
+        let entry = postretro_render_cpu::emissive_volume::area_glow_entry(
+            &postretro_level_format::area_glow::AreaGlowLight {
+                glow: 4.0,
+                color,
+                intensity: 0.0,
+                compose_slot: Some(0),
+                faces: vec![0],
+            },
+        );
+        assert_eq!(entry[1], 0.0, "the `light 0` entry form");
+        (light, entry)
+    }
+
+    /// A compose descriptor write and the bridge's scripted sample region
+    /// that frame, which its curve offsets index (`fgd_sample_float_count` 0).
+    type ComposeFrame = ([u8; ANIMATION_DESCRIPTOR_SIZE], Vec<f32>);
+
+    /// [`settle_one_shot`] keeping the curve samples, for a settled descriptor
+    /// that still carries curves; also returns the settled component.
+    fn settle_one_shot_with_samples(
+        light: MapLight,
+        animation: LightAnimation,
+    ) -> (LightComponent, Vec<ComposeFrame>) {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[light], &mut registry, 0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
+        let id = bridge.entity_for_map_index(0).unwrap();
+        let mut component = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .clone();
+        component.animation = Some(animation);
+        registry.set_component(id, component).unwrap();
+        let _ = bridge.update(&mut registry, 1.0, 0.0).unwrap();
+        let mut seen = Vec::new();
+        let mut last: Option<ComposeFrame> = None;
+        for time in [2.01, 2.5, 3.0] {
+            let update = bridge.update(&mut registry, time, 0.0).unwrap();
+            if let Some((slot, bytes)) = update.compose_descriptor_writes.first() {
+                assert_eq!(*slot, 0);
+                let samples = update
+                    .samples_bytes
+                    .chunks_exact(4)
+                    .map(|chunk| f32::from_ne_bytes(chunk.try_into().unwrap()))
+                    .collect();
+                last = Some((*bytes, samples));
+            }
+            seen.push(
+                last.clone()
+                    .expect("the settle frame writes the compose descriptor"),
+            );
+        }
+        let settled = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .clone();
+        (settled, seen)
+    }
+
+    /// The brightness and colour curves a compose descriptor names.
+    fn descriptor_curves(
+        bytes: &[u8; ANIMATION_DESCRIPTOR_SIZE],
+        samples: &[f32],
+    ) -> (Vec<f32>, Vec<[f32; 3]>) {
+        let u = |at: usize| u32::from_ne_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
+        let brightness = samples[u(8)..u(8) + u(12)].to_vec();
+        let color = (0..u(32))
+            .map(|key| {
+                let at = u(28) + key * 3;
+                [samples[at], samples[at + 1], samples[at + 2]]
+            })
+            .collect();
+        (brightness, color)
+    }
+
+    /// The glow and room a `light 0` area light presents at `time` from one
+    /// settled compose frame, through the CPU mirrors of the forward glow and
+    /// the compose pass.
+    fn light_zero_glow_and_room(
+        entry: [f32; 4],
+        (bytes, samples): &ComposeFrame,
+        time: f32,
+    ) -> ([f32; 3], [f32; 3]) {
+        let f = |at: usize| f32::from_ne_bytes(bytes[at..at + 4].try_into().unwrap());
+        let (brightness, color) = descriptor_curves(bytes, samples);
+        let descriptor = postretro_render_cpu::sh_compose::AnimatedLightScaleDescriptor {
+            period: f(0),
+            phase: f(4),
+            base_color: [f(16), f(20), f(24)],
+            brightness: &brightness,
+            color: &color,
+            is_active: u32::from_ne_bytes(bytes[36..40].try_into().unwrap()) != 0,
+        };
+        assert!(f(0) > 0.0, "a settled hold loops; it never reads as a run");
+        (
+            postretro_render_cpu::emissive_volume::area_glow_factor(entry, Some(descriptor), time),
+            postretro_render_cpu::sh_compose::animated_light_scale(Some(descriptor), time),
+        )
+    }
+
+    fn one_shot(brightness: Option<Vec<f32>>, color: Option<Vec<Vec3Lit>>) -> LightAnimation {
+        LightAnimation {
+            period_ms: 1000.0,
+            phase: None,
+            play_count: Some(1),
+            start_active: None,
+            brightness,
+            color,
+            direction: None,
+            radius: None,
+        }
+    }
+
+    // Acceptance row 53 (research.md O1) on a `light 0` area light: its fade
+    // to 0.25 settles with the faces' emissive multiplier at 0.25, on the
+    // settle frame and after, and never snaps back to `_glow × _color`. The
+    // room stays unlit. The settled component holds the end value as a
+    // looping one-key curve.
+    #[test]
+    fn a_light_zero_area_light_fade_settles_its_glow_at_the_end_value() {
+        let (light, entry) = light_zero_area_light_with_glow([1.0, 0.8, 0.6]);
+        let rest = postretro_render_cpu::emissive_volume::unpack_area_glow_color(entry[2]);
+        let (settled, frames) =
+            settle_one_shot_with_samples(light, one_shot(Some(vec![1.0, 0.25]), None));
+        for (frame, compose) in frames.iter().enumerate() {
+            let (glow, room) = light_zero_glow_and_room(entry, compose, 2.01 + frame as f32);
+            for channel in 0..3 {
+                let multiplier = glow[channel] / (4.0 * rest[channel]);
+                assert!((multiplier - 0.25).abs() < 1e-6, "frame {frame}: {glow:?}");
+            }
+            assert_eq!(room, [0.0; 3], "frame {frame}: `light 0` lights nothing");
+        }
+        assert_eq!(settled.intensity, 0.0);
+        let hold = settled
+            .animation
+            .expect("a `light 0` settle holds its curve");
+        assert_eq!(hold.play_count, None);
+        assert_eq!(hold.brightness, Some(vec![0.25]));
+        assert_eq!(hold.color, None);
+    }
+
+    #[test]
+    fn a_light_zero_area_light_fade_to_zero_settles_dark() {
+        let (light, entry) = light_zero_area_light_with_glow([1.0, 0.8, 0.6]);
+        let (_, frames) = settle_one_shot_with_samples(light, one_shot(Some(vec![1.0, 0.0]), None));
+        for (frame, compose) in frames.iter().enumerate() {
+            let (glow, room) = light_zero_glow_and_room(entry, compose, 2.01 + frame as f32);
+            assert_eq!(glow, [0.0; 3], "frame {frame}");
+            assert_eq!(room, [0.0; 3], "frame {frame}");
+        }
+    }
+
+    // Acceptance row 54 (research.md O17) on a `light 0` area light: a
+    // one-shot colour change settles at its final colour, never `_color`.
+    #[test]
+    fn a_light_zero_area_light_colour_shot_settles_at_the_final_colour() {
+        let (light, entry) = light_zero_area_light_with_glow([1.0; 3]);
+        let amber = [1.0, 0.6, 0.1];
+        let (settled, frames) = settle_one_shot_with_samples(
+            light,
+            one_shot(None, Some(vec![Vec3Lit([1.0, 1.0, 1.0]), Vec3Lit(amber)])),
+        );
+        for (frame, compose) in frames.iter().enumerate() {
+            let (glow, room) = light_zero_glow_and_room(entry, compose, 2.01 + frame as f32);
+            for channel in 0..3 {
+                assert!(
+                    (glow[channel] / 4.0 - amber[channel]).abs() < 1e-6,
+                    "frame {frame}: {glow:?}"
+                );
+            }
+            assert_eq!(room, [0.0; 3], "frame {frame}");
+        }
+        let hold = settled
+            .animation
+            .expect("a `light 0` settle holds its curve");
+        assert_eq!(hold.brightness, None);
+        assert_eq!(hold.color, Some(vec![Vec3Lit(amber)]));
     }
 
     #[test]

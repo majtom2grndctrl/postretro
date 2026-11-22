@@ -27,6 +27,17 @@ pub const MAX_AREA_GLOW_FACES: usize = GLOW_TABLE_ENTRIES - AREA_GLOW_FIRST_ENTR
 /// slot: its faces draw `glow × color` on every frame.
 const NO_COMPOSE_SLOT: u32 = u32::MAX;
 
+/// The compiler writes intensity as an integer `light` over this Quake
+/// reference, so a lit light's intensity lies in `[1 / 300, i32::MAX / 300]`.
+const QUAKE_INTENSITY_REFERENCE: f32 = 300.0;
+/// The dimmest lit intensity the compiler writes: `light 1`.
+const MIN_LIT_INTENSITY: f32 = 1.0 / QUAKE_INTENSITY_REFERENCE;
+/// The brightest intensity the compiler writes: `light` at `i32::MAX`.
+const MAX_INTENSITY: f32 = i32::MAX as f32 / QUAKE_INTENSITY_REFERENCE;
+/// Relative slack on both bounds, for a writer that rounds the division
+/// differently in the last place.
+const INTENSITY_BOUND_SLACK: f32 = 1.0e-6;
+
 /// One area light's glow and the Geometry faces that draw it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AreaGlowLight {
@@ -40,7 +51,8 @@ pub struct AreaGlowLight {
     /// The light's intensity (`light` over the Quake reference), the factor
     /// its compose descriptor's base colour also carries; the runtime divides
     /// it out so the glow never scales with `light`. At 0 the descriptor
-    /// carries no colour, and the runtime reads `color` instead.
+    /// carries no colour, and the runtime reads `color` instead. Otherwise
+    /// within `[1 / 300, i32::MAX / 300]`, the integer `light` range.
     pub intensity: f32,
     /// The light's compose descriptor slot (AnimatedBakedLights order), at
     /// any intensity, 0 included, so the glow follows the light's state and
@@ -172,6 +184,19 @@ impl AreaGlowSection {
             if !intensity.is_finite() || intensity < 0.0 {
                 return Err(invalid(format!(
                     "AreaGlow light {index} intensity {intensity} is negative or not finite"
+                )));
+            }
+            // The glow entry stores 1 / intensity. Below `light 1` it
+            // can overflow to infinity (NaN in the shader); a huge intensity
+            // makes it subnormal, which a flush-to-zero GPU reads as 0, the
+            // `light 0` form, while the CPU mirror does not. Both bounds are
+            // the compiler's own range.
+            let lit_range = MIN_LIT_INTENSITY * (1.0 - INTENSITY_BOUND_SLACK)
+                ..=MAX_INTENSITY * (1.0 + INTENSITY_BOUND_SLACK);
+            if intensity > 0.0 && !lit_range.contains(&intensity) {
+                return Err(invalid(format!(
+                    "AreaGlow light {index} intensity {intensity} is outside 0 and \
+                     [{MIN_LIT_INTENSITY}, {MAX_INTENSITY}]"
                 )));
             }
             let slot = u32_at(take(4, "compose slot")?);
@@ -331,7 +356,7 @@ mod tests {
 
     #[test]
     fn values_the_compiler_never_writes_are_refused() {
-        let cases: [(AreaGlowSection, &str); 7] = [
+        let cases: [(AreaGlowSection, &str); 10] = [
             (
                 AreaGlowSection {
                     lights: vec![AreaGlowLight {
@@ -349,6 +374,35 @@ mod tests {
                     }],
                 },
                 "intensity -1",
+            ),
+            // Below `light 1` and above `light` at `i32::MAX`: 1 / intensity
+            // overflows, or a flush-to-zero GPU reads it as the `light 0` form.
+            (
+                AreaGlowSection {
+                    lights: vec![AreaGlowLight {
+                        intensity: f32::MIN_POSITIVE,
+                        ..light(Some(0), vec![0])
+                    }],
+                },
+                "outside 0 and",
+            ),
+            (
+                AreaGlowSection {
+                    lights: vec![AreaGlowLight {
+                        intensity: 0.5 / 300.0,
+                        ..light(Some(0), vec![0])
+                    }],
+                },
+                "outside 0 and",
+            ),
+            (
+                AreaGlowSection {
+                    lights: vec![AreaGlowLight {
+                        intensity: 1.0e30,
+                        ..light(Some(0), vec![0])
+                    }],
+                },
+                "outside 0 and",
             ),
             (
                 AreaGlowSection {
@@ -395,6 +449,18 @@ mod tests {
         for (section, expected) in cases {
             let text = message(AreaGlowSection::from_bytes(&section.to_bytes()).unwrap_err());
             assert!(text.contains(expected), "{expected}: {text}");
+        }
+        // The compiler's own extremes, `light 1` and `light` at `i32::MAX`,
+        // computed as it computes them, still decode.
+        for raw in [1, i32::MAX] {
+            let section = AreaGlowSection {
+                lights: vec![AreaGlowLight {
+                    intensity: raw as f32 / 300.0,
+                    ..light(Some(0), vec![0])
+                }],
+            };
+            AreaGlowSection::from_bytes(&section.to_bytes())
+                .unwrap_or_else(|error| panic!("light {raw}: {error}"));
         }
         let mut bytes = AreaGlowSection::default().to_bytes();
         bytes[0] = 9;

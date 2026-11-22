@@ -63,7 +63,8 @@ pub(crate) fn area_sh_projection(emitter: &AreaEmitter, p: DVec3) -> [f64; 9] {
 /// ever scaled by its own ratio. With `posed`, the term then scales by the
 /// share q of its static-clear samples the pose leaves clear, as every light's
 /// does ([`probe_direct_joint_visibility`]). Samples leave the probe lifted
-/// along Φ̂, the light's net direction there.
+/// along the light's direction there ([`AreaEmitter::probe_direction`]):
+/// Φ̂, or a faced polygon's reversed normal where Φ cancels.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn accumulate_area_direct(
     acc: &mut [f32; 27],
@@ -82,7 +83,7 @@ pub(super) fn accumulate_area_direct(
     if window <= 0.0 {
         return;
     }
-    let Some(lift) = emitter.irradiance_vector(p).try_normalize() else {
+    let Some(lift) = emitter.probe_direction(p) else {
         return;
     };
     let lift = lift.as_vec3();
@@ -131,6 +132,39 @@ pub(super) fn accumulate_area_direct(
         let value = c * scale;
         for (channel, colour) in light.color.iter().enumerate() {
             acc[band * 3 + channel] += (value * f64::from(*colour)) as f32;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use glam::{DVec3, Vec3};
+
+    use super::super::sh_math::sh_basis_l2;
+    use super::sh_basis_l2_f64;
+
+    // The f64 basis re-types `sh_basis_l2`'s constants: a slip in one would
+    // bend every shadowed area-light probe away from the runtime's basis.
+    #[test]
+    fn the_f64_basis_matches_the_f32_basis() {
+        let directions = [
+            DVec3::X,
+            DVec3::NEG_Y,
+            DVec3::Z,
+            DVec3::new(1.0, 1.0, 1.0),
+            DVec3::new(-0.3, 0.8, -0.5),
+            DVec3::new(0.9, -0.2, 0.1),
+            DVec3::new(-0.6, -0.6, 0.7),
+        ];
+        for d in directions.map(DVec3::normalize) {
+            let wide = sh_basis_l2_f64(d);
+            let narrow = sh_basis_l2(Vec3::new(d.x as f32, d.y as f32, d.z as f32));
+            for (band, (w, n)) in wide.iter().zip(narrow).enumerate() {
+                assert!(
+                    (w - f64::from(n)).abs() <= 1.0e-6,
+                    "band {band} at {d}: f64 {w} vs f32 {n}"
+                );
+            }
         }
     }
 }

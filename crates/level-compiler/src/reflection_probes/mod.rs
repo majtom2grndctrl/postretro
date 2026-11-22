@@ -434,7 +434,11 @@ fn bake_or_load_with(
             inputs.emissive_volumes,
             inputs.geometry.geometry.faces.len(),
         ),
-        area_glow: AreaGlowFaces::new(inputs.area_glow, inputs.geometry.geometry.faces.len()),
+        area_glow: AreaGlowFaces::new(
+            inputs.area_glow,
+            &inputs.sh_volume.animation_descriptors,
+            inputs.geometry.geometry.faces.len(),
+        ),
         lightmap: LightmapSampler::new(inputs.lightmap),
         sh,
         animated_direct: inputs

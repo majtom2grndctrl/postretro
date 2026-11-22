@@ -246,6 +246,100 @@ fn near_and_far_half_occluders_are_ordered_by_integrand_weight() {
     assert_eq!(near_half.area, far_half.area);
 }
 
+/// A texel on a wall in the plane x = 0, facing +X, 1 m under a ceiling
+/// panel over x in `panel_x`, the wall's plane cutting the panel where the
+/// span crosses 0.
+fn wall_under_cut_panel(panel_x: [f64; 2], seed: u64) -> (MapLight, TexelSite) {
+    let light = area_light(vec![ceiling_panel(panel_x, [-0.5, 0.5], 2.0)], 1.0, None);
+    let site = TexelSite {
+        world_p: Vec3::new(0.0, 1.0, 0.0),
+        normal: Vec3::X,
+        seed,
+        frame: TexelFrame::new(Vec3::Y * PITCH, Vec3::Z * PITCH),
+        may_clip: false,
+    };
+    (light, site)
+}
+
+/// The cut-panel texel's visibility under `early_out`, centre sampler and
+/// footprint. A segment ending behind the wall is blocked, by the wall's own
+/// solid; nothing else is in the way.
+fn cut_panel_visibility(light: &MapLight, site: &TexelSite, early_out: ProbeEarlyOut) -> [f32; 2] {
+    let clear_unless_behind_wall = |_from: Vec3, to: Vec3| to.x >= 0.0;
+    let centre = crate::lightmap_bake::soft_visibility_early_out(
+        site.world_p,
+        site.normal,
+        light,
+        site.seed,
+        DEFAULT_AREA_SAMPLE_COUNT,
+        early_out,
+        clear_unless_behind_wall,
+    );
+    let footprint = footprint_visibility(
+        light,
+        site,
+        &footprint_for(light, DEFAULT_AREA_SAMPLE_COUNT),
+        clear_unless_behind_wall,
+        |_, _| true,
+        |_, _| true,
+        early_out,
+    )
+    .visibility;
+    [centre, footprint]
+}
+
+// Regression: where a wall's plane cut a ceiling panel, every probe could
+// land on the part behind the wall, weightless and blocked by the wall
+// itself, and the all-blocked early-out stored 0 on a lit texel (black
+// pillar sides and stair risers under a panel). With nothing in the way the
+// texel stores 1 with the early-outs on or off, and a clear tile stores the
+// same; a panel wholly behind the wall stores 0 either way.
+#[test]
+fn a_wall_cutting_a_panel_stores_one_when_every_probe_is_behind_it() {
+    let mut weightless_probe_sets = 0;
+    for i in 0..32u64 {
+        let seed = 0x9E37_79B9_7F4A_7C15_u64.wrapping_mul(i + 1);
+        let (light, site) = wall_under_cut_panel([-1.5, 0.15], seed);
+        let agreed = cut_panel_visibility(&light, &site, ProbeEarlyOut::Agreed);
+        let full = cut_panel_visibility(&light, &site, ProbeEarlyOut::Off);
+        assert_eq!(full, [1.0, 1.0], "seed {seed:#x}");
+        assert_eq!(agreed, full, "seed {seed:#x}");
+        for floor in [false, true] {
+            let sampler = TexelSampler::new(&light, DEFAULT_AREA_SAMPLE_COUNT, floor, false);
+            assert_eq!(
+                sampler.clear_visibility(&light, &site),
+                1.0,
+                "seed {seed:#x}, floor {floor}"
+            );
+        }
+
+        let probes = SoftProbes::new(&light, DEFAULT_AREA_SAMPLE_COUNT);
+        let sampler = crate::lightmap_bake::area_sampler(&light, site.world_p, site.normal)
+            .expect("the texel faces the panel");
+        if probes.indices().iter().all(|&index| {
+            let u = crate::area_light::area_lattice_point(index, probes.full_samples(), seed);
+            sampler.sample(u).weight == 0.0
+        }) {
+            weightless_probe_sets += 1;
+        }
+
+        let (behind, site) = wall_under_cut_panel([-1.5, -0.1], seed);
+        assert_eq!(
+            cut_panel_visibility(&behind, &site, ProbeEarlyOut::Agreed),
+            [0.0, 0.0]
+        );
+        assert_eq!(
+            cut_panel_visibility(&behind, &site, ProbeEarlyOut::Off),
+            [0.0, 0.0]
+        );
+    }
+    // The sweep reaches the case the regression is about.
+    assert!(
+        weightless_probe_sets > 0,
+        "no seed put every probe behind the wall"
+    );
+}
+
 // AC 9 (O19): a texel facing one emitting face, under a light wrapping a
 // pillar (centroid inside it) and under a flush panel (centroid on the
 // glass), stores exactly 1 with nothing between. With every segment but the

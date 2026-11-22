@@ -8,9 +8,9 @@ use std::sync::Arc;
 use glam::{DVec3, Vec3};
 
 use super::posed_solid::{PosedHit, PosedSolid};
-use super::visibility::EMITTER_TARGET_SLACK_M;
 use crate::geometry::GeometryResult;
 use crate::lightmap_bake::{RAY_EPSILON, emitter_radius, hard_ray_target};
+use crate::lightmap_layer::EMITTER_SLACK;
 use crate::map_data::{LightType, MapLight};
 use crate::mover_light_gate::{BOX_SLACK_M, segment_may_touch_box};
 use crate::partition::Aabb;
@@ -63,7 +63,7 @@ impl PosedScene {
             // tolerance: inside the emitter sphere with its 1 mm slack.
             LightType::Area => {
                 let (centre, radius) = light.emitter_sphere();
-                (centre, radius + EMITTER_TARGET_SLACK_M)
+                (centre, radius + EMITTER_SLACK)
             }
             LightType::Directional => {
                 let centre = hard_ray_target(point, light).as_dvec3();

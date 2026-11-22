@@ -81,7 +81,8 @@ pub(crate) struct SparseLayer {
 /// kind, position, colour, intensity, falloff, range, emitter size and cone
 /// or aim, and an area light's polygons. No list position, source index,
 /// label, tag or tier field enters, so two lights of equal content share a
-/// digest wherever they stand in the entity list. The embedded-emitter flag is folded beside it in the key.
+/// digest wherever they stand in the entity list. The embedded-emitter flag is
+/// folded beside it in the key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct LightDigest([u8; 32]);
 

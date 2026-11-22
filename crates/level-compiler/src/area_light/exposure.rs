@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use super::{AreaEmitter, EmitterPolygon, derived_reach};
 use crate::map_data::{BrushVolume, Face, MapData};
+use crate::partition::BspTree;
 
 /// Emitting pieces smaller than this (1 mm², as for fluid surface parts) are
 /// slivers: dropped before the light's polygons are fixed (research.md O8).
@@ -16,22 +17,32 @@ pub(crate) const EMITTER_PIECE_AREA_FLOOR_M2: f64 = 1.0e-6;
 const UNSPLIT_SIDE_RELATIVE_TOLERANCE: f64 = 1.0e-6;
 
 /// Resolves every area light's emitter from `faces`, the BSP's surviving
-/// world faces. They already exclude what lies inside another solid and hold
-/// a coplanar overlap once (research.md O7). An emitting face is one whose
-/// brush belongs to the light and whose texture has an `_e` map. Sets each
-/// light's `area`, its `origin` to the area-weighted centroid and its
-/// `falloff_range` to the authored override or the derived reach (O22), and
-/// appends the centroid to its diagnostic label. Fails, naming the light,
-/// when one is left with no emitting polygon.
+/// world faces, as `tree`'s interior leaves draw them. They already exclude
+/// what lies inside another solid and hold a coplanar overlap once
+/// (research.md O7); a face only solid or `exterior_leaves` hold, such as a
+/// hull side facing the void, is dropped as geometry drops it, so emission
+/// follows what renders. An emitting face is one whose brush belongs to the
+/// light and whose texture has an `_e` map. Sets each light's `area`, its
+/// `origin` to the area-weighted centroid and its `falloff_range` to the
+/// authored override or the derived reach (O22), and appends the centroid to
+/// its diagnostic label. Fails, naming the light, when one is left with no
+/// emitting polygon.
 pub(crate) fn resolve_area_lights(
     map_data: &mut MapData,
     faces: &[Face],
+    tree: &BspTree,
+    exterior_leaves: &HashSet<usize>,
     has_emissive_map: impl Fn(&str) -> bool,
 ) -> anyhow::Result<()> {
+    let drawn = drawn_faces(faces.len(), tree, exterior_leaves);
     for area in &map_data.area_lights {
         let polygons = emitting_polygons(
             &map_data.brush_volumes,
-            faces,
+            faces
+                .iter()
+                .zip(&drawn)
+                .filter(|&(_, &is_drawn)| is_drawn)
+                .map(|(face, _)| face),
             &area.brush_indices,
             &has_emissive_map,
         );
@@ -55,11 +66,29 @@ pub(crate) fn resolve_area_lights(
     Ok(())
 }
 
+/// Per face index, whether an interior leaf of `tree` draws the face: one
+/// that is neither solid nor in `exterior_leaves`. Geometry extraction emits
+/// exactly these.
+fn drawn_faces(face_count: usize, tree: &BspTree, exterior_leaves: &HashSet<usize>) -> Vec<bool> {
+    let mut drawn = vec![false; face_count];
+    for (index, leaf) in tree.leaves.iter().enumerate() {
+        if leaf.is_solid || exterior_leaves.contains(&index) {
+            continue;
+        }
+        for &face in &leaf.face_indices {
+            if let Some(drawn) = drawn.get_mut(face) {
+                *drawn = true;
+            }
+        }
+    }
+    drawn
+}
+
 /// The light's emitting polygons: per source side, its unsplit winding when
 /// every piece survived, else its surviving pieces; slivers dropped.
-fn emitting_polygons(
+fn emitting_polygons<'a>(
     brushes: &[BrushVolume],
-    faces: &[Face],
+    faces: impl IntoIterator<Item = &'a Face>,
     brush_indices: &[usize],
     has_emissive_map: &impl Fn(&str) -> bool,
 ) -> Vec<EmitterPolygon> {

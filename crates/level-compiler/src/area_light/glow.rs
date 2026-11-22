@@ -44,13 +44,16 @@ fn brush_owners(area_lights: &[MapAreaLight]) -> HashMap<usize, usize> {
 /// An emitting face is a final face whose brush belongs to the light and
 /// whose texture has an `_e` map; every render face derived from an emitting
 /// side is one, however the BSP or the atlas split it, and a frame face is
-/// not (O12). A face with no triangle carries no glow: the runtime reaches a
-/// face's vertices only through its BVH leaf.
+/// not (O12). Once any face glows, a world face with no triangle fails the
+/// build: the runtime reaches a face's vertices only through its BVH leaf,
+/// so it cannot stamp glow ids on such a level.
 ///
-/// A light takes its compose slot when it has one and its intensity is above
-/// 0; otherwise its faces draw the static glow `_glow × _color` (O16). Past
-/// [`MAX_AREA_GLOW_FACES`] emitting faces the build fails, naming the count
-/// and the cap (O5).
+/// A light with a compose slot keeps it at any intensity, `light 0`
+/// included, so its glow follows its state and curves; a static light's
+/// faces draw `_glow × _color` (O16). Past [`MAX_AREA_GLOW_FACES`] emitting
+/// faces the build fails, naming the count and the cap (O5). Both checks
+/// live here alone: this is id 62's one producer, and it runs before
+/// reflection capture, so a failing map fails early.
 pub(crate) fn build_area_glow_section(
     area_lights: &[MapAreaLight],
     lights: &[MapLight],
@@ -112,18 +115,14 @@ pub(crate) fn build_area_glow_section(
             .zip(faces_of)
             .map(|(area, faces)| {
                 let light = &lights[area.light_index];
-                let slot = slot_for_map_light
-                    .get(area.light_index)
-                    .copied()
-                    .filter(|&slot| slot != ANIMATED_SLOT_NONE);
                 AreaGlowLight {
                     glow: area.glow,
                     color: light.color,
                     intensity: light.intensity,
-                    // The descriptor carries colour × intensity; with intensity
-                    // 0 there is nothing to divide out, so the face takes the
-                    // static glow.
-                    compose_slot: slot.filter(|_| light.intensity > 0.0),
+                    compose_slot: slot_for_map_light
+                        .get(area.light_index)
+                        .copied()
+                        .filter(|&slot| slot != ANIMATED_SLOT_NONE),
                     faces,
                 }
             })

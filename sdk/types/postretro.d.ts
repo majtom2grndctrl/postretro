@@ -1897,7 +1897,7 @@ declare module "postretro" {
   /** Reads a per-placement KVP value authored on the source `.map` entity. Returns null when the key is absent or the entity has no KVP bag (e.g. runtime-spawned). Available in definition and data contexts. */
   export function getEntityProperty(id: EntityId, key: string): string | null;
 
-  /** Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. Non-unit direction samples are silently normalized; zero-length direction samples and empty channel arrays error with InvalidArgument. Definition context. */
+  /** Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. Non-unit direction samples are silently normalized; zero-length direction samples and empty channel arrays error with InvalidArgument, as does a direction channel (sweep) on an Area light. Definition context. */
   export function setLightAnimation(id: EntityId, animation: LightAnimation | null): void;
 
   /** Read the current value of an engine-global state slot by stable dotted name. Per-owner slots require an owner-addressed read and are rejected. Available in definition and data contexts. */

@@ -386,6 +386,62 @@ fn a_start_inactive_area_light_starts_dark_and_a_pulse_starts_it_lit() {
     }
 }
 
+// `light 0` lights nothing, but its faces still glow with their light: a
+// `_start_inactive` one keeps its reserved slot, starts dark with its
+// (unlit) room, and once a pulse starts it active glows `_glow × _color`.
+#[test]
+fn a_light_zero_area_light_keeps_its_slot_and_starts_dark() {
+    let mut world = World::new(&room(
+        &[],
+        &[area_light(
+            "\"_start_inactive\" \"1\"\n\"_color\" \"255 128 0\"\n",
+            &[glass([-20, 20], [-20, 20])],
+        )
+        .replace("\"light\" \"300\"", "\"light\" \"0\"")],
+    ));
+    let section = world.section().unwrap();
+    let light = &section.lights[0];
+    assert_eq!((light.intensity, light.compose_slot), (0.0, Some(0)));
+    let entry = area_glow_entry(light);
+    let index = world.map.area_lights[0].light_index;
+
+    let glow_and_room = |light: &crate::map_data::MapLight| {
+        let baked = crate::sh_bake::animation_descriptor_for_light(light);
+        let descriptor = AnimatedLightScaleDescriptor {
+            period: baked.period,
+            phase: baked.phase,
+            base_color: baked.base_color,
+            brightness: &baked.brightness,
+            color: &[],
+            is_active: baked.start_active != 0,
+        };
+        (
+            area_glow_factor(entry, Some(descriptor), 0.0),
+            animated_light_scale(Some(descriptor), 0.0),
+        )
+    };
+    let (glow, room) = glow_and_room(&world.map.lights[index]);
+    assert_eq!((glow, room), ([0.0; 3], [0.0; 3]), "dark faces, unlit room");
+
+    let manifest = postretro_level_format::light_membership::LightMembershipManifest::new(
+        vec![
+            postretro_level_format::light_membership::LightMembershipRecord {
+                index: index as u32,
+                is_dynamic: false,
+                start_active: Some(true),
+                start_active_conflict: false,
+            },
+        ],
+        Vec::new(),
+    );
+    let defaults = world.map.light_start_active_defaults.clone();
+    crate::script_light_membership::apply_manifest(&mut world.map.lights, &defaults, &manifest)
+        .expect("manifest applies");
+    let (glow, room) = glow_and_room(&world.map.lights[index]);
+    assert_eq!(room, [0.0; 3], "`light 0` lights nothing");
+    assert_eq!(glow, [4.0, 4.0 * (128.0 / 255.0), 0.0], "`_glow × _color`");
+}
+
 // Acceptance row 60 (research.md O5): a map with no area light writes no
 // section, and no face is skipped by volume membership.
 #[test]
@@ -471,10 +527,11 @@ fn emitting_faces_past_the_cap_fail_naming_the_count_and_the_cap() {
     );
 }
 
-// A slotted light carries its authored facts; `light 0` takes the static
-// glow, since there is no intensity to divide out.
+// A slotted light carries its authored facts; `light 0` keeps its slot, so
+// its glow still follows the light. A face with no `_e` map carries no
+// glow, and a triangle-less world face fails the build.
 #[test]
-fn records_carry_glow_colour_intensity_and_a_slot_only_when_lit() {
+fn records_carry_glow_colour_intensity_and_a_slot_at_any_intensity() {
     let (geometry, brushes) = many_faces(2);
     let (areas, lights, slots) = one_area_light(1.5, true);
     let section = build_area_glow_section(&areas, &lights, &slots, &geometry, &brushes, &[true])
@@ -491,9 +548,11 @@ fn records_carry_glow_colour_intensity_and_a_slot_only_when_lit() {
     let section = build_area_glow_section(&areas, &lights, &slots, &geometry, &brushes, &[true])
         .unwrap()
         .unwrap();
-    assert_eq!(section.lights[0].compose_slot, None);
+    assert_eq!(
+        (section.lights[0].intensity, section.lights[0].compose_slot),
+        (0.0, Some(0))
+    );
 
-    // A face with no `_e` map, or no triangle, carries no glow.
     let (mut geometry, brushes) = many_faces(2);
     geometry.face_index_ranges[1].index_count = 0;
     let (areas, lights, slots) = one_area_light(1.0, false);

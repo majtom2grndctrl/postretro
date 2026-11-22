@@ -193,17 +193,21 @@ A glowing surface that lights the room as one soft panel: a ceiling skylight, a 
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `light` | integer | `300` | Brightness per square metre of glowing face. |
+| `light` | integer | `300` | Brightness per square metre of glowing face. `0` lights nothing, but the faces still glow and follow the light; a negative value stops the compile. |
 | `_color` | RGB | `255 255 255` | Colour of its light and of its faces' glow. |
 | `_falloff_range` | integer | worked out | Reach in map units, measured from the panel. Leave blank to have the compiler work it out from brightness and size. |
 | `_glow` | float | `4` | How brightly the faces glow, independent of `light`. Above `64` reads `64` and warns; a negative value stops the compile. |
-| `brightness_curve`, `color_curve`, `period_ms`, `_curve_phase` | curve | — | Custom animation, as on `light` (see Custom animation curves below). |
+| `brightness_curve`, `color_curve`, `period_ms`, `_curve_phase` | curve | — | Custom animation, as on `light` (see Custom animation curves below). `color_curve` needs `_bake_only`, `_animated` or `_start_inactive`. |
 | `_animated` | 0/1 | `0` | `1` reserves the animated bake so a mod-wide script can animate the light. A light the map's own script animates is reserved for you. |
 | `_start_inactive` | 0/1 | `0` | `1` = the light starts dark, faces and room together, until a script lights it. On an area light this reserves the animated bake by itself. |
-| `_bake_only` | 0/1 | `0` | `1` = baked only; no runtime presence, and scripts cannot find it. |
+| `_bake_only` | 0/1 | `0` | `1` = baked only; no runtime presence, and scripts cannot find it. With `_start_inactive 1` it stops the compile: nothing could ever light it. |
 | `_tags` | string | `""` | Space-delimited tags. Scripts find lights by tag. |
 
-**Keys from other lights.** Changing a `light` or `light_spot` to `light_area` in TrenchBroom keeps its keys. These do nothing on an area light, and each warns once, naming the entity and the key: `delay`, `_light_size`, `_cone`, `_cone2`, `angle`, `angles`, `mangle`, `target`. These ask for something an area light cannot do, and stop the compile, naming the entity and the key: `_shadow_type sdf`, `direction_curve`, and any `style` other than `0` (use `brightness_curve` instead).
+**Keys from other lights.** Changing another light to `light_area` in TrenchBroom keeps its keys. These do nothing on an area light, and each warns once, naming the entity and the key: `delay`, `_light_size`, `_phase`, `_angular_diameter`, `carrier`, `_cast_entity_shadows`, `_cone`, `_cone2`, `angle`, `angles`, `mangle`, `target`.
+
+**Keys that stop the compile.** Each names the entity and the key: `_shadow_type sdf`, `direction_curve`, any `style` other than `0` (use `brightness_curve` instead), a negative `light`, and `_bake_only 1` together with `_start_inactive 1`.
+
+**`light 0`.** The light lights nothing, and the compile warns so. Its faces still glow at `_glow` × `_color` and follow the light: they start dark with `_start_inactive 1`, and brighten, dim and change colour when a script animates it. A fade or colour change that runs once and stops returns them to `_glow` × `_color`. Water reflections show them at their average glow, even while the light is dark.
 
 **Scripts** see an area light as a light of type `"Area"`, at the centre of its glowing faces. `pulse`, `fade`, `flicker` and `colorShift` work; `sweep` has no direction to turn and is refused. See [LightComponent](scripting-reference.md#lightcomponent).
 

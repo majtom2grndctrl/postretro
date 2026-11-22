@@ -1,6 +1,6 @@
 // GPU readback of `forward.wgsl`'s `area_glow_factor` against render-cpu's
 // mirror: static entries, pulses, colour shifts, settled one-shots, inactive
-// lights and the ceiling clamp, at several frame times.
+// lights, `light 0` entries and the ceiling clamp, at several frame times.
 // See: context/lib/rendering_pipeline.md §7.3 (Area glow) · testing_guide.md §3
 //
 // Intentional exception to testing_guide.md §3 "No GPU context in tests": the
@@ -9,7 +9,9 @@
 // entry point are harness code. The test self-skips without an adapter and
 // says so; set `POSTRETRO_REQUIRE_GPU` to make a missing adapter fail.
 
-use postretro_render_cpu::emissive_volume::{AREA_GLOW_STATIC, area_glow_factor};
+use postretro_render_cpu::emissive_volume::{
+    AREA_GLOW_STATIC, area_glow_factor, pack_area_glow_color,
+};
 use postretro_render_cpu::sh_compose::AnimatedLightScaleDescriptor;
 use wgpu::util::DeviceExt;
 
@@ -198,8 +200,10 @@ fn run(
 // the CPU mirror's, frame for frame: a static entry holds `_glow × _color`
 // beside a pulsing light (O16); a colour shift and a pulse follow their
 // descriptor with `light` divided out (O2, O13); settled one-shots read
-// their folded radiance (O1, O17); an inactive light is dark (O3); the live
-// factor stops at the ceiling.
+// their folded radiance (O1, O17); an inactive light is dark (O3); a
+// `light 0` entry decodes its packed `_color` and follows its descriptor's
+// active state, pulse and colour curve; the live factor stops at the
+// ceiling.
 #[test]
 fn shader_area_glow_matches_the_cpu_mirror() {
     let Some(ctx) = gpu_or_skip("shader_area_glow_matches_the_cpu_mirror") else {
@@ -251,7 +255,26 @@ fn shader_area_glow_matches_the_cpu_mirror() {
             color: Vec::new(),
             is_active: true,
         },
+        // 5: `light 0` with a pulse: colour × intensity is 0.
+        Light {
+            period: 1.0,
+            phase: 0.0,
+            base_color: [0.0; 3],
+            brightness: vec![0.2, 1.0, 0.6],
+            color: Vec::new(),
+            is_active: true,
+        },
+        // 6: `light 0` with a colour shift.
+        Light {
+            period: 0.75,
+            phase: 0.25,
+            base_color: [0.0; 3],
+            brightness: Vec::new(),
+            color: vec![[1.0, 1.0, 1.0], [1.0, 0.6, 0.1], [0.2, 0.4, 1.0]],
+            is_active: true,
+        },
     ];
+    let amber = pack_area_glow_color([1.0, 128.0 / 255.0, 0.0]);
     let entries = [
         [3.0, 0.0, 0.0, AREA_GLOW_STATIC],
         [4.0, 0.5, 0.0, 0.0],
@@ -261,6 +284,11 @@ fn shader_area_glow_matches_the_cpu_mirror() {
         [64.0, 1.0, 0.0, 4.0],
         // A slot past the descriptors reads nothing.
         [4.0, 1.0, 0.0, 9.0],
+        // `light 0`: pulsing in amber, colour-shifting, inactive, and hot.
+        [4.0, 0.0, amber, 5.0],
+        [6.0, 0.0, amber, 6.0],
+        [4.0, 0.0, amber, 3.0],
+        [64.0, 0.0, amber, 4.0],
     ];
     for time in [0.0, 0.13, 0.5, 0.77, 3.3] {
         let gpu = run(&ctx, &lights, &entries, time);
@@ -292,6 +320,14 @@ fn shader_area_glow_matches_the_cpu_mirror() {
         assert_eq!(gpu[4], [0.0; 3], "the inactive light is dark");
         assert_eq!(gpu[5], [64.0, 32.0, 0.0], "the ceiling");
         assert_eq!(gpu[6], [0.0; 3], "no descriptor, no glow");
+        assert_eq!(gpu[9], [0.0; 3], "an inactive `light 0` light is dark");
+        assert!(gpu[7][0] > 0.0 && gpu[7][2] == 0.0, "amber: {:?}", gpu[7]);
+        assert!(
+            gpu[8][2] > 0.0,
+            "the colour curve replaces amber: {:?}",
+            gpu[8]
+        );
+        assert_eq!(gpu[10][0], 64.0, "the ceiling, `light 0` too");
         for channel in 0..3 {
             let settled = gpu[3][channel] / 4.0 / [1.0, 0.8, 0.6][channel];
             assert!(

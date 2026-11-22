@@ -312,13 +312,19 @@ const AREA_GLOW_FIRST_ENTRY: u32 = 257u;
 const AREA_GLOW_CEILING: f32 = 64.0;
 
 // An area-light face's rgb glow factor, mirrored on the CPU by render-cpu
-// `emissive_volume::area_glow_factor`. A static entry (w < 0) holds
-// `_glow × _color`. A slotted entry holds `(_glow, 1 / intensity, 0, slot)`
-// and reads the light's compose descriptor and the frame's time, as compose
-// does, so glow and room light take one curve value per frame (research.md
-// O13); the descriptor's base colour carries colour × intensity, which the
-// entry divides back out (O2). Inactive reads 0. The live `_glow ×
-// brightness` stops at the emissive ceiling, and so does each channel.
+// `emissive_volume::area_glow_factor`. Three entry forms:
+// - Static (w < 0): `_glow × _color`, drawn as is; `_color` is at most 1, so
+//   each channel is at most the ceiling.
+// - Slotted (w = slot ≥ 0, y > 0): `(_glow, 1 / intensity, 0, slot)`. The
+//   descriptor's base colour carries colour × intensity, which y divides
+//   back out (research.md O2).
+// - Slotted at `light 0` (w = slot ≥ 0, y = 0): `(_glow, 0, packed _color,
+//   slot)`. The descriptor's base colour is 0, so the colour rides z, 8 bits
+//   per channel, red lowest; a colour curve replaces it, as on a lit light.
+// A slotted entry reads the light's compose descriptor and the frame's
+// time, as compose does, so glow and room light take one curve value per
+// frame (O13). Inactive reads 0. The live `_glow × brightness` stops at the
+// emissive ceiling, and so does each channel.
 fn area_glow_factor(entry: vec4<f32>) -> vec3<f32> {
     if entry.w < 0.0 {
         return entry.rgb;
@@ -336,14 +342,28 @@ fn area_glow_factor(entry: vec4<f32>) -> vec3<f32> {
         sample_curve_catmull_rom(desc.brightness_offset, desc.brightness_count, t),
         0.0,
     );
-    var color = desc.base_color;
+    var base = desc.base_color;
+    var unit = entry.y;
+    if entry.y <= 0.0 {
+        unit = 1.0;
+        base = vec3<f32>(1.0);
+        if desc.color_count == 0u {
+            let packed = u32(entry.z);
+            base = vec3<f32>(
+                f32(packed & 0xffu),
+                f32((packed >> 8u) & 0xffu),
+                f32((packed >> 16u) & 0xffu),
+            ) / 255.0;
+        }
+    }
+    var color = base;
     if desc.color_count > 0u {
         color = max(
             sample_color_catmull_rom(desc.color_offset, desc.color_count, t, vec3<f32>(1.0)),
             vec3<f32>(0.0),
-        ) * desc.base_color;
+        ) * base;
     }
-    let scale = min(entry.x * brightness, AREA_GLOW_CEILING) * entry.y;
+    let scale = min(entry.x * brightness, AREA_GLOW_CEILING) * unit;
     return min(color * scale, vec3<f32>(AREA_GLOW_CEILING));
 }
 

@@ -157,6 +157,37 @@ fn capture_shows_animated_area_glass_at_its_reference_and_never_times_light() {
     assert_eq!(capture_at(1.0, 0).to_bytes(), at_l.to_bytes());
 }
 
+// A `light 0` area light keeps its slot, but its reference value is 0, so no
+// share can scale its glass. The capture shades the glass at its reference
+// glow instead, `_e` × `_glow` × `_color` × its curve's cycle mean, as
+// static radiance that holds in reflections, whether or not it starts
+// inactive, and stores no share entry for it.
+#[test]
+fn capture_shows_light_zero_glass_at_its_reference_glow_with_no_share() {
+    let red = [1.0, 0.0, 0.0];
+    let capture_at = |start_active: u32| {
+        let mut room = glass_room([0, 0, 0, 255], 0.0, area_light(red, 0.0, Some(0)));
+        let mut light = half_mean_pulse([0.0; 3]);
+        light.start_active = start_active;
+        room.extras.sh.animation_descriptors = vec![light];
+        bake(&room, &pool()).expect("the pool keeps its probe")
+    };
+    let section = capture_at(1);
+    close(
+        tile_texel(&section, 0, Vec3::Y),
+        Vec3::from(red) * glass_texel() * 4.0 * 0.5,
+    );
+    assert!(
+        section.probes[0]
+            .lights
+            .iter()
+            .all(|entry| entry.reference == [0.0; 3] || entry.roster_index != 0),
+        "no share scales a zero reference: {:?}",
+        section.probes[0].lights
+    );
+    assert_eq!(capture_at(0).to_bytes(), section.to_bytes());
+}
+
 // Acceptance row 47 (research.md O3): in a room lit by a `_start_inactive`
 // area light alone, its glow and its light share one share entry, so the
 // reflected glass and the reflected room are dark until a script lights it

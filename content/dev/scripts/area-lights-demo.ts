@@ -21,5 +21,3 @@ export function setupLevel(_ctx: unknown) {
     ],
   };
 }
-// p.component.lightType === "Area"; p.position is the emitting faces' centroid.
-// p.sweep(...) on an area light fails with InvalidArgument.

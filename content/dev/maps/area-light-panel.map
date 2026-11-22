@@ -1,7 +1,7 @@
 // Game: Generic
 // Format: Standard
 // area-light-panel: a sealed 256 x 256 x 128 room lit only by one ceiling
-// light_area. The entity holds a concrete frame brush and a 64 x 64 glass
+// light_area. The entity holds a frame slab above the glass and a 64 x 64 glass
 // brush whose bottom face alone carries neon/glow_panel (an _e texture).
 // entity 0
 {

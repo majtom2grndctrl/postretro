@@ -12,14 +12,11 @@ use crate::lightmap_bake::{
     RAY_EPSILON, SOFT_PROBE_SAMPLES, SoftProbes, area_sample_target, emitter_radius,
     hard_ray_target,
 };
+use crate::lightmap_layer::EMITTER_SLACK;
 use crate::map_data::{LightType, MapLight};
 use crate::mover_light_gate::{BOX_SLACK_M, Pose};
 use crate::partition::Aabb;
 use crate::texel_footprint::ProbeEarlyOut;
-
-/// Slack past an area light's emitter sphere that holds every sample
-/// target's lift off its polygon (the tracer tolerance, 0.5 mm).
-pub(crate) const EMITTER_TARGET_SLACK_M: f64 = 1.0e-3;
 
 /// Angular slack on the sun cone test, far above the `f32` rounding of a
 /// jittered sample direction.
@@ -77,7 +74,7 @@ impl PosedOccluder {
             // tolerance: inside the emitter sphere with its 1 mm slack.
             LightType::Area => {
                 let (centre, radius) = light.emitter_sphere();
-                (centre, radius + EMITTER_TARGET_SLACK_M)
+                (centre, radius + EMITTER_SLACK)
             }
         };
         let reach = DVec3::splat(radius);

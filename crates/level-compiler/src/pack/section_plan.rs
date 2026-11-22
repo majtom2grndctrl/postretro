@@ -533,21 +533,10 @@ pub(super) fn build_finalized_section_plan<'a>(
         || Ok(emissive.to_bytes()),
     ));
     // Absent means no area light; a map without one writes no id 62, so its
-    // bytes stay what they were before area glow existed.
+    // bytes stay what they were before area glow existed. Its face cap and
+    // triangle check run where the compiler builds it, before reflection
+    // capture.
     if let Some(section) = area_glow {
-        anyhow::ensure!(
-            section.face_count() <= postretro_level_format::area_glow::MAX_AREA_GLOW_FACES,
-            "AreaGlow holds {} emitting faces, past the glow table's cap of {}",
-            section.face_count(),
-            postretro_level_format::area_glow::MAX_AREA_GLOW_FACES
-        );
-        if section.face_count() > 0
-            && let Some(face) = first_face_without_a_triangle(geo_result)
-        {
-            anyhow::bail!(
-                "Area glow needs a triangle on every Geometry face, but face {face} has none"
-            );
-        }
         sections.push(PlannedSection::new(
             SectionId::AreaGlow as u32,
             postretro_level_format::area_glow::AREA_GLOW_VERSION,

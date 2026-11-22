@@ -975,6 +975,7 @@ impl LevelWorld {
             texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
             #[cfg(feature = "load-prl")]
             emissive: EmissiveSection::default(),
+            #[cfg(feature = "load-prl")]
             area_glow: AreaGlowSection::default(),
             #[cfg(feature = "load-prl")]
             bvh: BvhTree {

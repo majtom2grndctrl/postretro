@@ -82,11 +82,12 @@ pub(crate) fn bounce_sample_index(
 ///
 /// `probe_index`/`ray_index` only feed the deterministic soft-visibility seed
 /// (`soft_visibility_seed`); they never alter which geometry is traced. Each
-/// light's bounce contribution is scaled by the `[0, 1]` area-light visibility
-/// fraction so bounced shadows soften in lockstep with the direct static term
-/// (an authored hard light — `_light_size`/`_angular_diameter == 0` — collapses to
-/// the single hard ray inside either visibility helper, matching the old binary
-/// gate).
+/// light's bounce contribution is scaled by its soft-light visibility (a
+/// `[0, 1]` fraction for a point or spot light; an area light's one-sample
+/// value can exceed 1, see below) so bounced shadows soften in lockstep with
+/// the direct static term (an authored hard light —
+/// `_light_size`/`_angular_diameter == 0` — collapses to the single hard ray
+/// inside either visibility helper, matching the old binary gate).
 /// `visibility` picks how a soft light resolves: production traces one
 /// stratified emitter sample per (hit, light) (`bounce_sample_index`), whose
 /// expectation at a hit is the full 32-sample lattice's clear fraction, or

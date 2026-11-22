@@ -62,6 +62,10 @@ fn inert_keys_warn_once_each_and_leave_the_record_unchanged() {
         ("delay", "2"),
         ("delay", "0"),
         ("_light_size", "16"),
+        ("_phase", "0.5"),
+        ("_angular_diameter", "2"),
+        ("carrier", "lift_a"),
+        ("_cast_entity_shadows", "0"),
         ("_cone", "30"),
         ("_cone2", "45"),
         ("angles", "-90 0 0"),
@@ -210,4 +214,72 @@ fn start_inactive_reserves_the_animated_bake_and_starts_dark() {
         ("_start_inactive", "1"),
     ])
     .expect("a reserved area light may animate colour");
+}
+
+// A negative `light` fails, naming the light and key, under either key
+// name; the compiler would otherwise write an id 62 its loader refuses.
+#[test]
+fn a_negative_light_fails_naming_the_light_and_key() {
+    for key in ["light", "_light"] {
+        let error = translate(&[(key, "-300")])
+            .expect_err("a negative light fails the build")
+            .to_string();
+        assert!(
+            error.contains(LABEL) && error.contains(&format!("'{key}'")),
+            "{key}: {error}"
+        );
+    }
+}
+
+// `light 0` lights nothing, and says its faces still glow.
+#[test]
+fn light_zero_warns_that_it_lights_nothing_but_still_glows() {
+    let capture = LogCapture::start();
+    let (light, _) = translate(&[("light", "0")]).expect("light 0 compiles");
+    assert_eq!(light.intensity, 0.0);
+    capture.assert_logged_once(
+        Level::Warn,
+        &format!("{LABEL}: `light` is 0; it lights nothing, but its faces still glow"),
+    );
+}
+
+// `_bake_only 1` with `_start_inactive 1` would stay dark forever: nothing
+// at runtime can light it. It fails, naming the light and both keys.
+// `_bake_only` beside `_animated` or a curve still compiles: the curve plays
+// without a runtime entity.
+#[test]
+fn bake_only_and_start_inactive_fail_naming_both_keys() {
+    let error = translate(&[("_bake_only", "1"), ("_start_inactive", "1")])
+        .expect_err("a bake-only light that starts dark fails")
+        .to_string();
+    assert!(
+        error.contains(LABEL) && error.contains("_bake_only") && error.contains("_start_inactive"),
+        "{error}"
+    );
+    translate(&[("_bake_only", "1"), ("_animated", "1")]).expect("bake-only and animated");
+    translate(&[
+        ("_bake_only", "1"),
+        ("brightness_curve", "[0, 0.2] [500, 1]"),
+        ("period_ms", "1000"),
+    ])
+    .expect("a bake-only curve plays");
+}
+
+// Every error names the light once: the translator names it, and the parser
+// reports the error as is.
+#[test]
+fn errors_name_the_light_once() {
+    for pairs in [
+        &[("_glow", "-1")][..],
+        &[("_color", "red")],
+        &[("_falloff_range", "0")],
+        &[("_start_inactive", "2")],
+        &[("brightness_curve", "[0, 1] [500, 0]")],
+        &[("style", "3")],
+    ] {
+        let error = translate(pairs)
+            .expect_err("each case fails the build")
+            .to_string();
+        assert_eq!(error.matches(LABEL).count(), 1, "{pairs:?}: {error}");
+    }
 }

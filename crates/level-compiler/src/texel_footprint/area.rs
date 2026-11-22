@@ -69,11 +69,15 @@ impl AreaLattice {
 /// polygon whose front half-space holds the texel centre, lifted off it by
 /// the tracer tolerance, inside the emitter sphere's slack.
 ///
-/// Agreeing probes end the texel as for a sphere: all blocked stores exactly
-/// 0, all clear exactly 1, except that all clear ends it only when the
-/// probes carry weight. A texel whose surviving samples carry no weight
-/// stores 0 (research.md O8). An area light is never flagged embedded, so
-/// production walks take [`ProbeEarlyOut::Agreed`].
+/// Agreeing probes end the texel as for a sphere, all blocked storing exactly
+/// 0 and all clear exactly 1, but agreement counts only the probes that carry
+/// weight ([`ProbeEarlyOut::ends_weighted`]): the lattice is not clipped to
+/// the receiver's horizon, so where the receiver's plane cuts a polygon every
+/// probe can lie below it, blocked by the receiver itself, on a lit texel.
+/// Probes with no weight between them trace the full set. A texel whose
+/// surviving samples all carry no weight stores 0 (research.md O8). An area
+/// light is never flagged embedded, so production walks take
+/// [`ProbeEarlyOut::Agreed`].
 pub(super) fn footprint_visibility(
     light: &MapLight,
     site: &TexelSite,
@@ -112,13 +116,7 @@ pub(super) fn footprint_visibility(
             None => clipped_probe = true,
         }
     }
-    // The centre is never clipped, so `traced` holds at least one sample.
-    let clear = traced.iter().filter(|&&(_, clear)| clear).count() as u32;
-    let probe_weight: f64 = traced.iter().map(|&(weight, _)| weight).sum();
-    if !clipped_probe
-        && early_out.ends(clear, traced.len() as u32)
-        && (clear == 0 || probe_weight > 0.0)
-    {
+    if !clipped_probe && early_out.ends_weighted(&traced) {
         return FootprintOutcome {
             visibility: weighted_visibility(traced) as f32,
             clipped_probe,

@@ -1250,11 +1250,14 @@ pub(crate) fn soft_visibility_with(
 /// no ray aims at the light's origin or ends on the face it targets.
 ///
 /// The probe subset is traced first. Agreeing probes end the trace as for a
-/// sphere, all blocked storing 0 and all clear 1, but all clear ends it only
-/// when the probes carry weight; probes that all lie on the receiver's
-/// horizon escalate. A texel no polygon faces, and one whose every sample
-/// carries weight 0, stores 0 (research.md O8). [`area_clear_visibility`] is
-/// what this returns when every segment is clear.
+/// sphere, all blocked storing 0 and all clear 1, but agreement counts only
+/// the probes that carry weight ([`ProbeEarlyOut::ends_weighted`]): the
+/// lattice is not clipped to the receiver's horizon, so where the receiver's
+/// plane cuts a polygon every probe can lie below it, blocked by the receiver
+/// itself, on a lit texel. Probes with no weight between them escalate. A
+/// texel no polygon faces, and one whose every lattice sample carries weight
+/// 0, stores 0 (research.md O8). [`area_clear_visibility`] is what this
+/// returns when every segment is clear.
 fn area_soft_visibility(
     surface_point: Vec3,
     surface_normal: Vec3,
@@ -1279,9 +1282,7 @@ fn area_soft_visibility(
     };
     let mut traced: Vec<(f64, bool)> = Vec::with_capacity(full_samples as usize);
     traced.extend(probes.iter().map(|&i| trace_sample(i)));
-    let clear = traced.iter().filter(|&&(_, clear)| clear).count() as u32;
-    let probe_weight: f64 = traced.iter().map(|&(weight, _)| weight).sum();
-    if early_out.ends(clear, SOFT_PROBE_SAMPLES) && (clear == 0 || probe_weight > 0.0) {
+    if early_out.ends_weighted(&traced) {
         return weighted_visibility(traced) as f32;
     }
     traced.extend(

@@ -75,12 +75,15 @@ pub(crate) fn incident_radiance_at_point(light: &MapLight, point: Vec3) -> Optio
 }
 
 /// An area light's windowed polygon term at `point` as a receiver facing
-/// Φ̂ receives it, times colour × radiance, and Φ̂; `None` where no polygon
-/// faces the point or the term is zero.
+/// the light's probe direction receives it, times colour × radiance, and
+/// that direction: Φ̂, or a faced polygon's reversed normal where Φ cancels
+/// ([`AreaEmitter::probe_direction`](crate::area_light::AreaEmitter::probe_direction)),
+/// the lift direct SH takes. `None` where no polygon faces the point or the
+/// term is zero.
 fn area_facing_radiance(light: &MapLight, point: Vec3) -> Option<(Vec3, Vec3)> {
     let emitter = light.area.as_ref()?;
     let p = point.as_dvec3();
-    let facing = emitter.irradiance_vector(p).try_normalize()?;
+    let facing = emitter.probe_direction(p)?;
     let (irradiance, _) = emitter.windowed_irradiance(p, facing, f64::from(light.falloff_range));
     if irradiance <= 0.0 {
         return None;

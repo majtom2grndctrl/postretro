@@ -1320,8 +1320,8 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                 );
             }
             let props = collect_entity_properties(&geo_map, entity_id);
-            let (light, keys) = quake_map::translate_area_light(&props, &label)
-                .map_err(|error| anyhow::anyhow!("failed to translate {label}: {error}"))?;
+            // Every area-light error already names the light.
+            let (light, keys) = quake_map::translate_area_light(&props, &label)?;
             let light_index = lights.len();
             light_start_active_defaults.push(
                 quake_map::authored_light_start_active(&props)

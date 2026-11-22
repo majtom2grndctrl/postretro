@@ -736,8 +736,11 @@ impl LightBridge {
                     current,
                     snapshot,
                     current_time,
-                    (!shape.animated_baked_raw_indices.is_empty())
-                        .then_some(shape.authored_rest_direction),
+                    // An area light has no cone; its loader-zeroed rest
+                    // direction must not become a settled cone.
+                    (!shape.animated_baked_raw_indices.is_empty()
+                        && !matches!(current.light_type, LightKind::Area))
+                    .then_some(shape.authored_rest_direction),
                 )
             {
                 let had_radius_animation = current

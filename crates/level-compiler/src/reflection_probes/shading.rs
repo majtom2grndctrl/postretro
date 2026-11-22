@@ -150,8 +150,9 @@ impl CaptureScene<'_> {
     /// production weight) + emissive × baked strength (id 60) × the face's
     /// volume factor`, the volume at its no-script reference state, max ×
     /// colour (1 outside any volume); a `light_area` face's emissive is its
-    /// `_e` × its light's glow instead (static `_glow × _color`, or
-    /// `_glow / intensity` in the light's unit term); a light's unit term
+    /// `_e` × its light's glow instead (static `_glow × _color`;
+    /// `_glow / intensity` in the light's unit term; or, for a slotted
+    /// `light 0` light, static at its reference glow); a light's unit term
     /// is `albedo × (its weight-map direct + its delta SH × production
     /// weight)`. These are the forward pass's terms with the shading normal at
     /// the face normal (no normal map, so both bumped-Lambert factors are 1).

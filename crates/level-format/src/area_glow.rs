@@ -23,8 +23,8 @@ pub const AREA_GLOW_FIRST_ENTRY: usize = MAX_EMISSIVE_VOLUMES + 1;
 /// compiler fails a map past it; the loader refuses a section past it.
 pub const MAX_AREA_GLOW_FACES: usize = GLOW_TABLE_ENTRIES - AREA_GLOW_FIRST_ENTRY;
 
-/// The on-disk value of a light that has no compose descriptor slot: its
-/// faces draw the static glow, `glow × color`, on every frame.
+/// The on-disk value of a static light, which has no compose descriptor
+/// slot: its faces draw `glow × color` on every frame.
 const NO_COMPOSE_SLOT: u32 = u32::MAX;
 
 /// One area light's glow and the Geometry faces that draw it.
@@ -33,15 +33,19 @@ pub struct AreaGlowLight {
     /// `_glow`, already within `[0, EMISSIVE_VALUE_CEILING]`.
     pub glow: f32,
     /// The light's authored `_color`, linear, as its compose descriptor's
-    /// base colour carries it.
+    /// base colour carries it. Each channel is in `[0, 1]`, and the compiler
+    /// writes whole 255ths, which the runtime packs 8 bits per channel for a
+    /// light at intensity 0.
     pub color: [f32; 3],
     /// The light's intensity (`light` over the Quake reference), the factor
     /// its compose descriptor's base colour also carries; the runtime divides
-    /// it out so the glow never scales with `light`.
+    /// it out so the glow never scales with `light`. At 0 the descriptor
+    /// carries no colour, and the runtime reads `color` instead.
     pub intensity: f32,
-    /// The light's compose descriptor slot (AnimatedBakedLights order), or
-    /// `None` for a static light, or one whose intensity is 0, whose faces
-    /// draw `glow × color` unchanged.
+    /// The light's compose descriptor slot (AnimatedBakedLights order), at
+    /// any intensity, 0 included, so the glow follows the light's state and
+    /// curves; `None` for a static light, whose faces draw `glow × color`
+    /// unchanged.
     pub compose_slot: Option<u32>,
     /// Geometry face indices, strictly ascending; each owned by one light.
     pub faces: Vec<u32>,
@@ -159,9 +163,9 @@ impl AreaGlowSection {
             for channel in &mut color {
                 *channel = f32_at(take(4, "colour")?);
             }
-            if color.iter().any(|c| !c.is_finite() || *c < 0.0) {
+            if color.iter().any(|c| !(0.0..=1.0).contains(c)) {
                 return Err(invalid(format!(
-                    "AreaGlow light {index} colour {color:?} has a negative or non-finite channel"
+                    "AreaGlow light {index} colour {color:?} has a channel outside [0, 1]"
                 )));
             }
             let intensity = f32_at(take(4, "intensity")?);
@@ -286,6 +290,20 @@ mod tests {
         assert_eq!(decoded.face_count(), 3);
     }
 
+    // A `light 0` light keeps its slot: intensity 0 with a slot is valid.
+    #[test]
+    fn a_slotted_light_at_intensity_zero_round_trips() {
+        let section = AreaGlowSection {
+            lights: vec![AreaGlowLight {
+                intensity: 0.0,
+                ..light(Some(4), vec![2])
+            }],
+        };
+        let decoded = AreaGlowSection::from_bytes(&section.to_bytes()).unwrap();
+        assert_eq!(decoded, section);
+        assert_eq!(decoded.lights[0].compose_slot, Some(4));
+    }
+
     #[test]
     fn the_cap_fills_the_table_after_the_volume_entries() {
         assert_eq!(AREA_GLOW_FIRST_ENTRY, 257);
@@ -313,7 +331,7 @@ mod tests {
 
     #[test]
     fn values_the_compiler_never_writes_are_refused() {
-        let cases: [(AreaGlowSection, &str); 5] = [
+        let cases: [(AreaGlowSection, &str); 7] = [
             (
                 AreaGlowSection {
                     lights: vec![AreaGlowLight {
@@ -352,6 +370,26 @@ mod tests {
                     }],
                 },
                 "colour",
+            ),
+            // `_color` reads at most 255, so a channel past 1 is refused:
+            // a static entry draws `glow × color` with no clamp.
+            (
+                AreaGlowSection {
+                    lights: vec![AreaGlowLight {
+                        color: [1.0, 1.5, 0.0],
+                        ..light(None, vec![0])
+                    }],
+                },
+                "outside [0, 1]",
+            ),
+            (
+                AreaGlowSection {
+                    lights: vec![AreaGlowLight {
+                        color: [1.0, -0.25, 0.0],
+                        ..light(Some(0), vec![0])
+                    }],
+                },
+                "outside [0, 1]",
             ),
         ];
         for (section, expected) in cases {

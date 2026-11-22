@@ -3820,7 +3820,7 @@ A `LightAnimation` describes one looping (or finite) animation cycle. All fields
 | `periodMs` | `number` | required | Total duration of one cycle, in milliseconds. |
 | `brightness` | `number[]` | `null` | Brightness multiplier samples. The GPU interpolates via Catmull-Rom over the period. `0` = off, `1` = full intensity. Values above `1` are valid. |
 | `color` | `Vec3[]` | `null` | RGB color samples (`{ x, y, z }`). Accepted on dynamic and animated-baked static lights; the curve recolors their direct and baked-indirect contributions while preserving authored intensity. |
-| `direction` | `Vec3[]` | `null` | Unit-vector direction samples for spot lights. Non-unit samples are silently normalized. Zero-length samples are rejected with `InvalidArgument`. |
+| `direction` | `Vec3[]` | `null` | Unit-vector direction samples for spot lights. Non-unit samples are silently normalized. Zero-length samples are rejected with `InvalidArgument`. Refused on Area lights. |
 | `phase` | `number` | `null` | Offset into the cycle where this light starts, in `[0, 1)`. Use to stagger lights in a sequence. Values outside `[0, 1)` are normalized automatically. |
 | `playCount` | `number` | `null` | Number of complete cycles to play, then stop. `null` loops forever. |
 | `startActive` | `boolean` | `null` (true) | `false` defers the animation until an event activates the entity. Mirrors the FGD `_start_inactive` flag. |
@@ -3840,7 +3840,7 @@ The full component state returned in `LightEntity.component`. All fields are rea
 | `falloffRange` | `number` | Attenuation radius, in meters. For an area light, its reach: the authored `_falloff_range`, or the reach the compiler worked out from its brightness and size. |
 | `coneAngleInner` | `number \| null` | Inner cone half-angle in radians. `null` for non-Spot lights. |
 | `coneAngleOuter` | `number \| null` | Outer cone half-angle in radians. `null` for non-Spot lights. |
-| `coneDirection` | `{ x, y, z } \| null` | Normalized aim vector. `null` for Point lights. |
+| `coneDirection` | `{ x, y, z } \| null` | Normalized aim vector. `null` for Point and Area lights. |
 | `isDynamic` | `boolean` | Same as `LightEntity.isDynamic`. |
 | `animation` | `LightAnimation \| null` | Active animation, or `null` if none. Reflects the last executed `setLightAnimation` step. |
 

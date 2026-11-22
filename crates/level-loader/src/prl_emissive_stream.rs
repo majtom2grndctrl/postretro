@@ -9,7 +9,7 @@ use postretro_render_data::geometry::BvhLeaf;
 use crate::prl::PrlLoadError;
 use crate::prl_face_ranges::face_index_ranges;
 
-/// The stream value of a vertex whose face belongs to no volume.
+/// The stream value of a vertex whose face belongs to no volume and no area light.
 pub(crate) const NO_EMISSIVE_VOLUME: u32 = 0;
 
 /// One `u32` per world vertex: its face's emissive volume index + 1, its
@@ -53,8 +53,14 @@ pub(crate) fn build_vertex_emissive_volumes(
         area_glow,
     )
     .map_err(|reason| {
+        // Area glow ids (id 62) share the stream; name it when any are present.
+        let section = if area_glow.face_count() == 0 {
+            "Emissive"
+        } else {
+            "Emissive/AreaGlow"
+        };
         crate::prl_loader::section_validation(
-            "Emissive",
+            section,
             format!("glow membership cannot reach the world vertices: {reason}"),
         )
     })
@@ -68,18 +74,18 @@ fn stamp(
     emissive: &EmissiveSection,
     area_glow: &AreaGlowSection,
 ) -> Result<Vec<u32>, String> {
-    let mut face_volume = vec![NO_EMISSIVE_VOLUME; face_count];
+    let mut face_glow_id = vec![NO_EMISSIVE_VOLUME; face_count];
     for (volume, record) in emissive.volumes.iter().enumerate() {
         let id = volume as u32 + 1;
         for &face in &record.faces {
-            let slot = face_volume.get_mut(face as usize).ok_or_else(|| {
+            let slot = face_glow_id.get_mut(face as usize).ok_or_else(|| {
                 format!("volume {volume} face {face} is outside the {face_count} faces")
             })?;
             *slot = id;
         }
     }
     for (entry, (face, _)) in area_glow.entries().enumerate() {
-        let slot = face_volume
+        let slot = face_glow_id
             .get_mut(face as usize)
             .ok_or_else(|| format!("area glow face {face} is outside the {face_count} faces"))?;
         *slot = (AREA_GLOW_FIRST_ENTRY + entry) as u32;
@@ -92,7 +98,7 @@ fn stamp(
     const UNSTAMPED: usize = usize::MAX;
     let mut stamped_by = vec![UNSTAMPED; vertex_count];
     for (face, range) in ranges.into_iter().enumerate() {
-        let id = face_volume[face];
+        let id = face_glow_id[face];
         for &index in &indices[range] {
             let vertex = index as usize;
             let (Some(slot), Some(first)) = (stream.get_mut(vertex), stamped_by.get_mut(vertex))

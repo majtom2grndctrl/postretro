@@ -41,18 +41,43 @@ pub const AREA_GLOW_STATIC: f32 = -1.0;
 ///   light's compose descriptor, whose base colour carries colour ×
 ///   intensity, and divides the intensity back out, so the glow follows the
 ///   light's live colour and brightness but never `light` itself (O2, O13).
+/// - Slotted at intensity 0 (`light 0`): `(glow, 0, packed colour, slot)`.
+///   The descriptor's base colour is 0, so the `1 / intensity` lane is 0 and
+///   the colour rides lane z instead, from [`pack_area_glow_color`]. The
+///   glow still follows the light's active state and brightness curve, and a
+///   colour curve while one plays.
 pub fn area_glow_entry(light: &AreaGlowLight) -> [f32; 4] {
     match light.compose_slot {
-        Some(slot) if light.intensity > 0.0 => {
-            [light.glow, 1.0 / light.intensity, 0.0, slot as f32]
-        }
-        _ => [
+        None => [
             light.glow * light.color[0],
             light.glow * light.color[1],
             light.glow * light.color[2],
             AREA_GLOW_STATIC,
         ],
+        Some(slot) if light.intensity > 0.0 => {
+            [light.glow, 1.0 / light.intensity, 0.0, slot as f32]
+        }
+        Some(slot) => [
+            light.glow,
+            0.0,
+            pack_area_glow_color(light.color),
+            slot as f32,
+        ],
     }
+}
+
+/// A `light 0` entry's colour lane: each channel as an 8-bit integer, red in
+/// the low byte, as an exact float (at most 2²⁴ − 1). `_color` is authored
+/// in 8 bits per channel, so the packing loses nothing.
+pub fn pack_area_glow_color(color: [f32; 3]) -> f32 {
+    let byte = |channel: f32| (channel.clamp(0.0, 1.0) * 255.0).round() as u32;
+    (byte(color[0]) | byte(color[1]) << 8 | byte(color[2]) << 16) as f32
+}
+
+/// [`pack_area_glow_color`]'s inverse, as `forward.wgsl` decodes lane z.
+pub fn unpack_area_glow_color(lane: f32) -> [f32; 3] {
+    let packed = lane as u32;
+    std::array::from_fn(|channel| ((packed >> (8 * channel)) & 0xff) as f32 / 255.0)
 }
 
 /// The table entries past the volumes: one per emitting face of id 62's
@@ -86,10 +111,13 @@ pub fn glow_table_bytes(volumes: &[EmissiveVolumeRecord], area_entries: &[[f32; 
 
 /// CPU mirror of `forward.wgsl` `area_glow_factor`: the rgb factor an area
 /// face's `_e` sample is multiplied by. `descriptor` is the entry's compose
-/// descriptor (ignored for a static entry). A slotted entry reads 0 while its
-/// light is inactive; otherwise `min(glow × brightness, 64) / intensity ×` the
-/// descriptor's live colour, each channel capped at 64, the emissive ceiling
-/// that keeps bloom under the half-float range even when a curve runs past 1.
+/// descriptor (ignored for a static entry). A static entry's channels are
+/// `_glow × _color`, at most 64 since `_color` is at most 1. A slotted entry
+/// reads 0 while its light is inactive; otherwise `min(glow × brightness,
+/// 64) ×` its live colour, each channel capped at 64, the emissive ceiling
+/// that keeps bloom under the half-float range even when a curve runs past
+/// one. The live colour is the descriptor's, intensity divided out, or for a
+/// `light 0` entry its packed `_color`, or its colour curve while one plays.
 pub fn area_glow_factor(
     entry: [f32; 4],
     descriptor: Option<AnimatedLightScaleDescriptor<'_>>,
@@ -103,13 +131,22 @@ pub fn area_glow_factor(
     };
     let cycle_t = animation_curve_t(descriptor.period, descriptor.phase, time);
     let brightness = sample_curve_catmull_rom(descriptor.brightness, cycle_t).max(0.0);
+    // A lit light's descriptor carries colour × intensity, which lane y
+    // (1 / intensity) divides out. A `light 0` light's carries nothing.
+    let (base, unit) = if entry[1] > 0.0 {
+        (descriptor.base_color, entry[1])
+    } else if descriptor.color.is_empty() {
+        (unpack_area_glow_color(entry[2]), 1.0)
+    } else {
+        ([1.0; 3], 1.0)
+    };
     let color = if descriptor.color.is_empty() {
-        descriptor.base_color
+        base
     } else {
         let sampled = sample_color_catmull_rom(descriptor.color, cycle_t);
-        std::array::from_fn(|channel| sampled[channel].max(0.0) * descriptor.base_color[channel])
+        std::array::from_fn(|channel| sampled[channel].max(0.0) * base[channel])
     };
-    let scale = (entry[0] * brightness).min(EMISSIVE_VALUE_CEILING) * entry[1];
+    let scale = (entry[0] * brightness).min(EMISSIVE_VALUE_CEILING) * unit;
     color.map(|channel| (channel * scale).min(EMISSIVE_VALUE_CEILING))
 }
 
@@ -603,21 +640,97 @@ mod tests {
         }
     }
 
-    // A dark light draws dark faces; `light 0` takes the static glow; the live
-    // factor stops at the emissive ceiling even when a curve runs past 1.
+    // A dark light draws dark faces; the live factor stops at the emissive
+    // ceiling even when a curve runs past 1.
     #[test]
     fn inactive_lights_are_dark_and_the_live_glow_stops_at_the_ceiling() {
         let entry = area_glow_entry(&light(4.0, [1.0; 3], 1.0, Some(3)));
         let dark = descriptor([1.0; 3], 1.0, &[], &[], false);
         assert_eq!(area_glow_factor(entry, Some(dark), 0.0), [0.0; 3]);
         assert_eq!(area_glow_factor(entry, None, 0.0), [0.0; 3]);
-        assert_eq!(
-            area_glow_entry(&light(4.0, [0.5, 1.0, 0.0], 0.0, Some(3))),
-            [2.0, 4.0, 0.0, AREA_GLOW_STATIC]
-        );
         let hot = area_glow_entry(&light(64.0, [1.0, 0.5, 0.0], 1.0, Some(0)));
         let over = descriptor([1.0, 0.5, 0.0], 1.0, &[3.0], &[], true);
         assert_eq!(area_glow_factor(hot, Some(over), 0.0), [64.0, 32.0, 0.0]);
+    }
+
+    // Every 8-bit `_color` packs into lane z and back exactly.
+    #[test]
+    fn a_light_zero_colour_packs_exactly() {
+        for color in [[0, 0, 0], [255, 128, 0], [1, 254, 255], [255; 3]] {
+            let linear = color.map(|channel: u32| channel as f32 / 255.0);
+            let lane = pack_area_glow_color(linear);
+            assert_eq!(lane, (color[0] | color[1] << 8 | color[2] << 16) as f32);
+            assert_eq!(unpack_area_glow_color(lane), linear);
+        }
+    }
+
+    // A `light 0` light keeps its slot, so its glow still follows the light:
+    // dark while inactive, scaled by its brightness curve and capped at the
+    // ceiling as a lit light's is, coloured by `_color`, and by a colour
+    // curve while one plays. Its descriptor's base colour is 0 (colour ×
+    // intensity), so nothing is divided out.
+    #[test]
+    fn a_light_zero_entry_follows_its_light_in_its_own_colour() {
+        let amber = [1.0, 128.0 / 255.0, 0.0];
+        let unlit = light(4.0, amber, 0.0, Some(3));
+        let entry = area_glow_entry(&unlit);
+        assert_eq!(
+            entry,
+            [4.0, 0.0, pack_area_glow_color(amber), 3.0],
+            "a slotted entry with no intensity lane"
+        );
+
+        // Starts inactive: dark, faces and room together.
+        let dark = descriptor(amber, 0.0, &[], &[], false);
+        assert_eq!(area_glow_factor(entry, Some(dark), 0.0), [0.0; 3]);
+        assert_eq!(
+            crate::sh_compose::animated_light_scale(Some(dark), 0.0),
+            [0.0; 3]
+        );
+
+        // Lit and curveless: `_glow × _color`.
+        let lit = descriptor(amber, 0.0, &[], &[], true);
+        assert_eq!(
+            area_glow_factor(entry, Some(lit), 0.0),
+            amber.map(|channel| channel * 4.0)
+        );
+
+        // A pulse scales it as it scales a lit light's glow.
+        let curve = [0.25, 1.0, 0.5];
+        let pulse = descriptor(amber, 0.0, &curve, &[], true);
+        let lit_pulse = descriptor(amber, 2.0, &curve, &[], true);
+        let lit_entry = area_glow_entry(&light(4.0, amber, 2.0, Some(3)));
+        for step in 0..12 {
+            let time = step as f32 / 12.0;
+            close_rel(
+                area_glow_factor(entry, Some(pulse), time),
+                area_glow_factor(lit_entry, Some(lit_pulse), time),
+                1e-6,
+            );
+        }
+
+        // A colour curve replaces `_color`, as on a lit light.
+        let colors = [[1.0, 1.0, 1.0], [1.0, 0.6, 0.1], [0.2, 0.4, 1.0]];
+        let shifting = descriptor(amber, 0.0, &[], &colors, true);
+        let lit_shifting = descriptor(amber, 1.5, &[], &colors, true);
+        let lit_entry = area_glow_entry(&light(4.0, amber, 1.5, Some(3)));
+        for step in 0..12 {
+            let time = step as f32 / 12.0;
+            close_rel(
+                area_glow_factor(entry, Some(shifting), time),
+                area_glow_factor(lit_entry, Some(lit_shifting), time),
+                1e-5,
+            );
+        }
+
+        // The ceiling holds as on a lit light.
+        let hot = area_glow_entry(&light(64.0, [1.0, 0.5, 0.0], 0.0, Some(0)));
+        let over = descriptor([1.0, 0.5, 0.0], 0.0, &[3.0], &[], true);
+        let half = 128.0 / 255.0;
+        assert_eq!(
+            area_glow_factor(hot, Some(over), 0.0),
+            [64.0, 64.0 * half, 0.0]
+        );
     }
 
     // The install table: volumes first, area entries from entry 257, zeros

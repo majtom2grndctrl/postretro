@@ -153,8 +153,14 @@ pub fn load_map(path: &Path) -> FixturePipeline {
     if !map_data.area_lights.is_empty() {
         let has_emissive_map =
             crate::texture_mips::emissive_map_lookup(&crate::resolve_texture_root(path));
-        crate::area_light::resolve_area_lights(&mut map_data, &result.faces, has_emissive_map)
-            .unwrap_or_else(|e| panic!("area lights {name}: {e}"));
+        crate::area_light::resolve_area_lights(
+            &mut map_data,
+            &result.faces,
+            &result.tree,
+            &full_exterior,
+            has_emissive_map,
+        )
+        .unwrap_or_else(|e| panic!("area lights {name}: {e}"));
     }
     let RuntimeCells { cells, portals } = runtime;
 

@@ -864,18 +864,22 @@
 // sides whose texture has an _e map form one light that emits from their front
 // only, so frame a glowing pane with non-glowing brushes in the same entity. An
 // entity with no such side fails the build. Brightness is per square metre: a
-// larger panel gives more light. delay, _light_size and spot keys warn and are
-// ignored; _shadow_type sdf, direction_curve and style fail the build.
+// larger panel gives more light. Keys left over from another light class
+// (delay, _light_size, _phase, _angular_diameter, carrier,
+// _cast_entity_shadows and the spot keys) warn and are ignored. These fail
+// the build: _shadow_type sdf, direction_curve, style, a negative light, and
+// _bake_only 1 with _start_inactive 1. light 0 lights nothing, but its faces
+// still glow with the light.
 @SolidClass
     color(255 220 120)
     = light_area : "Area light (brush; emits from its _e faces)"
 [
-    light(integer) : "Brightness per square metre (300 = a light 300 at 1 m on a 1 m² panel's axis, far away)" : 300
+    light(integer) : "Brightness per square metre (far from a 1 m² panel on its axis, light 300 matches a light 300 point light with delay 2; 0 or more)" : 300
     _color(color255) : "Color" : "255 255 255"
     _falloff_range(integer) : "Reach override (map units, from the panel; blank = derived from brightness and area)"
     _glow(float) : "Face glow strength (independent of light; past 64 reads 64)" : "4"
     brightness_curve(string) : "Brightness Keyframe Curve ([t_ms, v] entries)" : ""
-    color_curve(string) : "Color Keyframe Curve ([t_ms, r, g, b] entries; requires _bake_only or _animated)" : ""
+    color_curve(string) : "Color Keyframe Curve ([t_ms, r, g, b] entries; requires _bake_only, _animated or _start_inactive)" : ""
     period_ms(integer) : "Keyframe Curve Period (milliseconds; required when any *_curve is set)" : 0
     _curve_phase(string) : "Keyframe Curve Phase Offset [0.0, 1.0)" : "0.0"
     _animated(choices) : "Animated-bake reservation (script-driven)" : 0 =
@@ -888,7 +892,7 @@
         0 : "No — lit at map load (default)"
         1 : "Yes — dark until an active script animation"
     ]
-    _bake_only(choices) : "Bake Only" : 0 =
+    _bake_only(choices) : "Bake Only (cannot pair with _start_inactive 1)" : 0 =
     [
         0 : "Runtime-present baked light"
         1 : "Bake only (no runtime entity)"

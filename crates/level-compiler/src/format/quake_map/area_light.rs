@@ -19,11 +19,17 @@ const AREA_LIGHT_CLASSNAME: &str = "light_area";
 pub(crate) const DEFAULT_AREA_GLOW: f32 = 4.0;
 
 /// Keys that mean nothing on an area light but survive a classname change
-/// from `light` or `light_spot` in the editor: each warns once, naming the
-/// light and key, and is ignored.
-const INERT_KEYS: [&str; 8] = [
+/// from another light class in the editor: each warns once, naming the
+/// light and key, and is ignored. The aim keys (`_cone`, `_cone2`, `angle`,
+/// `angles`, `mangle`, `target`) come from `light_spot` and `light_sun`; an
+/// area light emits along its faces' normals.
+const INERT_KEYS: [&str; 12] = [
     "delay",
     "_light_size",
+    "_phase",
+    "_angular_diameter",
+    "carrier",
+    "_cast_entity_shadows",
     "_cone",
     "_cone2",
     "angle",
@@ -54,11 +60,32 @@ pub(crate) struct AreaLightKeys {
 }
 
 /// Translates a `light_area` entity's keys. `light_ref` names the light in
-/// every warning and error. The record's `origin` and `falloff_range` are
-/// placeholders until its emitter resolves after partitioning; every field an
-/// area light does not read is normalised, so an inert authored key can
-/// never change the record or its bytes.
+/// every warning and error, so a caller reports an error as is. The record's
+/// `origin` and `falloff_range` are placeholders until its emitter resolves
+/// after partitioning; every field an area light does not read is
+/// normalised, so an inert authored key can never change the record or its
+/// bytes.
 pub(crate) fn translate_area_light(
+    props: &HashMap<String, String>,
+    light_ref: &str,
+) -> Result<(MapLight, AreaLightKeys), TranslateError> {
+    let name = |key: &'static str, reason: String| TranslateError::AreaLightKey {
+        light_ref: light_ref.to_owned(),
+        key,
+        reason,
+    };
+    translate_keys(props, light_ref).map_err(|error| match error {
+        TranslateError::InvalidProperty { key, value, reason } => {
+            name(key, format!("`{}` is not valid: {reason}", value.trim()))
+        }
+        TranslateError::MissingProperty(key) => {
+            name(key, "required when any curve key is set".to_owned())
+        }
+        named => named,
+    })
+}
+
+fn translate_keys(
     props: &HashMap<String, String>,
     light_ref: &str,
 ) -> Result<(MapLight, AreaLightKeys), TranslateError> {
@@ -71,12 +98,27 @@ pub(crate) fn translate_area_light(
         }
     }
 
-    let raw_intensity = parse_optional_int(props, "light")?
-        .or(parse_optional_int(props, "_light")?)
+    let (intensity_key, authored_intensity) = match parse_optional_int(props, "light")? {
+        Some(value) => ("light", Some(value)),
+        None => ("_light", parse_optional_int(props, "_light")?),
+    };
+    let raw_intensity = authored_intensity
         .map(|v| v as f32)
         .unwrap_or(QUAKE_INTENSITY_REFERENCE);
+    if raw_intensity < 0.0 {
+        return Err(TranslateError::AreaLightKey {
+            light_ref: light_ref.to_owned(),
+            key: intensity_key,
+            reason: format!(
+                "`{raw_intensity}` is negative; an area light's brightness must be 0 or more"
+            ),
+        });
+    }
     if raw_intensity == 0.0 {
-        log::warn!("[Compiler] {light_ref}: `light` is 0; it will contribute nothing");
+        log::warn!(
+            "[Compiler] {light_ref}: `{intensity_key}` is 0; it lights nothing, but its faces \
+             still glow"
+        );
     }
     let intensity = raw_intensity / QUAKE_INTENSITY_REFERENCE;
 
@@ -126,6 +168,15 @@ pub(crate) fn translate_area_light(
         }
     };
     let start_active = super::authored_light_start_active(props)?;
+    if bake_only && !start_active {
+        return Err(TranslateError::AreaLightKey {
+            light_ref: light_ref.to_owned(),
+            key: "_start_inactive",
+            reason: "a `_bake_only 1` light has no runtime presence, so no script can light \
+                     it and it would stay dark; remove `_bake_only` or `_start_inactive`"
+                .to_owned(),
+        });
+    }
     // An area light that starts dark must be lightable at runtime, so
     // `_start_inactive 1` takes the same animated reservation `_animated 1`
     // does. Point and spot lights keep their own rule.

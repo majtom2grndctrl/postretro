@@ -38,6 +38,7 @@ pub(crate) struct AreaSample {
     /// max(0, cosθ_r) for a receiver with a normal; 1 for a probe.
     pub weight: f64,
     /// Index of the sampled polygon in the emitter's list.
+    #[allow(dead_code)] // Read by tests only.
     pub polygon: usize,
 }
 

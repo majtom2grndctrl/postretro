@@ -215,7 +215,7 @@ impl AlphaLightsSection {
         // The leading version word gates the layout; a foreign version is rejected
         // with a clear "recompile" error. The `cast_shadows` byte was removed in
         // v4 (it was never read at runtime), so there is no in-place migration —
-        // pre-v4 `.prl` files must be rebuilt via `prl-build`.
+        // pre-v5 `.prl` files must be rebuilt via `prl-build`.
         let version = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
         if version != ALPHA_LIGHTS_VERSION {
             return Err(FormatError::Io(std::io::Error::new(

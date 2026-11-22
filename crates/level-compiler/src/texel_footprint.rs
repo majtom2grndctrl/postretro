@@ -392,6 +392,22 @@ impl ProbeEarlyOut {
             Self::Off => false,
         }
     }
+
+    /// [`Self::ends`] for an area light's ratio-estimator probes, each a
+    /// `(weight, clear)` pair, judged only among the probes that carry
+    /// weight. A zero-weight probe lies below the receiver's horizon: it
+    /// holds no light, and its ray mostly dives into the receiver's own
+    /// solid, so counting it would end a lit texel at 0. With no weighted
+    /// probe nothing is judged and the full set is traced.
+    pub(crate) fn ends_weighted(self, probes: &[(f64, bool)]) -> bool {
+        let (weighted, clear) = probes
+            .iter()
+            .filter(|&&(weight, _)| weight.is_finite() && weight > 0.0)
+            .fold((0u32, 0u32), |(weighted, clear), &(_, is_clear)| {
+                (weighted + 1, clear + u32::from(is_clear))
+            });
+        weighted > 0 && self.ends(clear, weighted)
+    }
 }
 
 impl TexelSampler {

@@ -221,6 +221,11 @@ fn run_after_parsing(
             &map_data.brush_volumes,
             &map_data.kinematic_movers,
         )?;
+    // The full tree's exterior flood over its own portals. It runs here, not
+    // with the runtime cells it also feeds (Visibility), because area-light
+    // exposure below drops the faces only exterior leaves hold.
+    let (full_exterior_leaves, full_tree_portal_count) =
+        runtime_cells::full_exterior_flood(&result.tree);
     finish_stage(
         &mut timings,
         reporter.as_ref(),
@@ -232,13 +237,20 @@ fn run_after_parsing(
         partition::log_stats(&result.tree, &result.faces);
     }
 
-    // Area lights take their polygons from the faces that survived the BSP,
-    // before buried classification, the script's light table and every bake
-    // read their origin and reach (research.md O11, O18, O22).
+    // Area lights take their polygons from the faces that survived the BSP
+    // and that an interior leaf draws, before buried classification, the
+    // script's light table and every bake read their origin and reach
+    // (research.md O11, O18, O22).
     if !map_data.area_lights.is_empty() {
         let has_emissive_map =
             crate::texture_mips::emissive_map_lookup(&resolve_texture_root(&args.input));
-        crate::area_light::resolve_area_lights(&mut map_data, &result.faces, has_emissive_map)?;
+        crate::area_light::resolve_area_lights(
+            &mut map_data,
+            &result.faces,
+            &result.tree,
+            &full_exterior_leaves,
+            has_emissive_map,
+        )?;
     }
 
     // Classify buried lights before the data script runs, so the script's
@@ -363,13 +375,17 @@ fn run_after_parsing(
     }
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::Visibility);
-    // The full tree's portals feed only the exterior flood. Every later stage
-    // that reads cell ids reads the runtime cells: the cell view of the tree,
-    // its exterior cells, and the portals between occluder-tier cells. The
-    // exterior set lets the cell encoder emit `face_count = 0` for
-    // outside-the-map cells in lockstep with the geometry section.
-    let (runtime, full_exterior_leaves) =
-        runtime_cells::RuntimeCells::of_partition(&result.tree, &tier);
+    // Every later stage that reads cell ids reads the runtime cells: the cell
+    // view of the tree, its exterior cells, and the portals between
+    // occluder-tier cells. The exterior set lets the cell encoder emit
+    // `face_count = 0` for outside-the-map cells in lockstep with the
+    // geometry section.
+    let runtime = runtime_cells::RuntimeCells::build(
+        &result.tree,
+        &tier,
+        &full_exterior_leaves,
+        full_tree_portal_count,
+    );
     let portal_count = runtime.portals.len();
     if portal_count == 0 {
         log::warn!(

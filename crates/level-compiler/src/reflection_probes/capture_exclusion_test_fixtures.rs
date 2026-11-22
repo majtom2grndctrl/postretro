@@ -423,7 +423,7 @@ impl CaptureFixture {
                 self.prm_dir.path(),
             ),
             emissive: EmissiveFaceFactors::none(),
-            area_glow: super::emissive_factor::AreaGlowFaces::new(None, 0),
+            area_glow: super::emissive_factor::AreaGlowFaces::new(None, &[], 0),
             lightmap: LightmapSampler::new(&self.lightmap),
             sh: ShVolumeSampler::new(&self.sh, PRODUCTION_PROBE_OCCLUSION).unwrap(),
             animated_direct: self

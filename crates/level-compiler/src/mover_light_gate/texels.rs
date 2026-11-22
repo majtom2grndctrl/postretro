@@ -11,7 +11,7 @@ use super::segment::{
 };
 use crate::chart_raster::{chart_interior_dims, chart_texel_world_position};
 use crate::lightmap_bake::hard_ray_target;
-use crate::lightmap_layer::{LightmapLayer, SharedAtlas};
+use crate::lightmap_layer::{EMITTER_SLACK, LightmapLayer, SharedAtlas};
 use crate::map_data::{LightType, MapLight};
 use crate::partition::Aabb;
 use crate::ray_traversal::RAY_EPSILON;
@@ -92,8 +92,9 @@ pub(crate) fn light_candidates(light: &MapLight, poses: &MoverPoses) -> Vec<Cand
                         })
                     }
                     // Texels it lights lie in its reach sphere and their
-                    // segments end on its polygons (`hard_ray_target`), so
-                    // the reach sphere, which holds both, bounds them. The
+                    // segments end on its lattice samples (`AreaSampler`),
+                    // which lie on its polygons, so the reach sphere, which
+                    // holds both, bounds them. The
                     // light has no point a brush could hold: a brush over
                     // its glass holds the segments' ends instead, and the
                     // segment test counts them.
@@ -219,10 +220,6 @@ impl<'a> TexelGate<'a> {
     }
 }
 
-/// How far past its circumradius an area light's segment target may lie from
-/// its centroid: its lift off the polygon and `f32` rounding, both far below.
-const EMITTER_TARGET_SLACK_M: f64 = 1.0e-3;
-
 /// World bounds of every segment a chart's texels trace toward `light`,
 /// lift included.
 fn segment_hull(light: &MapLight, (min, max): (Vec3, Vec3)) -> Aabb {
@@ -235,7 +232,7 @@ fn segment_hull(light: &MapLight, (min, max): (Vec3, Vec3)) -> Aabb {
         // inside the emitter sphere grown by the 1 mm the shaft cull allows.
         LightType::Area => {
             let (centre, radius) = light.emitter_sphere();
-            let reach = DVec3::splat(radius + EMITTER_TARGET_SLACK_M);
+            let reach = DVec3::splat(radius + EMITTER_SLACK);
             hull.expand_aabb(&Aabb {
                 min: centre - reach,
                 max: centre + reach,

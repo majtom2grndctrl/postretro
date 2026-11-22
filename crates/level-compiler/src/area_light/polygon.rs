@@ -1,9 +1,10 @@
-// Unshadowed polygon term: Lambert's clipped irradiance, irradiance vector, solid angle, distance.
+// Unshadowed polygon term: Lambert's clipped irradiance, irradiance vector, solid angle, distance,
+// and the direction a probe takes toward the light.
 // See: context/lib/build_pipeline.md §Compiler pipeline (Area lights)
 
 use glam::{DMat3, DVec3};
 
-use super::EmitterPolygon;
+use super::{AreaEmitter, EmitterPolygon};
 
 /// A receiver whose signed distance from an emitter's plane is at or below
 /// this is on or behind it and takes nothing from that polygon: the emitter's
@@ -129,6 +130,30 @@ pub(crate) fn polygon_solid_angle(poly: &EmitterPolygon, p: DVec3) -> f64 {
         .map(|pair| triangle_solid_angle(a, pair[0] - p, pair[1] - p))
         .sum();
     if omega.is_finite() { omega } else { 0.0 }
+}
+
+impl AreaEmitter {
+    /// The unit direction a probe at `p` takes toward the light: the lift its
+    /// shadow segments leave along, the facing of its scatter card and the
+    /// mover channel's direction. Normally Φ̂, the normalised irradiance
+    /// vector. Where Φ cancels to exactly zero though polygons face `p` (a
+    /// probe at the symmetric centre of opposing faces), it is the reversed
+    /// normal of the faced polygon with the largest solid angle, the first on
+    /// a tie, so the light is never dropped while Ω > 0. `None` when no
+    /// polygon faces `p`.
+    pub(crate) fn probe_direction(&self, p: DVec3) -> Option<DVec3> {
+        if let Some(direction) = self.irradiance_vector(p).try_normalize() {
+            return Some(direction);
+        }
+        let mut largest: Option<(f64, DVec3)> = None;
+        for poly in &self.polygons {
+            let omega = polygon_solid_angle(poly, p);
+            if omega > 0.0 && largest.is_none_or(|(most, _)| omega > most) {
+                largest = Some((omega, -poly.normal));
+            }
+        }
+        largest.map(|(_, direction)| direction)
+    }
 }
 
 /// Solid angle of the triangle with receiver-relative corners `a`, `b`, `c`

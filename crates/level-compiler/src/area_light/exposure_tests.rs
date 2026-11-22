@@ -20,7 +20,9 @@ use crate::map_data::{LightType, MapLight};
 use crate::map_format::MapFormat;
 use crate::parse::{parse_map_file, quake_to_engine};
 use crate::partition::{BspTree, find_leaf_for_point};
-use crate::pipeline::runtime_cells::{OccluderPartition, partition_with_occluders};
+use crate::pipeline::runtime_cells::{
+    OccluderPartition, full_exterior_flood, partition_with_occluders,
+};
 use crate::texel_footprint::has_emitter_sphere;
 
 /// Quake map units to engine metres.
@@ -114,7 +116,8 @@ fn resolve(map_text: &str) -> anyhow::Result<(MapData, Vec<Face>, BspTree)> {
         partition_with_occluders(&map.brush_volumes, &map.kinematic_movers)?;
     let lookup =
         crate::texture_mips::emissive_map_lookup(&crate::resolve_texture_root(&content.map));
-    resolve_area_lights(&mut map, &result.faces, lookup)?;
+    let (exterior, _) = full_exterior_flood(&result.tree);
+    resolve_area_lights(&mut map, &result.faces, &result.tree, &exterior, lookup)?;
     Ok((map, result.faces, result.tree))
 }
 
@@ -296,7 +299,7 @@ fn a_pane_half_sunk_in_a_wall_emits_only_its_exposed_part() {
 // `_e` face.
 #[test]
 fn sliver_pieces_are_dropped_and_a_sliver_only_light_fails() {
-    let (mut map, faces, _) =
+    let (mut map, faces, tree) =
         resolve(&ceiling_panel(&[([96, 96, 120], [160, 160, 128])], "")).unwrap();
     let area = map.area_lights[0].clone();
     let is_glass = |texture: &str| texture == GLASS;
@@ -326,7 +329,8 @@ fn sliver_pieces_are_dropped_and_a_sliver_only_light_fails() {
             }
         })
         .collect();
-    let error = resolve_area_lights(&mut map, &slivered, is_glass)
+    let (exterior, _) = full_exterior_flood(&tree);
+    let error = resolve_area_lights(&mut map, &slivered, &tree, &exterior, is_glass)
         .expect_err("slivers alone leave no emitter")
         .to_string();
     assert!(
@@ -376,6 +380,70 @@ fn an_area_light_without_an_e_face_or_without_brushes_fails_naming_it() {
         .to_string();
     assert!(
         error.contains("entity 1 'light_area' has no brushes"),
+        "{error}"
+    );
+}
+
+/// The sealed room of [`room_map`] with its ceiling slab, −16..272 square
+/// and 128..144 high, moved into a `light_area` whose sides carry `tex`
+/// (`[-x, +x, -y, +y, -z, +z]`): the light is part of the hull, its −z side
+/// facing the room and every other exposed side the void.
+fn hull_ceiling_map(tex: [&str; 6]) -> String {
+    let shell = [
+        brush([-16, -16, -16], [272, 272, 0], WALL),
+        brush([-16, -16, 0], [0, 272, 128], WALL),
+        brush([256, -16, 0], [272, 272, 128], WALL),
+        brush([0, -16, 0], [256, 0, 128], WALL),
+        brush([0, 256, 0], [256, 272, 128], WALL),
+    ]
+    .concat();
+    let ceiling = area_entity("", &brush_faces([-16, -16, 128], [272, 272, 144], tex));
+    format!(
+        "{{\n\"classname\" \"worldspawn\"\n{shell}}}\n{ceiling}\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"32 32 24\"\n}}\n"
+    )
+}
+
+// Regression: a `light_area` brush in the outer hull emitted its sides
+// facing the void, which the exterior cull later drops from the render:
+// its area, centroid and derived reach grew. Painted `_e` on every side,
+// only the underside facing the room emits.
+#[test]
+fn a_hull_forming_pane_emits_only_its_side_facing_the_room() {
+    let (map, _, _) = resolve(&hull_ceiling_map([GLASS; 6])).unwrap();
+    let (light, emitter) = only_area(&map.lights);
+    assert_close(
+        emitter.total_area,
+        square_metres(256.0 * 256.0),
+        1.0e-9,
+        "the room-facing underside alone",
+    );
+    for polygon in &emitter.polygons {
+        assert!(
+            (polygon.normal - DVec3::NEG_Y).length() < 1.0e-9,
+            "a polygon facing {} emits",
+            polygon.normal
+        );
+    }
+    let centre = engine(128.0, 128.0, 128.0);
+    assert!(
+        emitter.centroid.distance(centre) < 1.0e-6,
+        "centroid {} off the underside's centre {centre}",
+        emitter.centroid
+    );
+    assert_eq!(light.origin, emitter.centroid);
+}
+
+// Regression: a hull-forming `light_area` whose only `_e` side faces the
+// void compiled silently dark; it fails, naming the entity, as one with no
+// `_e` face does.
+#[test]
+fn a_hull_forming_light_whose_only_e_side_faces_the_void_fails_naming_it() {
+    let error = resolve(&hull_ceiling_map([WALL, WALL, WALL, WALL, WALL, GLASS]))
+        .expect_err("the `_e` side faces the void")
+        .to_string();
+    assert!(
+        error.contains("entity 1 'light_area' has no face with an `_e` map"),
         "{error}"
     );
 }

@@ -13,7 +13,7 @@ use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
 use postretro_level_format::texture_names::TextureNamesSection;
 
 use crate::area_light::reach_window;
-use crate::area_light::test_lights::{area_light, ceiling_panel, pillar_sides};
+use crate::area_light::test_lights::{area_light, ceiling_panel, horizontal_rect, pillar_sides};
 use crate::billboard_direct_scatter_bake::visible_radiance_sum;
 use crate::bvh_build::{BvhPrimitive, build_bvh};
 use crate::direct_sh_bake::{DirectBakeInputs, build_reach_index};
@@ -460,6 +460,66 @@ fn scatter_and_the_mover_channel_integrate_a_4x4_panel_over_the_polygon() {
         1.0e-3,
         "far limit",
     );
+}
+
+// Regression: a probe at the symmetric centre of opposing faces of one light
+// has Φ = 0 exactly while Ω > 0, and the light vanished from direct SH,
+// scatter and the mover channel, which all normalised Φ. Midway between a
+// 2 × 2 m floor panel and its mirror in the ceiling, direct SH stores the
+// analytic L0 = Y₀₀·Ω·L·window through the lobe and no L1; scatter stores
+// one panel's term for a card facing it; the mover channel's own tile
+// matches direct SH and q reads every sample clear.
+#[test]
+fn a_probe_between_mirrored_faces_of_one_light_keeps_its_light() {
+    let world = Scene::default()
+        .horizontal([-4.0, 4.0], [-4.0, 4.0], 0.0)
+        .horizontal([-4.0, 4.0], [-4.0, 4.0], 2.0)
+        .build();
+    let light = area_light(
+        vec![
+            ceiling_panel([-1.0, 1.0], [-1.0, 1.0], 2.0),
+            horizontal_rect([-1.0, 1.0], [-1.0, 1.0], 0.0, DVec3::Y),
+        ],
+        1.0,
+        Some(50.0),
+    );
+    let probe = Vec3::new(0.0, 1.0, 0.0);
+    let emitter = light.area.as_ref().unwrap();
+    let p = probe.as_dvec3();
+    assert_eq!(emitter.irradiance_vector(p), DVec3::ZERO, "Φ cancels");
+    assert!(emitter.solid_angle(p) > 0.0);
+    // Toward whichever panel subtends more, to the last bit; the ceiling on
+    // an exact tie.
+    let facing = emitter
+        .probe_direction(p)
+        .expect("both panels face the probe");
+    assert!(facing == DVec3::Y || facing == DVec3::NEG_Y, "{facing}");
+
+    let acc = world.direct(probe, &light);
+    let analytic = analytic_sh(&light, probe);
+    let y00 = 0.5 / PI.sqrt();
+    let window = reach_window(emitter.nearest_distance(p), 50.0);
+    let l0 = PI * y00 * emitter.solid_angle(p) * f64::from(light.intensity) * window;
+    assert!(l0 > 0.0);
+    assert_rel(analytic[0][0], l0, 1.0e-12, "analytic L0");
+    assert_rel(f64::from(acc[0]), l0, 1.0e-5, "direct SH L0");
+    for value in &acc[3..12] {
+        assert!(value.abs() <= 1.0e-5 * l0 as f32, "L1 cancels: {acc:?}");
+    }
+
+    let scatter = f64::from(world.scatter(probe, &light).x);
+    assert!(scatter > 0.0);
+    assert_rel(
+        scatter,
+        windowed_term(&light, probe, facing.as_vec3()),
+        1.0e-5,
+        "scatter facing one panel",
+    );
+
+    let (tile, samples, clear) = world.mover_own_term(probe, &light);
+    assert_eq!(tile, acc, "the mover channel's own tile is direct SH");
+    assert!(samples > 0);
+    assert_eq!(clear, samples, "q: every sample clear");
 }
 
 // --- AC 14: the window in every probe consumer ------------------------------

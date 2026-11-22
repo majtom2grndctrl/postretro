@@ -30,7 +30,7 @@ impl EmitterPolygon {
     /// contract holds whatever order the caller passed. A zero `normal` takes
     /// the winding's own normal.
     pub(crate) fn new(mut vertices: Vec<DVec3>, normal: DVec3) -> Self {
-        let winding = newell_normal(&vertices);
+        let winding = fan_vector_area(&vertices);
         let normal = normal
             .try_normalize()
             .unwrap_or_else(|| winding.normalize_or_zero());
@@ -73,9 +73,9 @@ impl EmitterPolygon {
     }
 }
 
-/// Twice the vector area of a planar polygon, taken relative to its first
-/// vertex so far-from-origin corners keep their precision.
-fn newell_normal(vertices: &[DVec3]) -> DVec3 {
+/// Twice the vector area of a planar polygon (a fan of cross products), taken
+/// relative to its first vertex so far-from-origin corners keep their precision.
+fn fan_vector_area(vertices: &[DVec3]) -> DVec3 {
     let Some(&v0) = vertices.first() else {
         return DVec3::ZERO;
     };

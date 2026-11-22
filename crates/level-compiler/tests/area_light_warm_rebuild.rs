@@ -160,7 +160,9 @@ fn inert_keys_on_area_lights_rebuild_every_stage_from_the_cache() {
 // Acceptance row 37: raising `--soft-shadow-samples` on an area-light map
 // re-bakes its lightmap layers and the weight-map stage, and a warm rebuild
 // still reads its surface-radiance, direct-SH, scatter, mover-channel and
-// bounce-delta entries from the cache. Those sections keep their bytes.
+// bounce-delta entries from the cache. Those sections keep their bytes: the
+// warm 16-sample PRL matches a cold (`--no-cache`) 16-sample build section for
+// section, so no probe path reads the count without keying it.
 #[test]
 fn soft_shadow_samples_rekey_only_the_texel_paths_of_area_lights() {
     let fixture = fixture(&area_map(""));
@@ -208,6 +210,19 @@ fn soft_shadow_samples_rekey_only_the_texel_paths_of_area_lights() {
         );
     }
     probe_stages_hit(&tally, "--soft-shadow-samples", &raised.log);
+
+    // A cold build at the same count is the reference: cached probe stages
+    // can only equal it if the count never reaches them unkeyed.
+    let cold = fixture.bake(
+        &current_compiler(),
+        "sixteen_cold",
+        TALLY_LOG,
+        &["--jobs", "2", "--soft-shadow-samples", "16", "--no-cache"],
+    );
+    assert_eq!(
+        raised.sections, cold.sections,
+        "the warm 16-sample PRL differs from a cold 16-sample build"
+    );
 
     // Texel outputs move; every probe-side section keeps its bytes.
     let texel_paths: [u32; 3] = [22, 25, 42];

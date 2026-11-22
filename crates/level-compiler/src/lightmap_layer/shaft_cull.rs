@@ -80,8 +80,9 @@ const PAD_SLACK: f64 = 4.0;
 /// Slack on the emitter sphere, in metres, over `light_size` or an area
 /// light's circumradius: sphere targets lie on the sphere to within rounding
 /// far below it, and area targets lie on their polygons, lifted off them by
-/// the tracer tolerance (0.5 mm), within rounding far below the rest.
-const EMITTER_SLACK: f64 = 1.0e-3;
+/// the tracer tolerance (0.5 mm), within rounding far below the rest. Also the
+/// bound the mover gates put on an area light's segment targets.
+pub(crate) const EMITTER_SLACK: f64 = 1.0e-3;
 
 /// Least height, in `RAY_EPSILON`s, of the emitter's nearest target above
 /// the texel plane. A lead-in runs 1.25 past its origin; with the target at

@@ -127,8 +127,8 @@ const DISTANCE_SLACK: f64 = 4.0e-6;
 /// Whether `light`'s direct term can be non-zero at any interior texel of
 /// `chart`. `false` is exact: the bake's own expressions give every texel the
 /// walk visits (`for_each_light_layer_chart_texel`) a zero contribution, so it
-/// would record none. The direct term reads the light centre only, never
-/// `light_size`, so neither does this.
+/// would record none. A point or spot light's direct term reads the light
+/// centre only, never `light_size`, so neither does this.
 ///
 /// A point or spot light is ruled out by any one of three tests, each bounding
 /// an affine or monotone quantity over the texel-centre rectangle at its

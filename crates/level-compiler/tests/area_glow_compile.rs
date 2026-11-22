@@ -1,7 +1,8 @@
 //! `light_area` glow through the real compiler CLI: id 62's entries by
 //! `_glow`, `_color` and compose slot, whatever the texture strength; `_glow`
 //! and the `_e` map keying no lighting bake; `light` scaling the light but
-//! not the glow; the loader's per-vertex ids; and maps without area lights.
+//! not the glow; `light 0` keeping its slot; the loader's per-vertex ids; and
+//! maps without area lights.
 //! See: context/lib/build_pipeline.md §PRL section IDs · resource_management.md §4.5
 
 mod coloured_bounce_support;
@@ -421,6 +422,33 @@ fn doubling_light_doubles_the_lightmap_and_leaves_the_glow() {
     // (0.4% measured), where direct SH and the lightmap double exactly.
     let lit = assert_doubles(&bounce(&a), &bounce(&b), 1e-2, "SH bounce (id 34)");
     assert!(lit > 100, "the probes take bounce: {lit} channels");
+}
+
+// `light 0` lights nothing, but its glow still follows its light: a
+// `_start_inactive` one writes a slotted entry at intensity 0, which the
+// loader accepts, rather than a static glow that would show from the first
+// frame and ignore every script.
+#[test]
+fn a_light_zero_start_inactive_area_light_writes_a_slotted_entry() {
+    let map = area_map(GLASS, "\"_start_inactive\" \"1\"\n")
+        .replace("\"light\" \"300\"", "\"light\" \"0\"");
+    let fixture = fixture(&map);
+    let bake = bake(&fixture, "light-zero", false);
+    let glow = area_glow(&bake);
+    let [light] = glow.lights.as_slice() else {
+        panic!("one area light: {:?}", glow.lights);
+    };
+    assert_eq!(light.intensity, 0.0);
+    assert!(light.compose_slot.is_some(), "slotted: {light:?}");
+    assert!(!light.faces.is_empty());
+    assert!(
+        bake.log
+            .contains("`light` is 0; it lights nothing, but its faces still glow"),
+        "{}",
+        bake.log
+    );
+    let world = postretro_level_loader::load_prl(bake.prl.to_str().unwrap()).expect("loads");
+    assert_eq!(world.area_glow, glow);
 }
 
 // Acceptance row 60 (research.md O5): a map with no area light writes no

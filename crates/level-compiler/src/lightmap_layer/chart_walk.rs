@@ -121,11 +121,11 @@ pub(crate) fn bake_light_layer_chart_reached(
 /// With the shaft cull on, the chart splits into [`SHAFT_TILE_TEXELS`]-square
 /// tiles from its first interior texel, and each tile is tested once, on its
 /// first covered texel ([`ShaftCull::tile_clear`]). A clear tile's covered
-/// texels store visibility exactly 1.0, the ratio an all-clear sample set
-/// gives (an area light's [`TexelSampler::clear_visibility`], which is 0
-/// where no lattice sample carries weight), and trace nothing: no shadow, clip or lead-in segment. The occluder
-/// caches change only on a hit, so they leave a clear tile as the unculled
-/// walk would. The direct term and the records are unchanged.
+/// texels store the sampler's all-clear value
+/// ([`TexelSampler::clear_visibility`]): 1.0, or for an area light 0 where no
+/// lattice sample carries weight. They trace nothing: no shadow, clip or
+/// lead-in segment. The occluder caches change only on a hit, so they leave a
+/// clear tile as the unculled walk would. The direct term and the records are unchanged.
 ///
 /// With `reach` culling the pair, a covered texel whose own slab touches
 /// open leaves only stores visibility 0 and traces nothing; every other
@@ -417,7 +417,8 @@ fn verify_clear_texel(
     let skipped = sampler.clear_visibility(light, site);
     assert!(
         visibility == skipped,
-        "shaft cull: a clear tile's texel at {:?} traces visibility {visibility}, not {skipped},          toward a light at {:?}",
+        "shaft cull: a clear tile's texel at {:?} traces visibility {visibility}, not {skipped}, \
+         toward a light at {:?}",
         site.world_p,
         light.origin
     );

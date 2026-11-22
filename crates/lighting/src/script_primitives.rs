@@ -6,7 +6,7 @@
 
 use postretro_entities::components::light::{LightAnimation, LightComponent, LightKind};
 use postretro_entities::{
-    Component, ComponentKind, EntityId, EntityRegistry, ScriptCtx, ScriptError,
+    Component, ComponentKind, EntityId, EntityRegistry, RegistryError, ScriptCtx, ScriptError,
 };
 use postretro_foundation::Vec3Lit;
 use postretro_scripting_core::primitives_registry::{ContextScope, PrimitiveRegistry};
@@ -191,18 +191,25 @@ pub(crate) fn apply_light_animation_inner(
         None => None,
     };
 
-    let mut next = current;
+    commit_light_animation(registry, id, validated).map_err(ScriptError::from)
+}
+
+/// Write an already-validated animation onto `id`'s light. Shared by the
+/// single-target and tagged/group paths so both commit identically.
+fn commit_light_animation(
+    registry: &mut EntityRegistry,
+    id: EntityId,
+    validated: Option<LightAnimation>,
+) -> Result<(), RegistryError> {
+    let mut next = registry.get_component::<LightComponent>(id)?.clone();
     next.animation = validated;
-    registry
-        .set_component(id, next)
-        .map_err(ScriptError::from)?;
-    Ok(())
+    registry.set_component(id, next)
 }
 
 const SET_LIGHT_ANIM_DOC: &str = "Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. \
      Non-unit direction samples are silently normalized; zero-length direction samples \
-     and empty channel arrays error with InvalidArgument. \
-     Definition context.";
+     and empty channel arrays error with InvalidArgument, \
+     as does a direction channel (sweep) on an Area light. Definition context.";
 
 #[allow(clippy::arc_with_non_send_sync)]
 pub fn register_light_entity_primitives(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
@@ -259,18 +266,11 @@ pub fn register_light_reaction_primitives(registry: &mut ReactionPrimitiveRegist
             writes.push((id, validated));
         }
         for (id, validated) in writes {
-            let mut next = registry
-                .get_component::<LightComponent>(id)
-                .map_err(|error| ReactionError::InvalidArgument {
+            commit_light_animation(registry, id, validated).map_err(|error| {
+                ReactionError::InvalidArgument {
                     reason: format!("setLightAnimation: target {id}: {error}"),
-                })?
-                .clone();
-            next.animation = validated;
-            registry
-                .set_component(id, next)
-                .map_err(|error| ReactionError::InvalidArgument {
-                    reason: format!("setLightAnimation: target {id}: {error}"),
-                })?;
+                }
+            })?;
         }
         Ok(())
     });

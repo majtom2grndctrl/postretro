@@ -622,3 +622,79 @@ fn the_panel_fixture_lights_the_floor_with_the_unshadowed_polygon_term() {
         "the floor under the panel holds texels: {checked}"
     );
 }
+
+// Acceptance row 31: editing only `delay`, `_light_size` or a spot key on an
+// area light re-keys no bake entry. Translation drops them, so the resolved
+// light is byte-identical, and so is every key that folds it: each
+// lightmap layer, the surface-radiance digest and the light bytes the
+// SH-family memos fold. The geometry, and so every geometry key, is the same.
+#[test]
+fn inert_keys_leave_every_lighting_key_unchanged() {
+    use crate::bvh_build::build_bvh;
+    use crate::delta_sh_cache::encoded_key_light;
+    use crate::lightmap_bake::{DEFAULT_AREA_SAMPLE_COUNT, prepare_atlas};
+    use crate::lightmap_layer::{SharedAtlas, layer_input_hash};
+    use crate::ray_traversal::TRACER_EPOCH;
+    use crate::surface_radiance::LightDigest;
+    use crate::texel_footprint::PENUMBRA_FLOOR_DEFAULT;
+
+    let panel = [([96, 96, 120], [160, 160, 128])];
+    let inert = "\"delay\" \"0\"\n\"_light_size\" \"16\"\n\"_cone\" \"20\"\n\"_cone2\" \"30\"\n\
+                 \"angle\" \"90\"\n\"mangle\" \"0 -90 0\"\n\"target\" \"t1\"\n";
+    let plain = fixture(&ceiling_panel(&panel, ""));
+    let edited = fixture(&ceiling_panel(&panel, inert));
+    let (light, _) = only_area(&plain.lights);
+    let (edited_light, _) = only_area(&edited.lights);
+    assert_eq!(light, edited_light);
+    assert_eq!(encoded_key_light(light), encoded_key_light(edited_light));
+    assert_eq!(LightDigest::of(light), LightDigest::of(edited_light));
+
+    let keys = |mut fixture: FixturePipeline, light: &MapLight| {
+        let static_lights = StaticBakedLights::from_lights(std::slice::from_ref(light));
+        let prepared = prepare_atlas(&mut fixture.geometry, &static_lights, 0.25, &[]).unwrap();
+        let (_, primitives, _) = build_bvh(&fixture.geometry).unwrap();
+        let shared = SharedAtlas {
+            charts: &prepared.charts,
+            placements: &prepared.placements,
+            atlas_width: prepared.atlas_width,
+            atlas_height: prepared.atlas_height,
+            layout: &prepared.layout,
+        };
+        (0..prepared.layer_count)
+            .map(|layer| {
+                layer_input_hash(
+                    light,
+                    &shared,
+                    &primitives,
+                    &fixture.geometry,
+                    0.25,
+                    DEFAULT_AREA_SAMPLE_COUNT,
+                    PENUMBRA_FLOOR_DEFAULT,
+                    TRACER_EPOCH,
+                    layer,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let (light, edited_light) = (light.clone(), edited_light.clone());
+    assert_eq!(keys(plain, &light), keys(edited, &edited_light));
+}
+
+// The affinity flood seeds an area light from the cells in front of its
+// polygons, never the cell its centroid locates to: the light wrapping the
+// pillar, whose centroid lies in the pillar's solid, floods the room rather
+// than bypassing the portal filter.
+#[test]
+fn a_pillar_wrapped_light_floods_its_cells_from_its_faces() {
+    use crate::affinity_grid::{light_portal_reach, portal_adjacency};
+
+    let fixture = fixture(&pillar_map());
+    let (area, _) = only_area(&fixture.lights);
+    let centroid_cell = find_leaf_for_point(&fixture.tree, area.origin);
+    assert!(fixture.tree.leaves[centroid_cell].is_solid);
+    let adjacency = portal_adjacency(&fixture.portals);
+    let reached = light_portal_reach(area, &fixture.tree, &fixture.exterior_leaves, &adjacency)
+        .expect("the faces' cells are open, so the filter applies");
+    let room = find_leaf_for_point(&fixture.tree, engine(32.0, 32.0, 64.0));
+    assert!(reached.contains(&room), "the room's cell is reached");
+}

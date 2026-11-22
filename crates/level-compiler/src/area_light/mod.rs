@@ -6,11 +6,14 @@
 
 pub(crate) mod emitter;
 mod exposure;
+mod lattice;
 mod polygon;
 mod reach;
 mod sampler;
 mod visibility;
 
+#[cfg(test)]
+pub(crate) mod test_lights;
 #[cfg(test)]
 mod tests;
 
@@ -18,6 +21,7 @@ use glam::DVec3;
 
 pub(crate) use emitter::{AreaEmitter, EmitterPolygon};
 pub(crate) use exposure::{EMITTER_PIECE_AREA_FLOOR_M2, resolve_area_lights};
+pub(crate) use lattice::{area_lattice_point, area_probe_indices};
 
 pub(crate) use polygon::{
     PLANE_EPSILON_METERS, polygon_distance, polygon_irradiance, polygon_irradiance_vector,

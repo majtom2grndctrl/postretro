@@ -159,47 +159,90 @@ impl TexelFootprint {
         rotation: (f32, f32),
     ) -> EmitterPairing {
         let axis = match light.light_type {
+            // An area light pairs through `area_pairing_frame` instead.
             LightType::Point | LightType::Spot | LightType::Area => (light.origin.as_vec3()
                 - (site.world_p + site.normal * RAY_EPSILON))
                 .normalize_or_zero(),
             LightType::Directional => sun_axis(light),
         };
-        // A world offset `w` projects onto the receiver along `axis` as
-        // `w − axis · (n·w) / (n·axis)`; its texel coordinates are dots with
-        // the pitch axes over their squared lengths, unrotated by the
-        // footprint's turn. All of that is linear in `w`, so it folds into two
-        // vectors, carried into the unrotated lattice's frame instead of
-        // turning every lattice sample by the texel's seed.
-        let normal = site.normal;
-        let facing = normal.dot(axis);
-        let lean = if facing > MIN_PROJECTION_COSINE {
-            axis / facing
-        } else {
-            normal
-        };
-        let texel_axis = |pitch: Vec3| {
-            let along = pitch / pitch.length_squared();
-            along - normal * lean.dot(along)
-        };
-        let (u, v) = (
-            texel_axis(site.frame.pitch_u),
-            texel_axis(site.frame.pitch_v),
-        );
-        let (sin, cos) = rotation;
+        let (x_axis, y_axis) = pairing_axes(site, rotation, axis);
         let unspin = emitter_lattice_spin(light, site.seed).inverse();
-        EmitterPairing {
-            x_axis: unspin * (u * cos + v * sin),
-            y_axis: unspin * (v * cos - u * sin),
+        EmitterPairing::unclaimed(unspin * x_axis, unspin * y_axis)
+    }
+
+    /// An area-light texel's pairing with nothing claimed yet. Its lattice
+    /// is the texel's own lifted samples less their mean, `anchor`, already
+    /// turned by the texel's seed, so the frame projects along the direction
+    /// to the anchor and unspins nothing: each sample pairs by its offset
+    /// projected onto the receiver, as a sphere sample does (research.md §2).
+    #[inline]
+    pub(super) fn area_pairing_frame(
+        &self,
+        site: &TexelSite,
+        rotation: (f32, f32),
+        anchor: Vec3,
+    ) -> EmitterPairing {
+        let axis = (anchor - (site.world_p + site.normal * RAY_EPSILON)).normalize_or_zero();
+        let (x_axis, y_axis) = pairing_axes(site, rotation, axis);
+        EmitterPairing::unclaimed(x_axis, y_axis)
+    }
+}
+
+impl EmitterPairing {
+    #[inline]
+    fn unclaimed(x_axis: Vec3, y_axis: Vec3) -> Self {
+        Self {
+            x_axis,
+            y_axis,
             probes: [0; FOOTPRINT_PROBES],
             counter: [0; COUNTER_RING_SAMPLES],
             claimed: [0; FOOTPRINT_PROBES + COUNTER_RING_SAMPLES],
             claimed_len: 0,
         }
     }
+}
 
+/// The two vectors that carry a world offset, projected onto the receiver
+/// along `axis`, into the footprint's unrotated texel frame, before any
+/// emitter lattice spin is undone.
+#[inline]
+fn pairing_axes(site: &TexelSite, rotation: (f32, f32), axis: Vec3) -> (Vec3, Vec3) {
+    // A world offset `w` projects onto the receiver along `axis` as
+    // `w − axis · (n·w) / (n·axis)`; its texel coordinates are dots with
+    // the pitch axes over their squared lengths, unrotated by the
+    // footprint's turn. All of that is linear in `w`, so it folds into two
+    // vectors, carried into the unrotated lattice's frame instead of
+    // turning every lattice sample by the texel's seed.
+    let normal = site.normal;
+    let facing = normal.dot(axis);
+    let lean = if facing > MIN_PROJECTION_COSINE {
+        axis / facing
+    } else {
+        normal
+    };
+    let texel_axis = |pitch: Vec3| {
+        let along = pitch / pitch.length_squared();
+        along - normal * lean.dot(along)
+    };
+    let (u, v) = (
+        texel_axis(site.frame.pitch_u),
+        texel_axis(site.frame.pitch_v),
+    );
+    let (sin, cos) = rotation;
+    (u * cos + v * sin, v * cos - u * sin)
+}
+
+impl TexelFootprint {
     /// Claims the probes' emitter samples ([`TexelFootprint::emitter_pairing`]).
     #[inline]
     pub(super) fn claim_probes(&self, pairing: &mut EmitterPairing) {
+        self.claim_probes_in(pairing, &self.lattice);
+    }
+
+    /// [`TexelFootprint::claim_probes`] over `lattice`: the footprint's own
+    /// for a point, spot or sun, a texel's samples for an area light.
+    #[inline]
+    pub(super) fn claim_probes_in(&self, pairing: &mut EmitterPairing, lattice: &[Vec3]) {
         // One pass finds the sample nearest the centre and each sector's two
         // farthest, the second standing in when the first is that nearest.
         // Both are kept as keys, so every update is a `min` or `max`: the
@@ -211,7 +254,7 @@ impl TexelFootprint {
         // Copied out of `pairing`, which the compiler would otherwise reload
         // on every sample.
         let (x_axis, y_axis) = (pairing.x_axis, pairing.y_axis);
-        for (index, offset) in self.lattice.iter().enumerate() {
+        for (index, offset) in lattice.iter().enumerate() {
             let index = index as u32;
             let position = [x_axis.dot(*offset), y_axis.dot(*offset)];
             let radius_sq = position[0] * position[0] + position[1] * position[1];
@@ -245,7 +288,7 @@ impl TexelFootprint {
         }
         for k in (1..FOOTPRINT_PROBES).filter(|k| unfilled & (1 << k) != 0) {
             let sector = (k - 1) * RING_POSITION_STRIDE % RING_SAMPLES;
-            let index = self.farthest_unclaimed(pairing, RING_DIRECTIONS[sector]);
+            let index = self.farthest_unclaimed_in(pairing, lattice, RING_DIRECTIONS[sector]);
             pairing.probes[k] = index;
             pairing.claimed[pairing.claimed_len] = index;
             pairing.claimed_len += 1;
@@ -265,11 +308,17 @@ impl TexelFootprint {
     /// the spread of its footprint and emitter taken independently.
     #[inline]
     pub(super) fn claim_counter_ring(&self, pairing: &mut EmitterPairing) {
+        self.claim_counter_ring_in(pairing, &self.lattice);
+    }
+
+    /// [`TexelFootprint::claim_counter_ring`] over `lattice`.
+    #[inline]
+    pub(super) fn claim_counter_ring_in(&self, pairing: &mut EmitterPairing, lattice: &[Vec3]) {
         let len = self.offsets.len();
         for j in 0..self.counter_len {
             let [x, y] = self.offsets[len - 1 - j];
             let length = x.hypot(y);
-            let index = self.farthest_unclaimed(pairing, [-x / length, -y / length]);
+            let index = self.farthest_unclaimed_in(pairing, lattice, [-x / length, -y / length]);
             pairing.counter[j] = index;
             pairing.claimed[pairing.claimed_len] = index;
             pairing.claimed_len += 1;
@@ -280,12 +329,23 @@ impl TexelFootprint {
     /// The unclaimed lattice sample reaching farthest along unit direction
     /// `[x, y]` of the footprint's unrotated texel frame. Ties keep the lowest
     /// index.
+    #[cfg(test)]
+    pub(super) fn farthest_unclaimed(&self, pairing: &EmitterPairing, direction: [f32; 2]) -> u32 {
+        self.farthest_unclaimed_in(pairing, &self.lattice, direction)
+    }
+
+    /// [`TexelFootprint::farthest_unclaimed`] over `lattice`.
     #[inline]
-    pub(super) fn farthest_unclaimed(&self, pairing: &EmitterPairing, [x, y]: [f32; 2]) -> u32 {
+    pub(super) fn farthest_unclaimed_in(
+        &self,
+        pairing: &EmitterPairing,
+        lattice: &[Vec3],
+        [x, y]: [f32; 2],
+    ) -> u32 {
         let claimed = &pairing.claimed[..pairing.claimed_len];
         let mut best = f32::NEG_INFINITY;
         let mut best_index = 0;
-        for (index, offset) in self.lattice.iter().enumerate() {
+        for (index, offset) in lattice.iter().enumerate() {
             let position = pairing.frame_position(*offset);
             let reach = position[0] * x + position[1] * y;
             if reach > best && !claimed.contains(&(index as u32)) {

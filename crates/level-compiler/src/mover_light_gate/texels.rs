@@ -91,16 +91,16 @@ pub(crate) fn light_candidates(light: &MapLight, poses: &MoverPoses) -> Vec<Cand
                                 .any(|brush| point_touches_brush(light.origin, brush))
                         })
                     }
-                    // Texels it lights lie in its reach sphere; their segments
-                    // end on its centroid until area-lights task 3 aims them
-                    // at the polygons.
+                    // Texels it lights lie in its reach sphere and their
+                    // segments end on its polygons (`hard_ray_target`), so
+                    // the reach sphere, which holds both, bounds them. The
+                    // light has no point a brush could hold: a brush over
+                    // its glass holds the segments' ends instead, and the
+                    // segment test counts them.
                     LightType::Area => {
                         let (centre, radius) = light.reach_sphere();
-                        sphere_touches_box(centre, radius + BOX_SLACK_M, &pose.bounds).then(|| {
-                            pose.brushes
-                                .iter()
-                                .any(|brush| point_touches_brush(light.origin, brush))
-                        })
+                        sphere_touches_box(centre, radius + BOX_SLACK_M, &pose.bounds)
+                            .then_some(false)
                     }
                 }
             });
@@ -219,6 +219,10 @@ impl<'a> TexelGate<'a> {
     }
 }
 
+/// How far past its circumradius an area light's segment target may lie from
+/// its centroid: its lift off the polygon and `f32` rounding, both far below.
+const EMITTER_TARGET_SLACK_M: f64 = 1.0e-3;
+
 /// World bounds of every segment a chart's texels trace toward `light`,
 /// lift included.
 fn segment_hull(light: &MapLight, (min, max): (Vec3, Vec3)) -> Aabb {
@@ -226,7 +230,17 @@ fn segment_hull(light: &MapLight, (min, max): (Vec3, Vec3)) -> Aabb {
     let (min, max) = ((min - lift).as_dvec3(), (max + lift).as_dvec3());
     let mut hull = Aabb { min, max };
     match light.light_type {
-        LightType::Point | LightType::Spot | LightType::Area => hull.expand_point(light.origin),
+        LightType::Point | LightType::Spot => hull.expand_point(light.origin),
+        // Its targets lie on its polygons, lifted by the tracer tolerance,
+        // inside the emitter sphere grown by the 1 mm the shaft cull allows.
+        LightType::Area => {
+            let (centre, radius) = light.emitter_sphere();
+            let reach = DVec3::splat(radius + EMITTER_TARGET_SLACK_M);
+            hull.expand_aabb(&Aabb {
+                min: centre - reach,
+                max: centre + reach,
+            });
+        }
         LightType::Directional => {
             // A sun's target sits a fixed offset from its texel.
             let offset = hard_ray_target(Vec3::ZERO, light).as_dvec3();

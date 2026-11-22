@@ -63,6 +63,31 @@ cited symbol exists. No Decision premise is false. The Path is stale or incomple
   unsplit side winding whenever its pieces sum to the side's area. An `_e` side that loses
   a coplanar contest to a non-`_e` face is trimmed, so emission follows what renders;
   O6–O8 and row 12 keep their meaning.
+- As built (task 3), Path clarifications that keep every row's meaning:
+  - **Shaft cull, single-plane exemption.** With the emitter sphere alone no tile of a
+    real panel clears: its own glass and a flush ceiling enter every hull, which would
+    make row 21's cleared-tile count unmeetable. When every polygon shares one plane and
+    a tile's slab corners lie at least τ in front of it, a triangle lying in that plane
+    (within 0.1 mm, tilt under 1 mrad, sphere within 1 km of the origin) is skipped, since
+    no traced segment can cross it. Multi-plane lights still test it. This is the simplest
+    form of research §4's front-half-space tightening (`lightmap_layer/shaft_cull.rs`).
+  - **Clear tiles** store `TexelSampler::clear_visibility`: 1 for every light, except an
+    area light with no weighted lattice sample (O8), which stores 0. Skip-on stays byte
+    equal to skip-off.
+  - **Reach cull** admits area lights. Each polygon centroid lifted by τ must sit in an
+    open leaf, and the flood seeds from all of them. `Emitter::of` takes the emitter
+    sphere. The affinity flood seeds the same way.
+  - **`hard_ray_target(Area)`** is the solid-angle median sample of the faced polygons,
+    lifted by τ. It falls back to the centroid when no polygon faces the point. The mover
+    gate's texel and probe segments use it and never set `inside` for area. Its hull uses
+    the emitter-sphere box.
+  - **Chart cull** drops a pair when every texel centre is outside the reach sphere, or
+    when every polygon is behind or wholly below the horizon of every centre.
+  - **Lattice and probes.** The area lattice is rank-1: x is stratified, y steps by the
+    golden ratio, and the whole lattice is shifted on the torus by the seed. The probe
+    subset (`area_probe_indices`) is one sample per quadrant and depends on the count
+    alone. Pairing uses each sample's offset from the lattice mean. An all-clear probe set
+    ends early only when the probes carry weight; otherwise the trace escalates.
   Faces carry `brush_index` only (no side index): glow ids stamp on every render face
   whose brush belongs to the light and whose texture has an `_e` map, which is the
   Decision's definition of an emitting face.
@@ -195,7 +220,7 @@ not edit `plan.md` or commit. Each task commits with its row update.
 |---|---|---|---|---|
 | 1 | Polygon maths core: new compiler `area_light` module — clipped Lambert term and irradiance vector (f64 atan2), solid angle, derived reach and Karis window, emitter and reach spheres, Ureña/Arvo-fan solid-angle sampler with cosθ_r weights. Rows 1–4 | worker, reviewed by integrator | — | done: 22 `area_light` tests pass (`--bin prl-build area_light`); clippy clean. Note: a fixed lattice over a fan or multi-polygon emitter splits strata off-centre (1.7% high on a hexagon at 64²); exact at all-visible and none-visible, so penumbra only. The module uses `ray_traversal` (bin-only), so task 2 splits the types into a file `lib.rs` can compile beside `map_data` |
 | 2 | Authoring and translation, lightmap term: `LightType::Area` (compiler, loader, `LightKind`), `light_area` parse branch, pre-BSP exposure (O6–O8), polygons + centroid + resolved reach in `MapLight`, key rules and inert-key normalisation, buried/embedded skips, FGD entry, unshadowed lightmap arm on a test map. Other bake arms read zero until tasks 4–5. Rows 12, 13, 16, 23–25, 27, 30 | integrator | 1 | done. AlphaLights v5 pulled in from task 6; loader rejects area records until task 8. `--bin prl-build`: 2682 pass before the fixture fix; drift guard `light_wire_drift_tests` passes; `level-format` 834 pass; `level-loader` 423 pass; `cargo check --workspace --all-targets` clean; clippy `-D warnings` clean on compiler/format/loader. `sh-streaming-hinted-door.prl` regenerated per its README (two cold builds identical): id 18 v4→v5 word, and id 52 v1→v2, which was already stale on `main` (E10 perception step). Transient arms until tasks 3–8: visibility 1 at `texel_footprint.rs:442`; zero SH/scatter/patch/bounce at `sh_bake/light_eval.rs:69`; the rest are named in task 3–8 scope |
-| 3 | Lightmap shadows and culls: polygon lattice outside both memos, ratio-estimator visibility, centre probe (O19, O20), emitter/reach sphere readers (shaft cull, flood, chart cull, layer key, affinity flood), mover light gate, weight maps, shadowmask. Rows 5, 6, 9, 10, 14 (texel, weight map), 15 (lightmap), 17, 18, 20–22, 26, 29, 31, 33, 37 | integrator | 2 | |
+| 3 | Lightmap shadows and culls: polygon lattice outside both memos, ratio-estimator visibility, centre probe (O19, O20), emitter/reach sphere readers (shaft cull, flood, chart cull, layer key, affinity flood), mover light gate, weight maps, shadowmask. Rows 5, 6, 9, 10, 14 (texel, weight map), 15 (lightmap), 17, 18, 20–22, 26, 29, 31, 33, 37 | integrator | 2 | done. `--bin prl-build` 2703 pass, 0 fail; workspace check and compiler clippy clean. Proofs: `texel_footprint::area_tests` (rows 5, 6, 9, 10, 14, 17, 18, 29, 33), `mover_light_gate::tests::a_mover_between_an_area_light_and_what_it_lights_is_gated` (20), `pipeline::lightmap_stage::tests::area_light_tests` (15 via chart planning, 21, 22, 26, 37), `area_light::exposure::tests::inert_keys_leave_every_lighting_key_unchanged` (31). Follow-ups: rerun row 22 after task 4 folds polygons into `LightDigest::of`. Rows 31 and 37 are key-level proofs; add a warm-rebuild pipeline check at task 9, once probe arms are live. The lightmap cache was not version-bumped, so warm entries from task-2 builds (visibility 1) can be served stale, on this branch only. `build_pipeline.md` needs wording for the shaft-cull exemption, reach-cull eligibility and mover gate (task 9). Still transient: the one-sample arm traces `hard_ray_target` (task 5), and `chunk_light_list_bake` arms are unreachable behind `overlaps_chunk` (task 6) |
 | 4 | Probe arms: direct SH 35/41/45 (analytic L0–L2 + control variate), surface-radiance patch + `LightDigest`, billboard scatter (term facing Φ̂), mover probe channel. Rows 7, 8, 11, 14, 15, 19 | worker, reviewed by integrator | 3 | |
 | 5 | Animated bounce: one-sample polygon arm, delta `light_aabb`/affinity reach sphere. Rows 34–36 | integrator | 4 | |
 | 6 | Wire and refusals: AlphaLights v5 (pack, loader, engine), silent unassigned leaf, animated-promotion refusal, placeholder `SpecLight` out of id-42 owners and chunk lists. Rows 32, 38 | worker | 2 | |

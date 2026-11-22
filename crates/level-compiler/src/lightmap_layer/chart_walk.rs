@@ -122,7 +122,8 @@ pub(crate) fn bake_light_layer_chart_reached(
 /// tiles from its first interior texel, and each tile is tested once, on its
 /// first covered texel ([`ShaftCull::tile_clear`]). A clear tile's covered
 /// texels store visibility exactly 1.0, the ratio an all-clear sample set
-/// gives, and trace nothing: no shadow, clip or lead-in segment. The occluder
+/// gives (an area light's [`TexelSampler::clear_visibility`], which is 0
+/// where no lattice sample carries weight), and trace nothing: no shadow, clip or lead-in segment. The occluder
 /// caches change only on a hit, so they leave a clear tile as the unculled
 /// walk would. The direct term and the records are unchanged.
 ///
@@ -237,10 +238,7 @@ fn walk_chart(
     // wait on this init while holding their permits, which is safe only
     // because `ShaftScene::new` is serial and takes no lock or permit: keep
     // it that way.
-    // An area light traces no shadow ray yet, so no tile of it is shadowed
-    // (area-lights task 3 gives the shaft its emitter sphere).
-    let shaft_eligible = !matches!(light.light_type, LightType::Directional | LightType::Area);
-    let shaft = if traces && exact_skips.shaft_cull && shaft_eligible {
+    let shaft = if traces && exact_skips.shaft_cull && light.light_type != LightType::Directional {
         let scene = shaft_scene.get_or_init(|| ShaftScene::new(primitives, geometry));
         ShaftCull::new(
             light, chart, &sampler, &frame, scene, bvh, primitives, geometry,
@@ -336,7 +334,8 @@ fn walk_chart(
                             stats.add_verified_texel();
                         }
                     }
-                    return 1.0;
+                    // 1, or an area light's value with every segment clear.
+                    return sampler.clear_visibility(light, &site);
                 }
             }
             sampler.visibility(light, &site, trace, reach, lead_in)
@@ -394,8 +393,9 @@ struct TracedSegments {
 
 /// Verify mode: trace a clear tile's covered texel as the unculled walk
 /// would, with copies of both occluder caches as the walk holds them here,
-/// and require exactly 1.0 with both copies unchanged, as the skip leaves
-/// the caches.
+/// and require exactly the skip's value (1.0, or an area light's
+/// [`TexelSampler::clear_visibility`]) with both copies unchanged, as the
+/// skip leaves the caches.
 #[cfg(test)]
 fn verify_clear_texel(
     light: &MapLight,
@@ -414,9 +414,10 @@ fn verify_clear_texel(
         |from, to| segment_clear_remembering(bvh, primitives, geometry, from, to, &clip),
         |from, to| lead_in_clear(bvh, primitives, geometry, band, from, to),
     );
+    let skipped = sampler.clear_visibility(light, site);
     assert!(
-        visibility == 1.0,
-        "shaft cull: a clear tile's texel at {:?} traces visibility {visibility} toward a light at {:?}",
+        visibility == skipped,
+        "shaft cull: a clear tile's texel at {:?} traces visibility {visibility}, not {skipped},          toward a light at {:?}",
         site.world_p,
         light.origin
     );

@@ -1396,3 +1396,127 @@ fn the_largest_authored_pose_cost_is_named_first() {
     assert!(large_at < small_at, "{error}");
     assert!(!error.contains("'auto'"), "{error}");
 }
+
+// --- area lights ------------------------------------------------------------
+
+/// The twelve outward triangles of an axis-aligned box.
+fn box_triangles(min: [f32; 3], max: [f32; 3]) -> Vec<[[f32; 3]; 3]> {
+    let corner = |i: usize| {
+        [
+            if i & 1 == 0 { min[0] } else { max[0] },
+            if i & 2 == 0 { min[1] } else { max[1] },
+            if i & 4 == 0 { min[2] } else { max[2] },
+        ]
+    };
+    let quads = [
+        [0, 4, 6, 2],
+        [1, 3, 7, 5],
+        [0, 1, 5, 4],
+        [2, 6, 7, 3],
+        [0, 2, 3, 1],
+        [4, 5, 7, 6],
+    ];
+    quads
+        .iter()
+        .flat_map(|q| {
+            [
+                [corner(q[0]), corner(q[1]), corner(q[2])],
+                [corner(q[0]), corner(q[2]), corner(q[3])],
+            ]
+        })
+        .collect()
+}
+
+/// Per terminus, the floor texels at `centres` the light's gate counts.
+fn gated_texels(poses: &MoverPoses, light: &MapLight, centres: &[Vec3]) -> [u64; 2] {
+    let candidates = light_candidates(light, poses);
+    assert_eq!(candidates.len(), 1, "the door is a candidate");
+    let mut gate = TexelGate::new(poses, light, &candidates);
+    let lo = centres.iter().copied().fold(Vec3::INFINITY, Vec3::min) - Vec3::splat(0.1);
+    let hi = centres.iter().copied().fold(Vec3::NEG_INFINITY, Vec3::max) + Vec3::splat(0.1);
+    assert!(gate.begin_chart((lo, hi)), "the door lies between");
+    for &centre in centres {
+        gate.add_texel(centre, centre + Vec3::Y * RAY_EPSILON, 0);
+    }
+    match gate.finish().as_slice() {
+        [] => [0, 0],
+        [mover] => mover.gated,
+        movers => panic!("one mover gated: {movers:?}"),
+    }
+}
+
+// AC 20: a door between a light wrapping all four sides of a pillar and the
+// floor it lights, and a plate under a flush ceiling panel, are gated
+// against that light: the gate counts the texels and probes each shades at
+// the terminus where it stands between, and none where it has moved away.
+// Every segment ends on a lifted polygon sample, so the static trace from a
+// probe stays clear though the pillar light's centroid lies in solid.
+#[test]
+fn a_mover_between_an_area_light_and_what_it_lights_is_gated() {
+    use crate::area_light::test_lights::{area_light, ceiling_panel, pillar_sides};
+
+    // A pillar wrapped 0.5 to 1.5 m up, a door slab north of it sliding 5 m
+    // along +x, and floor texels and probes north of the door.
+    let pillar = area_light(pillar_sides(0.0, 0.0, 0.25, [0.5, 1.5]), 1.0, None);
+    let movers = vec![mover(
+        0,
+        "door",
+        "shut",
+        vec![box_brush(
+            DVec3::new(-1.0, 0.0, 0.6),
+            DVec3::new(1.0, 2.0, 0.7),
+        )],
+    )];
+    let waypoints = vec![
+        waypoint("shut", "open", DVec3::new(0.0, 1.0, 0.65)),
+        waypoint("open", "", DVec3::new(5.0, 1.0, 0.65)),
+    ];
+    let door = MoverPoses::resolve(&movers, &waypoints);
+    let floor: Vec<Vec3> = [-0.2, 0.0, 0.2].map(|x| Vec3::new(x, 0.0, 1.5)).to_vec();
+    assert_eq!(gated_texels(&door, &pillar, &floor), [3, 0]);
+    let world_min = DVec3::new(-0.4, 1.0, 1.5);
+    let layout = ProbeGridLayout {
+        world_min,
+        dims: [5, 1, 1],
+        cell_size: [0.2; 3],
+        far_sentinel: 1.0,
+        probe_positions: (0..5)
+            .map(|x| world_min + DVec3::X * 0.2 * f64::from(x))
+            .collect(),
+        validity: vec![1; 5],
+    };
+    let geometry = geometry_of(&box_triangles([-0.25, 0.0, -0.25], [0.25, 2.0, 0.25]));
+    let (bvh, primitives, _) = build_bvh(&geometry).expect("bvh");
+    let lights = [GateLight {
+        source_index: 0,
+        light: &pillar,
+    }];
+    let probes = gate_probes(
+        &door,
+        &lights,
+        &ProbeScene {
+            layout: &layout,
+            bvh: &bvh,
+            primitives: &primitives,
+            geometry: &geometry,
+        },
+        &BakeControl::unrestricted(),
+    );
+    assert_eq!(probes.len(), 1, "the pillar light gates probes");
+    assert_eq!(probes[0].movers[0].gated, [5, 0]);
+
+    // A 2 × 2 m panel flush in a ceiling 3 m up over the probe line, the
+    // plate between at its first waypoint and 100 m up at its last.
+    let panel = area_light(
+        vec![ceiling_panel([-1.0, 1.0], [-1.0, 1.0], 3.0)],
+        1.0,
+        None,
+    );
+    let ceiling = [
+        [[-6.0, 3.0, -6.0], [6.0, 3.0, -6.0], [6.0, 3.0, 6.0]],
+        [[-6.0, 3.0, -6.0], [6.0, 3.0, 6.0], [-6.0, 3.0, 6.0]],
+    ];
+    assert_eq!(gated_probes(panel.clone(), &probe_line(), &ceiling), [9, 0]);
+    let floor: Vec<Vec3> = [-1.0, 0.0, 1.0].map(|x| Vec3::new(x, 0.0, 0.0)).to_vec();
+    assert_eq!(gated_texels(&plate_over_probes(), &panel, &floor), [3, 0]);
+}

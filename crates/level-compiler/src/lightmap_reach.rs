@@ -18,7 +18,7 @@ use crate::texel_footprint::TexelFrame;
 mod flood;
 mod slab;
 
-use flood::{Emitter, PortalGraph, ball_flood, reach_radius};
+use flood::{Emitter, PortalGraph, ball_flood, flood_sources, reach_radius};
 use slab::ChartFrame;
 
 /// A set of full-tree leaves, one bit each.
@@ -58,24 +58,27 @@ pub(crate) struct ReachLight<'a> {
 }
 
 /// Whether a light's pairs may be culled: a point or spot light the stage
-/// does not flag as embedded, whose `f32` origin lies in an open leaf. Every
-/// other light is never culled; an area light floods from its polygons once
-/// area-lights task 3 lands, not from its centroid.
+/// does not flag as embedded, whose `f32` origin lies in an open leaf, or a
+/// resolved area light each of whose lifted polygon centroids lies in an
+/// open leaf (its own centroid may sit in a pillar). Every other light is
+/// never culled.
 fn eligible(tree: &BspTree, closed: &[bool], light: ReachLight<'_>) -> bool {
-    if light.embedded_emitter
-        || matches!(
-            light.light.light_type,
-            LightType::Directional | LightType::Area
-        )
-    {
+    if light.embedded_emitter || light.light.light_type == LightType::Directional {
         return false;
     }
-    let emitter = Emitter::of(light.light);
-    if !emitter.centre.is_finite() || !light.light.falloff_range.is_finite() {
+    let Some(emitter) = Emitter::of(light.light) else {
         return false;
-    }
-    let leaf = find_leaf_for_point(tree, emitter.centre);
-    closed.get(leaf).is_some_and(|&closed| !closed)
+    };
+    let sources = flood_sources(light.light);
+    let finite = emitter.centre.is_finite()
+        && emitter.size.is_finite()
+        && light.light.falloff_range.is_finite()
+        && sources.iter().all(|source| source.is_finite());
+    finite
+        && sources.iter().all(|&source| {
+            let leaf = find_leaf_for_point(tree, source);
+            closed.get(leaf).is_some_and(|&closed| !closed)
+        })
 }
 
 /// Per full-tree leaf, whether the flood treats it as closed: solid, or in
@@ -219,13 +222,16 @@ impl<'t> LightmapReachIndex<'t> {
                     .filter(|(bounds, _)| light_may_reach(light.light, **bounds))
                     .map(|(_, &radius)| radius)
                     .fold(0.0, f64::max);
-                let emitter = Emitter::of(light.light);
+                let emitter = Emitter::of(light.light)?;
                 let reach = reach_radius(light.light, emitter, footprint);
-                ball_flood(tree, &closed, &graph, emitter, reach).map(|reached| LightReach {
-                    emitter,
-                    reached,
-                    #[cfg(test)]
-                    reach,
+                let sources = flood_sources(light.light);
+                ball_flood(tree, &closed, &graph, emitter, &sources, reach).map(|reached| {
+                    LightReach {
+                        emitter,
+                        reached,
+                        #[cfg(test)]
+                        reach,
+                    }
                 })
             })
             .collect();

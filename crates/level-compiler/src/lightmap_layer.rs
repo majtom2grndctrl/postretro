@@ -430,7 +430,8 @@ pub fn layer_influence_aabb(
 ) -> (DVec3, DVec3) {
     let (min, max) = light_aabb(light, world_aabb);
     match light.light_type {
-        // An area light's `light_size` is 0, so only the footprint pads it.
+        // An area light's `light_size` is 0 and its reach sphere already
+        // holds its emitter sphere, so only the footprint pads it.
         LightType::Point | LightType::Spot | LightType::Area => {
             let reach = f64::from((light.falloff_range + AABB_PADDING_METERS).max(0.01));
             let emitter_beyond_reach = f64::from(light.light_size) - reach;

@@ -598,6 +598,18 @@ impl MapLight {
             None => (self.origin, range),
         }
     }
+
+    /// The ball holding every shadow-ray target the bake aims at this light,
+    /// before any reader's slack: (centre, radius). For a resolved `Area`
+    /// light, its emitter sphere (centroid, circumradius), whose readers' 1 mm
+    /// slack also holds each target's lift off its polygon; otherwise the
+    /// origin and `light_size`. A sun has no such ball: its readers decline it.
+    pub fn emitter_sphere(&self) -> (DVec3, f64) {
+        match &self.area {
+            Some(emitter) => emitter.emitter_sphere(),
+            None => (self.origin, f64::from(self.light_size.max(0.0))),
+        }
+    }
 }
 
 /// An area light's compiler-side facts beside its `MapLight`.

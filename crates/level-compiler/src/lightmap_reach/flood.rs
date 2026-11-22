@@ -4,8 +4,9 @@
 
 use glam::DVec3;
 
+use crate::area_light::target_lift_meters;
 use crate::lightmap_bake::RAY_EPSILON;
-use crate::map_data::MapLight;
+use crate::map_data::{LightType, MapLight};
 use crate::partition::{BspChild, BspTree, find_leaf_for_point};
 use crate::portals::{Portal, PortalTolerance, generate_portals_with};
 
@@ -76,8 +77,11 @@ impl PortalGraph {
     }
 }
 
-/// A point or spot light's emitter as the walk traces to it: the `f32`
-/// origin every ray target reads, in `f64`, and its size.
+/// A light's emitter as the walk traces to it: for a point or spot light the
+/// `f32` origin every ray target reads, in `f64`, and its size; for an area
+/// light its emitter sphere, the polygons' centroid and circumradius, whose
+/// targets lie on the polygons, lifted by the tracer tolerance, which the
+/// absolute slack holds.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Emitter {
     pub(super) centre: DVec3,
@@ -85,10 +89,18 @@ pub(super) struct Emitter {
 }
 
 impl Emitter {
-    pub(super) fn of(light: &MapLight) -> Self {
-        Self {
-            centre: light.origin.as_vec3().as_dvec3(),
-            size: f64::from(light.light_size.max(0.0)),
+    /// `None` for a sun, and for an area light with no resolved emitter.
+    pub(super) fn of(light: &MapLight) -> Option<Self> {
+        match light.light_type {
+            LightType::Point | LightType::Spot => Some(Self {
+                centre: light.origin.as_vec3().as_dvec3(),
+                size: f64::from(light.light_size.max(0.0)),
+            }),
+            LightType::Area => light.area.as_ref().map(|_| {
+                let (centre, size) = light.emitter_sphere();
+                Self { centre, size }
+            }),
+            LightType::Directional => None,
         }
     }
 
@@ -102,10 +114,11 @@ impl Emitter {
 
 /// R: a bound on the distance from the emitter centre of every point of
 /// every segment the sampler traces for a texel the light lights. A texel
-/// with a direct term lies within the clamped `falloff_range`; its traced
-/// points lie within a footprint radius and two `RAY_EPSILON`s of it; an
-/// emitter target lies within `size` plus its `f32` rounding, which the
-/// relative margin covers; every point of a segment lies within the
+/// with a direct term lies within the clamped `falloff_range` of the centre,
+/// or of a polygon and so within `size` more of an area light's centroid;
+/// its traced points lie within a footprint radius and two `RAY_EPSILON`s of
+/// it; an emitter target lies within `size` plus its `f32` rounding, which
+/// the relative margin covers; every point of a segment lies within the
 /// farther of its ends.
 pub(super) fn reach_radius(light: &MapLight, emitter: Emitter, footprint_radius: f64) -> f64 {
     let range = f64::from(light.falloff_range.max(1.0e-4));
@@ -115,19 +128,41 @@ pub(super) fn reach_radius(light: &MapLight, emitter: Emitter, footprint_radius:
         + REACH_SLACK_PER_METER * (terms + emitter.centre.length())
 }
 
-/// The open leaves `emitter` can carry light into within `reach`: from every
-/// open leaf the emitter sphere overlaps, across every portal whose polygon
-/// comes within `reach` of the centre, never into a closed leaf. `None` when
-/// the centre's own leaf is closed.
+/// Where a light's flood starts, each of which must lie in an open leaf: a
+/// point or spot light's `f32` origin, or each of an area light's polygon
+/// centroids lifted along its front normal by the tracer tolerance, in front
+/// of its glass whatever its own centroid sits in.
+pub(super) fn flood_sources(light: &MapLight) -> Vec<DVec3> {
+    match &light.area {
+        Some(emitter) if light.light_type == LightType::Area => emitter
+            .polygons
+            .iter()
+            .map(|poly| poly.centroid() + poly.normal * target_lift_meters())
+            .collect(),
+        _ => vec![light.origin.as_vec3().as_dvec3()],
+    }
+}
+
+/// The open leaves `emitter` can carry light into within `reach`: from each
+/// source's leaf and every open leaf the emitter sphere overlaps, across
+/// every portal whose polygon comes within `reach` of the centre, never into
+/// a closed leaf. `None` when a source's leaf is closed.
 pub(super) fn ball_flood(
     tree: &BspTree,
     closed: &[bool],
     graph: &PortalGraph,
     emitter: Emitter,
+    sources: &[DVec3],
     reach: f64,
 ) -> Option<LeafSet> {
-    let source = find_leaf_for_point(tree, emitter.centre);
-    if closed.get(source).is_none_or(|&closed| closed) {
+    let sources: Vec<usize> = sources
+        .iter()
+        .map(|&source| find_leaf_for_point(tree, source))
+        .collect();
+    let closed_source = sources
+        .iter()
+        .any(|&source| closed.get(source).is_none_or(|&closed| closed));
+    if sources.is_empty() || closed_source {
         return None;
     }
     let mut reached = LeafSet::new(tree.leaves.len());
@@ -137,7 +172,9 @@ pub(super) fn ball_flood(
             frontier.push(leaf);
         }
     };
-    seed(source, &mut reached, &mut frontier);
+    for &source in &sources {
+        seed(source, &mut reached, &mut frontier);
+    }
     for leaf in sphere_leaves(tree, emitter.centre, emitter.target_radius()) {
         seed(leaf, &mut reached, &mut frontier);
     }

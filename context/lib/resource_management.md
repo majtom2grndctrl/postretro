@@ -425,6 +425,7 @@ PRL id 54 carries probes, tiles and face bindings (`build_pipeline.md` §PRL sec
 | Distance array | R16Float `texture_2d_array`, the same layers |
 | Share table | One uniform laid out at the cap, written once at install: per probe its box, capture point and layer, then its light entries with shares packed unorm10 RGB per lobe |
 | Probe index | Third fluid vertex buffer, one probe index per vertex, written once at install from the face bindings |
+| Live-lighting sums | Decided, not yet built. One RGB sum per lobe per probe at the cap, 20 480 B. A compute pass rewrites them each frame with a reflecting draw; the fluid fragment reads them as a uniform. Never written into the share table or tiles (`rendering_pipeline.md` §7.3a Live lighting) |
 
 At the cap the arrays cost 12 MiB (colour 4 194 304 B BC6H, distance 8 388 608 B) and the table 61 456 B; the probe-index buffer costs 4 B per fluid vertex. A level with fluid surfaces and no usable id 54 binds a 1×1 one-layer dummy for each array and a zeroed table, and no face samples them.
 

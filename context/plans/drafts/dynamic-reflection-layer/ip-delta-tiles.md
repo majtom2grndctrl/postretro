@@ -68,7 +68,7 @@ Claim 1, verbatim from the prior record: "(a) determining light source change in
 
 **Base variant.** S-B (base without glow + current × unit delta) is the literal superposition FIG. 4 describes: transfer × coefficient per light. S-A (reference base + change × delta) equals the shipped ratio's algebra, `L_rest + Σ (share_l·L)(b_l / b̄_l)` (`plans/done/reflection-probes/research.md`), at image resolution instead of five lobes. Both break the prior record's high-confidence rule: "No baked quantity that stays fixed while a light changes is multiplied or weighted at runtime by a value tied to that light's state". No base choice escapes it. S-A at least adds no shape that shipped water does not already have.
 
-**Carried observation.** The shipped water ratio (baked per-light, per-probe lobe shares × current_l / ref_l) has the same '451 shape at lobe resolution. The repository's '451 claim charts cover id 25, 27, 34, 45 and the mover channels. The fluid-pass IP research names '451 against the ratio but did not read its claims. No claim-level chart of the ratio against '451 was found in `context/`. Delta tiles extend that exposure to glow; they do not open a new one.
+**Carried observation.** The shipped water ratio (baked per-light, per-probe lobe shares × current_l / ref_l) has the same '451 shape at lobe resolution. The repository's '451 claim charts cover id 25, 27, 34, 45 and the mover channels. `plans/drafts/reflection-probe-fluid-pass-performance/ip-check.md` §Lever A charts the ratio against '451 (added after this note): (b) and (c) arguable, as here. Delta tiles extend that exposure to glow; they do not open a new one.
 
 ## 3. Baobab US11605198B2
 

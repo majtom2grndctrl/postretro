@@ -17,7 +17,7 @@ Why a thin, bright, animated emitter (a neon tube, a strip light, area-light gla
 Estimate, 2026-11-21, against the code at `e9495f27`. [M] read from code; [E] estimated.
 
 - **Today** [M]: id 54 stores 4 lights × 5 lobes per probe (`REFLECTION_PROBE_LIGHTS_PER_PROBE`, `REFLECTION_PROBE_LOBE_COUNT`). The GPU `FluidProbeTable` is 240 B per probe, 61,456 B at 256 probes, under a 64 KiB `const_assert` (`render-cpu` `fluid_surface/reflection.rs`). A fifth light slot does not fit. `fluid_reflection_ratio` evaluates the shares per fragment.
-- **Cheapest design** [E]: one aggregated glow term per probe and lobe, Σ_v share_v × (current_v / ref_v − 1). This is exact because the ratio is linear. current_v is the post-clamp table entry; ref_v is max × colour. It joins the per-probe sums of `reflection-probe-fluid-pass-performance` (unlanded, blocked on counsel) at zero per-fragment cost. Before that lands it fits the table's spare words, but the table then stops being install-only.
+- **Cheapest design** [E]: one aggregated glow term per probe and lobe, Σ_v share_v × (current_v / ref_v − 1). This is exact because the ratio is linear. current_v is the post-clamp table entry; ref_v is max × colour. It joins the per-probe sums of `reflection-probe-fluid-pass-performance` (unlanded; the owner accepted its IP reading on 2026-11-22, so counsel does not gate it) at zero per-fragment cost. Before that lands it fits the table's spare words, but the table then stops being install-only.
 - **Cost** [E]: CPU is about 15 MADs per (probe, volume) pair, so a few µs typically and about 1 ms at 256 × 256, and nothing on a static frame. Id 54 gains about 64 B per volume per probe and needs a version bump shared with this brief's v3. Compile cost is negligible: `ShareSums::add` gains one lobe accumulation.
 - **Why it is deferred** [E]: a share spreads over a whole lobe. A sign is small and sharp, so pulsing one dims or tints a quadrant of the reflection while the sign's own image stays fixed. Ref-0 channels cannot show a recolour, and tiny refs amplify unorm10 share error.
 
@@ -43,7 +43,7 @@ A rival to the deferred limit (§Volume glow share) for glow that changes at run
 - **IP.**
   - A compose pass that writes base + Σ deltas into a live tile on a source change is out. It updates stored probe lighting on a light change, which is what Tencent WO2026113651A1 claims 10–14 and 19 describe (`plans/done/reflection-probes/ip-check.md` §4).
   - Summing at sample time rewrites nothing and appears to stay outside WO claims 10–14 and 19, with claim 10 the closest element.
-  - The nearest risk is Tencent US12293451B2 claim 1(c): a fixed per-probe, per-source delta × a runtime coefficient reads like its "radiance transfer parameter". This is the same open question as the shipped animated SH deltas (id 27). The shipped water share ratio has the same shape at lobe resolution and has no claim-level chart yet.
+  - The nearest risk is Tencent US12293451B2 claim 1(c): a fixed per-probe, per-source delta × a runtime coefficient reads like its "radiance transfer parameter". This is the same open question as the shipped animated SH deltas (id 27). The shipped water share ratio has the same shape at lobe resolution; `plans/drafts/reflection-probe-fluid-pass-performance/ip-check.md` §Lever A charts it.
   - Fences: write tiles once at compile, keep deltas glow-only, and store them at base resolution (`ip-delta-tiles.md` §7).
 - **Open.**
   - Per-fragment cost on the 5300M near a large glossy floor with several glow sources.

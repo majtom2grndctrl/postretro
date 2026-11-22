@@ -480,7 +480,7 @@ fn encode_animated_scatter(
 /// authority. Each light's early-out is [`ProbeEarlyOut::for_probe_point`] of
 /// its embedded-emitter flag: a flagged light traces its full set, as in direct
 /// SH.
-fn visible_radiance_sum<'a>(
+pub(crate) fn visible_radiance_sum<'a>(
     probe: Vec3,
     lights: impl IntoIterator<Item = (&'a MapLight, u64, ProbeEarlyOut)>,
     probe_index: u64,

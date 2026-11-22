@@ -8,6 +8,7 @@ use std::sync::Arc;
 use glam::{DVec3, Vec3};
 
 use super::posed_solid::{PosedHit, PosedSolid};
+use super::visibility::EMITTER_TARGET_SLACK_M;
 use crate::geometry::GeometryResult;
 use crate::lightmap_bake::{RAY_EPSILON, emitter_radius, hard_ray_target};
 use crate::map_data::{LightType, MapLight};
@@ -52,13 +53,18 @@ impl PosedScene {
     /// Whether any soft-visibility sample segment from `point` (lifted
     /// along its normal by at most [`RAY_EPSILON`]) toward `light` can meet
     /// the pose. Every target lies within a ball about one centre: the
-    /// emitter sphere of a point or spot, the cone's far cap of a sun; so
-    /// every segment lies within that radius of the centre segment.
+    /// emitter sphere of a point, spot or area light, the cone's far cap of
+    /// a sun; so every segment lies within that radius of the centre segment.
     pub(crate) fn may_shadow(&self, point: Vec3, light: &MapLight) -> bool {
         let radius = f64::from(emitter_radius(light).max(0.0));
         let (centre, reach) = match light.light_type {
-            // Area: its samples aim at the centroid until area-lights task 4.
-            LightType::Point | LightType::Spot | LightType::Area => (light.origin, radius),
+            LightType::Point | LightType::Spot => (light.origin, radius),
+            // Its targets lie on its polygons, lifted by the tracer
+            // tolerance: inside the emitter sphere with its 1 mm slack.
+            LightType::Area => {
+                let (centre, radius) = light.emitter_sphere();
+                (centre, radius + EMITTER_TARGET_SLACK_M)
+            }
             LightType::Directional => {
                 let centre = hard_ray_target(point, light).as_dvec3();
                 let length = centre.distance(point.as_dvec3());

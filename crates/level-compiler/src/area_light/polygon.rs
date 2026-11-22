@@ -1,7 +1,7 @@
 // Unshadowed polygon term: Lambert's clipped irradiance, irradiance vector, solid angle, distance.
 // See: context/lib/build_pipeline.md §Compiler pipeline (Area lights)
 
-use glam::DVec3;
+use glam::{DMat3, DVec3};
 
 use super::EmitterPolygon;
 
@@ -67,6 +67,54 @@ pub(crate) fn polygon_irradiance_vector(poly: &EmitterPolygon, p: DVec3) -> DVec
     }
     let phi = edges.irradiance_vector();
     if phi.is_finite() { phi } else { DVec3::ZERO }
+}
+
+/// Second moment ∫ ω ωᵀ dω of the directions the polygon subtends at `p`, per
+/// unit radiance; zero when `p` is on or behind the plane. Arvo's axial-moment
+/// recurrence (Arvo 1995) for n = 2: wᵀMw = ⅓[Ω − Σᵢ (n̂ᵢ·w) ∫ᵢ (ω·w) dθ], with
+/// n̂ᵢ the unit normal of edge i's plane in the winding [`polygon_irradiance_vector`]
+/// uses and the arc integral (a·w) sin Θᵢ + (t·w)(1 − cos Θᵢ), where t is the
+/// arc's unit tangent at its start a. Its trace is Ω. Probe bakes read it for
+/// the L2 band.
+pub(crate) fn polygon_second_moment(poly: &EmitterPolygon, p: DVec3) -> DMat3 {
+    if !faces_receiver(poly, p) {
+        return DMat3::ZERO;
+    }
+    let count = poly.vertices.len();
+    let mut edges = DMat3::ZERO;
+    for i in 0..count {
+        let (Some(a), Some(b)) = (
+            (poly.vertices[i] - p).try_normalize(),
+            (poly.vertices[(i + 1) % count] - p).try_normalize(),
+        ) else {
+            continue;
+        };
+        let c = a.cross(b);
+        let length = c.length();
+        if length < f64::MIN_POSITIVE {
+            continue;
+        }
+        let Some(tangent) = (b - a.dot(b) * a).try_normalize() else {
+            continue;
+        };
+        let normal = c / length;
+        let (sin, cos) = length.atan2(a.dot(b)).sin_cos();
+        let arc = a * sin + tangent * (1.0 - cos);
+        let outer = outer_product(normal, arc);
+        edges += (outer + outer.transpose()) * 0.5;
+    }
+    let omega = polygon_solid_angle(poly, p);
+    let moment = (DMat3::from_diagonal(DVec3::splat(omega)) - edges) * (1.0 / 3.0);
+    if moment.is_finite() {
+        moment
+    } else {
+        DMat3::ZERO
+    }
+}
+
+/// a bᵀ.
+fn outer_product(a: DVec3, b: DVec3) -> DMat3 {
+    DMat3::from_cols(a * b.x, a * b.y, a * b.z)
 }
 
 /// Solid angle the polygon subtends at `p` (Van Oosterom–Strackee over a fan);

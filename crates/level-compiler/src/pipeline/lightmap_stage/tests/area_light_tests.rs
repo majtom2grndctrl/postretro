@@ -175,6 +175,20 @@ fn moving_one_polygon_vertex_rekeys_only_that_lights_entries() {
     );
     assert_ne!(LightDigest::of(panel), LightDigest::of(&moved));
     assert_ne!(encoded_key_light(panel), encoded_key_light(&moved));
+    // The patch digest folds the polygons by hand, beside the centroid it
+    // always held: a reshape that keeps the centroid, area and reach still
+    // re-keys it.
+    let mut reshaped = area_light(
+        vec![ceiling_panel(
+            [-4.55, -3.45],
+            [-4.5 + 0.05 / 1.1, -3.5 - 0.05 / 1.1],
+            CEILING,
+        )],
+        1.0,
+        Some(5.0),
+    );
+    reshaped.origin = panel.origin;
+    assert_ne!(LightDigest::of(panel), LightDigest::of(&reshaped));
     // Each key folds its own light alone, so the pillar light's entries,
     // over the same geometry and atlas, stay where they were.
     let pillar_after = (

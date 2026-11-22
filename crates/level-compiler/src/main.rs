@@ -94,6 +94,8 @@ pub mod visibility;
 mod working_set;
 
 #[cfg(test)]
+mod area_light_probe_tests;
+#[cfg(test)]
 mod bake_counters;
 #[cfg(test)]
 mod binary_tests;

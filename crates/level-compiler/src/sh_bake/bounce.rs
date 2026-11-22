@@ -9,7 +9,7 @@ use super::{BOUNCE_ALBEDO, BounceVisibility, RaytracingCtx, SAMPLING_LATTICE_OFF
 #[cfg(test)]
 use crate::lightmap_bake::soft_visibility_early_out;
 use crate::lightmap_bake::{DEFAULT_AREA_SAMPLE_COUNT, soft_visibility_one_sample};
-use crate::map_data::MapLight;
+use crate::map_data::{LightType, MapLight};
 use crate::surface_materials::stats::BounceMaterials;
 #[cfg(test)]
 use crate::texel_footprint::ProbeEarlyOut;
@@ -121,6 +121,12 @@ pub(super) fn sample_radiance_rgb(
                 // light would only add `0 × visibility`. Kept lights retain their
                 // original slice/global index and therefore their deterministic
                 // visibility seed.
+                //
+                // An area light's one-sample polygon arm lands with area-lights
+                // task 5 (research.md O23); until then it adds no per-hit bounce.
+                if light.light_type == LightType::Area {
+                    continue;
+                }
                 let Some(contribution) = bounce_contribution(light, hit.point, hit.normal) else {
                     continue;
                 };

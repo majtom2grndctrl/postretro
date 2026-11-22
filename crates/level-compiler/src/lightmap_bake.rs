@@ -4,7 +4,7 @@
 use std::sync::Mutex;
 
 use bvh::bvh::Bvh;
-use glam::{DVec2, Quat, Vec3};
+use glam::{DVec2, DVec3, Quat, Vec3};
 use postretro_level_format::coded_plane::BlockCodec;
 use postretro_level_format::lightmap::{LIGHTMAP_POOL_LAYER_EDGE, LightmapSection};
 use rayon::prelude::*;
@@ -1327,6 +1327,86 @@ pub(crate) fn area_clear_visibility(
             > 0.0
     });
     if lit { 1.0 } else { 0.0 }
+}
+
+/// One shadow sample of an area light at a probe point: the unit direction
+/// toward the sampled (unlifted) point and whether its segment is clear.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct AreaProbeSample {
+    pub(crate) direction: DVec3,
+    pub(crate) clear: bool,
+}
+
+/// An area light's shadow samples at a probe point, as the probe-point bakes
+/// read them.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum AreaProbeVisibility {
+    /// Every traced sample is clear: the unshadowed term, exactly.
+    Clear,
+    /// Every traced sample is blocked: nothing.
+    Blocked,
+    /// The full lattice, clear and blocked mixed, in lattice order.
+    Partial(Vec<AreaProbeSample>),
+}
+
+/// The probe-point twin of `area_soft_visibility`: an area light's polygon
+/// lattice mapped uniformly in solid angle onto the polygons whose front
+/// half-space holds `point`, every sample weighing alike, since a probe has
+/// no receiver normal. Each segment leaves `point` lifted along `lift` (the
+/// light's net direction, the normalised irradiance vector) and ends on a
+/// polygon, lifted off it by the tracer tolerance. The probe subset
+/// ([`area_probe_indices`]) is traced first and ends the trace where
+/// `early_out` says, as for a sphere; otherwise the full set is traced.
+/// `None` for a light that is not a resolved area light, or a point no
+/// polygon faces.
+pub(crate) fn area_probe_visibility(
+    point: Vec3,
+    lift: Vec3,
+    light: &MapLight,
+    seed: u64,
+    full_samples: u32,
+    early_out: ProbeEarlyOut,
+    trace: impl Fn(Vec3, Vec3) -> bool,
+) -> Option<AreaProbeVisibility> {
+    if light.light_type != LightType::Area {
+        return None;
+    }
+    let emitter = light.area.as_ref()?;
+    let sampler = AreaSampler::new(emitter, point.as_dvec3(), None)?;
+    let origin = point + lift * RAY_EPSILON;
+    let SoftProbes {
+        full_samples,
+        probes,
+    } = SoftProbes::new(light, full_samples);
+    let trace_sample = |i: u32| {
+        let sample = sampler.sample(area_lattice_point(i, full_samples, seed));
+        AreaProbeSample {
+            direction: sample.direction,
+            clear: trace(origin, sample.target.as_vec3()),
+        }
+    };
+    let probe_samples = probes.map(trace_sample);
+    let clear = probe_samples.iter().filter(|sample| sample.clear).count() as u32;
+    if early_out.ends(clear, SOFT_PROBE_SAMPLES) {
+        return Some(if clear == 0 {
+            AreaProbeVisibility::Blocked
+        } else {
+            AreaProbeVisibility::Clear
+        });
+    }
+    let samples: Vec<AreaProbeSample> = (0..full_samples)
+        .map(|i| match probes.iter().position(|&probe| probe == i) {
+            Some(k) => probe_samples[k],
+            None => trace_sample(i),
+        })
+        .collect();
+    Some(if samples.iter().all(|sample| sample.clear) {
+        AreaProbeVisibility::Clear
+    } else if samples.iter().all(|sample| !sample.clear) {
+        AreaProbeVisibility::Blocked
+    } else {
+        AreaProbeVisibility::Partial(samples)
+    })
 }
 
 /// One-ray twin of `soft_visibility` for an estimator that averages many

@@ -1846,3 +1846,107 @@ fn the_direct_entry_bound_covers_the_bake_within_the_lights_reach() {
         );
     }
 }
+
+// AC 11 (mover channel, production bake): a 2 × 2 m panel above the slab.
+// Each stored q is the surviving byte of the area light's joint visibility
+// over its polygons' solid-angle samples, lifted along Φ̂; the posed direct
+// bake scales the light's polygon projection by that byte; and each stored
+// tile is the packed polygon projection, never a single-direction one.
+#[test]
+fn an_area_lights_q_and_tile_integrate_over_its_polygons() {
+    use crate::area_light::test_lights::{area_light, ceiling_panel};
+    use crate::sh_bake::pack_octahedral_irradiance_tile;
+    use postretro_level_format::octahedral::{
+        DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
+    };
+
+    let world = world();
+    let light = area_light(
+        vec![ceiling_panel([-1.0, 1.0], [-1.0, 1.0], 3.5)],
+        1.0,
+        Some(10.0),
+    );
+    let channel = static_light(&light, 2);
+    let poses = poses_of(&[slab_mover()]);
+    let bake = world.bake(&poses, std::slice::from_ref(&channel));
+    assert_eq!(bake.lights.len(), 1, "the panel over the slab is gated");
+    let first = PosedOccluder::new(Arc::clone(
+        &poses.movers()[0].solids[Terminus::First.index()],
+    ));
+    let ctx = world.ctx();
+    let (mut checked, mut partial) = (0, 0);
+    for entry in &bake.lights[0].entries {
+        for (slot, probe) in world
+            .cells
+            .valid_probes(entry.cell as usize)
+            .into_iter()
+            .enumerate()
+        {
+            let point = vec3_from(world.layout.probe_positions[probe]);
+            let term = |posed: Option<&PosedOccluder>| {
+                bake_probe_direct_rgb_posed(
+                    &ctx,
+                    point,
+                    &[&light],
+                    &[channel.seed_axis],
+                    &[ProbeEarlyOut::Agreed],
+                    probe as u64,
+                    posed,
+                )
+            };
+            let packed: Vec<u16> = pack_octahedral_irradiance_tile(
+                &term(None),
+                true,
+                DEFAULT_IRRADIANCE_TILE_DIMENSION,
+                DEFAULT_IRRADIANCE_TILE_BORDER,
+            )
+            .into_iter()
+            .flat_map(|texel| [texel.rgba[0], texel.rgba[1], texel.rgba[2]])
+            .collect();
+            assert_eq!(
+                &entry.tiles[slot * DEFAULT_DELTA_PROBE_F16_STRIDE
+                    ..(slot + 1) * DEFAULT_DELTA_PROBE_F16_STRIDE],
+                &packed[..],
+                "probe {probe}: the tile is the polygon projection's"
+            );
+            let stored = entry.visibility[2 * slot];
+            let Some((_, l)) = incident_radiance_at_point(&light, point) else {
+                assert_eq!(stored, 255);
+                continue;
+            };
+            if first.encloses(point) {
+                assert_eq!(stored, 255, "probe {probe} is enclosed");
+                continue;
+            }
+            let joint = joint_soft_visibility(
+                point,
+                l,
+                &light,
+                soft_visibility_seed(probe as u64, 0, channel.seed_axis),
+                DEFAULT_AREA_SAMPLE_COUNT,
+                ProbeEarlyOut::Agreed,
+                |from, to| segment_clear(&ctx, from, to),
+                |from, to| first.blocks(from, to),
+            );
+            let expected = if joint.meets_mover() {
+                joint.surviving_byte()
+            } else {
+                255
+            };
+            assert_eq!(stored, expected, "probe {probe}");
+            checked += 1;
+            if joint.meets_mover() && joint.posed_clear > 0 {
+                partial += 1;
+                let q = term(Some(&first))[0] / term(None)[0];
+                assert!(
+                    (q - f32::from(stored) / 255.0).abs() <= 1.0 / 510.0 + 1.0e-5,
+                    "probe {probe}: baked q {q} against stored {stored}"
+                );
+            }
+        }
+    }
+    assert!(
+        checked > 0 && partial > 0,
+        "{checked} probes, {partial} in penumbra"
+    );
+}

@@ -7,6 +7,7 @@ use glam::Vec3;
 use rayon::prelude::*;
 
 use super::patches::{MIN_PATCH_AREA_M2, PATCH_SIZE_M, Patch, PatchSet, Side};
+use crate::area_light::AreaEmitter;
 use crate::bake_content_keys::{bounce_material_hash, fold_bounce_hash};
 use crate::bake_control::BakeControl;
 use crate::cache::CacheKey;
@@ -78,9 +79,9 @@ pub(crate) struct SparseLayer {
 
 /// blake3 over exactly the fields that shape a light's patch shading: its
 /// kind, position, colour, intensity, falloff, range, emitter size and cone
-/// or aim. No list position, source index, label, tag or tier field enters,
-/// so two lights of equal content share a digest wherever they stand in the
-/// entity list. The embedded-emitter flag is folded beside it in the key.
+/// or aim, and an area light's polygons. No list position, source index,
+/// label, tag or tier field enters, so two lights of equal content share a
+/// digest wherever they stand in the entity list. The embedded-emitter flag is folded beside it in the key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct LightDigest([u8; 32]);
 
@@ -92,9 +93,14 @@ impl LightDigest {
             LightType::Point => 0,
             LightType::Spot => 1,
             LightType::Directional => 2,
-            // Area-lights task 4 folds the polygons in beside this tag.
             LightType::Area => 3,
         }]);
+        // An area light's emitter is its polygons, which this digest, unlike
+        // the postcard-keyed ones, must fold by hand. No other light reaches
+        // this, so their digests keep their bytes.
+        if light.light_type == LightType::Area {
+            fold_area_emitter(&mut hasher, light.area.as_ref());
+        }
         for v in light.origin.to_array() {
             hasher.update(&v.to_le_bytes());
         }
@@ -137,6 +143,21 @@ impl LightDigest {
         let mut axis = [0u8; 8];
         axis.copy_from_slice(&self.0[..8]);
         u64::from_le_bytes(axis)
+    }
+}
+
+/// Every polygon's vertices and front normal, in order, behind its count;
+/// `None` folds as no polygon.
+fn fold_area_emitter(hasher: &mut blake3::Hasher, emitter: Option<&AreaEmitter>) {
+    let polygons = emitter.map_or(&[][..], |emitter| emitter.polygons.as_slice());
+    hasher.update(&(polygons.len() as u64).to_le_bytes());
+    for polygon in polygons {
+        hasher.update(&(polygon.vertices.len() as u64).to_le_bytes());
+        for v in polygon.vertices.iter().chain([&polygon.normal]) {
+            for c in v.to_array() {
+                hasher.update(&c.to_le_bytes());
+            }
+        }
     }
 }
 

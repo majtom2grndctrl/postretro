@@ -691,3 +691,57 @@ fn one_sample_visibility_averages_to_the_shadowed_ratio() {
     assert_eq!(one_sample_visibility(0.7, true, omega, 0.0), 0.0);
     assert_eq!(one_sample_visibility(0.7, false, omega, projected), 0.0);
 }
+
+/// ∫ ω ωᵀ dω over a down-facing rectangle at height `y`, by midpoint
+/// quadrature over its area: ω ωᵀ cosθ_e / r² dA.
+fn second_moment_quadrature(x: [f64; 2], z: [f64; 2], y: f64, p: DVec3) -> glam::DMat3 {
+    let n = 600;
+    let (dx, dz) = ((x[1] - x[0]) / n as f64, (z[1] - z[0]) / n as f64);
+    let mut sum = glam::DMat3::ZERO;
+    for i in 0..n {
+        for j in 0..n {
+            let point = DVec3::new(
+                x[0] + (i as f64 + 0.5) * dx,
+                y,
+                z[0] + (j as f64 + 0.5) * dz,
+            );
+            let d = point - p;
+            let r2 = d.length_squared();
+            let w = d.normalize();
+            let weight = (w.y / r2) * dx * dz;
+            sum += glam::DMat3::from_cols(w * w.x, w * w.y, w * w.z) * weight;
+        }
+    }
+    sum
+}
+
+// The L2 band's input: the second moment ∫ωωᵀ dω (Arvo's recurrence)
+// matches quadrature over the polygon, on axis and off it, and its trace is
+// the solid angle. Behind the emitter it is zero.
+#[test]
+fn polygon_second_moment_matches_quadrature_and_traces_to_the_solid_angle() {
+    let poly = panel_4x4(1.0);
+    for p in [
+        DVec3::ZERO,
+        DVec3::new(1.3, -0.5, 0.7),
+        DVec3::new(3.0, 0.2, -2.5),
+    ] {
+        let moment = polygon_second_moment(&poly, p);
+        let reference = second_moment_quadrature([-2.0, 2.0], [-2.0, 2.0], 1.0, p);
+        for (column, expected) in [
+            (moment.x_axis, reference.x_axis),
+            (moment.y_axis, reference.y_axis),
+            (moment.z_axis, reference.z_axis),
+        ] {
+            for (a, e) in column.to_array().into_iter().zip(expected.to_array()) {
+                assert_abs(a, e, 2.0e-5, &format!("second moment at {p}"));
+            }
+        }
+        let trace = moment.x_axis.x + moment.y_axis.y + moment.z_axis.z;
+        assert_rel(trace, polygon_solid_angle(&poly, p), 1.0e-12, "trace is Ω");
+    }
+    assert_eq!(
+        polygon_second_moment(&poly, DVec3::new(0.0, 2.0, 0.0)),
+        glam::DMat3::ZERO
+    );
+}

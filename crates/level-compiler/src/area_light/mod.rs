@@ -17,7 +17,7 @@ pub(crate) mod test_lights;
 #[cfg(test)]
 mod tests;
 
-use glam::DVec3;
+use glam::{DMat3, DVec3};
 
 pub(crate) use emitter::{AreaEmitter, EmitterPolygon};
 pub(crate) use exposure::{EMITTER_PIECE_AREA_FLOOR_M2, resolve_area_lights};
@@ -25,7 +25,7 @@ pub(crate) use lattice::{area_lattice_point, area_probe_indices};
 
 pub(crate) use polygon::{
     PLANE_EPSILON_METERS, polygon_distance, polygon_irradiance, polygon_irradiance_vector,
-    polygon_solid_angle,
+    polygon_second_moment, polygon_solid_angle,
 };
 pub(crate) use reach::{REACH_CUTOFF_FRACTION, derived_reach, reach_window};
 pub(crate) use sampler::{AreaSample, AreaSampler, target_lift_meters};
@@ -66,6 +66,15 @@ impl AreaEmitter {
             .iter()
             .map(|poly| polygon_solid_angle(poly, p))
             .sum()
+    }
+
+    /// Second moment ∫ ω ωᵀ dω over the polygons whose front half-space holds
+    /// `p`, per unit radiance (probes: the L2 band).
+    pub(crate) fn second_moment(&self, p: DVec3) -> DMat3 {
+        self.polygons
+            .iter()
+            .map(|poly| polygon_second_moment(poly, p))
+            .fold(DMat3::ZERO, |sum, moment| sum + moment)
     }
 
     /// Distance from `p` to the nearest point of any polygon, either side.

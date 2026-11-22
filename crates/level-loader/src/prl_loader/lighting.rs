@@ -25,10 +25,11 @@ use crate::prl_lightmap::{LoadedLightmap, LoadedShadowmask};
 use crate::sh_stream::ShStreamManifest;
 use crate::{FalloffModel, LightType, MapLight, PortalData, PrlLoadError, ShadowType};
 
-/// Converts AlphaLights records to runtime lights. An area record fails the
-/// load: the runtime has no area light type yet, and reading one as a point
-/// would light and script it wrongly. Runtime support lands in area-lights
-/// task 8.
+/// Converts AlphaLights records to runtime lights. An area record becomes a
+/// placeholder `LightType::Area` light that keeps its index; its light is
+/// baked. One the compiler could not have written (dynamic, `sdf`, or casting
+/// entity shadows) fails the load, since the runtime would route it onto a
+/// runtime light path an area light has no term for.
 pub(crate) fn convert_alpha_lights(
     section: AlphaLightsSection,
 ) -> Result<Vec<MapLight>, PrlLoadError> {
@@ -42,13 +43,19 @@ pub(crate) fn convert_alpha_lights(
                 AlphaLightType::Spot => LightType::Spot,
                 AlphaLightType::Directional => LightType::Directional,
                 AlphaLightType::Area => {
-                    return Err(PrlLoadError::SectionValidation {
-                        section: "AlphaLights",
-                        message: format!(
-                            "light {index} is an area light, which this engine cannot load yet \
-                             (runtime area lights arrive in area-lights task 8)"
-                        ),
-                    });
+                    if r.is_dynamic
+                        || r.casts_entity_shadows
+                        || r.shadow_type != AlphaShadowType::StaticLightMap
+                    {
+                        return Err(PrlLoadError::SectionValidation {
+                            section: "AlphaLights",
+                            message: format!(
+                                "light {index} is an area light marked dynamic, `sdf` or \
+                                 entity-shadow casting; an area light is baked only"
+                            ),
+                        });
+                    }
+                    LightType::Area
                 }
             };
             let falloff_model = match r.falloff_model {

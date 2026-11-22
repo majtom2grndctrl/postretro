@@ -13,6 +13,8 @@ use crate::lightmap_reach::test_fixtures::ReachFixture;
 pub(super) struct ReachBake {
     pub(super) lightmap: Vec<u8>,
     pub(super) shadowmask: Option<Vec<u8>>,
+    /// Id 42's per-face owner entries, when the stage wrote the section.
+    pub(super) shadowmask_owners: Option<Vec<postretro_level_format::shadowmask_atlas::FaceOwners>>,
     pub(super) counts: ReachCounts,
     /// What the stage logged on the thread it ran on.
     pub(super) records: Vec<CapturedRecord>,
@@ -154,6 +156,10 @@ fn bake_on_pool(
     )?;
     Ok(ReachBake {
         lightmap: output.lightmap.section.to_bytes(),
+        shadowmask_owners: output
+            .shadowmask
+            .as_ref()
+            .map(|section| section.owners.clone()),
         shadowmask: output.shadowmask.map(|section| section.to_bytes()),
         counts: LAST_REACH_COUNTS
             .with(|last| last.get())

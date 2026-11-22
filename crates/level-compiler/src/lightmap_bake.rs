@@ -10,8 +10,7 @@ use postretro_level_format::lightmap::{LIGHTMAP_POOL_LAYER_EDGE, LightmapSection
 use rayon::prelude::*;
 
 use crate::area_light::{
-    AreaSampler, area_lattice_point, area_probe_indices, one_sample_visibility,
-    weighted_visibility,
+    AreaSampler, area_lattice_point, area_probe_indices, one_sample_visibility, weighted_visibility,
 };
 use crate::bake_control::BakeControl;
 use crate::texel_footprint::ProbeEarlyOut;
@@ -1487,12 +1486,7 @@ fn area_visibility_one_sample(
         return 0.0;
     };
     let (projected, _) = emitter.irradiance(surface_point.as_dvec3(), surface_normal.as_dvec3());
-    one_sample_visibility(
-        sample.weight,
-        true,
-        sampler.total_solid_angle(),
-        projected,
-    ) as f32
+    one_sample_visibility(sample.weight, true, sampler.total_solid_angle(), projected) as f32
 }
 
 /// The emitter extent soft visibility samples: the sphere radius of a point or

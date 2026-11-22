@@ -421,9 +421,13 @@ pub fn bake_chunk_light_list(
 
     // `None` means portal filter is bypassed: directional sources, or origin in
     // solid/exterior cell — fall back to spatial overlap + BVH shadow rays only.
+    // An area light enters no list (`overlaps_chunk`), so it floods nothing.
     let light_reachable: Vec<Option<HashSet<usize>>> = static_slots
         .iter()
         .map(|&(_, light)| {
+            if light.light_type == LightType::Area {
+                return None;
+            }
             crate::affinity_grid::light_portal_reach(
                 light,
                 inputs.tree,
@@ -784,7 +788,8 @@ fn build_receiver_triangle_bins(
 fn overlaps_chunk(light: &MapLight, chunk_min: Vec3, chunk_max: Vec3) -> bool {
     match light.light_type {
         LightType::Directional => true,
-        // An area light draws no specular, so it enters no chunk list.
+        // An area light draws no specular, so it enters no chunk list. Its
+        // placeholder spec record keeps its slot; no list names it.
         LightType::Area => false,
         LightType::Point | LightType::Spot => {
             // Spot lights use a conservative sphere; cone refinement is a runtime concern.
@@ -918,8 +923,8 @@ fn any_receiver_unoccluded(
 
 fn receiver_to_light_direction(light: &MapLight, sample: Vec3) -> Vec3 {
     match light.light_type {
-        // Area never reaches here: `overlaps_chunk` refuses it first.
-        LightType::Point | LightType::Spot | LightType::Area => (Vec3::new(
+        LightType::Area => unreachable!("`overlaps_chunk` keeps area lights out of chunk lists"),
+        LightType::Point | LightType::Spot => (Vec3::new(
             light.origin.x as f32,
             light.origin.y as f32,
             light.origin.z as f32,
@@ -1015,8 +1020,8 @@ fn segment_clear_brute_force(geometry: &GeometryResult, light: &MapLight, sample
 /// when the segment is too short to trace.
 fn sample_ray(light: &MapLight, sample: Vec3) -> Option<(TraceRay, f32)> {
     let (from, to) = match light.light_type {
-        // Area never reaches here: `overlaps_chunk` refuses it first.
-        LightType::Point | LightType::Spot | LightType::Area => (
+        LightType::Area => unreachable!("`overlaps_chunk` keeps area lights out of chunk lists"),
+        LightType::Point | LightType::Spot => (
             Vec3::new(
                 light.origin.x as f32,
                 light.origin.y as f32,
@@ -2311,6 +2316,41 @@ mod tests {
             kept,
             vec![0, 1, 2],
             "overflow must not fall back to lowest-slot truncation"
+        );
+    }
+
+    // AC 32: an area light's placeholder spec record keeps its compacted
+    // slot, so the point after it keeps slot 2, but no chunk names it, even
+    // a chunk holding its panel, which lights the floor below.
+    #[test]
+    fn an_area_light_keeps_its_slot_but_enters_no_chunk_list() {
+        let panel = crate::area_light::test_lights::area_light(
+            vec![crate::area_light::test_lights::ceiling_panel(
+                [-1.0, 1.0],
+                [-1.0, 1.0],
+                3.0,
+            )],
+            300.0,
+            Some(20.0),
+        );
+        let lights = vec![
+            point_light(DVec3::new(-4.0, 1.0, -4.0), 30.0),
+            panel,
+            point_light(DVec3::new(4.0, 1.0, 4.0), 30.0),
+        ];
+        let section = bake_single_quad_chunk_lights(&lights, 8.0, 256);
+        assert_eq!(section.has_grid, 1);
+        assert!(
+            !section.light_indices.contains(&1),
+            "no chunk list names the area light: {:?}",
+            section.light_indices
+        );
+        assert!(section.light_indices.contains(&0));
+        assert!(section.light_indices.contains(&2));
+        let (under_panel, _, _) = chunk_slots_and_bounds_at(&section, Vec3::new(0.0, 0.5, 0.0));
+        assert!(
+            under_panel.contains(&0) && under_panel.contains(&2) && !under_panel.contains(&1),
+            "{under_panel:?}"
         );
     }
 

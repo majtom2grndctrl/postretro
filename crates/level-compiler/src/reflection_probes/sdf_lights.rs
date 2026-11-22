@@ -52,7 +52,9 @@ impl SpecLight {
                 -1.0,
             ),
             // An area light's placeholder record keeps its spec index and
-            // adds no specular: zero colour below.
+            // adds nothing: zero colour below, as `pack_spec_lights` packs
+            // it. Its cast light is baked, which capture reads as it does
+            // any static light's; its glow is not a spec-light term.
             AlphaLightType::Point | AlphaLightType::Area => (Vec3::ZERO, 0, 1.0, -1.0),
         };
         let color = if r.light_type == AlphaLightType::Area {

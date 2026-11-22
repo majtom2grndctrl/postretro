@@ -328,3 +328,47 @@ fn raising_the_sample_count_rekeys_and_rebakes_area_texels() {
     );
     assert_ne!(coarse, fine, "the pillar's penumbra moves with the count");
 }
+
+// AC 32: the placeholder spec record is never an id-42 owner, even on the
+// faces it alone lights. Room A is lit by a flush ceiling panel alone and
+// room B by a point light past the solid wall. Every owner entry names only
+// the point (spec index 1). Swapping the panel for a point light at its place
+// makes that light an owner of room A's faces, so the refusal, not the
+// faces, keeps the panel out.
+#[test]
+fn an_area_light_owns_no_shadowmask_channel_even_where_it_alone_lights() {
+    use postretro_level_format::shadowmask_atlas::{FaceOwners, SHADOWMASK_OWNER_EMPTY};
+
+    let fixture = rooms_with_pillar();
+    let panel = room_a_lights().swap_remove(0);
+    let mut room_b_point = crate::lightmap_reach::test_fixtures::point_light(room_b_centre(), 5.0);
+    room_b_point.intensity = 300.0;
+    let mut stand_in = room_b_point.clone();
+    stand_in.origin = panel.origin - DVec3::new(0.0, 0.5, 0.0);
+
+    let owners_named = |lights: &[MapLight]| -> Vec<u16> {
+        let bake = reach_bake(&fixture, lights, true, lightmap_layer::ExactSkips::ON, 4)
+            .expect("owner bake");
+        let owners: Vec<FaceOwners> = bake.shadowmask_owners.expect("id 42 is written");
+        let mut named: Vec<u16> = owners
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|&owner| owner != SHADOWMASK_OWNER_EMPTY)
+            .collect();
+        named.sort_unstable();
+        named.dedup();
+        named
+    };
+
+    assert_eq!(
+        owners_named(&[panel, room_b_point.clone()]),
+        vec![1],
+        "only the point light in room B owns channels"
+    );
+    assert_eq!(
+        owners_named(&[stand_in, room_b_point]),
+        vec![0, 1],
+        "a point light where the panel was owns room A's faces"
+    );
+}

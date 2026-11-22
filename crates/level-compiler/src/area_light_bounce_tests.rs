@@ -115,9 +115,9 @@ fn the_one_sample_polygon_arm_averages_to_the_weighted_visibility() {
         open.iter().all(|&v| v != 0.0 && v != 1.0),
         "an open single value read exactly 0 or 1"
     );
-    let (lo, hi) = open
-        .iter()
-        .fold((f64::INFINITY, 0.0_f64), |(lo, hi), &v| (lo.min(v), hi.max(v)));
+    let (lo, hi) = open.iter().fold((f64::INFINITY, 0.0_f64), |(lo, hi), &v| {
+        (lo.min(v), hi.max(v))
+    });
     assert!(hi - lo > 0.2, "single values barely vary: {lo}..{hi}");
 
     let far_blocked = one_sample_values(&light, point, up, |to| to.x < 0.0);
@@ -173,7 +173,11 @@ fn geometry_bounds(fixture: &FixturePipeline) -> (DVec3, DVec3) {
 /// A 4 × 4 m panel flush in the ceiling at `ceiling` m, centred on `(x, z)`.
 fn flush_panel(x: f64, z: f64, ceiling: f64, intensity: f32, reach: Option<f32>) -> MapLight {
     area_light(
-        vec![ceiling_panel([x - 2.0, x + 2.0], [z - 2.0, z + 2.0], ceiling)],
+        vec![ceiling_panel(
+            [x - 2.0, x + 2.0],
+            [z - 2.0, z + 2.0],
+            ceiling,
+        )],
         intensity,
         reach,
     )
@@ -199,7 +203,11 @@ fn delta_section(
     config: &ShConfig,
 ) -> DeltaShVolumesSection {
     let animated_lights = AnimatedBakedLights::from_lights(lights);
-    assert_eq!(animated_lights.len(), 1, "the panel is the one animated light");
+    assert_eq!(
+        animated_lights.len(),
+        1,
+        "the panel is the one animated light"
+    );
     bake_delta_sh_volumes(
         &DeltaBakeInputs {
             bounce_materials: None,
@@ -291,9 +299,7 @@ fn an_animated_panels_bounce_delta_matches_its_static_bounce() {
     let delta = delta_section(&fixture, &animated_lights_vec, &config);
     let deltas = delta_tiles(&delta);
     let slots = delta_base_slots(&delta, &base);
-    let scale = static_light
-        .color
-        .map(|c| c * static_light.intensity);
+    let scale = static_light.color.map(|c| c * static_light.intensity);
 
     let (mut animated_sum, mut static_sum) = ([0.0; 3], [0.0; 3]);
     let mut paired = 0;
@@ -311,7 +317,10 @@ fn an_animated_panels_bounce_delta_matches_its_static_bounce() {
         paired += 1;
     }
     let valid_base = base.probes.iter().filter(|p| p.validity != 0).count();
-    assert_eq!(paired, valid_base, "every valid probe holds the panel's delta");
+    assert_eq!(
+        paired, valid_base,
+        "every valid probe holds the panel's delta"
+    );
     for c in 0..3 {
         let relative = animated_sum[c] / static_sum[c] - 1.0;
         eprintln!(

@@ -188,6 +188,11 @@ pub(crate) fn animated_baked_shadow_candidates_with_direct_delta(
             let (source_index, light) = lights.iter().enumerate().find(|(_, light)| {
                 !light.is_dynamic && light.animated_slot == Some(descriptor_index)
             })?;
+            // Promotion shadows from a point, which an area light is not. Its
+            // roster row stays a hole, so later indices keep their positions.
+            if light.light_type == postretro_level_loader::LightType::Area {
+                return None;
+            }
             Some(AnimatedBakedShadowCandidate {
                 source_index,
                 animated_baked_index,
@@ -255,9 +260,9 @@ pub(crate) fn filter_selected_static_entity_shadow_lights(
 /// Resolve one selected-static entry by its source index into the full level
 /// light array. `Some(light, influence)` when the index is in range AND the
 /// light is baked-tier (`!is_dynamic`); `None` when the entry can never promote
-/// (out-of-range index, or a dynamic-tier light). Missing influence entries
-/// fall back to uncullable, matching the loader/forward-light degradation
-/// contract. Shared by the candidate filter (skips `None`) and the parallel
+/// (out-of-range index, a dynamic-tier light, or an area light). Missing
+/// influence entries fall back to uncullable, matching the loader/forward-light
+/// degradation contract. Shared by the candidate filter (skips `None`) and the parallel
 /// selected-static filter (fills `None` slots with a sentinel).
 fn resolve_selected_static_light(
     lights: &[MapLight],
@@ -265,7 +270,8 @@ fn resolve_selected_static_light(
     source_index: usize,
 ) -> Option<(MapLight, LightInfluence)> {
     let light = lights.get(source_index)?;
-    if light.is_dynamic {
+    // The loader refuses a selection naming an area light; never promote one.
+    if light.is_dynamic || light.light_type == postretro_level_loader::LightType::Area {
         return None;
     }
     let influence = influences

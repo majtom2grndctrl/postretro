@@ -454,6 +454,33 @@ mod tests {
         assert_eq!(restored, section);
     }
 
+    /// The section writes version 5, and every type value round-trips to its
+    /// own variant. The match has no `_` arm, so a new type is a compile
+    /// error here until it is given a wire value.
+    #[test]
+    fn writes_v5_and_round_trips_every_light_type() {
+        let bytes = AlphaLightsSection { lights: vec![] }.to_bytes();
+        assert_eq!(bytes[..4], 5u32.to_le_bytes());
+        for value in 0u8..=3 {
+            let ty = AlphaLightType::from_u8(value).expect("a known type value");
+            let expected = match ty {
+                AlphaLightType::Point => 0,
+                AlphaLightType::Spot => 1,
+                AlphaLightType::Directional => 2,
+                AlphaLightType::Area => 3,
+            };
+            assert_eq!(expected, value);
+            let section = AlphaLightsSection {
+                lights: vec![AlphaLightRecord {
+                    light_type: ty,
+                    ..sample_record()
+                }],
+            };
+            let restored = AlphaLightsSection::from_bytes(&section.to_bytes()).unwrap();
+            assert_eq!(restored, section);
+        }
+    }
+
     /// A v4 section, which knew no area type, is rejected rather than read.
     #[test]
     fn rejects_v4_section() {

@@ -399,6 +399,13 @@ pub enum LightType {
     Point,
     Spot,
     Directional,
+    /// Polygon area light. Its whole contribution is baked (lightmap, SH,
+    /// scatter, mover channel); the runtime record is a placeholder that keeps
+    /// the light's index in every light namespace. It is never dynamic, never
+    /// promoted, never a shadowmask owner or chunk-list member, and adds no
+    /// specular. `origin` is the polygons' area-weighted centroid and
+    /// `falloff_range` the resolved reach.
+    Area,
 }
 
 /// Mirrors `postretro-level-compiler::map_data::FalloffModel`.
@@ -1955,15 +1962,80 @@ mod tests {
         );
     }
 
+    /// An AlphaLights record as the compiler writes an area light: centroid
+    /// origin, reach as range, InverseSquared, zero cone fields, baked only.
+    fn area_alpha_light_record() -> postretro_level_format::alpha_lights::AlphaLightRecord {
+        postretro_level_format::alpha_lights::AlphaLightRecord {
+            origin: [2.0, 3.5, -1.25],
+            light_type: AlphaLightType::Area,
+            intensity: 300.0,
+            color: [1.0, 0.5, 0.25],
+            falloff_model: AlphaFalloffModel::InverseSquared,
+            falloff_range: 16.0,
+            cone_angle_inner: 0.0,
+            cone_angle_outer: 0.0,
+            cone_direction: [0.0, 0.0, 0.0],
+            is_dynamic: false,
+            casts_entity_shadows: false,
+            leaf_index: ALPHA_LIGHT_LEAF_UNASSIGNED,
+            shadow_type: AlphaShadowType::StaticLightMap,
+        }
+    }
+
     #[test]
-    fn convert_alpha_lights_rejects_an_area_record_until_runtime_support_lands() {
+    fn convert_alpha_lights_keeps_an_area_record_as_a_placeholder_at_its_index() {
         let mut alpha = sample_alpha_lights();
-        alpha.lights[1].light_type = AlphaLightType::Area;
-        let err = convert_alpha_lights(alpha).unwrap_err().to_string();
-        assert!(
-            err.contains("light 1 is an area light") && err.contains("area-lights task 8"),
-            "expected an area-record rejection naming the light and task, got {err}",
+        alpha.lights.insert(1, area_alpha_light_record());
+        let lights = convert_alpha_lights(alpha).expect("an area record loads");
+        let types: Vec<LightType> = lights.iter().map(|l| l.light_type).collect();
+        assert_eq!(
+            types,
+            [
+                LightType::Point,
+                LightType::Area,
+                LightType::Spot,
+                LightType::Directional
+            ]
         );
+        let area = &lights[1];
+        assert_eq!(area.origin, [2.0, 3.5, -1.25]);
+        assert_eq!(area.falloff_range, 16.0);
+        assert_eq!(area.falloff_model, FalloffModel::InverseSquared);
+        assert!(!area.is_dynamic && !area.casts_entity_shadows);
+        assert_eq!(area.cell_index, ALPHA_LIGHT_LEAF_UNASSIGNED);
+    }
+
+    #[test]
+    fn convert_alpha_lights_rejects_a_dynamic_sdf_or_shadow_casting_area_record() {
+        let corrupt: [fn(&mut postretro_level_format::alpha_lights::AlphaLightRecord); 3] = [
+            |r| r.is_dynamic = true,
+            |r| r.shadow_type = AlphaShadowType::Sdf,
+            |r| r.casts_entity_shadows = true,
+        ];
+        for corrupt in corrupt {
+            let mut alpha = sample_alpha_lights();
+            let mut area = area_alpha_light_record();
+            corrupt(&mut area);
+            alpha.lights.insert(1, area);
+            let err = convert_alpha_lights(alpha).unwrap_err().to_string();
+            assert!(
+                err.contains("light 1 is an area light"),
+                "expected a rejection naming the area light, got {err}",
+            );
+        }
+    }
+
+    #[test]
+    fn validate_entity_shadow_lights_rejects_an_area_light() {
+        let mut alpha = sample_alpha_lights();
+        alpha.lights.insert(1, area_alpha_light_record());
+        let lights = convert_alpha_lights(alpha).expect("an area record loads");
+        let err = validate_entity_shadow_light_selection(&[1], &lights).unwrap_err();
+        assert!(
+            err.to_string().contains("references an area light"),
+            "expected an area-light rejection, got {err:?}",
+        );
+        assert!(validate_entity_shadow_light_selection(&[0], &lights).is_ok());
     }
 
     #[test]
@@ -5495,6 +5567,74 @@ mod tests {
         assert_eq!(world.lights[2].cell_index, ALPHA_LIGHT_LEAF_UNASSIGNED);
 
         std::fs::remove_file(&tmp).ok();
+    }
+
+    fn alpha_lights_fixture_sections(alpha_lights_bytes: Vec<u8>) -> Vec<prl_format::SectionBlob> {
+        vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: GEOMETRY_CONTAINER_VERSION,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: sample_bvh_section().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::AlphaLights as u32,
+                version: 1,
+                data: alpha_lights_bytes,
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ]
+    }
+
+    // AC 38: a v5 AlphaLights section with an area light between a point and
+    // a spot loads, and the area light keeps its index.
+    #[test]
+    fn load_prl_loads_an_area_light_at_its_authored_index() {
+        let mut alpha_lights = sample_alpha_lights();
+        alpha_lights.lights.insert(1, area_alpha_light_record());
+        let tmp = write_prl_fixture(
+            alpha_lights_fixture_sections(alpha_lights.to_bytes()),
+            "postretro_test_alpha_lights_area.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap()).expect("an area-light map loads");
+        std::fs::remove_file(&tmp).ok();
+
+        let types: Vec<LightType> = world.lights.iter().map(|l| l.light_type).collect();
+        assert_eq!(
+            types,
+            [
+                LightType::Point,
+                LightType::Area,
+                LightType::Spot,
+                LightType::Directional
+            ]
+        );
+        assert_eq!(world.lights[1].origin, [2.0, 3.5, -1.25]);
+        assert_eq!(world.lights[1].falloff_range, 16.0);
+    }
+
+    // AC 38: a v4 AlphaLights section, written before area lights existed,
+    // fails the load rather than being read as v5.
+    #[test]
+    fn load_prl_rejects_a_v4_alpha_lights_section() {
+        let mut bytes = sample_alpha_lights().to_bytes();
+        bytes[..4].copy_from_slice(&4u32.to_le_bytes());
+        let tmp = write_prl_fixture(
+            alpha_lights_fixture_sections(bytes),
+            "postretro_test_alpha_lights_v4.prl",
+        );
+        let err = load_prl(tmp.to_str().unwrap()).expect_err("a v4 section is refused");
+        std::fs::remove_file(&tmp).ok();
+        assert!(
+            err.to_string()
+                .contains("unsupported AlphaLights section version 4"),
+            "unexpected error: {err}",
+        );
     }
 
     fn empty_bvh_blob() -> prl_format::SectionBlob {

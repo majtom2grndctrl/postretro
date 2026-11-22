@@ -38,7 +38,13 @@ Read at e761fb13. Findings that inform the brief; the brief carries the conclusi
 ## Prior commitments touched
 - `done/E16--enemy-ranged-projectile/`: enemies carry no `Inventory`; a per-enemy weapon instance entity is a non-goal. Kept: a set is not an inventory.
 - `done/E10--enemy-stances-and-telegraphs/`: the exhaustive `attacks` list is the load-time half of weapon-gated attacks.
-- `done/E21--bone-sockets-attachments/`: deferred a runtime attach/detach API to replicated weapon identity. This brief's set name is that identity for NPCs.
+- `done/E21--bone-sockets-attachments/`: deferred a runtime attach/detach API to replicated weapon identity. This brief's replicated NPC mount list delivers it for NPCs.
 - `done/E18--spawner-and-closet-containment/`: no per-fire spawn arguments. The `equipment` key is a placement-time spawner key, not a per-fire argument.
 - `entity_model.md` §4: maps select, never tune.
-- `networking.md` randomness posture: host-only, load-time, consequences-only. Enemy behavior draws are the carved exception the set draw rides.
+- `networking.md` randomness posture: host-only, load-time, consequences-only. Enemy behavior draws are a second carved exception, "decided, not yet built" in the doc, though `behavior_draws.rs` exists. The set draw rides it and runs at spawn, so the doc amendment says so.
+- `done/E16--wieldable-switching-inventory/`: a live loadout edit applies at the next install, not to a live inventory. Held NPC equipment follows that rule on hot reload.
+- `done/E10--enemy-stances-and-telegraphs/`: rejects a reached rest with no way out. This brief runs that check once per declared set.
+- Roadmap "Patrol routes": per-instance variants chosen by map or script. It reuses this brief's selection pattern.
+
+## Validation history input
+The first `/validate-plan` returned Reshape: set identity as runtime state forecloses single-weapon changes. The owner chose held weapons as the state (2026-11-22).

@@ -7,17 +7,17 @@ Developer-raised, from the blend-cost and cell-rate spikes and the `fluid-base-p
 
 ## Decisions
 - **Scope: the probe term's live-lighting ratio.** The reflection-free variant, the search, Fresnel, the composite and both styles' looks are unchanged (§7.3a). The reflecting variant only stops evaluating lights.
-- **A GPU compute pass, once per frame with any reflecting-variant draw.**
+- **A GPU compute pass, once per frame with any reflecting-variant draw.** A frame with no reflecting draw pays nothing, as §7.3a promises for reflections.
   - It writes, per probe and per §7.3a lobe, the RGB sum the ratio is linear in: `Σ_l share_{l,k} · (current_l / ref_l − 1)`.
   - The fragment blends those sums by its lobe weights and clamps, as the ratio does today. No fragment entry evaluates a probe's stored lights.
   - GPU, not CPU. The pass reads the descriptor and sample buffers that script writes land in, so scripted lights never read stale. A CPU form needs a mirror of bridge samples the renderer does not keep (`research.md` §Precompute).
   - All backends, not Metal-only (§10): the lever removes fragment work everywhere, and the GTX 1660 floor is measured beside the 5300M.
 - **Every installed probe, not the drawn set.** Freshness holds by construction for a face first drawn this frame, with no CPU set build. This diverges from the blend spike's drawn-probes recommendation, which priced a CPU loop, not one dispatch (`research.md` §Precompute).
 - **Level-scoped storage, read as a uniform.**
-  - The sums live in one buffer at the probe cap, created at fluid install beside the share table (`resource_management.md` §5.3) and released with it.
+  - The sums live at the probe cap, created with the level's fluid surfaces beside the share table (`resource_management.md` §5.3) and released with it.
   - The fluid fragment reads the sums as a uniform in the level-scoped fluid group, because fragment storage is spent (§10).
   - No bind group rebuilds per frame; only the buffer's contents change.
-  - Its pipeline builds at full init beside the other fluid pipelines, never during a frame.
+  - Its pipeline builds at full init, never during a frame.
 - **IP fences (owner, 2026-11-22), from `ip-check.md` §Lever A.** The owner accepts that section's engineering reading for this lever; counsel's answer on the shipped ratio (§For counsel 1–2) does not gate it.
   - The sums live in their own buffer. They never write the probe tile, the share table or any record the capture owns.
   - Every installed probe is evaluated every frame that dispatches; no probe, face or lobe subset is amortised across frames.
@@ -46,7 +46,7 @@ Orderings cite `research.md` §Pins.
 - [ ] The no-history gate's binding inventory covers the sums pass shader and lists the sums by name; none is named for history or intersections.
 - [ ] Budget pins pass with the new binding, including the compute stage's counts; no shared group gains a stage its shader does not read.
 - [ ] The sums pass records a labelled GPU timing pair inside the frame's prefilled query set.
-- [ ] No sums pipeline is created outside full init. No sums buffer is created outside fluid install or released outside unload. A source gate refuses both.
+- [ ] No sums pipeline is created outside full init. The sums live in the probe resources the level's fluid surfaces own, beside the share table, and only the fluid surface build creates them. No pass or renderer-lifetime state holds the sums or a bind group over them. Source gates refuse each.
 ### Automated: GPU gates (a GPU machine, under `POSTRETRO_REQUIRE_GPU`; a skip for want of an adapter is not a pass)
 - [ ] Dispatches: no fluid level, reflection-free fluid only, or a lighting mask shutting every reflecting draw dispatch no sums pass. A frame with reflecting draws dispatches it exactly once, whatever the draw count (P2).
 - [ ] The dispatch follows the fluid pass's reflecting draws, not the screen-space pass's (P6):
@@ -78,7 +78,6 @@ Orderings cite `research.md` §Pins.
   - A CPU precompute uploaded each frame (the blend spike's). It needs a bridge-sample mirror.
   - Per-light values once per frame, Quake's lightstyle shape: each light's `current / ref − 1` in a buffer, with the share × value sum kept per fragment. No per-probe, per-direction state exists, so it is the IP fallback if counsel reads '451 claim 6 onto the sums (`ip-check.md` §Lever A). It loses on cost: fragments still read shares and loop lights × lobes, and each seams neighbour repeats that loop.
 - **Keep the per-fragment ratio:** `fluid_reflection_ratio` and its render-cpu reference stay, unreachable from any entry, as the sums' parity oracle and as the fallback for a reflector the IP fences send back to per-fragment (`glossy-world-reflections` Sequencing).
-- **Buffer usage:** one buffer bound as storage to the sums pass and as a uniform to the fluid fragment, or a copy into a uniform. Delegated. Check the usage combination on Metal, Vulkan and DX12.
 - **Compute group:** the share table is fragment-visible today. The sums pass needs it with compute visibility, through its own layout over the same buffer, or a widened one.
 - **First slice:** the sums pass and blend behind the parity test, then one 5300M A/B at probes 4K. The ratio cost there was largest pre-landing.
 - **Register screen:** the reflecting entry loses its light loop, which may move it to a different VGPR tier on the 5300M (§7.3, Mover register cliff). Screen `fs_main_reflecting` before and after with `tools/metal_register_screen/`'s method, retargeted from the mover pipelines, so a timing change has a named cause.
@@ -86,3 +85,4 @@ Orderings cite `research.md` §Pins.
 
 ## Open questions
 - Placement of the dispatch within the frame (pre-scene compute or the fluid block) — **delegated**.
+- One buffer carrying storage and uniform usage, or a copy into a uniform buffer: whichever every backend accepts — **delegated**: the executor checks Metal, Vulkan and DX12 and reports it.

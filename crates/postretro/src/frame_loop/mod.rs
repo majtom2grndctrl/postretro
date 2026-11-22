@@ -1298,7 +1298,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // Before the first reader of a mover's presented pose: the aim's yaw
     // residual, remote riders, foot probes, audio and the render collectors.
     app.advance_mover_correction_glides(frame_dt);
-    app.place_local_pawn_body(frame_result.alpha);
+    app.place_local_pawn_body(frame_result.alpha, frame_dt);
     app.present_rider_feet(frame_result.alpha, frame_anim_time);
 
     // Regression: a turntable's transform slerps through this tick while

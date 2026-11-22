@@ -548,6 +548,15 @@ impl ClientPrediction {
         self.presentation_offset
     }
 
+    /// Move `delta` into the presentation offset, render-only: a share of the
+    /// eye's motion handed between the drawn deck and the world offset.
+    pub(crate) fn shift_presentation_offset(&mut self, delta: Vec3) {
+        let shifted = self.presentation_offset + delta;
+        if shifted.is_finite() {
+            self.presentation_offset = shifted;
+        }
+    }
+
     /// Produce the presented local pose: the gameplay-authoritative `registry_pose`
     /// with the decaying correction offset added to its position. The
     /// presentation-pose accessor in `Transform` form — used wherever a full pose

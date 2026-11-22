@@ -714,6 +714,11 @@ pub struct MoverCorrection {
     pub network_id: NetworkId,
     pub mover_id: u32,
     pub magnitude: f32,
+    /// The mover's current pose before this correction.
+    pub pre_correction: Transform,
+    /// The rigid correction carried to its current pose and blend, when it
+    /// went through the registry's presented-pose correction.
+    pub applied: Option<postretro_entities::presentation_correction::PoseCorrection>,
     /// Authoritative/predicted-to-target-tick mover state that replaced the
     /// client's live phase. App refreshes its live pose table from this before
     /// input carry or render presentation can consume stale angular motion.
@@ -2097,8 +2102,23 @@ impl ClientReplication {
         }
 
         if let Some(plan) = &mover_apply {
-            if let Ok(current) = registry.get_component::<Transform>(id) {
+            let pre_correction = registry.get_component::<Transform>(id).ok().copied();
+            let _ = registry.set_component(id, plan.phase.clone());
+            let applied = if self.legacy_mover_corrections {
+                let _ = registry.set_component(id, plan.transform);
+                None
+            } else {
+                // A correction to a mover this binding already drew glides
+                // onto the corrected pose; a first bind or a rebind lands
+                // whole. `settle_mover_correction_snaps` snaps a glide that
+                // would move the deck by the teleport floor.
+                let glide = bound_mover_id == Some(plan.mover_id);
+                registry.correct_transform(id, plan.transform, glide).ok()
+            };
+            if let Some(current) = pre_correction {
                 outcome.mover_corrections.push(MoverCorrection {
+                    pre_correction: current,
+                    applied,
                     network_id,
                     mover_id: plan.mover_id,
                     magnitude: (current.position - plan.transform.position).length(),
@@ -2113,17 +2133,6 @@ impl ClientReplication {
                         tick_dt: plan.pose.tick_dt,
                     },
                 });
-            }
-            let _ = registry.set_component(id, plan.phase.clone());
-            if self.legacy_mover_corrections {
-                let _ = registry.set_component(id, plan.transform);
-            } else {
-                // A correction to a mover this binding already drew glides
-                // onto the corrected pose; a first bind or a rebind lands
-                // whole. `settle_mover_correction_snaps` snaps a glide that
-                // would move the deck by the teleport floor.
-                let glide = bound_mover_id == Some(plan.mover_id);
-                let _ = registry.correct_transform(id, plan.transform, glide);
             }
             self.bindings
                 .mover_network_ids

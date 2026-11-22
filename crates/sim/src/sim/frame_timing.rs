@@ -242,6 +242,26 @@ impl FrameTiming {
         self.first_tick_done = true;
     }
 
+    /// Shift both endpoints' eye and world offset by `delta`: a hand-off that
+    /// moves a share of the eye between the drawn deck and the world offset
+    /// reaches the eye at every alpha of the interval it lands in.
+    pub fn shift_interval(&mut self, delta: Vec3) {
+        if !delta.is_finite() {
+            return;
+        }
+        for state in [&mut self.previous_state, &mut self.current_state] {
+            state.position += delta;
+            if let Some(body) = state.body.as_mut() {
+                body.offset += delta;
+            }
+        }
+    }
+
+    /// The current alpha, for presenting outside the frame's render pass.
+    pub fn alpha(&self) -> f32 {
+        self.current_alpha()
+    }
+
     /// The eye and pawn body to present this frame; see [`present_eye`].
     pub fn presented_eye(&self, presented: impl Fn(EntityId) -> Option<Transform>) -> PresentedEye {
         present_eye(

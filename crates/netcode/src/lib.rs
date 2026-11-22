@@ -82,6 +82,12 @@ mod lifecycle;
 mod movement_state;
 mod mover_glide;
 pub use mover_glide::{advance_mover_correction_glides, settle_mover_correction_snaps};
+
+/// Move `delta` into the local pawn's render-only presentation offset: a share
+/// of the eye handed between the drawn deck and the world offset.
+pub fn shift_local_presentation_offset(prediction: &mut ClientPrediction, delta: glam::Vec3) {
+    prediction.shift_presentation_offset(delta);
+}
 mod netdiag;
 mod prediction;
 mod presentation;
@@ -1204,6 +1210,7 @@ pub fn client_receive_and_apply(
                     .map(|transform| transform.position),
                 prediction.first_record_pending(),
             );
+            let pawn_before = mover_glide::pawn_before_reconcile(registry, local.entity_id);
             let _class = reconcile::reconcile_local_pawn_with_mover_history(
                 registry,
                 prediction,
@@ -1217,6 +1224,13 @@ pub fn client_receive_and_apply(
                 environment,
                 tick_dt,
                 life_state_tables,
+            );
+            mover_glide::exclude_mover_share_from_offset(
+                registry,
+                prediction,
+                local.entity_id,
+                pawn_before,
+                &outcome.mover_corrections,
             );
             #[cfg(test)]
             if let (Some(class), Some(predicted), Ok(reconciled)) = (
@@ -1654,6 +1668,16 @@ fn local_hits_to_wire_records(
 /// is pushed to frame timing. The render stage interpolates those presented poses
 /// directly, so the offset enters the frame-timing endpoints exactly once. A no-op
 /// for single-player, the host, or a client with no correction in flight.
+/// Connected-client [`shift_local_presentation_offset`]; a no-op elsewhere.
+pub fn client_shift_local_presentation_offset(
+    endpoint: Option<&mut NetEndpoint>,
+    delta: glam::Vec3,
+) {
+    if let Some(NetEndpoint::Client { prediction, .. }) = endpoint {
+        prediction.shift_presentation_offset(delta);
+    }
+}
+
 pub fn client_decay_local_correction(endpoint: Option<&mut NetEndpoint>) {
     if let Some(NetEndpoint::Client { prediction, .. }) = endpoint {
         prediction.decay_presentation_offset();

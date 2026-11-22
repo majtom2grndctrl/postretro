@@ -4,6 +4,32 @@
 
 use super::*;
 
+/// One frame of the view-yaw hand-off: decay what is in flight by `frame_dt`,
+/// then, when the carry_yaw deck the view rides changed since last frame,
+/// take the glide yaw it drew there less the one it draws now.
+pub(crate) fn next_view_yaw_handoff(
+    handoff: f32,
+    drawn: (Option<u32>, f32),
+    now: (Option<u32>, f32),
+    frame_dt: f32,
+) -> f32 {
+    let mut handoff = handoff;
+    if frame_dt.is_finite() && frame_dt > 0.0 {
+        handoff *= (-frame_dt / VIEW_YAW_HANDOFF_TAU_SECS).exp();
+        if handoff.abs() < 1.0e-6 {
+            handoff = 0.0;
+        }
+    }
+    if drawn.0 != now.0 && drawn.1.is_finite() && now.1.is_finite() {
+        handoff += drawn.1 - now.1;
+    }
+    handoff
+}
+
+/// The view-yaw hand-off decays at the pawn presentation offset's rate:
+/// 0.7 per 60 Hz tick.
+const VIEW_YAW_HANDOFF_TAU_SECS: f32 = 0.0467;
+
 pub(crate) fn world_up_yaw_delta(tick_rotation_delta: Quat) -> f32 {
     kinematic_mover::world_up_yaw(tick_rotation_delta)
 }
@@ -120,7 +146,8 @@ impl App {
         // apply, so the view adds the glide's yaw to stay on the drawn deck.
         let glide_yaw = registry
             .as_deref()
-            .map_or(0.0, |registry| self.carried_glide_yaw(registry));
+            .map_or(0.0, |registry| self.carried_glide_yaw(registry).1)
+            + self.view_yaw_handoff;
         PresentedAimPose {
             // Timing already carries the connected owner's presentation correction.
             position: eye,
@@ -151,20 +178,37 @@ impl App {
         )
     }
 
-    /// The world-up yaw still to glide on the carry_yaw mover the view rides.
-    fn carried_glide_yaw(&self, registry: &postretro_entities::EntityRegistry) -> f32 {
+    /// The carry_yaw mover the view rides, and the world-up yaw still to glide
+    /// on it.
+    fn carried_glide_yaw(
+        &self,
+        registry: &postretro_entities::EntityRegistry,
+    ) -> (Option<u32>, f32) {
         let postretro_foundation::GroundRef::Mover(mover_id) = self.mover_yaw_carry_ground else {
-            return 0.0;
+            return (None, 0.0);
         };
         let Some(state) = self.kinematic_mover_tick_states.get(mover_id) else {
-            return 0.0;
+            return (None, 0.0);
         };
         if !state.carry_yaw {
-            return 0.0;
+            return (None, 0.0);
         }
-        registry
+        let glide = registry
             .presentation_correction(state.entity)
-            .map_or(0.0, |glide| world_up_yaw_delta(glide.rotation))
+            .map_or(0.0, |glide| world_up_yaw_delta(glide.rotation));
+        (Some(mover_id), glide)
+    }
+
+    /// Hand the view yaw across a change of the carry_yaw deck it rides (pin
+    /// P20): leaving, landing on or losing a gliding deck moves the glide yaw it
+    /// drew into a render-only offset that decays at the pawn offset's rate, so
+    /// the drawn view does not turn and the settled yaw commands read is
+    /// untouched. Runs once per frame.
+    fn hand_off_view_yaw(&mut self, registry: &postretro_entities::EntityRegistry, frame_dt: f32) {
+        let now = self.carried_glide_yaw(registry);
+        self.view_yaw_handoff =
+            next_view_yaw_handoff(self.view_yaw_handoff, self.drawn_glide_yaw, now, frame_dt);
+        self.drawn_glide_yaw = now;
     }
 
     /// Draw the local pawn's mesh, shadow and mirror included, where this
@@ -172,12 +216,17 @@ impl App {
     /// connected client with the eye's world offset (option A of the rider
     /// brief). Anywhere else the mesh keeps its plain blend, bit for bit. Runs
     /// once per frame before any reader of the pawn's presented pose.
-    pub(crate) fn place_local_pawn_body(&mut self, alpha: f32) {
+    pub(crate) fn place_local_pawn_body(&mut self, alpha: f32, frame_dt: f32) {
         let connected_client = self.is_connected_client();
-        let Some(session) = self.session.as_ref() else {
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.scripting.script_ctx.clone())
+        else {
             return;
         };
-        let mut registry = session.scripting.script_ctx.registry.borrow_mut();
+        self.hand_off_view_yaw(&script_ctx.registry.borrow(), frame_dt);
+        let mut registry = script_ctx.registry.borrow_mut();
         registry.clear_pinned_presentation_offsets();
         let Some(pawn) = followed_player_pawn(&registry) else {
             return;
@@ -244,6 +293,104 @@ pub(crate) fn apply_authoritative_mover_corrections(
         }
         mover_states.publish(correction.mover_id, authoritative);
     }
+}
+
+/// Push a connected client's eye endpoint, keeping the eye still where the
+/// push changes what places it (pins P4, P5, P15, P19). The returned delta
+/// moves into the world offset, so later endpoints carry it; zero when nothing
+/// was handed off.
+///
+/// - Attaching (the new interval rides a deck the old one did not): the gap
+///   between the old interval's end and the new one's start moves into both
+///   new endpoints, so the glide still in flight is cancelled at the eye and
+///   decays with the offset.
+/// - Detaching (leaving, or changing to another deck): the old endpoint takes
+///   the eye the deck drew at the boundary, and the new endpoint and the
+///   offset take the glide's displacement at the eye's point, so the eye keeps
+///   the drawn deck's place and lands on its world position as that decays.
+pub(crate) fn push_eye_endpoint(
+    timing: &mut frame_timing::FrameTiming,
+    endpoint: frame_timing::InterpolableState,
+    registry: &postretro_entities::EntityRegistry,
+) -> Vec3 {
+    // At the tick boundary the mover's previous slot holds the pose the old
+    // interval ends on and the new one starts from.
+    let drawn = |mover| registry.interpolated_transform(mover, 0.0).ok();
+    let old_end =
+        frame_timing::present_eye(&timing.previous_state, &timing.current_state, 1.0, drawn);
+    // The same boundary without any glide: the deck as simulated.
+    let simulated = |mover| {
+        let drawn = registry.interpolated_transform(mover, 0.0).ok()?;
+        Some(
+            registry
+                .presentation_correction(mover)
+                .map_or(drawn, |glide| glide.inverse().apply(&drawn)),
+        )
+    };
+    let old_end_simulated = frame_timing::present_eye(
+        &timing.previous_state,
+        &timing.current_state,
+        1.0,
+        simulated,
+    );
+    timing.push_state(endpoint);
+    let new_start =
+        frame_timing::present_eye(&timing.previous_state, &timing.current_state, 0.0, drawn);
+    let placement =
+        |eye: &frame_timing::PresentedEye| eye.riding.map(|mover| (mover.mover_id, mover.entity));
+    if placement(&old_end) == placement(&new_start) {
+        return Vec3::ZERO;
+    }
+    let shift = |state: &mut frame_timing::InterpolableState, delta: Vec3| {
+        state.position += delta;
+        if let Some(body) = state.body.as_mut() {
+            body.offset += delta;
+        }
+    };
+    if old_end.riding.is_some() && new_start.riding.is_none() {
+        let glide = old_end.eye - old_end_simulated.eye;
+        let to_drawn = old_end.eye - timing.previous_state.position;
+        if !glide.is_finite() || !to_drawn.is_finite() {
+            return Vec3::ZERO;
+        }
+        shift(&mut timing.previous_state, to_drawn);
+        shift(&mut timing.current_state, glide);
+        return glide;
+    }
+    let delta = old_end.eye - new_start.eye;
+    if delta == Vec3::ZERO || !delta.is_finite() {
+        return Vec3::ZERO;
+    }
+    timing.shift_interval(delta);
+    delta
+}
+
+/// Keep the eye still across a snapshot apply that changes what places it.
+/// A deck that snapped under the eye cuts it to the snapped deck (pin P7).
+/// A glide dropped under it, or a mover lost or rebound beneath it, hands the
+/// residual at the eye's point into the world offset and both endpoints, so it
+/// reaches the eye on this frame at any alpha, even with no tick to push a new
+/// endpoint (pins P12, P16).
+pub(crate) fn hand_off_eye_across_apply(
+    timing: &mut frame_timing::FrameTiming,
+    prediction: &mut netcode::ClientPrediction,
+    before: frame_timing::PresentedEye,
+    after: frame_timing::PresentedEye,
+    snapped: &[u32],
+) {
+    let Some(riding) = before.riding else {
+        return;
+    };
+    if snapped.contains(&riding.mover_id) {
+        timing.hold_state(frame_timing::InterpolableState::new(after.eye));
+        return;
+    }
+    let delta = before.eye - after.eye;
+    if delta == Vec3::ZERO || !delta.is_finite() {
+        return;
+    }
+    timing.shift_interval(delta);
+    netcode::shift_local_presentation_offset(prediction, delta);
 }
 
 pub(crate) fn local_player_ground(
@@ -357,3 +504,7 @@ pub(crate) fn pawn_eye_position(
             + Vec3::new(0.0, component.capsule.eye_height, 0.0),
     )
 }
+
+#[cfg(test)]
+#[path = "local_eye_tests.rs"]
+mod tests;

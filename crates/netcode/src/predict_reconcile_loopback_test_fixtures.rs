@@ -751,7 +751,7 @@ impl LoopbackHarness {
                 );
             self.latest_mover_corrections
                 .extend(outcome.mover_corrections.iter().copied());
-            super::settle_mover_correction_snaps(
+            let _ = super::settle_mover_correction_snaps(
                 &mut self.client_registry,
                 &outcome.mover_corrections,
                 &self.mover_colliders,
@@ -805,6 +805,10 @@ impl LoopbackHarness {
                     &self.mover_colliders,
                     &self.client_mover_states,
                 );
+                let pawn_before = super::mover_glide::pawn_before_reconcile(
+                    &self.client_registry,
+                    reconcile.entity_id,
+                );
                 let class = reconcile_local_pawn_with_mover_history(
                     &mut self.client_registry,
                     &mut self.prediction,
@@ -818,6 +822,13 @@ impl LoopbackHarness {
                     environment,
                     DT,
                     &self.life_state_tables,
+                );
+                super::mover_glide::exclude_mover_share_from_offset(
+                    &self.client_registry,
+                    &mut self.prediction,
+                    reconcile.entity_id,
+                    pawn_before,
+                    &outcome.mover_corrections,
                 );
                 self.latest_reconcile_windows
                     .push((reconcile.acked_tick, self.last_sent_client_tick));

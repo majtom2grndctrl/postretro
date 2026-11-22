@@ -1108,6 +1108,11 @@ pub(crate) struct App {
     /// Each mover's tick state at the pose this frame draws it, for rider
     /// foot probes on every seat. Refreshed once per frame.
     presented_mover_poses: sim::PresentedMoverPoses,
+    /// Render-only view yaw handed off a gliding carry_yaw deck, decaying to
+    /// zero; the settled yaw movement commands read never takes it.
+    view_yaw_handoff: f32,
+    /// The carry_yaw glide yaw the view drew last frame, and its mover.
+    drawn_glide_yaw: (Option<u32>, f32),
     /// Owning pawn ground reference captured at the start of the exact tick
     /// that consumed the pending mover pose delta. The next Input stage uses
     /// it to gate that delta's yaw carry.
@@ -4596,6 +4601,17 @@ impl App {
                 let mover_target_tick = time_sync
                     .estimated_server_tick()
                     .map(|tick| tick.floor().clamp(0.0, f64::from(u32::MAX)) as u32);
+                // The eye this frame would draw before the snapshot lands, so a
+                // glide the apply drops under it hands off instead of stepping.
+                let eye_before = {
+                    let alpha = self.frame_timing.alpha();
+                    frame_timing::present_eye(
+                        &self.frame_timing.previous_state,
+                        &self.frame_timing.current_state,
+                        alpha,
+                        |mover| registry.interpolated_transform(mover, alpha).ok(),
+                    )
+                };
                 let apply_outcome = {
                     let combined_collision = collision::moving::CombinedCollisionWorld::new(
                         collision_world,
@@ -4729,10 +4745,26 @@ impl App {
                     &mut self.kinematic_mover_tick_states,
                     &apply_outcome.mover_corrections,
                 );
-                netcode::settle_mover_correction_snaps(
+                let snapped = netcode::settle_mover_correction_snaps(
                     &mut registry,
                     &apply_outcome.mover_corrections,
                     &self.kinematic_mover_colliders,
+                );
+                let eye_after = {
+                    let alpha = self.frame_timing.alpha();
+                    frame_timing::present_eye(
+                        &self.frame_timing.previous_state,
+                        &self.frame_timing.current_state,
+                        alpha,
+                        |mover| registry.interpolated_transform(mover, alpha).ok(),
+                    )
+                };
+                local_eye::hand_off_eye_across_apply(
+                    &mut self.frame_timing,
+                    prediction,
+                    eye_before,
+                    eye_after,
+                    &snapped,
                 );
                 if let Some(cooldown) = apply_outcome.owner_private_weapon.cooldown {
                     let _ = reconcile_client_weapon_cooldown_from_slot_table(
@@ -7367,6 +7399,8 @@ mod tests {
             tick_dt: 1.0,
         };
         let correction = netcode::MoverCorrection {
+            pre_correction: Default::default(),
+            applied: None,
             network_id: postretro_net::wire::NetworkId(70),
             mover_id: 7,
             magnitude: 0.0,
@@ -7417,6 +7451,8 @@ mod tests {
         let entity = EntityId::from_raw(0);
         let mut mover_states = mover_yaw_states(false, Quat::from_rotation_y(0.2));
         let correction = netcode::MoverCorrection {
+            pre_correction: Default::default(),
+            applied: None,
             network_id: postretro_net::wire::NetworkId(70),
             mover_id: 7,
             magnitude: 0.0,

@@ -87,7 +87,25 @@ impl crate::App {
                 ),
                 None => InterpolableState::new(self.camera.position),
             };
-            self.frame_timing.push_state(endpoint);
+            let handed_off = match self.session.as_ref() {
+                Some(session) => crate::local_eye::push_eye_endpoint(
+                    &mut self.frame_timing,
+                    endpoint,
+                    &session.scripting.script_ctx.registry.borrow(),
+                ),
+                None => {
+                    self.frame_timing.push_state(endpoint);
+                    glam::Vec3::ZERO
+                }
+            };
+            if handed_off != glam::Vec3::ZERO {
+                netcode::client_shift_local_presentation_offset(
+                    self.session
+                        .as_mut()
+                        .and_then(|session| session.net_endpoint.as_mut()),
+                    handed_off,
+                );
+            }
         }
         prediction_tick
     }

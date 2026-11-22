@@ -2,8 +2,10 @@
 // converges, advanced once per frame.
 // See: context/lib/networking.md §Snapshot apply ordering
 
-use postretro_entities::EntityRegistry;
+use glam::Vec3;
 use postretro_entities::presentation_correction::PoseCorrection;
+use postretro_entities::{EntityId, EntityRegistry, Transform};
+use postretro_foundation::{GroundRef, PlayerMovementComponent};
 
 use crate::MoverCorrection;
 use crate::collision::moving::MoverCollider;
@@ -39,11 +41,13 @@ pub fn advance_mover_correction_glides(registry: &mut EntityRegistry, frame_dt: 
 /// glide, so several corrections in one frame snap together, and on the
 /// mover's reach about its origin, so a rotation-only correction of a large
 /// mover snaps too (pin P7). A mover with no collider is judged by its origin.
+/// Returns the snapped movers' ids; allocates only when one snaps.
 pub fn settle_mover_correction_snaps(
     registry: &mut EntityRegistry,
     corrections: &[MoverCorrection],
     colliders: &[MoverCollider],
-) {
+) -> Vec<u32> {
+    let mut snapped = Vec::new();
     for correction in corrections {
         let mover = correction.authoritative_state.entity;
         let Some(glide) = registry.presentation_correction(mover) else {
@@ -55,8 +59,62 @@ pub fn settle_mover_correction_snaps(
             .map_or(0.0, MoverCollider::reach);
         if glide_moves_mover_by(&glide, reach) >= TELEPORT_CORRECTION_MIN_M {
             registry.clear_presentation_correction(mover);
+            snapped.push(correction.mover_id);
         }
     }
+    snapped
+}
+
+/// The local pawn's position and ground just before a reconcile, for
+/// [`exclude_mover_share_from_offset`].
+pub(crate) fn pawn_before_reconcile(
+    registry: &EntityRegistry,
+    pawn: EntityId,
+) -> Option<(Vec3, GroundRef)> {
+    let position = registry.get_component::<Transform>(pawn).ok()?.position;
+    let ground = registry
+        .get_component::<PlayerMovementComponent>(pawn)
+        .ok()?
+        .ground;
+    Some((position, ground))
+}
+
+/// Keep a mover correction's share of a standing pawn's reconcile out of the
+/// world offset: the eye rides the drawn deck, which glides that share in
+/// already, so counting it in the offset too would carry it twice. The share
+/// is the correction's displacement of the pawn's pre-correction point, taken
+/// only when the pawn's ground names the corrected mover before and after the
+/// reconcile, and only while the reconcile left an offset in flight (a cut
+/// clears it).
+pub(crate) fn exclude_mover_share_from_offset(
+    registry: &EntityRegistry,
+    prediction: &mut crate::prediction::ClientPrediction,
+    pawn: EntityId,
+    before: Option<(Vec3, GroundRef)>,
+    corrections: &[MoverCorrection],
+) {
+    let Some((point, GroundRef::Mover(mover_id))) = before else {
+        return;
+    };
+    let after = registry
+        .get_component::<PlayerMovementComponent>(pawn)
+        .map(|movement| movement.ground);
+    if after != Ok(GroundRef::Mover(mover_id)) || prediction.presentation_offset() == Vec3::ZERO {
+        return;
+    }
+    let share = corrections
+        .iter()
+        .filter(|correction| correction.mover_id == mover_id)
+        .filter_map(|correction| mover_share_at(point, correction))
+        .fold(Vec3::ZERO, |sum, share| sum + share);
+    prediction.shift_presentation_offset(share);
+}
+
+/// How far `correction` carries a point fixed to its mover at `point`.
+fn mover_share_at(point: Vec3, correction: &MoverCorrection) -> Option<Vec3> {
+    let applied = correction.applied?;
+    let origin = correction.pre_correction.position;
+    Some(origin + applied.translation + applied.rotation * (point - origin) - point)
 }
 
 /// The farthest any point within `reach` of the mover origin moves under
@@ -151,6 +209,8 @@ mod snap_tests {
         let mover = registry.spawn(Transform::default());
         registry.correct_transform(mover, corrected, true).unwrap();
         let correction = MoverCorrection {
+            pre_correction: Default::default(),
+            applied: None,
             network_id: NetworkId(1),
             mover_id: MOVER,
             magnitude: corrected.position.length(),
@@ -255,5 +315,108 @@ mod zero_tick_step_tests {
         );
         assert!(before > 0.1);
         assert!(after <= 1.0e-5, "{after}");
+    }
+}
+
+#[cfg(test)]
+mod share_tests {
+    use glam::{Quat, Vec3};
+    use postretro_entities::presentation_correction::PoseCorrection;
+    use postretro_entities::{EntityRegistry, Transform};
+    use postretro_foundation::{GroundRef, PlayerMovementComponent};
+    use postretro_net::wire::NetworkId;
+
+    use super::{exclude_mover_share_from_offset, pawn_before_reconcile};
+    use crate::MoverCorrection;
+    use crate::kinematic_mover::MoverTickState;
+    use crate::prediction::ClientPrediction;
+
+    const MOVER: u32 = 6;
+
+    fn correction(
+        applied: PoseCorrection,
+        entity: postretro_entities::EntityId,
+    ) -> MoverCorrection {
+        MoverCorrection {
+            pre_correction: Transform {
+                position: Vec3::new(1.0, 0.0, 0.0),
+                ..Transform::default()
+            },
+            applied: Some(applied),
+            network_id: NetworkId(2),
+            mover_id: MOVER,
+            magnitude: applied.translation.length(),
+            authoritative_state: MoverTickState {
+                entity,
+                transform: Transform::default(),
+                linear_velocity: Vec3::ZERO,
+                tick_delta: Vec3::ZERO,
+                angular_velocity: Vec3::ZERO,
+                tick_rotation_delta: Quat::IDENTITY,
+                carry_yaw: false,
+                tick_dt: 1.0 / 60.0,
+            },
+        }
+    }
+
+    /// The offset a reconcile leaves after excluding the mover's share, for a
+    /// pawn at (3, 1, 0) whose ground goes from `before` to `after`.
+    fn offset_after(before: GroundRef, after: GroundRef, mispredict: Vec3) -> (Vec3, Vec3) {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform {
+            position: Vec3::new(3.0, 1.0, 0.0),
+            ..Transform::default()
+        });
+        let mut movement: PlayerMovementComponent =
+            crate::predict_reconcile_harness_test_fixtures::component();
+        movement.ground = before;
+        registry.set_component(pawn, movement.clone()).unwrap();
+        let pawn_before = pawn_before_reconcile(&registry, pawn);
+        let applied = PoseCorrection {
+            translation: Vec3::new(0.0, 0.0, -0.1),
+            rotation: Quat::from_rotation_y(0.05),
+        };
+        // The pawn's point carried by the mover correction about its origin.
+        let point = Vec3::new(3.0, 1.0, 0.0);
+        let origin = Vec3::new(1.0, 0.0, 0.0);
+        let share = origin + applied.translation + applied.rotation * (point - origin) - point;
+        // Reconcile seeds predicted minus reconciled: minus the share and the
+        // mispredict.
+        let mut prediction = ClientPrediction::default();
+        prediction.shift_presentation_offset(-share - mispredict);
+        movement.ground = after;
+        registry.set_component(pawn, movement).unwrap();
+        exclude_mover_share_from_offset(
+            &registry,
+            &mut prediction,
+            pawn,
+            pawn_before,
+            &[correction(applied, pawn)],
+        );
+        (prediction.presentation_offset(), share)
+    }
+
+    // A standing pawn's correction reaches the eye once: the mover's share
+    // through the drawn deck, the mispredict alone through the world offset.
+    #[test]
+    fn standing_pawn_keeps_only_the_mispredict_in_its_world_offset() {
+        let mispredict = Vec3::new(0.01, 0.0, -0.02);
+        let on = GroundRef::Mover(MOVER);
+        let (offset, share) = offset_after(on, on, mispredict);
+        assert!(share.length() > 0.1);
+        assert!((offset + mispredict).length() < 1.0e-6, "{offset}");
+    }
+
+    // Pin P5: when the snapshot also moves the pawn's ground onto or off the
+    // corrected mover, the whole correction stays in the offset; the eye's
+    // push hands off the rest.
+    #[test]
+    fn ground_change_keeps_the_whole_correction_in_the_offset() {
+        let mispredict = Vec3::new(0.01, 0.0, -0.02);
+        let on = GroundRef::Mover(MOVER);
+        for (before, after) in [(on, GroundRef::World), (GroundRef::Airborne, on)] {
+            let (offset, share) = offset_after(before, after, mispredict);
+            assert!((offset + share + mispredict).length() < 1.0e-6);
+        }
     }
 }

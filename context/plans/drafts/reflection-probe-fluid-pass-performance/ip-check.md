@@ -54,6 +54,8 @@ Lever B, the view-dependent early-out, is out of scope: the brief decided agains
 | US11605198B2 | Baobab | Granted 2023-03-14. No fee-payment or expiry event on Google | A | Two precomputed GI sets (SH probes and lightmaps), up-sample the lower-resolution one, blend by weight | Appears absent | High |
 | EP1652151A1 / US7532220B2 | Philips | Refused (EP); US expired, fee related | C3 | Per primitive, pick a resampling algorithm "in dependence on a size of the primitive" | Prior art only | High |
 | US10198856B2 | Oxide Interactive | Granted 2019-02-05; 4th-year fee paid 2022-07-20 (small entity); ≈2034-03-05 | A, C3 | 1: per object, a shading parameter image; sort objects "to minimize state changes of a shader program"; a MIP chain of the shaded mesh, then rasterize that MIP chain. Cl. 4: reduced-size images "based on an estimated pixel coverage" | **New.** Appears absent: no MIP chain of the shaded result, no state-change sort. Cl. 4 is what the sizing fence already forbids | High |
+| US11436783B2 | Oxide Interactive | Granted 2022-09-06; ≈2040-11-19; priority 2019-10-16 | A | 1: a raster loop and a shade loop "at a second frequency"; a shadel storage buffer; on a miss the raster loop generates the shaded portion and stores it "in a shadel miss buffer", then reads it back | **New.** Appears absent: overflowed draws evaluate per fragment and store nothing; no miss buffer | Medium-high |
+| US12154208B2 (division of '783) | Oxide Interactive | Granted (OG 2024-11-26); priority 2019-10-16 | A | 1: allocate "space in a shadel storage buffer … by subdividing", "atomic exchange increments … using hash functions"; "a work queue buffer" of commands per shadel | **New.** Appears absent: the pool is shelf-packed on the CPU; no hashed atomic allocation, no GPU work queue | High |
 | US10198788B2 | Oxide Interactive | Granted 2019-02-05 (CIP); 4th-year fee paid 2022-07-20; ≈2033-11-11. Continuation US20190295214A1 abandoned | A | '856's steps plus shading "at a first frequency" and rasterizing at a second | **New.** Appears absent (shades every frame; no MIP chain) | High |
 | US9342926B2 / EP2797054B1 | Square Enix | US granted 2016-05-17; EP granted 2018-11-21, ≈2034-04-02 (fee status unread) | B | 1: a low-resolution "indirect illumination buffer for a specular reflection", raised in resolution with each pixel weighted by "a level of similarity of specular reflection lobes" | **New.** Appears absent: B reads one target texel, nearest, with no lobe weighting | Medium-high |
 | US10510185B2 | AMD | Granted 2019-12-17, ≈2037-08-25 | B | 1: rasterizer quads into a tile buffer, downsampled to coarse quads by a shading rate, shaded, modulated with fine rasterization data | **New.** Appears absent | High |
@@ -74,7 +76,7 @@ No reading moved toward present. No crux row changed. No existing fence weakened
 
 **Changes in the cell-path pass (2026-11-22):**
 - Shape B charted (§Shape B). No filing found reads on it as '166 reads on shape A.
-- New for shape A: the Oxide family (appears absent on its MIP-chain element; 2013-priority art on sizing by pixel coverage). '715's EP twin is pending.
+- New for shape A: the Oxide families. 2013 priority: appears absent on its MIP-chain element, and is art on sizing by pixel coverage. 2019 priority ('783, '208): appears absent on the miss buffer and the hashed GPU allocation. '715's EP twin is pending.
 - EP4409531B1: designations and national entries recorded; no opposition event seen; the opposition window closes about 2027-04-22.
 - No '166 or '715 continuation found. No SAS filing found. No filing found claims the inline hidden-cell test or a size-keyed path switch with hysteresis.
 - No source contradicted an existing row. No reading moved toward present. Nothing found clears counsel questions 3 or 5.
@@ -311,7 +313,32 @@ US10198788B2 (CIP, application 14/709,064; granted 2019-02-05; 4th-year fee paid
 
 **Reading.** Appears absent on the MIP-chain element. The family dates the "size an object's shading image by its estimated pixel coverage" idea to a 2013 priority, beside SAS (2018) and Baker's talk (2016), for counsel's '166 question.
 
-**Fences:** no MIP chain built over the cell pool; no frequency split between cell shading and the fluid pass.
+**Later family: decoupled object-space shading (priority 2019-10-16).** Baker, Kipp, Heazlett and Osefo; the engine generation in Baker & Jarzynski, EGSR 2022 (already of record in '715). **New this pass.** Claims read from Google Patents ('783) and the Official Gazette ('208).
+
+US11436783B2 (application 17/073,193; granted 2022-09-06; ≈2040-11-19). Claim 1, verbatim:
+
+| Element | Cell path (A) | Reading |
+|---|---|---|
+| "continuously executing a raster loop at a first frequency, the raster loop collecting meshes … and rasterizing the meshes into the frame images" | The fluid pass draws the water each frame | Present |
+| "continuously executing a shade loop at a second frequency, the shade loop generating shaded portions of the meshes and storing the shaded portions … in a shadel storage buffer" | The cell pass runs once per frame, before the fluid pass, into the pool | Arguable: one pass per frame, but the claim does not say the frequencies differ |
+| "responsive to the raster loop determining that a shaded portion of a respective mesh is stored in the shadel storage buffer, … read the shaded portion … and … rasterize" | A cell-path draw reads its cells | Present |
+| "responsive to the raster loop determining that the shaded portion … is not stored …, (i) generate the shaded portion …, (ii) store the shaded portion … in a shadel miss buffer, (iii) read the shaded portion … from the shadel miss buffer, and (iv) rasterize" | A draw that does not fit is chosen per fragment on the CPU before the pass. Its fragments evaluate the probe term themselves and store nothing | **Appears absent**: no per-draw miss detection by the raster loop, no miss buffer |
+
+Claims 3 and 6 are system forms (6 read only in part).
+
+US12154208B2 (division, application 17/726,693; prior publication US 2022/0245883 A1). Claim 1, verbatim from the Official Gazette:
+
+| Element | Cell path (A) | Reading |
+|---|---|---|
+| "determining, via the GPU in a raster loop at a first frequency, one or more shadels to be computed for the frame image based at least on the one or more input attributes …, each shadel being a shaded portion of the mesh" | Cells chosen on the CPU from the pack | Leans absent (CPU, not a GPU raster loop) |
+| "allocating, via the GPU in a shade loop at a second frequency, space in a shadel storage buffer … by subdividing the shadel storage buffer into a plurality of subdivisions" | CPU shelf pack | Appears absent |
+| "performing atomic exchange increments on respective ones of the plurality of subdivisions, … using GPU hardware atomic operations, … using hash functions to map the one or more shadels to the respective ones of the plurality of subdivisions" | None | **Appears absent** |
+| "populating, via the GPU, a work queue buffer, the work queue buffer containing a list of commands to be executed to compute each of the one or more shadels" | The dispatch size comes from the pack alone; no command list | **Appears absent** |
+| "computing … the determined one or more shadels …; and rasterizing … the shaded mesh into the frame image" | Cell pass, then the fluid pass | Present |
+
+**Reading.** Both appear absent. Shape B appears absent from both: it stores no shaded portion of a mesh in object space.
+
+**Fences:** no MIP chain built over the cell pool; no frequency split between cell shading and the fluid pass; an overflowed draw evaluates per fragment and writes no fallback buffer; allocation stays a CPU pack, with no GPU hashed or atomic allocation and no GPU work queue.
 
 ### Tencent WO2026113651A1 against the pool
 
@@ -467,6 +494,8 @@ Topics: texture- or object-space shading with depth visibility per texel tile; p
 | Hit | Owner | Shape | Outcome |
 |---|---|---|---|
 | US10198856B2, US10198788B2, US20190295214A1 | Oxide Interactive | A, C3 | Charted (§Oxide) |
+| US11436783B2, US12154208B2 | Oxide Interactive | A | Charted (§Oxide) |
+| US12444121B2 "Pre-filtering with anisotropic filter in decoupled shading" | AMD / ATI | A | Claim 1 (OG excerpt): gradients relating "shade space texel spacing and screen space pixel spacing" and material texel spacing, for filtering. The cell path computes no such gradient and filters nothing. Appears absent; not charted further |
 | US9342926B2 / EP2797054B1 | Square Enix | B | Charted (§Shape B) |
 | US10510185B2 | AMD | B | Charted (§Shape B) |
 | US9710881B2 | Sony | B | Charted (§Shape B) |
@@ -494,7 +523,7 @@ The `ip-research.md` §For counsel questions stand, narrowed by this chart:
 5. **Qualcomm '715 against the pool.** Confirm that whole-rect allocation from a screen clip, with cells at texel-grid offsets, is not "a group offset … based on a number of visible shading elements" or an element offset from a count.
 6. **Qualcomm '856 continuation (US20260203991A1).** Its pending claim 1 needs only a mip-region resolution from derivatives of visible meshlets. The cell path computes none. Watch for allowance.
 7. **Shape B (cell-path pass).** Confirm that no reduced-resolution family charted in §Shape B reaches a separate probe pass into a fixed-fraction target read by one nearest load at the cell centre. If Intel's coarse-pixel claims matter, read them; they were not reachable here.
-8. **Oxide US10198856B2.** Confirm the MIP-chain and shader-state sort elements keep the cell pool outside claim 1. The family is also 2013-priority art on sizing an object's shading image by pixel coverage, for question 3.
+8. **Oxide US10198856B2, US11436783B2, US12154208B2.** Confirm the MIP-chain and shader-state sort ('856), the miss buffer ('783) and hashed atomic allocation with a GPU work queue ('208) keep the cell pool outside each claim 1. The family is also 2013-priority art on sizing an object's shading image by pixel coverage, for question 3.
 9. **Watch: EP4409531B1 opposition window closes about 2027-04-22** (nine months from the 2026-07-22 mention of grant). Opposition is the low-cost route against an EP patent once granted. Decide whether to file, or note that the window passed, before that date. National entries so far: CH, GB, IE, DE.
 10. **Watch: EP4778033A1** ('715's EP twin, pending). Read its claims when examination produces them.
 11. Fee status of Baobab US11605198B2. Google shows no payment or expiry event. The 3.5-year window closed about 2026-09-14; the surcharge period runs to about 2027-03-14.

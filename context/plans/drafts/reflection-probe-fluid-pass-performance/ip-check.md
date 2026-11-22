@@ -79,6 +79,8 @@ No reading moved toward present. No crux row changed. No existing fence weakened
 - New for shape A: the Oxide families. 2013 priority: appears absent on its MIP-chain element, and is art on sizing by pixel coverage. 2019 priority ('783, '208): appears absent on the miss buffer and the hashed GPU allocation. '715's EP twin is pending.
 - EP4409531B1: designations and national entries recorded; no opposition event seen; the opposition window closes about 2027-04-22.
 - No '166 or '715 continuation found. No SAS filing found. No filing found claims the inline hidden-cell test or a size-keyed path switch with hysteresis.
+- Oxide's 2019 family ('783, '208): appears absent on the miss buffer and on hashed GPU allocation with a work queue. Intel US12243125B2 (stencil-set coarse pixels): appears absent on shape B.
+- Access: USPTO file wrappers, the Open Data Portal and the fee lookup now need a USPTO.gov sign-in; RECAP showed no docket for any charted patent.
 - No source contradicted an existing row. No reading moved toward present. Nothing found clears counsel questions 3 or 5.
 
 ## Lever A: precompute
@@ -466,7 +468,7 @@ None of these evaluates a **probe** term into a reduced target as its own pass. 
 - **Nothing found reads on B as '166 reads on A.** No filing found claims a texture-space-sized allocation for B to meet, because B allocates nothing per face: its target is fixed by the scene extent and tier.
 - **B's live constraints are the shipped layer's,** plus the separation rule above if the probe term and SSR share a target.
 - **This flags the brief's decision rule.** On the IP axis alone, B carries no counsel question of '166's kind; A's questions 3 and 5 stay open. Nothing found clears A's counsel questions.
-- Search depth is uneven: Intel's coarse-pixel claims were not read (Google refused the pages), and the sweep was keyword web search, not a classification query.
+- Search depth is uneven: of Intel's coarse-pixel family, only US12243125B2's claim 1 and one abandoned continuation were read (Google refused the other pages), and the sweep was keyword web search, not a classification query.
 
 **Fences for shape B:**
 - The target's fraction comes from the tier (or one fixed value), never from a per-draw, per-region or per-pixel estimate (Sony '881, VRS families).
@@ -503,7 +505,7 @@ Topics: texture- or object-space shading with depth visibility per texel tile; p
 | US9710881B2 | Sony | B | Charted (§Shape B) |
 | US10235799B2 | Microsoft | B | Charted (§Shape B) |
 | US11869115B1 | Qualcomm | B, C3 | Screened (abstract) |
-| Intel CPS family (WO2016043909A1, EP3195269A1, US20150287240A1, US20190087983A1, US9916682B2) | Intel | B | Claims not read (pages refused) |
+| Intel coarse-pixel family (US12243125B2 chain; decoupled shading pipeline US9569883B2 chain; WO2016043909A1, EP3195269A1, US9905046B2, US10242493, US10262455B2, US11871142B2, US11663774B2, US9916682B2) | Intel | B | US12243125B2 claim 1 read (Official Gazette), appears absent; US20240169664A1 abandoned; the rest not read at claim level |
 | US12322029B2 | Meta | A | Charted (§Other texture-space filings) |
 | 18/477,375 "Hybrid deferred decoupled rendering" | AMD | A | Pending; rejected over '715's A1. Claims not published in what was read |
 | US10504280B2, US11132831B1, US11875452B2 | Qualcomm (Schmalstieg group) | A | Screened by abstract; none claims per-frame sizing by projection |
@@ -524,7 +526,7 @@ The `ip-research.md` §For counsel questions stand, narrowed by this chart:
 4. **Intel '475.** Confirm that an inline per-invocation depth test with unconditional dispatch falls outside claims 1, 10 and 19. If the build ever wants compaction or indirect dispatch: weigh Liktor & Dachsbacher 2012 (per-sample visible flags gating shading kernels after a depth pass) and Hillesland & Yang 2016 (tile work list); neither is of record.
 5. **Qualcomm '715 against the pool.** Confirm that whole-rect allocation from a screen clip, with cells at texel-grid offsets, is not "a group offset … based on a number of visible shading elements" or an element offset from a count.
 6. **Qualcomm '856 continuation (US20260203991A1).** Its pending claim 1 needs only a mip-region resolution from derivatives of visible meshlets. The cell path computes none. Watch for allowance.
-7. **Shape B (cell-path pass).** Confirm that no reduced-resolution family charted in §Shape B reaches a separate probe pass into a fixed-fraction target read by one nearest load at the cell centre. If Intel's coarse-pixel claims matter, read them; they were not reachable here.
+7. **Shape B (cell-path pass).** Confirm that no reduced-resolution family charted in §Shape B reaches a separate probe pass into a fixed-fraction target read by one nearest load at the cell centre. Intel US12243125B2 (stencil-set coarse pixels) appears absent; the rest of Intel's coarse-pixel family is unread at claim level and worth a counsel search if the shape is chosen.
 8. **Oxide US10198856B2, US11436783B2, US12154208B2.** Confirm the MIP-chain and shader-state sort ('856), the miss buffer ('783) and hashed atomic allocation with a GPU work queue ('208) keep the cell pool outside each claim 1. The family is also 2013-priority art on sizing an object's shading image by pixel coverage, for question 3.
 9. **Watch: EP4409531B1 opposition window closes about 2027-04-22** (nine months from the 2026-07-22 mention of grant). Opposition is the low-cost route against an EP patent once granted. Decide whether to file, or note that the window passed, before that date. National entries so far: CH, GB, IE, DE.
 10. **Watch: EP4778033A1** ('715's EP twin, pending). Read its claims when examination produces them.

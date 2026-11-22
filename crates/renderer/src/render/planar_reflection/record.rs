@@ -348,6 +348,7 @@ fn record_planar_passes(
             &level.kinematic,
             &level.gpu_textures,
             mover_view,
+            full.frame_specular_style,
         );
     }
     if let Some(plan) = meshes {

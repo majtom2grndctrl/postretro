@@ -1,16 +1,18 @@
-// The specular style's transport through the real renderer: the bytes the
-// forward pass (group 0, `spec_shadowmask_flags` bit 2) and the mover pass
-// (`KinematicLightParams.specular_style`) read on a recorded frame, across
-// installs, unloads, full-renderer rebuilds and live changes. What each word
-// does to a highlight is proven by the forward and mover readback harnesses
+// The specular style's transport through the real renderer: the bit the
+// forward pass reads (group 0, `spec_shadowmask_flags` bit 2) and the beauty
+// pipeline the mover pass binds on a recorded frame, across installs,
+// unloads, full-renderer rebuilds and live changes. What each style does to a
+// highlight is proven by the forward and mover readback harnesses
 // (`world_specular_test.rs`, `kinematic_specular_test.rs`).
 // See: context/lib/rendering_pipeline.md §4 (Texel-centre highlight)
 
 use glam::{Mat4, Vec3};
 use postretro_level_loader::ShDrainBatch;
 use postretro_render_cpu::frame_uniforms::{
-    KINEMATIC_SPECULAR_STYLE_SMOOTH, SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH, SpecularStyle, UNIFORM_SIZE,
+    SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH, SpecularStyle, UNIFORM_SIZE,
 };
+
+use super::kinematic_brush::MoverViewKind;
 use postretro_visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
 
 use super::gpu_create::gpu_creation_counts;
@@ -112,8 +114,10 @@ pub(super) fn add_mover(renderer: &mut Renderer) {
     renderer.set_kinematic_mover_draws(&movers, &movers);
 }
 
-/// One recorded frame, looking at the mover from 3 m.
+/// One recorded frame, looking at the mover from 3 m. Starts the mover pass's
+/// bound-style report afresh, so [`transported`] reads this frame's records.
 pub(super) fn frame(renderer: &mut Renderer) {
+    renderer.full().kinematic_brush.take_bound_styles();
     let eye = Vec3::new(0.0, 0.9, 3.0);
     let view = glam::camera::rh::view::look_at_mat4(eye, Vec3::new(0.0, 0.9, 0.0), Vec3::Y);
     let projection = glam::camera::rh::proj::directx::perspective(1.2, 1.0, 0.05, 100.0);
@@ -152,32 +156,35 @@ pub(super) fn frame(renderer: &mut Renderer) {
         .expect("capture records");
 }
 
-/// The style each pass reads, as the GPU holds its per-frame uniform after
-/// the last recorded frame: the forward word's bit 2 and the mover word.
-pub(super) fn transported(renderer: &Renderer) -> (bool, u32) {
+/// The style each pass drew the last recorded frame with: forward's
+/// group-0 smooth bit as the GPU holds it, and the style of each pipeline the
+/// main view's mover records bound.
+pub(super) fn transported(renderer: &Renderer) -> (bool, Vec<SpecularStyle>) {
     let full = renderer.full();
     let group0 = read_uniform_bytes(renderer, &full.uniform_buffer, UNIFORM_SIZE as u64);
     let flags = u32::from_ne_bytes(group0[124..128].try_into().expect("a word"));
-    let mover = read_uniform_bytes(
-        renderer,
-        full.kinematic_brush.light_params_buffer_for_test(),
-        32,
-    );
-    let word = u32::from_ne_bytes(mover[28..32].try_into().expect("a word"));
-    (flags & SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH != 0, word)
+    let movers = full
+        .kinematic_brush
+        .take_bound_styles()
+        .into_iter()
+        .filter(|(view, _)| *view == MoverViewKind::Main)
+        .map(|(_, style)| style)
+        .collect();
+    (flags & SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH != 0, movers)
 }
 
-pub(super) fn expected(style: SpecularStyle) -> (bool, u32) {
-    match style {
-        SpecularStyle::Pixel => (false, 0),
-        SpecularStyle::Smooth => (true, KINEMATIC_SPECULAR_STYLE_SMOOTH),
-    }
+/// Forward's bit for `style`, and one main-view mover record bound with
+/// `style`'s pipeline.
+pub(super) fn expected(style: SpecularStyle) -> (bool, Vec<SpecularStyle>) {
+    (style == SpecularStyle::Smooth, vec![style])
 }
 
-// Style transport half: a style committed with no level loaded,
-// before a full-renderer rebuild, or before an unload reaches both passes'
-// uniforms on the first frame of the next installed level. Each install is
-// checked under both styles, so neither a stale nor a default word passes.
+// Style transport half: a style committed with no level loaded, before a
+// full-renderer rebuild, or before an unload reaches forward's uniform and
+// the mover's pipeline choice on the first frame of the next installed level
+// (R2). The rebuild takes the same `build_full_renderer` path as the first
+// full init, so it stands for a commit before full init too. Each install is
+// checked under both styles, so neither a stale nor a default choice passes.
 #[test]
 fn specular_style_reaches_the_first_frame_of_each_install() {
     let test = "specular_style_reaches_the_first_frame_of_each_install";
@@ -227,9 +234,10 @@ fn specular_style_reaches_the_first_frame_of_each_install() {
     }
 }
 
-// Live-change transport half: a live change reaches the very next frame's forward
-// and mover uniforms, creating no pipeline or bind group and publishing no
-// level set beyond what an unchanged frame does.
+// Live-change transport half: a live change reaches the very next frame's
+// forward uniform and binds the other mover pipeline, in both directions,
+// creating no pipeline or bind group and publishing no level set beyond what
+// an unchanged frame does. Both mover pipelines were built at full init.
 #[test]
 fn a_live_specular_style_change_reaches_the_next_frame_without_a_rebuild() {
     let test = "a_live_specular_style_change_reaches_the_next_frame_without_a_rebuild";
@@ -250,6 +258,7 @@ fn a_live_specular_style_change_reaches_the_next_frame_without_a_rebuild() {
         SpecularStyle::Smooth,
         SpecularStyle::Pixel,
         SpecularStyle::Smooth,
+        SpecularStyle::Pixel,
     ] {
         renderer.set_specular_style(style);
         let before = gpu_creation_counts();
@@ -270,13 +279,120 @@ fn a_live_specular_style_change_reaches_the_next_frame_without_a_rebuild() {
     }
 }
 
+// Surface Depth rewrites the material uniform; the style rides no material
+// state and picks the pipeline alone. Under smooth, Surface Depth Off then On
+// keeps the smooth pipeline drawing, and a style change while Surface Depth is
+// Off leaves every material's uniform, march word included, as Off wrote it.
+// The level's material is a Concrete surface map, so Off and On write
+// different bytes and a style change that re-marched would show.
+#[test]
+fn surface_depth_toggles_and_specular_style_changes_leave_each_other_alone() {
+    use crate::render::renderer_textures::tests::{chain, install_one_triangle, write_prm};
+    use postretro_level_format::prm::PrmFormat;
+    use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
+    use postretro_render_cpu::surface_depth::SurfaceDepthQuality;
+    use postretro_render_data::material::{Material, TextureMaterial};
+    let test = "surface_depth_toggles_and_specular_style_changes_leave_each_other_alone";
+    let Some(mut renderer) = offscreen_renderer_or_skip(test, EXTENT, EXTENT) else {
+        return;
+    };
+    let dir = tempfile::tempdir().expect("a scratch texture cache");
+    let key = [0x5Du8; 32];
+    write_prm(
+        dir.path(),
+        key,
+        [
+            Some(chain(PrmFormat::Rgba8UnormSrgb, 4, 4, 0x21)),
+            // A four-channel surface map: G carries the height Surface Depth
+            // marches.
+            Some(chain(PrmFormat::Rgba8Unorm, 4, 4, 0x6C)),
+            None,
+            None,
+        ],
+    );
+    let materials = [TextureMaterial {
+        material: Material::Concrete,
+        emissive_strength: 0.0,
+    }];
+    renderer.install_textures(
+        &["concrete_relief".to_owned()],
+        &TextureCacheKeysSection { keys: vec![key] },
+        dir.path(),
+        &materials,
+    );
+    install_one_triangle(&mut renderer, &materials);
+    add_mover(&mut renderer);
+    {
+        let full = renderer.full();
+        let level = full.level.as_ref().expect("an installed level");
+        assert!(
+            level.gpu_textures.iter().any(|material| {
+                material
+                    .uniform_plan
+                    .uniform_bytes(SurfaceDepthQuality::Off)
+                    != material.uniform_plan.uniform_bytes(SurfaceDepthQuality::On)
+            }),
+            "some material marches at On, so Off's bytes are not every quality's"
+        );
+    }
+
+    renderer.set_specular_style(SpecularStyle::Smooth);
+    for quality in [SurfaceDepthQuality::Off, SurfaceDepthQuality::On] {
+        renderer.set_surface_depth_quality(quality);
+        frame(&mut renderer);
+        assert_eq!(
+            transported(&renderer),
+            expected(SpecularStyle::Smooth),
+            "smooth draws at Surface Depth {quality:?}"
+        );
+    }
+
+    renderer.set_surface_depth_quality(SurfaceDepthQuality::Off);
+    frame(&mut renderer);
+    let materials = |renderer: &Renderer| -> Vec<Vec<u8>> {
+        let full = renderer.full();
+        let level = full.level.as_ref().expect("an installed level");
+        level
+            .gpu_textures
+            .iter()
+            .map(|material| read_uniform_bytes(renderer, &material.uniform_buffer, 32))
+            .collect()
+    };
+    let off = materials(&renderer);
+    {
+        let full = renderer.full();
+        let level = full.level.as_ref().expect("an installed level");
+        assert!(!level.gpu_textures.is_empty(), "the level has materials");
+        for (bytes, material) in off.iter().zip(&level.gpu_textures) {
+            assert_eq!(
+                bytes.as_slice(),
+                material
+                    .uniform_plan
+                    .uniform_bytes(SurfaceDepthQuality::Off),
+                "the GPU holds Off's material bytes"
+            );
+        }
+    }
+    for style in [SpecularStyle::Pixel, SpecularStyle::Smooth] {
+        renderer.set_specular_style(style);
+        frame(&mut renderer);
+        assert_eq!(transported(&renderer), expected(style), "{style:?}");
+        assert_eq!(
+            materials(&renderer),
+            off,
+            "{style:?}: the style change leaves Off's march as it was"
+        );
+    }
+}
+
 // One read per frame: group 0 snapshots the boot-state style before its
-// upload, and the mover params upload reads that copy, never the live boot
-// state, so a commit landing between the two writes cannot split a frame's
-// forward and mover styles. Source pin: no hook sits between the two writes
+// upload, and every mover pipeline selection, main view and planar mirror
+// alike, reads that copy, never the live boot state, so a commit landing
+// between the writes cannot split a frame's forward and mover styles (R1).
+// Source pin: no hook sits between the group-0 upload and the mover records
 // for a recorded frame to exercise.
 #[test]
-fn forward_and_mover_uploads_read_one_per_frame_specular_style_snapshot() {
+fn every_mover_pipeline_selection_reads_the_per_frame_specular_style_snapshot() {
     let frame = include_str!("renderer_frame.rs");
     let snapshot = frame
         .find("full.frame_specular_style = *specular_style;")
@@ -288,20 +404,75 @@ fn forward_and_mover_uploads_read_one_per_frame_specular_style_snapshot() {
         snapshot < upload,
         "snapshot the style before packing group 0"
     );
-    let render = include_str!("renderer_render_frame.rs");
-    let args = render
-        .split("kinematic_brush.write_light_params(")
-        .nth(1)
-        .expect("the mover pass uploads its params while recording")
-        .split_once(");")
-        .expect("the params upload call terminates")
-        .0;
-    assert!(
-        args.contains("full.frame_specular_style,"),
-        "the mover params must carry the style snapshotted with group 0"
+    // The two files below hold every mover beauty record in the crate.
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut callers = Vec::new();
+    let mut pending = vec![src.clone()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).expect("read the renderer source") {
+            let path = entry.expect("a source entry").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "rs")
+                && std::fs::read_to_string(&path)
+                    .expect("read a source file")
+                    .contains("kinematic_brush.record_draws(")
+            {
+                let relative = path.strip_prefix(&src).expect("under src");
+                let joined: Vec<String> = relative
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                    .collect();
+                callers.push(joined.join("/"));
+            }
+        }
+    }
+    callers.sort();
+    callers.retain(|file| !file.ends_with("specular_style_frame_tests.rs"));
+    assert_eq!(
+        callers,
+        [
+            "render/planar_reflection/record.rs",
+            "render/renderer_render_frame.rs"
+        ],
+        "every mover beauty record is pinned below"
     );
-    assert!(
-        !render.contains("self.specular_style()"),
-        "scene recording must not read the live boot-state style"
-    );
+    let squashed = |text: &str| -> String { text.split_whitespace().collect() };
+    for (file, source, receiver, snapshot) in [
+        (
+            "renderer_render_frame.rs",
+            include_str!("renderer_render_frame.rs"),
+            "self.full().kinematic_brush.record_draws(",
+            "self.full().frame_specular_style,",
+        ),
+        (
+            "planar_reflection/record.rs",
+            include_str!("planar_reflection/record.rs"),
+            "full.kinematic_brush.record_draws(",
+            "full.frame_specular_style,",
+        ),
+    ] {
+        let source = squashed(source);
+        let calls: Vec<&str> = source
+            .split("kinematic_brush.record_draws(")
+            .skip(1)
+            .collect();
+        assert_eq!(calls.len(), 1, "{file}: one mover beauty record");
+        assert!(
+            source.contains(&squashed(receiver)),
+            "{file}: the mover record goes through {receiver}"
+        );
+        let args = calls[0]
+            .split_once(");")
+            .expect("the record call terminates")
+            .0;
+        assert!(
+            args.ends_with(&squashed(snapshot)),
+            "{file}: the mover record picks its pipeline from the frame snapshot: {args}"
+        );
+        assert!(
+            !source.contains("specular_style()"),
+            "{file}: scene recording must not read the live boot-state style"
+        );
+    }
 }

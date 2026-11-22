@@ -54,6 +54,7 @@ my-game/
     models/
     scripts/
     start-script.ts
+    tsconfig.json       editor setup: completions and type errors for your scripts
   baked/materials/      generated: .prm material sidecars
   .build-caches/        generated: disposable compiler scratch
   dist/                 generated: payloads and bundles you build
@@ -88,6 +89,19 @@ Suggested `.gitignore`:
 from your PNG sources, and its files are content-addressed blobs that churn on
 every texture edit. `.build-caches/` is disposable at any time. `dist/` holds
 build products.
+
+## Editor setup for TypeScript
+
+Copy `sdk/templates/tsconfig.json` from your install into `content/base/`. It
+covers `start-script.ts` and every script below it, which is what gives your
+editor completions, hover docs and type errors inside `defineMod({ ... })`.
+
+Its three `paths` entries point at `../../sdk/types/postretro.d.ts`, which only
+resolves inside an install. In your own repository, change all three to your
+install's copy of that file — `/opt/postretro-sdk/sdk/types/postretro.d.ts`
+for an install at `/opt/postretro-sdk`. Unpacking a newer bundle at that path
+updates the types with no step on your side. Restart your editor's TypeScript server after
+changing the file.
 
 ## Engine assets stay in the install
 

@@ -394,28 +394,33 @@ fn planar_gpu_mirror_only_light_shows_only_in_the_reflection() {
     renderer.release_level_resources();
 }
 
-// The mirror's group 0 is a copy of the main frame's, and
-// its movers read the main view's one mover params buffer, so on the frame
-// a style is committed the planar mirror reads it for static faces and
-// movers alike, with no frame of lag in either direction.
+// The mirror's group 0 is a copy of the main frame's, and its mover records
+// bind the main view's beauty pipeline, both read from the frame's one style
+// snapshot. So on the frame a style is committed the planar mirror draws it
+// for static faces and movers alike, with no frame of lag in either
+// direction (R1). The mirror's own mover record must be present, so a frame
+// whose mirror drew no mover cannot pass.
 #[test]
 fn planar_mirror_reads_the_committed_specular_style_on_the_same_frame() {
     use crate::render::gpu_test_harness::read_uniform_bytes;
+    use crate::render::kinematic_brush::MoverViewKind;
     use postretro_render_cpu::frame_uniforms::{
-        KINEMATIC_SPECULAR_STYLE_SMOOTH, SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH, SpecularStyle,
-        UNIFORM_SIZE,
+        SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH, SpecularStyle, UNIFORM_SIZE,
     };
     let Some((mut renderer, view)) = lit_renderer() else {
         return;
     };
     let word =
         |bytes: &[u8], at: usize| u32::from_ne_bytes(bytes[at..at + 4].try_into().expect("a word"));
+    capture_lit(&mut renderer, view, &[], &[MIRROR_CELLS]);
     for style in [
         SpecularStyle::Smooth,
         SpecularStyle::Pixel,
         SpecularStyle::Smooth,
+        SpecularStyle::Pixel,
     ] {
         renderer.set_specular_style(style);
+        renderer.full().kinematic_brush.take_bound_styles();
         capture_lit(&mut renderer, view, &[], &[MIRROR_CELLS]);
         let full = renderer.full();
         assert!(
@@ -428,21 +433,9 @@ fn planar_mirror_reads_the_committed_specular_style_on_the_same_frame() {
             &full.planar_reflection.uniform_buffer,
             UNIFORM_SIZE as u64,
         );
-        let movers = read_uniform_bytes(
-            &renderer,
-            full.kinematic_brush.light_params_buffer_for_test(),
-            32,
-        );
-        let (bit, mover_word) = match style {
-            SpecularStyle::Pixel => (0, 0),
-            SpecularStyle::Smooth => (
-                SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH,
-                KINEMATIC_SPECULAR_STYLE_SMOOTH,
-            ),
-        };
         assert_eq!(
             word(&main, 124) & SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH,
-            bit,
+            style.forward_flag_bits(),
             "{style:?}: main view"
         );
         assert_eq!(
@@ -450,10 +443,18 @@ fn planar_mirror_reads_the_committed_specular_style_on_the_same_frame() {
             word(&main, 124),
             "{style:?}: the mirror's static faces read the main frame's style word"
         );
-        assert_eq!(
-            word(&movers, 28),
-            mover_word,
-            "{style:?}: shared mover word"
-        );
+        let bound = full.kinematic_brush.take_bound_styles();
+        for kind in [MoverViewKind::Main, MoverViewKind::Mirror] {
+            let styles: Vec<SpecularStyle> = bound
+                .iter()
+                .filter(|(view, _)| *view == kind)
+                .map(|(_, style)| *style)
+                .collect();
+            assert_eq!(
+                styles,
+                [style],
+                "{style:?}: the {kind:?} mover record binds the frame's pipeline: {bound:?}"
+            );
+        }
     }
 }

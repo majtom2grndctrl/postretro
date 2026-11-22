@@ -1,5 +1,6 @@
 //! Quake `level_seam` authoring: regions, keys, landmarks resolved to destinations.
 //! See: context/lib/build_pipeline.md §Custom FGD, §PRL section IDs (Seams, id 61)
+use super::player_starts::has_player_spawn;
 use super::teleporters::{
     Destination, enabled_on_spawn, optional, region_brushes, region_companion, required,
 };
@@ -11,9 +12,6 @@ use postretro_level_format::seams::{
 };
 use shambler::{GeoMap, brush::BrushId};
 use std::collections::HashMap;
-
-/// The classname a level start places players at.
-const PLAYER_SPAWN_CLASSNAME: &str = "player_spawn";
 
 /// A seam read from its entity, its landmark not yet resolved.
 struct Pending {
@@ -109,10 +107,7 @@ impl SeamParser {
         let Some(first) = self.pending.first() else {
             return;
         };
-        if map_entities
-            .iter()
-            .any(|entity| entity.classname == PLAYER_SPAWN_CLASSNAME)
-        {
+        if has_player_spawn(map_entities) {
             return;
         }
         log::warn!(

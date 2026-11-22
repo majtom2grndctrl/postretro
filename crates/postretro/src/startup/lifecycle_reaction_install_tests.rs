@@ -116,6 +116,7 @@ fn fresh_install_and_staged_reload_keep_callers_of_surviving_same_address_bodies
             trigger_pool_policy: TriggerPoolSeedPolicy::ArmAll,
             suppress_host_replicated: false,
             suppress_boot_pawn: false,
+            frontend_backdrop: false,
             local_carried_loadout: None,
             spawn_checkpoint: None,
             spawn_checkpoint_seam: false,

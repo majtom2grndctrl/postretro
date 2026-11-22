@@ -138,6 +138,7 @@ pub(crate) fn install_world_cpu_with_models(
         trigger_pool_policy,
         suppress_host_replicated,
         suppress_boot_pawn,
+        frontend_backdrop,
         local_carried_loadout,
         spawn_checkpoint,
         spawn_checkpoint_seam,
@@ -483,7 +484,18 @@ pub(crate) fn install_world_cpu_with_models(
                 local_carried_loadout.as_ref(),
             )
         } else {
-            log::info!("[Loader] no player_spawn in map; skipping player spawn");
+            // A map with no spawn (often Quake's `info_player_start` written by
+            // habit) would otherwise silently drop the player into the free-fly
+            // camera, so it warns. A frontend backdrop is held at the menu pose and needs no
+            // spawn, so it stays at info.
+            if frontend_backdrop {
+                log::info!("[Loader] no player_spawn in frontend backdrop; skipping player spawn");
+            } else {
+                log::warn!(
+                    "[Loader] no player_spawn in map; skipping player spawn, so the player \
+                     starts in the free-fly camera"
+                );
+            }
             None
         };
 

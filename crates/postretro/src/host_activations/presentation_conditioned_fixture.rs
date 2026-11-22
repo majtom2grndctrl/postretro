@@ -424,6 +424,7 @@ fn installed_with_reactions(
             trigger_pool_policy: crate::trigger_pools::TriggerPoolSeedPolicy::ArmAll,
             suppress_host_replicated: client,
             suppress_boot_pawn: true,
+            frontend_backdrop: false,
             local_carried_loadout: None,
             spawn_checkpoint: None,
             spawn_checkpoint_seam: false,

@@ -58,6 +58,11 @@ struct Installed {
 
 impl Installed {
     fn new(world: LevelWorld) -> Self {
+        Self::install(world, false)
+    }
+
+    /// `frontend_backdrop` installs the level as a frontend menu backdrop.
+    fn install(world: LevelWorld, frontend_backdrop: bool) -> Self {
         let mut app = test_app();
         let ctx = script_ctx(&app);
         let mut primitives = PrimitiveRegistry::new();
@@ -100,6 +105,7 @@ impl Installed {
                 trigger_pool_policy: crate::trigger_pools::TriggerPoolSeedPolicy::ArmAll,
                 suppress_host_replicated: false,
                 suppress_boot_pawn: false,
+                frontend_backdrop,
                 local_carried_loadout: None,
                 spawn_checkpoint: None,
                 spawn_checkpoint_seam: false,
@@ -129,6 +135,28 @@ impl Installed {
             .map(|(id, _)| id)
             .collect()
     }
+}
+
+// A map with no `player_spawn` warns that the player starts in the free-fly
+// camera; a frontend backdrop, held at the menu pose, logs it at info instead.
+#[test]
+fn a_spawnless_map_warns_except_as_a_frontend_backdrop() {
+    use log::Level;
+    use postretro_test_log_capture::LogCapture;
+
+    let out = tempfile::tempdir().unwrap();
+    let capture = LogCapture::start();
+    let level = Installed::new(compile("wedge-shared-plane", out.path()));
+    assert_eq!(level.spawn_count, 0, "the fixture map has no spawn");
+    assert!(level.first_player.is_none());
+    capture.assert_logged_once(Level::Warn, "[Loader] no player_spawn in map");
+    capture.assert_logged_once(Level::Warn, "free-fly camera");
+
+    capture.clear();
+    let backdrop = Installed::install(compile("wedge-shared-plane", out.path()), true);
+    assert!(backdrop.first_player.is_none());
+    capture.assert_not_logged(Level::Warn, "no player_spawn");
+    capture.assert_logged_once(Level::Info, "[Loader] no player_spawn in frontend backdrop");
 }
 
 // A map with three `player_spawn`s and one player gets one pawn, at the first.

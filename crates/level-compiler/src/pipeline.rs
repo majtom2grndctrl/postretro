@@ -2140,6 +2140,8 @@ fn run_after_parsing(
     // It precedes reflection capture, which shades each member face at its
     // volume's reference state.
     let membership_start = Instant::now();
+    // `light_area` faces glow with their light alone: membership skips them.
+    let area_faces = crate::area_light::area_light_faces(&map_data.area_lights, &face_brushes);
     let emissive_section = postretro_level_format::emissive::EmissiveSection {
         textures: emissive_textures,
         volumes: crate::emissive_membership::resolve_emissive_volume_records(
@@ -2147,6 +2149,7 @@ fn run_after_parsing(
             &geo_result,
             &fragment_centroids,
             &has_emissive_map,
+            &area_faces,
         ),
     };
     crate::emissive_membership::refuse_members_beside_a_triangle_less_face(
@@ -2154,6 +2157,18 @@ fn run_after_parsing(
         &emissive_section.volumes,
         &geo_result,
         &face_brushes,
+    )?;
+    // Area glow (id 62) stamps final faces after the light namespaces are
+    // fixed, so each light names its own compose slot (research.md O4); it
+    // precedes reflection capture, which shades area faces at their light's
+    // reference state. `None` for a map with no area light.
+    let area_glow_section = crate::area_light::build_area_glow_section(
+        &map_data.area_lights,
+        &map_data.lights,
+        &raw_slot_for_map_light,
+        &geo_result,
+        &face_brushes,
+        &has_emissive_map,
     )?;
     // Listed alone, not a stage: it runs uncached on every build.
     timings.push((
@@ -2194,6 +2209,7 @@ fn run_after_parsing(
             texture_keys: &name_to_key,
             emissive_textures: &emissive_section.textures,
             emissive_volumes: &emissive_section.volumes,
+            area_glow: area_glow_section.as_ref(),
             prm_root: &prm_root,
         },
         stage_cache.as_ref(),
@@ -2264,6 +2280,7 @@ fn run_after_parsing(
         fog_volumes: &fog_volumes_section,
         fog_cell_masks: fog_cell_masks_section.as_ref(),
         emissive: &emissive_section,
+        area_glow: area_glow_section.as_ref(),
         sdf_atlas: sdf_atlas_section.as_ref(),
         navmesh: navmesh_section.as_ref(),
         kinematic_geometry: kinematic_geometry_section.as_ref(),

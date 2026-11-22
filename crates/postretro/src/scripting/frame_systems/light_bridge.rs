@@ -3282,6 +3282,169 @@ mod tests {
         assert_eq!(final_radiance, [0.0, 0.0, 0.5]);
     }
 
+    /// A settled compose descriptor as the forward pass's area glow and the
+    /// compose pass read it: curveless, so no sample buffer is needed.
+    fn settled_compose(
+        bytes: &[u8; ANIMATION_DESCRIPTOR_SIZE],
+    ) -> postretro_render_cpu::sh_compose::AnimatedLightScaleDescriptor<'static> {
+        let f = |at: usize| f32::from_ne_bytes(bytes[at..at + 4].try_into().unwrap());
+        let u = |at: usize| u32::from_ne_bytes(bytes[at..at + 4].try_into().unwrap());
+        assert_eq!(
+            (u(12), u(32)),
+            (0, 0),
+            "a settled descriptor carries no curve"
+        );
+        postretro_render_cpu::sh_compose::AnimatedLightScaleDescriptor {
+            period: f(0),
+            phase: f(4),
+            base_color: [f(16), f(20), f(24)],
+            brightness: &[],
+            color: &[],
+            is_active: u(36) != 0,
+        }
+    }
+
+    /// One area light at compose slot 0 with its glow entry: `_glow` 4.
+    fn area_light_with_glow(color: [f32; 3]) -> (MapLight, [f32; 4]) {
+        let mut light = sample_point_light();
+        light.light_type = LightType::Area;
+        light.intensity = 2.0;
+        light.color = color;
+        light.animated_slot = Some(0);
+        let entry = postretro_render_cpu::emissive_volume::area_glow_entry(
+            &postretro_level_format::area_glow::AreaGlowLight {
+                glow: 4.0,
+                color,
+                intensity: light.intensity,
+                compose_slot: Some(0),
+                faces: vec![0],
+            },
+        );
+        (light, entry)
+    }
+
+    /// Run a one-shot `animation` (1 s, one play) on map light 0 from time 1
+    /// and return the compose descriptor writes on the settle frame and on two
+    /// frames after it.
+    fn settle_one_shot(
+        light: MapLight,
+        animation: LightAnimation,
+    ) -> Vec<[u8; ANIMATION_DESCRIPTOR_SIZE]> {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[light], &mut registry, 0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
+        let id = bridge.entity_for_map_index(0).unwrap();
+        let mut component = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .clone();
+        component.animation = Some(animation);
+        registry.set_component(id, component).unwrap();
+        let _ = bridge.update(&mut registry, 1.0, 0.0).unwrap();
+        let mut seen = Vec::new();
+        let mut last = None;
+        for time in [2.01, 2.5, 3.0] {
+            let update = bridge.update(&mut registry, time, 0.0).unwrap();
+            if let Some((slot, bytes)) = update.compose_descriptor_writes.first() {
+                assert_eq!(*slot, 0);
+                last = Some(*bytes);
+            }
+            seen.push(last.expect("the settle frame writes the compose descriptor"));
+        }
+        seen
+    }
+
+    // Acceptance row 53 (research.md O1): a script fade from 1 to 0.25 on an
+    // animated area light settles with its faces' emissive multiplier at
+    // 0.25, equal to the room's settled scale, on the settle frame and after.
+    #[test]
+    fn an_area_light_fade_settles_its_glow_with_the_room() {
+        let color = [1.0, 0.8, 0.6];
+        let (light, entry) = area_light_with_glow(color);
+        let intensity = light.intensity;
+        let frames = settle_one_shot(
+            light,
+            LightAnimation {
+                period_ms: 1000.0,
+                phase: None,
+                play_count: Some(1),
+                start_active: None,
+                brightness: Some(vec![1.0, 0.25]),
+                color: None,
+                direction: None,
+                radius: None,
+            },
+        );
+        for (frame, bytes) in frames.iter().enumerate() {
+            let descriptor = settled_compose(bytes);
+            let time = 2.01 + frame as f32;
+            let glow = postretro_render_cpu::emissive_volume::area_glow_factor(
+                entry,
+                Some(descriptor),
+                time,
+            );
+            let room =
+                postretro_render_cpu::sh_compose::animated_light_scale(Some(descriptor), time);
+            for channel in 0..3 {
+                let glow_multiplier = glow[channel] / (4.0 * color[channel]);
+                let room_scale = room[channel] / (intensity * color[channel]);
+                assert!(
+                    (glow_multiplier - 0.25).abs() < 1e-6,
+                    "frame {frame}: {glow:?}"
+                );
+                assert!((room_scale - 0.25).abs() < 1e-6, "frame {frame}: {room:?}");
+            }
+        }
+    }
+
+    // Acceptance row 54 (research.md O17): a one-shot colour animation from
+    // white to amber settles with the faces' glow colour amber, equal to the
+    // room's settled colour, on the settle frame and after; it never returns
+    // to `_color`.
+    #[test]
+    fn an_area_light_colour_shot_settles_its_glow_amber_with_the_room() {
+        let (light, entry) = area_light_with_glow([1.0; 3]);
+        let intensity = light.intensity;
+        let amber = [1.0, 0.6, 0.1];
+        let frames = settle_one_shot(
+            light,
+            LightAnimation {
+                period_ms: 1000.0,
+                phase: None,
+                play_count: Some(1),
+                start_active: None,
+                brightness: None,
+                color: Some(vec![Vec3Lit([1.0, 1.0, 1.0]), Vec3Lit(amber)]),
+                direction: None,
+                radius: None,
+            },
+        );
+        for (frame, bytes) in frames.iter().enumerate() {
+            let descriptor = settled_compose(bytes);
+            let time = 2.01 + frame as f32;
+            let glow = postretro_render_cpu::emissive_volume::area_glow_factor(
+                entry,
+                Some(descriptor),
+                time,
+            );
+            let room =
+                postretro_render_cpu::sh_compose::animated_light_scale(Some(descriptor), time);
+            for channel in 0..3 {
+                let glow_colour = glow[channel] / 4.0;
+                let room_colour = room[channel] / intensity;
+                assert!(
+                    (glow_colour - amber[channel]).abs() < 1e-6,
+                    "frame {frame}: {glow:?}"
+                );
+                assert!(
+                    (room_colour - amber[channel]).abs() < 1e-6,
+                    "frame {frame}: {room:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn setanimation_restart_resets_play_count_clock() {
         let mut registry = EntityRegistry::new();

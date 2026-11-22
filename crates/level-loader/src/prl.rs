@@ -16,6 +16,8 @@ use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
 #[cfg(feature = "load-prl")]
+use postretro_level_format::area_glow::AreaGlowSection;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::billboard_direct_scatter_volume::BillboardDirectScatterVolumeSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::cell_draw_index::CellDrawIndexSection;
@@ -705,6 +707,10 @@ pub struct LevelWorld {
     /// Required — loader rejects files where the section is absent.
     #[cfg(feature = "load-prl")]
     pub emissive: EmissiveSection,
+    /// Area glow (PRL section 62): each area light's glow and emitting
+    /// faces. Empty when the section is absent: the map has no area light.
+    #[cfg(feature = "load-prl")]
+    pub area_glow: AreaGlowSection,
     /// Always present — loader rejects files without a BVH section.
     #[cfg(feature = "load-prl")]
     pub bvh: BvhTree,
@@ -812,10 +818,11 @@ pub struct LevelWorld {
     /// no face draws static non-SDF world specular.
     #[cfg(feature = "load-prl")]
     pub vertex_spec_owners: Vec<SpecOwnerVertex>,
-    /// One emissive volume id per world vertex, stamped from id 60's face
-    /// lists: the volume index + 1, or 0 for a face in no volume. The forward
-    /// pass's slot-2 vertex stream. Empty when no volume lists a face; the
-    /// renderer then binds a zero-filled stream.
+    /// One glow table id per world vertex, stamped from id 60's and id 62's
+    /// face lists: the volume index + 1, `AREA_GLOW_FIRST_ENTRY` + the face's
+    /// area entry, or 0 for neither. The forward pass's slot-2 vertex stream.
+    /// Empty when neither lists a face; the renderer then binds a zero-filled
+    /// stream.
     #[cfg(feature = "load-prl")]
     pub vertex_emissive_volumes: Vec<u32>,
     /// Id-22 and id-42 block payloads, held only until install moves them
@@ -968,6 +975,7 @@ impl LevelWorld {
             texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
             #[cfg(feature = "load-prl")]
             emissive: EmissiveSection::default(),
+            area_glow: AreaGlowSection::default(),
             #[cfg(feature = "load-prl")]
             bvh: BvhTree {
                 nodes: vec![],
@@ -2193,6 +2201,7 @@ mod tests {
             texture_names: vec![],
             texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
             emissive: EmissiveSection::default(),
+            area_glow: AreaGlowSection::default(),
             bvh: empty_bvh(),
             lights: vec![],
             light_influences: vec![],
@@ -2309,6 +2318,7 @@ mod tests {
             texture_names: vec![],
             texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
             emissive: EmissiveSection::default(),
+            area_glow: AreaGlowSection::default(),
             bvh: empty_bvh(),
             lights: vec![],
             light_influences: vec![],
@@ -2379,6 +2389,7 @@ mod tests {
             texture_names: vec![],
             texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
             emissive: EmissiveSection::default(),
+            area_glow: AreaGlowSection::default(),
             bvh: empty_bvh(),
             lights: vec![],
             light_influences: vec![],
@@ -5054,6 +5065,74 @@ mod tests {
         std::fs::remove_file(&tmp).ok();
     }
 
+    fn area_glow_level(area_glow: &[u8], name: &str) -> std::path::PathBuf {
+        write_prl_fixture(
+            vec![
+                geometry_blob(sample_geometry()),
+                bvh_blob(sample_bvh_section()),
+                texture_names_blob(&["signs/bar", "metal/plate"]),
+                default_texture_cache_keys_blob(),
+                default_fog_volumes_blob(),
+                emissive_blob(&EmissiveSection::dark(2)),
+                prl_format::SectionBlob {
+                    section_id: SectionId::AreaGlow as u32,
+                    version: postretro_level_format::area_glow::AREA_GLOW_VERSION,
+                    data: area_glow.to_vec(),
+                },
+            ],
+            name,
+        )
+    }
+
+    fn area_glow_light(faces: Vec<u32>) -> postretro_level_format::area_glow::AreaGlowLight {
+        postretro_level_format::area_glow::AreaGlowLight {
+            glow: 4.0,
+            color: [1.0, 0.0, 0.0],
+            intensity: 1.0,
+            compose_slot: Some(0),
+            faces,
+        }
+    }
+
+    // Acceptance row 60 (research.md O5) and row 45 (loader half): id 62
+    // reaches the world and stamps its face's vertices from entry 257; a
+    // table past the glow table's cap, or a face outside the level, refuses
+    // the load by name.
+    #[test]
+    fn load_prl_carries_area_glow_and_refuses_an_over_cap_table() {
+        use postretro_level_format::area_glow::{AreaGlowSection, MAX_AREA_GLOW_FACES};
+        let section = AreaGlowSection {
+            lights: vec![area_glow_light(vec![1])],
+        };
+        let tmp = area_glow_level(&section.to_bytes(), "postretro_test_area_glow_loads.prl");
+        let world = load_prl(tmp.to_str().unwrap()).expect("a level with id 62 loads");
+        assert_eq!(world.area_glow, section);
+        assert!(world.vertex_emissive_volumes.contains(&257));
+        assert!(world.vertex_emissive_volumes.contains(&0));
+        std::fs::remove_file(&tmp).ok();
+
+        let over_cap = AreaGlowSection {
+            lights: vec![area_glow_light((0..=MAX_AREA_GLOW_FACES as u32).collect())],
+        };
+        let outside = AreaGlowSection {
+            lights: vec![area_glow_light(vec![2])],
+        };
+        for (case, section, expected) in [
+            ("over cap", over_cap, "more than 3839 emitting faces"),
+            ("face range", outside, "outside the level's 2 faces"),
+        ] {
+            let tmp = area_glow_level(&section.to_bytes(), "postretro_test_area_glow_refused.prl");
+            match load_prl(tmp.to_str().unwrap()).unwrap_err() {
+                PrlLoadError::SectionValidation { section, message } => {
+                    assert_eq!(section, "AreaGlow", "{case}");
+                    assert!(message.contains(expected), "{case}: {message}");
+                }
+                other => panic!("{case}: got {other:?}"),
+            }
+            std::fs::remove_file(&tmp).ok();
+        }
+    }
+
     #[test]
     fn load_prl_refuses_emissive_records_that_do_not_fit_the_level() {
         let mut short = baked_emissive();
@@ -5149,8 +5228,7 @@ mod tests {
             PrlLoadError::SectionValidation { section, message } => {
                 assert_eq!(section, "Emissive");
                 assert!(
-                    message
-                        .contains("faces 0 and 1 share vertex 0 but belong to different volumes"),
+                    message.contains("faces 0 and 1 share vertex 0 but carry different glow ids"),
                     "{message}"
                 );
             }

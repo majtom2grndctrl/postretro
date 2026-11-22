@@ -140,6 +140,7 @@ fn install_lit_quads(renderer: &mut Renderer, quads: &[WorldQuad], lights: &[Map
                 vertex_spec_owners: &[],
                 vertex_emissive_volumes: &[],
                 emissive_volumes: &[],
+                area_glow_lights: &[],
                 indices: &indices,
                 bvh: &bvh,
                 lights,

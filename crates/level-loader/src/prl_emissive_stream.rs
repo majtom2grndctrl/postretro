@@ -1,7 +1,8 @@
-// The forward pass's per-vertex emissive volume id stream, stamped from id 60's
-// per-volume face lists.
+// The forward pass's per-vertex glow table id stream, stamped from id 60's
+// per-volume face lists and id 62's per-area-light face lists.
 // See: context/lib/rendering_pipeline.md §7.3
 
+use postretro_level_format::area_glow::{AREA_GLOW_FIRST_ENTRY, AreaGlowSection};
 use postretro_level_format::emissive::EmissiveSection;
 use postretro_render_data::geometry::BvhLeaf;
 
@@ -11,36 +12,50 @@ use crate::prl_face_ranges::face_index_ranges;
 /// The stream value of a vertex whose face belongs to no volume.
 pub(crate) const NO_EMISSIVE_VOLUME: u32 = 0;
 
-/// One `u32` per world vertex: its face's emissive volume index + 1, or
-/// [`NO_EMISSIVE_VOLUME`]. Volume 255 stamps 256, so no index aliases "none".
+/// One `u32` per world vertex: its face's emissive volume index + 1, its
+/// area glow entry + `AREA_GLOW_FIRST_ENTRY`, or [`NO_EMISSIVE_VOLUME`].
+/// Volume 255 stamps 256, so no index aliases "none" or an area entry; area
+/// entry `k` is the `k`-th face of id 62 in its entry order.
 ///
-/// A level where no volume lists a face returns an empty stream: the renderer
-/// binds a zero-filled one, and the BVH leaves are never consulted.
+/// A level where no volume and no area light lists a face returns an empty
+/// stream: the renderer binds a zero-filled one, and the BVH leaves are never
+/// consulted. A map with no area light therefore builds exactly the stream it
+/// built before area glow existed.
 ///
 /// Each face's indices come from [`face_index_ranges`]. The compiler gives
 /// every face its own vertices, so a vertex never belongs to two faces. A
-/// vertex two faces of differing membership share could carry only one id, and
-/// the other face would glow with its neighbour's volume; the load is refused
-/// rather than let the id bleed across the edge. Faces that share a vertex and
-/// agree on their volume are harmless and allowed.
+/// vertex two faces of differing ids share could carry only one id, and the
+/// other face would glow with its neighbour's; the load is refused rather
+/// than let the id bleed across the edge. Faces that share a vertex and agree
+/// on their id are harmless and allowed.
 pub(crate) fn build_vertex_emissive_volumes(
     vertex_count: usize,
     indices: &[u32],
     leaves: &[BvhLeaf],
     face_count: usize,
     emissive: &EmissiveSection,
+    area_glow: &AreaGlowSection,
 ) -> Result<Vec<u32>, PrlLoadError> {
     if emissive
         .volumes
         .iter()
         .all(|volume| volume.faces.is_empty())
+        && area_glow.face_count() == 0
     {
         return Ok(Vec::new());
     }
-    stamp(vertex_count, indices, leaves, face_count, emissive).map_err(|reason| {
+    stamp(
+        vertex_count,
+        indices,
+        leaves,
+        face_count,
+        emissive,
+        area_glow,
+    )
+    .map_err(|reason| {
         crate::prl_loader::section_validation(
             "Emissive",
-            format!("volume membership cannot reach the world vertices: {reason}"),
+            format!("glow membership cannot reach the world vertices: {reason}"),
         )
     })
 }
@@ -51,6 +66,7 @@ fn stamp(
     leaves: &[BvhLeaf],
     face_count: usize,
     emissive: &EmissiveSection,
+    area_glow: &AreaGlowSection,
 ) -> Result<Vec<u32>, String> {
     let mut face_volume = vec![NO_EMISSIVE_VOLUME; face_count];
     for (volume, record) in emissive.volumes.iter().enumerate() {
@@ -61,6 +77,12 @@ fn stamp(
             })?;
             *slot = id;
         }
+    }
+    for (entry, (face, _)) in area_glow.entries().enumerate() {
+        let slot = face_volume
+            .get_mut(face as usize)
+            .ok_or_else(|| format!("area glow face {face} is outside the {face_count} faces"))?;
+        *slot = (AREA_GLOW_FIRST_ENTRY + entry) as u32;
     }
     let ranges = face_index_ranges(leaves, face_count, indices.len())?;
 
@@ -81,7 +103,7 @@ fn stamp(
             };
             if *first != UNSTAMPED && *first != face && *slot != id {
                 return Err(format!(
-                    "faces {} and {face} share vertex {index} but belong to different volumes",
+                    "faces {} and {face} share vertex {index} but carry different glow ids",
                     *first
                 ));
             }
@@ -143,6 +165,63 @@ mod tests {
         error.to_string()
     }
 
+    fn no_area() -> AreaGlowSection {
+        AreaGlowSection::default()
+    }
+
+    fn area(lights: Vec<(Option<u32>, Vec<u32>)>) -> AreaGlowSection {
+        use postretro_level_format::area_glow::AreaGlowLight;
+        AreaGlowSection {
+            lights: lights
+                .into_iter()
+                .map(|(compose_slot, faces)| AreaGlowLight {
+                    glow: 4.0,
+                    color: [1.0; 3],
+                    intensity: 1.0,
+                    compose_slot,
+                    faces,
+                })
+                .collect(),
+        }
+    }
+
+    // Acceptance rows 28 and 45 (stream half): an area light's faces carry
+    // ids from 257 in id 62's entry order, beside a volume face's own id; a
+    // face of neither carries 0.
+    #[test]
+    fn area_faces_carry_entries_past_the_volumes_in_entry_order() {
+        let (vertices, indices, leaves) = three_quads();
+        let emissive = section(vec![volume(vec![1])]);
+        let lights = area(vec![(None, vec![2]), (Some(0), vec![0])]);
+        let stream =
+            build_vertex_emissive_volumes(vertices, &indices, &leaves, 3, &emissive, &lights)
+                .unwrap();
+        assert_eq!(
+            &stream[0..4],
+            &[258; 4],
+            "the second light's face is entry 1"
+        );
+        assert_eq!(&stream[4..8], &[1; 4], "the volume face keeps its id");
+        assert_eq!(
+            &stream[8..12],
+            &[257; 4],
+            "the first light's face is entry 0"
+        );
+
+        // Area glow alone builds the stream; no volume needed.
+        let alone = area(vec![(None, vec![1])]);
+        let stream = build_vertex_emissive_volumes(
+            vertices,
+            &indices,
+            &leaves,
+            3,
+            &section(Vec::new()),
+            &alone,
+        )
+        .unwrap();
+        assert_eq!(stream, [0, 0, 0, 0, 257, 257, 257, 257, 0, 0, 0, 0]);
+    }
+
     // A8 first slice: a member face's vertices carry its id; the adjacent
     // non-member face, whose own vertices sit at the same positions along the
     // shared edge, carries 0, so the id never bleeds across the edge.
@@ -151,7 +230,8 @@ mod tests {
         let (vertices, indices, leaves) = three_quads();
         let emissive = section(vec![volume(vec![1])]);
         let stream =
-            build_vertex_emissive_volumes(vertices, &indices, &leaves, 3, &emissive).unwrap();
+            build_vertex_emissive_volumes(vertices, &indices, &leaves, 3, &emissive, &no_area())
+                .unwrap();
         assert_eq!(stream.len(), vertices);
         assert_eq!(&stream[0..4], &[0; 4], "face 0 is no member");
         assert_eq!(&stream[4..8], &[1; 4], "face 1 is volume 0's");
@@ -166,9 +246,15 @@ mod tests {
             .map(|_| volume(Vec::new()))
             .collect();
         volumes[MAX_EMISSIVE_VOLUMES - 1] = volume(vec![2]);
-        let stream =
-            build_vertex_emissive_volumes(vertices, &indices, &leaves, 3, &section(volumes))
-                .unwrap();
+        let stream = build_vertex_emissive_volumes(
+            vertices,
+            &indices,
+            &leaves,
+            3,
+            &section(volumes),
+            &no_area(),
+        )
+        .unwrap();
         assert_eq!(&stream[8..12], &[256; 4]);
         assert_eq!(&stream[0..8], &[NO_EMISSIVE_VOLUME; 8]);
     }
@@ -180,7 +266,8 @@ mod tests {
         let (vertices, indices, _) = three_quads();
         for emissive in [section(Vec::new()), section(vec![volume(Vec::new())])] {
             let stream =
-                build_vertex_emissive_volumes(vertices, &indices, &[], 3, &emissive).unwrap();
+                build_vertex_emissive_volumes(vertices, &indices, &[], 3, &emissive, &no_area())
+                    .unwrap();
             assert!(stream.is_empty());
         }
     }
@@ -194,18 +281,20 @@ mod tests {
         indices[6] = 3;
         let emissive = section(vec![volume(vec![1])]);
         let error =
-            build_vertex_emissive_volumes(vertices, &indices, &leaves, 3, &emissive).unwrap_err();
+            build_vertex_emissive_volumes(vertices, &indices, &leaves, 3, &emissive, &no_area())
+                .unwrap_err();
         let text = message(error);
         assert!(text.contains("Emissive"), "{text}");
         assert!(
-            text.contains("faces 0 and 1 share vertex 3 but belong to different volumes"),
+            text.contains("faces 0 and 1 share vertex 3 but carry different glow ids"),
             "{text}"
         );
 
         // Faces that agree on their volume may share a vertex.
         let agreeing = section(vec![volume(vec![0, 1])]);
         let stream =
-            build_vertex_emissive_volumes(vertices, &indices, &leaves, 3, &agreeing).unwrap();
+            build_vertex_emissive_volumes(vertices, &indices, &leaves, 3, &agreeing, &no_area())
+                .unwrap();
         assert_eq!(stream[3], 1);
     }
 
@@ -216,8 +305,15 @@ mod tests {
         let (vertices, indices, _) = three_quads();
         let emissive = section(vec![volume(vec![0])]);
         let text = message(
-            build_vertex_emissive_volumes(vertices, &indices, &[leaf(0, 6)], 3, &emissive)
-                .unwrap_err(),
+            build_vertex_emissive_volumes(
+                vertices,
+                &indices,
+                &[leaf(0, 6)],
+                3,
+                &emissive,
+                &no_area(),
+            )
+            .unwrap_err(),
         );
         assert!(text.contains("1 BVH leaves for 3 Geometry faces"), "{text}");
     }

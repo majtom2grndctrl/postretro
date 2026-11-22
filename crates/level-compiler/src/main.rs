@@ -3643,6 +3643,35 @@ mod tests {
         let map_path = workspace.join("content/dev/maps/script_light_membership_fixture.map");
         let mut map_data = parse::parse_map_file(&map_path, MapFormat::IdTech2)
             .expect("parse script-membership fixture");
+
+        // Acceptance row 57: light 0 is a static point light with
+        // `_start_inactive 1` and no `_animated` key or curve. With no script
+        // step it gains no animated reservation and bakes lit, at its full
+        // authored intensity, into the static namespace: point lights keep
+        // their own rule, unlike an area light.
+        assert_eq!(
+            map_data.lights[0].light_type,
+            crate::map_data::LightType::Point
+        );
+        assert!(!map_data.lights[0].is_animated);
+        assert!(map_data.lights[0].animation.is_none());
+        let unscripted = map_data.lights.clone();
+        let static_lights = light_namespaces::StaticBakedLights::from_lights(&unscripted);
+        assert!(
+            static_lights
+                .entries()
+                .iter()
+                .any(|entry| entry.source_index == 0
+                    && entry.light.intensity == unscripted[0].intensity),
+            "with no script step the `_start_inactive` point light bakes lit"
+        );
+        assert!(
+            light_namespaces::AnimatedBakedLights::from_lights(&unscripted)
+                .slot_for_source_lights(unscripted.len())[0]
+                == postretro_level_format::sh_volume::ANIMATED_SLOT_NONE,
+            "and gains no animated reservation"
+        );
+
         let compiled = compile_worldspawn_data_script(
             &map_path,
             map_data.data_script.as_deref(),

@@ -662,8 +662,8 @@ fn bgl_entries_pin_sampler_split() {
             ..
         }
     ));
-    // The emissive volume table: fragment-only, and never bound shorter than
-    // the shader's 257-entry array.
+    // The glow table: fragment-only, and never bound shorter than the
+    // shader's 4096-entry array (volumes, then area entries).
     let volume_table = entries
         .iter()
         .find(|entry| entry.binding == super::bindings::BIND_EMISSIVE_VOLUME_TABLE)
@@ -675,7 +675,7 @@ fn bgl_entries_pin_sampler_split() {
             ty: wgpu::BufferBindingType::Uniform,
             min_binding_size: Some(size),
             ..
-        } if size.get() == postretro_render_cpu::emissive_volume::EMISSIVE_TABLE_BYTES as u64
+        } if size.get() == postretro_render_cpu::emissive_volume::GLOW_TABLE_BYTES as u64
     ));
     // Two samplers: nearest at binding 2, linear at binding 4.
     assert_eq!(

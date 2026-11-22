@@ -4,7 +4,16 @@
 
 use std::ops::Range;
 
-use postretro_level_format::emissive::{EmissiveVolumeRecord, MAX_EMISSIVE_VOLUMES};
+use postretro_level_format::area_glow::AreaGlowLight;
+pub use postretro_level_format::area_glow::{AREA_GLOW_FIRST_ENTRY, GLOW_TABLE_ENTRIES};
+use postretro_level_format::emissive::{
+    EMISSIVE_VALUE_CEILING, EmissiveVolumeRecord, MAX_EMISSIVE_VOLUMES,
+};
+
+use crate::sh_compose::{
+    AnimatedLightScaleDescriptor, animation_curve_t, sample_color_catmull_rom,
+    sample_curve_catmull_rom,
+};
 
 /// Table entries: entry 0 is "no volume", entry `i + 1` is volume `i`, so the
 /// per-vertex stream's `volume index + 1` indexes it directly.
@@ -15,6 +24,94 @@ pub const EMISSIVE_TABLE_ENTRY_BYTES: usize = 16;
 pub const EMISSIVE_TABLE_BYTES: usize = EMISSIVE_TABLE_ENTRIES * EMISSIVE_TABLE_ENTRY_BYTES;
 /// The factor a face in no volume presents: its texture strength unchanged.
 pub const NO_VOLUME_FACTOR: [f32; 3] = [1.0; 3];
+/// The whole uniform the forward shader declares (`array<vec4<f32>, 4096>`):
+/// the [`EMISSIVE_TABLE_ENTRIES`] volume entries the per-frame packer owns,
+/// then one entry per area-light face, written once at install, then zeros.
+pub const GLOW_TABLE_BYTES: usize = GLOW_TABLE_ENTRIES * EMISSIVE_TABLE_ENTRY_BYTES;
+/// An area entry's `w` lane when the face draws its static glow: no compose
+/// descriptor slot. A slotted entry stores its slot as an exact float.
+pub const AREA_GLOW_STATIC: f32 = -1.0;
+
+/// One area-light face's table entry, as `forward.wgsl` `area_glow_factor`
+/// reads it.
+///
+/// - Static (no compose slot): `(glow × r, glow × g, glow × b, -1)`, drawn
+///   unchanged on every frame (research.md O16).
+/// - Slotted: `(glow, 1 / intensity, 0, slot)`. The shader evaluates the
+///   light's compose descriptor, whose base colour carries colour ×
+///   intensity, and divides the intensity back out, so the glow follows the
+///   light's live colour and brightness but never `light` itself (O2, O13).
+pub fn area_glow_entry(light: &AreaGlowLight) -> [f32; 4] {
+    match light.compose_slot {
+        Some(slot) if light.intensity > 0.0 => {
+            [light.glow, 1.0 / light.intensity, 0.0, slot as f32]
+        }
+        _ => [
+            light.glow * light.color[0],
+            light.glow * light.color[1],
+            light.glow * light.color[2],
+            AREA_GLOW_STATIC,
+        ],
+    }
+}
+
+/// The table entries past the volumes: one per emitting face of id 62's
+/// `lights`, in the section's entry order, so face entry `k` is table entry
+/// `AREA_GLOW_FIRST_ENTRY + k`.
+pub fn area_glow_entries(lights: &[AreaGlowLight]) -> Vec<[f32; 4]> {
+    lights
+        .iter()
+        .flat_map(|light| std::iter::repeat_n(area_glow_entry(light), light.faces.len()))
+        .collect()
+}
+
+/// The whole table a freshly installed level binds: the volumes at their
+/// no-script state, then `area_entries`, then zeros. Entries past the table
+/// are dropped; the compiler and the loader refuse a section that has them.
+pub fn glow_table_bytes(volumes: &[EmissiveVolumeRecord], area_entries: &[[f32; 4]]) -> Vec<u8> {
+    let mut bytes = authored_table_bytes(volumes);
+    bytes.resize(GLOW_TABLE_BYTES, 0);
+    for (k, entry) in area_entries
+        .iter()
+        .take(GLOW_TABLE_ENTRIES - AREA_GLOW_FIRST_ENTRY)
+        .enumerate()
+    {
+        let at = (AREA_GLOW_FIRST_ENTRY + k) * EMISSIVE_TABLE_ENTRY_BYTES;
+        for (lane, value) in entry.iter().enumerate() {
+            bytes[at + lane * 4..at + lane * 4 + 4].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+    bytes
+}
+
+/// CPU mirror of `forward.wgsl` `area_glow_factor`: the rgb factor an area
+/// face's `_e` sample is multiplied by. `descriptor` is the entry's compose
+/// descriptor (ignored for a static entry). A slotted entry reads 0 while its
+/// light is inactive; otherwise `min(glow × brightness, 64) / intensity ×` the
+/// descriptor's live colour, each channel capped at 64, the emissive ceiling
+/// that keeps bloom under the half-float range even when a curve runs past 1.
+pub fn area_glow_factor(
+    entry: [f32; 4],
+    descriptor: Option<AnimatedLightScaleDescriptor<'_>>,
+    time: f32,
+) -> [f32; 3] {
+    if entry[3] < 0.0 {
+        return [entry[0], entry[1], entry[2]];
+    }
+    let Some(descriptor) = descriptor.filter(|descriptor| descriptor.is_active) else {
+        return [0.0; 3];
+    };
+    let cycle_t = animation_curve_t(descriptor.period, descriptor.phase, time);
+    let brightness = sample_curve_catmull_rom(descriptor.brightness, cycle_t).max(0.0);
+    let color = if descriptor.color.is_empty() {
+        descriptor.base_color
+    } else {
+        let sampled = sample_color_catmull_rom(descriptor.color, cycle_t);
+        std::array::from_fn(|channel| sampled[channel].max(0.0) * descriptor.base_color[channel])
+    };
+    let scale = (entry[0] * brightness).min(EMISSIVE_VALUE_CEILING) * entry[1];
+    color.map(|channel| (channel * scale).min(EMISSIVE_VALUE_CEILING))
+}
 
 /// One volume's glow before it packs: the scalar multiplier the brightness
 /// maps to and the colour it tints by, kept apart so the flash limiter can
@@ -244,6 +341,7 @@ impl EmissiveVolumeTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_level_format::area_glow::AreaGlowSection;
 
     /// Pending entry runs as `(start, end)` pairs.
     fn spans(table: &mut EmissiveVolumeTable) -> Vec<(u32, u32)> {
@@ -388,6 +486,178 @@ mod tests {
         table.mark_uploaded();
         table.pack_volume(MAX_EMISSIVE_VOLUMES, [9.0; 3]);
         assert!(table.pending().runs.is_empty());
+    }
+
+    fn light(glow: f32, color: [f32; 3], intensity: f32, slot: Option<u32>) -> AreaGlowLight {
+        AreaGlowLight {
+            glow,
+            color,
+            intensity,
+            compose_slot: slot,
+            faces: vec![0],
+        }
+    }
+
+    /// A compose descriptor as the compiler bakes one: base colour × intensity,
+    /// or the intensity splat under a colour curve.
+    fn descriptor<'a>(
+        color: [f32; 3],
+        intensity: f32,
+        brightness: &'a [f32],
+        colors: &'a [[f32; 3]],
+        is_active: bool,
+    ) -> AnimatedLightScaleDescriptor<'a> {
+        AnimatedLightScaleDescriptor {
+            period: 1.0,
+            phase: 0.0,
+            base_color: if colors.is_empty() {
+                color.map(|channel| channel * intensity)
+            } else {
+                [intensity; 3]
+            },
+            brightness,
+            color: colors,
+            is_active,
+        }
+    }
+
+    fn close_rel(a: [f32; 3], b: [f32; 3], tolerance: f32) {
+        for (x, y) in a.into_iter().zip(b) {
+            assert!(
+                (x - y).abs() <= tolerance * y.abs().max(1e-6),
+                "{a:?} vs {b:?}"
+            );
+        }
+    }
+
+    // Acceptance row 59 (research.md O16): a static area light's entry draws
+    // `_glow × _color` on every frame, whatever any descriptor does, while an
+    // animated light's follows its pulse.
+    #[test]
+    fn a_static_entry_holds_its_glow_while_an_animated_one_pulses() {
+        let red = [1.0, 0.0, 0.0];
+        let fixed = area_glow_entry(&light(4.0, red, 1.0, None));
+        assert_eq!(fixed, [4.0, 0.0, 0.0, AREA_GLOW_STATIC]);
+        let pulsing = area_glow_entry(&light(4.0, [1.0; 3], 2.0, Some(0)));
+        let curve = [0.2, 1.0];
+        let slot0 = descriptor([1.0; 3], 2.0, &curve, &[], true);
+        let mut seen = Vec::new();
+        for step in 0..8 {
+            let time = step as f32 / 8.0;
+            assert_eq!(area_glow_factor(fixed, Some(slot0), time), [4.0, 0.0, 0.0]);
+            seen.push(area_glow_factor(pulsing, Some(slot0), time)[0]);
+        }
+        let (low, high) = seen
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)));
+        assert!(
+            low < 1.0 && high > 3.9,
+            "the animated face pulses: {seen:?}"
+        );
+    }
+
+    // Acceptance row 49: under a colour shift the glow's colour and the room's
+    // colour move together: the glow is the room's live scale × `_glow / L`.
+    #[test]
+    fn a_colour_shift_moves_the_glow_and_the_room_together() {
+        let intensity = 1.5;
+        let glow = 6.0;
+        let entry = area_glow_entry(&light(glow, [1.0; 3], intensity, Some(0)));
+        let colors = [[1.0, 1.0, 1.0], [1.0, 0.6, 0.1], [0.2, 0.4, 1.0]];
+        let shifting = descriptor([1.0; 3], intensity, &[], &colors, true);
+        for step in 0..12 {
+            let time = step as f32 / 12.0;
+            let room = crate::sh_compose::animated_light_scale(Some(shifting), time);
+            let expected = room.map(|channel| channel * glow / intensity);
+            close_rel(
+                area_glow_factor(entry, Some(shifting), time),
+                expected,
+                1e-5,
+            );
+        }
+    }
+
+    // Acceptance rows 50 and 48 (glow half, research.md O2): doubling `light`
+    // doubles the room's descriptor scale and leaves the glow unchanged.
+    #[test]
+    fn doubling_light_leaves_the_glow_unchanged() {
+        let color = [1.0, 0.5, 0.25];
+        let curve = [0.25, 1.0, 0.5];
+        for time in [0.0, 0.3, 0.7] {
+            let one = descriptor(color, 1.0, &curve, &[], true);
+            let two = descriptor(color, 2.0, &curve, &[], true);
+            let glow_one = area_glow_factor(
+                area_glow_entry(&light(4.0, color, 1.0, Some(0))),
+                Some(one),
+                time,
+            );
+            let glow_two = area_glow_factor(
+                area_glow_entry(&light(4.0, color, 2.0, Some(0))),
+                Some(two),
+                time,
+            );
+            close_rel(glow_two, glow_one, 1e-6);
+            let room_one = crate::sh_compose::animated_light_scale(Some(one), time);
+            let room_two = crate::sh_compose::animated_light_scale(Some(two), time);
+            close_rel(room_two, room_one.map(|channel| channel * 2.0), 1e-6);
+        }
+    }
+
+    // A dark light draws dark faces; `light 0` takes the static glow; the live
+    // factor stops at the emissive ceiling even when a curve runs past 1.
+    #[test]
+    fn inactive_lights_are_dark_and_the_live_glow_stops_at_the_ceiling() {
+        let entry = area_glow_entry(&light(4.0, [1.0; 3], 1.0, Some(3)));
+        let dark = descriptor([1.0; 3], 1.0, &[], &[], false);
+        assert_eq!(area_glow_factor(entry, Some(dark), 0.0), [0.0; 3]);
+        assert_eq!(area_glow_factor(entry, None, 0.0), [0.0; 3]);
+        assert_eq!(
+            area_glow_entry(&light(4.0, [0.5, 1.0, 0.0], 0.0, Some(3))),
+            [2.0, 4.0, 0.0, AREA_GLOW_STATIC]
+        );
+        let hot = area_glow_entry(&light(64.0, [1.0, 0.5, 0.0], 1.0, Some(0)));
+        let over = descriptor([1.0, 0.5, 0.0], 1.0, &[3.0], &[], true);
+        assert_eq!(area_glow_factor(hot, Some(over), 0.0), [64.0, 32.0, 0.0]);
+    }
+
+    // The install table: volumes first, area entries from entry 257, zeros
+    // after, 64 KiB in all.
+    #[test]
+    fn the_install_table_places_area_entries_after_the_volumes() {
+        let section = AreaGlowSection {
+            lights: vec![
+                AreaGlowLight {
+                    faces: vec![7, 9],
+                    ..light(2.0, [1.0, 0.0, 0.0], 1.0, None)
+                },
+                AreaGlowLight {
+                    faces: vec![8],
+                    ..light(4.0, [1.0; 3], 2.0, Some(5))
+                },
+            ],
+        };
+        let entries = area_glow_entries(&section.lights);
+        assert_eq!(entries.len(), 3);
+        let bytes = glow_table_bytes(&[], &entries);
+        assert_eq!(bytes.len(), GLOW_TABLE_BYTES);
+        assert_eq!(GLOW_TABLE_BYTES, 65536);
+        let entry = |index: usize| -> [f32; 4] {
+            let at = index * EMISSIVE_TABLE_ENTRY_BYTES;
+            std::array::from_fn(|lane| {
+                f32::from_le_bytes(bytes[at + lane * 4..at + lane * 4 + 4].try_into().unwrap())
+            })
+        };
+        assert_eq!(entry(0)[..3], NO_VOLUME_FACTOR);
+        assert_eq!(
+            entry(AREA_GLOW_FIRST_ENTRY),
+            [2.0, 0.0, 0.0, AREA_GLOW_STATIC]
+        );
+        assert_eq!(
+            entry(AREA_GLOW_FIRST_ENTRY + 1),
+            [2.0, 0.0, 0.0, AREA_GLOW_STATIC]
+        );
+        assert_eq!(entry(AREA_GLOW_FIRST_ENTRY + 2), [4.0, 0.5, 0.0, 5.0]);
+        assert_eq!(entry(AREA_GLOW_FIRST_ENTRY + 3), [0.0; 4]);
     }
 
     // A level change re-sends the whole table once, whatever matched before.

@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 
 use postretro_level_format::SectionId;
+use postretro_level_format::area_glow::AreaGlowSection;
 use postretro_level_format::emissive::EmissiveSection;
 use postretro_level_format::geometry::{GEOMETRY_CONTAINER_VERSION, GeometrySection, NO_TEXTURE};
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
@@ -84,6 +85,19 @@ pub(super) fn decode_geometry(container: &PrlContainer) -> Result<GeometryDecode
     emissive
         .validate_against_level(texture_names.len(), geom.faces.len())
         .map_err(|err| section_validation_from_error("Emissive", err))?;
+    // Optional: written only when the map has an area light. An over-cap
+    // table, or a face also a volume's, refuses the level (research.md O5).
+    let area_glow = match read_section(SectionId::AreaGlow)? {
+        Some(data) => {
+            let section = AreaGlowSection::from_bytes(&data)
+                .map_err(|err| section_validation_from_error("AreaGlow", err))?;
+            section
+                .validate_against_level(geom.faces.len(), &emissive)
+                .map_err(|err| section_validation_from_error("AreaGlow", err))?;
+            section
+        }
+        None => AreaGlowSection::default(),
+    };
 
     let mut warned_prefixes = HashSet::new();
     let vertices: Vec<WorldVertex> = geom
@@ -141,6 +155,7 @@ pub(super) fn decode_geometry(container: &PrlContainer) -> Result<GeometryDecode
         texture_names,
         texture_cache_keys,
         emissive,
+        area_glow,
     })
 }
 

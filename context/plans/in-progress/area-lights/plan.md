@@ -125,6 +125,26 @@ cited symbol exists. No Decision premise is false. The Path is stale or incomple
   - **Permanent arms.** The two chunk-list arms behind `overlaps_chunk` are now
     `unreachable!`. The `reflection_probes/sdf_lights.rs` arm is permanent, mirroring the
     runtime placeholder.
+- As built (task 7):
+  - **Section.** The area glow section is PRL id 62, `AreaGlow`. It stores the authored
+    facts per light (`_glow`, linear colour, intensity, compose slot or `u32::MAX`) and the
+    light's emitting faces in ascending order. The GPU table still holds one entry per
+    face, and the cap still counts faces (3839).
+  - **GPU entry encoding.** Taken literally, the Delegated answer's "`_glow × _color / L`"
+    would apply colour twice, because the descriptor's `base_color` already carries
+    colour × L. The entry is therefore one of two forms:
+    - static: `(glow·r, glow·g, glow·b, −1)`;
+    - slotted: `(glow, 1/L, 0, slot)`.
+
+    The slot is stored as a float, so no NaN bit patterns reach a uniform under FXC.
+  - **Clamps.** Besides the `_glow × brightness` clamp at 64, the shader caps each channel
+    at 64. This also bounds brightness that a settled one-shot has folded into the
+    descriptor.
+  - **Table sizes.** `EMISSIVE_TABLE_ENTRIES` stays 257 for the volume packer. The
+    4096-entry table has its own constants, and area entries are written once at install.
+  - **Docs.** Context docs were updated in this task: `build_pipeline.md` (id 62, the
+    membership skip), `rendering_pipeline.md` §7.3, and `resource_management.md` §4.5
+    and §5.2.
   Faces carry `brush_index` only (no side index): glow ids stamp on every render face
   whose brush belongs to the light and whose texture has an `_e` map, which is the
   Decision's definition of an emitting face.
@@ -261,6 +281,23 @@ not edit `plan.md` or commit. Each task commits with its row update.
 | 4 | Probe arms: direct SH 35/41/45 (analytic L0–L2 + control variate), surface-radiance patch + `LightDigest`, billboard scatter (term facing Φ̂), mover probe channel. Rows 7, 8, 11, 14, 15, 19 | worker, reviewed by integrator | 3 | done. `--bin prl-build` 2712 pass, 0 fail; workspace check and compiler clippy clean. Proofs in `area_light_probe_tests`: row 7 (L0/L1 within 1e-5), row 8 (side 0.761, 2.6% under 0.781; down −0.045 before the clamp), row 11 (scatter 2.611 within 1%; mover side 0.761), row 14 (each probe consumer at 0.8789 within 1e-3, 0 at reach), row 15 (corner patch and probe), row 19 (flush and pillar, all four consumers). Also `mover_probe_channel::direct_tests::an_area_lights_q_and_tile_integrate_over_its_polygons` (row 11, production bake). Row 22 re-run passes now that `LightDigest::of` folds the polygons. No stage version bumps (same branch-only stale-cache caveat as task 3). Still transient: the animated per-hit bounce skips Area explicitly (task 5) |
 | 5 | Animated bounce: one-sample polygon arm, delta `light_aabb`/affinity reach sphere. Rows 34–36 | integrator | 4 | done. `cargo test -p postretro-level-compiler --no-fail-fast`: bin 2740 pass, every integration binary passes, including `mover_bounded_bake_goldens`. Workspace check and compiler clippy clean. Proofs in `area_light_bounce_tests`: row 34 (delta 1302.20 vs static 1303.83, −0.12%, all 196 probes), row 35 (open mean 1.00039; far half occluded mean 0.87183 vs quadrature 0.86959), row 36 (every cell within 3 m holds an entry and a non-zero tile). No stage version bump (branch-only stale-cache caveat, as in task 3) |
 | 6 | Wire and refusals: AlphaLights v5 (pack, loader, engine), silent unassigned leaf, animated-promotion refusal, placeholder `SpecLight` out of id-42 owners and chunk lists. Rows 32, 38 | worker | 2 | done. An area-light map loads and renders (`area-light-panel.map`, `--capture` under `POSTRETRO_SH_STREAMING=sync-proof`, exit 0). Row 32: `light_filter_tests::promotion_selects_no_area_light_on_either_path`, `shadowmask_bake::tests::eligibility_skips_an_area_light_and_keeps_later_spec_indices`, `area_light_tests::an_area_light_owns_no_shadowmask_channel_even_where_it_alone_lights`, `chunk_light_list_bake::an_area_light_keeps_its_slot_but_enters_no_chunk_list`, `spec_buffer::area_light_packs_an_inert_placeholder_at_its_index`. Row 38: `alpha_lights::writes_v5_and_round_trips_every_light_type`, loader `load_prl_loads_an_area_light_at_its_authored_index` and `load_prl_rejects_a_v4_alpha_lights_section`. Suites: format 835, loader 427, `prl-build` 2744, lighting 75, postretro 3030+7, all pass. Renderer: 1438 pass, 1 fail, `world_specular_test::smooth_specular_matches_the_frozen_pre_change_function` (6 ulps on this GPU). Its test and shaders are byte-identical to `main`, so it is not this branch. Workspace check and clippy on six crates clean. Already broken before this task: `cargo test -p postretro-lighting` without `postretro-level-loader/load-prl` fails to compile |
-| 7 | Glow: `_glow` rules, area glow section + loader + cap, compiler stamping after namespaces, widened slot-2 table, forward area branch on compose descriptors with clamp, membership skip, `_start_inactive` reservation, reflection capture glow, key and share. Rows 28, 45–60 (glow parts) | worker, reviewed by integrator | 6 | |
+| 7 | Glow: `_glow` rules, area glow section + loader + cap, compiler stamping after namespaces, widened slot-2 table, forward area branch on compose descriptors with clamp, membership skip, `_start_inactive` reservation, reflection capture glow, key and share. Rows 28, 45–60 (glow parts) | worker, reviewed by integrator | 6 | done (worker-verified; integrator focused re-run pending, since builds paused for the owner). All owned glow rows pass:
+<ul>
+<li>row 28: `area_light::glow::tests::a_split_side_glows_on_every_piece_and_the_frame_carries_no_glow`</li>
+<li>rows 45, 51, 52: `tests/area_glow_compile.rs`</li>
+<li>row 46: `emissive_membership` tests</li>
+<li>rows 47, 48: `reflection_probes::area_glow_capture_tests`, plus the GPU `area_glow_gpu_test`</li>
+<li>rows 49, 50: render-cpu and the lightmap. For row 50 the probe-output doubling is not measured; the probe arms are linear in L.</li>
+<li>rows 53–55 (glow part), 58, 59: `light_bridge` tests. Row 55 uses a synthetic manifest record; task 8 owns the real start state and row 56.</li>
+<li>row 57: extended `fixture_keeps_script_and_kvp_animated_lights_distinct`</li>
+<li>row 60: section, cap and loader tests</li>
+</ul>
+Suites:
+<ul>
+<li>pass: format 840, render-cpu 845, loader 429, compiler 3140 (goldens unchanged), postretro 3039, `dx12_fxc`</li>
+<li>renderer with GPU: 1439 pass and 1 fail, the known `main` failure</li>
+<li>check, fmt and clippy on six crates clean</li>
+</ul>
+The capture shows the panel glowing over the lit room |
 | 8 | Script surface: `"Area"` kind + generated types + drift fixtures, snapshots, validate-all `sweep` refusal (O14), start-state rule (O15), `content/dev` example. Rows 41–44, 55, 56 | worker | 6 | |
 | 9 | Fixtures, gates, docs: profiled area fixture in `GATE_FIXTURES`, no-area byte identity vs `main`, `docs/level_design.md` and `docs/scripting-reference.md`. Rows 39, 40 | integrator | 1–8 | |

@@ -511,6 +511,7 @@ pub fn pack_and_write_portals_with_billboard_scatter(
         fog_volumes,
         fog_cell_masks,
         &emissive,
+        None,
         sdf_atlas,
         navmesh,
         kinematic_geometry,
@@ -569,6 +570,8 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
     fog_cell_masks: Option<&FogCellMasksSection>,
     // Emissive (id 60), written for every map.
     emissive: &EmissiveSection,
+    // AreaGlow (id 62); written only when the map has an area light.
+    area_glow: Option<&postretro_level_format::area_glow::AreaGlowSection>,
     sdf_atlas: Option<&SdfAtlasSection>,
     navmesh: Option<&NavMeshSection>,
     kinematic_geometry: Option<&KinematicGeometrySection>,
@@ -744,6 +747,7 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
         fog_volumes,
         fog_cell_masks,
         emissive,
+        area_glow,
         sdf_atlas,
         navmesh,
         kinematic_geometry,

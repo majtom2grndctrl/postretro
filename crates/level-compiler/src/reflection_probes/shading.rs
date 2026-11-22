@@ -7,7 +7,7 @@ use super::animated_direct::AnimatedDirectSampler;
 use super::capture_exclusion::{CaptureBrushes, ProbeExclusion, RayOutcome};
 use super::capture_fill::fill_surface;
 use super::delta_sample::DeltaShSampler;
-use super::emissive_factor::EmissiveFaceFactors;
+use super::emissive_factor::{AreaGlowFaces, AreaGlowTerm, EmissiveFaceFactors};
 use super::hit::{SceneTracer, SurfacePoint};
 use super::lightmap_sample::LightmapSampler;
 use super::sdf_lights::SdfLights;
@@ -37,6 +37,8 @@ pub(crate) struct CaptureScene<'a> {
     pub materials: SurfaceMaterials<'a>,
     /// Each static-world face's emissive volume factor, `max × colour`.
     pub emissive: EmissiveFaceFactors,
+    /// Each `light_area` face's glow term (id 62); empty for a map with none.
+    pub area_glow: AreaGlowFaces,
     pub lightmap: LightmapSampler<'a>,
     pub sh: ShVolumeSampler<'a>,
     /// Id 25, when the level has animated direct.
@@ -147,7 +149,9 @@ impl CaptureScene<'_> {
     /// Static is `albedo × (lightmap + selected sdf direct + base SH ×
     /// production weight) + emissive × baked strength (id 60) × the face's
     /// volume factor`, the volume at its no-script reference state, max ×
-    /// colour (1 outside any volume); a light's unit term
+    /// colour (1 outside any volume); a `light_area` face's emissive is its
+    /// `_e` × its light's glow instead (static `_glow × _color`, or
+    /// `_glow / intensity` in the light's unit term); a light's unit term
     /// is `albedo × (its weight-map direct + its delta SH × production
     /// weight)`. These are the forward pass's terms with the shading normal at
     /// the face normal (no normal map, so both bumped-Lambert factors are 1).
@@ -166,9 +170,17 @@ impl CaptureScene<'_> {
     ) -> anyhow::Result<Vec3> {
         scratch.animated.clear();
         let footprint_texels = distance * sample_angle * surface.texel_density;
-        let material = self
-            .materials
-            .sample(surface.texture_index, surface.uv, footprint_texels);
+        let area_glow = self.area_glow.of(surface.face);
+        let material = if area_glow.is_some() {
+            self.materials.sample_unscaled_emissive(
+                surface.texture_index,
+                surface.uv,
+                footprint_texels,
+            )
+        } else {
+            self.materials
+                .sample(surface.texture_index, surface.uv, footprint_texels)
+        };
         let mut direct = self
             .lightmap
             .irradiance(surface.lightmap_block, surface.lightmap_uv)?;
@@ -205,7 +217,18 @@ impl CaptureScene<'_> {
                 &mut scratch.animated,
             );
         }
-        let emissive = material.emissive * self.emissive.of(surface.face);
+        // An area face's `_e` × its light's glow replaces its texture strength
+        // and any volume: a static light's glow is static radiance, and an
+        // animated light's joins that light's unit term, so its share moves
+        // glow and room together (resource_management.md §5.2).
+        let emissive = match area_glow {
+            None => material.emissive * self.emissive.of(surface.face),
+            Some(AreaGlowTerm::Static(glow)) => material.emissive * glow,
+            Some(AreaGlowTerm::Animated { light, unit }) => {
+                scratch.animated.add(light, material.emissive * unit);
+                Vec3::ZERO
+            }
+        };
         Ok(shade(material.albedo, direct, indirect, emissive))
     }
 }

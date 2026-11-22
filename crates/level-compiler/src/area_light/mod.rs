@@ -6,6 +6,7 @@
 
 pub(crate) mod emitter;
 mod exposure;
+mod glow;
 mod lattice;
 mod polygon;
 mod reach;
@@ -21,6 +22,7 @@ use glam::{DMat3, DVec3};
 
 pub(crate) use emitter::{AreaEmitter, EmitterPolygon};
 pub(crate) use exposure::{EMITTER_PIECE_AREA_FLOOR_M2, resolve_area_lights};
+pub(crate) use glow::{area_light_faces, build_area_glow_section};
 pub(crate) use lattice::{area_lattice_point, area_probe_indices};
 
 pub(crate) use polygon::{

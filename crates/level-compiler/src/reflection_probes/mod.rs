@@ -29,6 +29,8 @@ mod share;
 mod stage_key;
 
 #[cfg(test)]
+mod area_glow_capture_tests;
+#[cfg(test)]
 mod capture_exclusion_held_tests;
 #[cfg(test)]
 mod capture_exclusion_oracle_tests;
@@ -62,6 +64,7 @@ use bvh::bvh::Bvh;
 use postretro_level_format::alpha_lights::AlphaLightsSection;
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
+use postretro_level_format::area_glow::AreaGlowSection;
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
 use postretro_level_format::emissive::{EmissiveTexture, EmissiveVolumeRecord};
@@ -91,7 +94,7 @@ use capture_exclusion::{BrushFaces, CaptureBrushes, ProbeExclusion};
 use capture_point::PointClassifier;
 use capture_visibility::warn_hidden_water;
 use delta_sample::DeltaShSampler;
-use emissive_factor::EmissiveFaceFactors;
+use emissive_factor::{AreaGlowFaces, EmissiveFaceFactors};
 use exclusion::{ExclusionConstants, ExclusionScene, classify_probes_within_boxes};
 pub(crate) use hit::SceneTracer;
 use lightmap_sample::LightmapSampler;
@@ -190,6 +193,9 @@ pub(crate) struct ReflectionProbeInputs<'a> {
     /// Id 60's volume records: a member face shades at its volume's
     /// no-script reference state, `max × colour`.
     pub emissive_volumes: &'a [EmissiveVolumeRecord],
+    /// Id 62, when the map has an area light: each area face shades at its
+    /// light's glow, `_glow` keying this stage and no lighting bake.
+    pub area_glow: Option<&'a AreaGlowSection>,
     pub prm_root: &'a Path,
 }
 
@@ -428,6 +434,7 @@ fn bake_or_load_with(
             inputs.emissive_volumes,
             inputs.geometry.geometry.faces.len(),
         ),
+        area_glow: AreaGlowFaces::new(inputs.area_glow, inputs.geometry.geometry.faces.len()),
         lightmap: LightmapSampler::new(inputs.lightmap),
         sh,
         animated_direct: inputs

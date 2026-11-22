@@ -189,7 +189,7 @@ pub(crate) fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 9] {
                 ty: wgpu::BufferBindingType::Uniform,
                 has_dynamic_offset: false,
                 min_binding_size: wgpu::BufferSize::new(
-                    postretro_render_cpu::emissive_volume::EMISSIVE_TABLE_BYTES as u64,
+                    postretro_render_cpu::emissive_volume::GLOW_TABLE_BYTES as u64,
                 ),
             },
             count: None,

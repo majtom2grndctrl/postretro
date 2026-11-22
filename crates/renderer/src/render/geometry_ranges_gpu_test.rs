@@ -12,6 +12,7 @@ fn geometry<'a>(
         vertex_spec_owners: &[],
         vertex_emissive_volumes: &[],
         emissive_volumes: &[],
+        area_glow_lights: &[],
         indices: &[],
         bvh,
         lights: &[],

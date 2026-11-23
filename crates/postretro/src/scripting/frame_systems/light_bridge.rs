@@ -3546,8 +3546,10 @@ mod tests {
                 assert_eq!(*slot, 0);
                 let samples = update
                     .samples_bytes
-                    .chunks_exact(4)
-                    .map(|chunk| f32::from_ne_bytes(chunk.try_into().unwrap()))
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|chunk| f32::from_ne_bytes(*chunk))
                     .collect();
                 last = Some((*bytes, samples));
             }

@@ -1,6 +1,6 @@
 # E10--npc-weapon-mounts — research
 
-Read at bb7323fc5, split from `drafts/E10--npc-equipment-sets/research.md`. Read at 73b072de3 (no source change since bb7323fc5): §Muzzle pose. Read at f29bc577d (no source change since 73b072de3): §Blocked muzzle. Read at e57fcf5ea (no source change since f29bc577d): §Rename consumers. Findings that inform the brief; the brief carries the conclusions.
+Read at bb7323fc5, split from `drafts/E10--npc-equipment-sets/research.md`. Read at 73b072de3 (no source change since bb7323fc5): §Muzzle pose. Read at f29bc577d (no source change since 73b072de3): §Blocked muzzle. Read at e57fcf5ea (no source change since f29bc577d): §Rename consumers. Read at 55d245fd1 (no source change since e57fcf5ea): §Blocked muzzle (path tests, burst), §Muzzle pose (untracked states). Findings that inform the brief; the brief carries the conclusions.
 
 ## NPC shot origin
 Owner-observed 2026-11-23 on `movement-feel`: the `rifle_trooper` (white armor, `rodin_sci-fi_trooper_m`) fires from above its head. Pre-existing: `enemy_eye` dates from `3d45c494e` (2026-08-23, enemy static LOS fire gate), and E21 did not touch it.
@@ -40,10 +40,12 @@ Costs of the held-muzzle source:
 ## Blocked muzzle
 Owner ruling, 2026-11-23, after `/validate-plan` returned Under-scoped: a muzzle whose path to the target is blocked whiffs; the shot never launches from the eye.
 - The eye gate: `line_of_sight_combined` from `enemy_eye` to `target_aim`, world and movers at the tick's pose (`perception.rs`). `perceive_target` debounces it through the LOS grace (`debounce_los`), and `fire_gate` reads the debounced verdict.
+- `line_of_sight_combined` tests the exact segment, with no radius (`crates/physics/src/collision/shot_queries.rs`). A projectile sweeps at its radius, so a lip below the muzzle-to-target segment but within the radius of it passes that test and still catches the shot.
+- The pawn precedent, `resolve_muzzle_launch_origin` (`crates/sim/src/weapon/mod.rs`), sweeps eye to muzzle at `projectile_radius` through `cast_sphere_exact_combined` (a segment test at radius 0), and also counts the eye ray reaching world at or before the muzzle's forward distance as obstructed. A pawn's obstruction falls back to the eye; an NPC's whiffs.
 - The fire proposal builds `WeaponAim` whenever target perception exists, visible or not (`compute.rs`). `advance_actor` cancels an execution only when the aim is absent, and each due shot launches at that tick's aim. So a running burst keeps firing after sight is lost.
 - `enemy_eye_height_clears_low_cover_but_full_cover_blocks_fire` (`crates/ai/src/ai_tests.rs`): a meshless NPC with a hitbox half-height 1.5 at offset 0, so its eye is 1.5 m; the pawn 2 m away, eye 0.5 m; walls at x = 1, 0.9 m (the eye ray crosses at 1.0 m, so it fires) and 1.25 m (blocked). Its attack is contact damage (8 HP, applied in-tick), not a projectile, so it proves the eye gate only.
 - The band the ruling accepts: cover between gun height and the hitbox top, near the NPC, passes the eye gate and blocks the muzzle. The measured eyes sit 0.08–0.12 m above the head top, and the trooper's 0.4–0.5 m above its gun (§NPC shot origin). An eye at head height would narrow it; the eye's derivation stays out of scope.
-- Rivals weighed: launch from the muzzle into the cover (the NPC shoots the lip in front of it); fall back to the eye as a pawn does (restores the defect); the chest or shoulder offset (the owner's earlier rejection: off the drawn gun).
+- Rivals weighed: launch from the muzzle into the cover (the NPC shoots the lip in front of it); fall back to the eye as a pawn does (restores the defect); the chest or shoulder offset (the owner's earlier rejection: off the drawn gun); a zero-radius muzzle-to-target segment (a lip within the shot's radius passes it and catches the shot); test only the burst's first shot, so later shots launch from the muzzle as the weapon's steps time them (a later shot flies into cover that rose or that the NPC turned into).
 - Foreclosure flagged by validation: once the muzzle socket is gameplay, art edits are gameplay edits. Re-baking an AR_4 (its scale, seat or solve) or moving its `muzzle` node moves the shot start and changes which cover blocks the NPC. `solve-weapon-mount --check` measures orientation only (`resource_management.md` §7).
 
 ## Muzzle pose
@@ -51,6 +53,7 @@ Owner ruling, 2026-11-23, after `/validate-plan` returned Under-scoped: a muzzle
 - `HitZoneStore::posed_socket_world` (`crates/sim/src/scripting_systems/hit_zones.rs`) samples a body socket on demand through `sample_world_pose_for_probe`. That resolves `MeshAnimation` stamps at an animation-clock `anim_time`, and returns `None` while the current state's clip is unresolved. Its callers (damaged-enemy overlay, client markers, netcode presentation) pass presentation time. So a pose at clip time samples the drawn clip at `ClipClock.time` directly: a new entry, with no crossfade blend.
 - It does not compose an attachment's own socket. A bake's rigid `muzzle` socket is a rest transform in the bake's mesh frame (`resource_management.md` §7), composed on the posed holder joint as the renderer places the attachment.
 - Gameplay capsules and probes omit presentation-only pose modifiers (`entity_model.md` §7, Skeletal hit zones). The muzzle pose follows that rule.
+- The clock tracks nothing while `state` is `None`. A moved `mesh_switches` count is a switch the brain did not make (a script reaction or impact effect), and `redraw` marks a fresh mesh not yet redrawn (a held enemy's drop): the clock holds until the redraw. On such a tick the mesh draws a state the clock does not time, so no clip-time pose of the drawn state exists.
 
 ## Mounts today
 - Third-person mounts are character-owned (E21). A character's `mesh.weaponMounts` maps each weapon to socket → model attachments baked for its rig (`resource_management.md` §7). `WeaponDescriptor.third_person_model` is retired.
@@ -101,6 +104,15 @@ The `weapon_mount` names in `crates/model/src/mount*` and `crates/tool/src/mount
 - `entity_model.md` §2: no branch on actor kind. Admitted here in launch origin only.
 - `entity_model.md` §7c: clip time is the one exception to a single animation clock. The muzzle pose joins it.
 
+## Ordering pins
+
+| id | scenario | ordering | expected outcome |
+|---|---|---|---|
+| NM-1 | Fire tick on which the NPC turns and enters an activity drawing a new clip | `begin_tick` → transitions → settle (clock restart) → muzzle pose and muzzle-path tests → facing write → weapon launch → apply late restart → steering | the path tests start at, and the shot launches from, one point: the bake's `muzzle` posed on the state and clip time settle left, at the facing written that tick, from the tick-start position |
+| NM-2 | Fire tick on which the mesh draws a state the clip clock does not track: it tracks none, a script reaction switched the state, or a redraw is pending | clock begin → foreign switch or pending redraw seen → fire proposal | the shot launches from the eye with no muzzle-path test and no warning; the clock's own handling of the moment is unchanged |
+| NM-3 | NPC entry socket missing from the rig, or entry model unloaded, at fire | E21 warning at composition → fire | nothing draws there; the shot launches from the eye; only E21's warning logs |
+| NM-4 | A bake without a `muzzle` socket, and an entry `muzzle` naming a body socket, on archetypes placed and not placed in the level | table check (before models load) → model sweep → missing-muzzle check | warns once per level load, after the sweep, for every carried bake and for each body model the level loaded; an archetype whose body model never loaded logs no body-socket warning |
+
 ## Not verified
 - That the host can pose the drawn state at the brain's clip time at the AI fire step: the model's joint data on the host, the drawn clip resolved, and the bake's `muzzle` composed on the posed holder joint. The first slice tests it.
 
@@ -114,3 +126,10 @@ A second `/validate-plan` returned Under-scoped (2026-11-23). Owner rulings: a b
 Later owner rulings, 2026-11-23, made while settling gear in `drafts/E10--npc-equipment-sets/`:
 - One `mesh.mounts` table, owned by this brief: E21's `weaponMounts` renamed and keyed by `item`, for every item a character carries or wears. The reason matches the `muzzle` entry's: no precedent that excludes melee. This brief's items are weapons; the equipment-sets brief adds gear.
 - A missing muzzle fires from the eye: a bake without a `muzzle` socket, a missing body socket, an unresolved clip, or (in the equipment-sets brief) a gun displaced by gear. Authoring errors warn once at load. A blocked muzzle still whiffs.
+
+Owner rulings, 2026-11-23, after detail review:
+- The muzzle gate tests the path the shot will fly, at its radius, and the path from the body to the muzzle, as pawns test eye to muzzle; either blocked whiffs. A zero-radius segment is not enough.
+- A fire tick on a state the clip clock does not track (a script reaction, a pending redraw) fires from the eye: a missing muzzle, with no warning.
+- Each shot of a burst re-tests its muzzle paths; a blocked shot is skipped and the burst continues, so no shot enters the cover lip. This supersedes the earlier delegated recommendation, which gated only the burst's start.
+- The brief is resumable. A built-in-weapon fixture (a body model with a muzzle socket, its weapon and an attack) is the first consumer of `{ item, muzzle }`; the build is gated on finding that content before it starts.
+- One table rather than a second one beside `weaponMounts` for gear: every carried item needs the same per-rig presentation.

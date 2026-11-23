@@ -169,6 +169,7 @@ mod renderer_diagnostics;
 mod renderer_dynamic_shadow_passes;
 mod renderer_extent;
 mod renderer_fluid_frame;
+mod renderer_forward_frame;
 mod renderer_frame;
 mod renderer_full_init;
 mod renderer_geometry;

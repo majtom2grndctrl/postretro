@@ -98,7 +98,7 @@ fn rust_violations(sources: &[Source]) -> Vec<String> {
                 );
                 let consumer = matches!(
                     site.path.as_str(),
-                    "render/renderer_shadow_passes.rs" | "render/renderer_render_frame.rs"
+                    "render/renderer_shadow_passes.rs" | "render/renderer_forward_frame.rs"
                 );
                 whole && pipeline && consumer
             }

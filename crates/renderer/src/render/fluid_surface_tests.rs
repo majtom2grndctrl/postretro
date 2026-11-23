@@ -5580,7 +5580,7 @@ fn the_sums_pass_records_after_the_flush_and_before_the_fluid_pass() {
         previous = at;
     }
     let forward = scene
-        .find("label:Some(\"TexturedPass\")")
+        .find("self.record_world_forward_pass(")
         .expect("world forward");
     let skinned = scene
         .find("label:Some(\"SkinnedMeshPass\")")

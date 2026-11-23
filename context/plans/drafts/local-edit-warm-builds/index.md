@@ -16,7 +16,7 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Ra
 ## Decisions
 - **Exactness holds.** Warm equals cold under the Determinism invariant (`build_pipeline.md` §Build Cache), with its carve-outs as they are. The retired approximate warm path stays retired (`done/surface-radiance-cache/`).
 - **Stable geometry identity is the foundation.**
-  - Faces, charts, patches, triangles and probes are identified by content: the source brush side plus the fragment's world-space geometry. Traversal order never identifies them. A face is its source brush side plus its fragment polygon. A face re-cut because an edit moved a BSP split is a changed face: re-traced exactly, and named in the Build Summary as a re-partition.
+  - Faces, charts, patches, triangles and probes are identified by content: the source brush side plus the fragment's world-space geometry. Traversal order never identifies them. A face re-cut because an edit moved a BSP split is a changed face: re-traced exactly, and named in the Build Summary as a re-partition.
   - Triangle corners are emitted in a canonical order, in cold and warm bakes alike. Re-saved but unchanged geometry keeps its identity, and a re-intersected distance stays bit-exact.
   - Every key, seed and tie-break that reads a global index today reads the stable identity instead: patch and chart seeds, soft-visibility seeds, and closest-hit ties.
   - The probe and affinity grids anchor to one world-fixed lattice, snapped at the affinity grid's multiple of probe spacing, so growing the map's bounds moves no existing probe or affinity cell. The chunk light-list grid keeps its bounds anchor and deliberate half-cell pad; that stage is cheap to re-run.
@@ -28,7 +28,7 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Ra
   - An embedded-emitter flag flip re-bakes that light whole.
   - Partitions store chart-relative texels, remapped through the current placement at fold.
   - Encoded atlas layers and ShadowmaskAtlas output are memoised per atlas layer. The key covers the layer's placements, its contributing partitions, those lights' photometric fields and the encode parameters. Each memo carries its texel-step report.
-- **SH patch-direct layers stay keyed on the whole light and localize per sample.** They store radiance, which bakes colour and intensity in: the `done/surface-radiance-cache/` IP guard (Tencent '451). A tint edit re-shades that light's patches. With the light unchanged and its reach geometry changed, the layer re-traces only patches on changed geometry and samples whose segment meets a changed triangle, by the same diff as the lightmap.
+- **SH patch-direct layers stay keyed on the whole light and localize per sample.** They store radiance, which bakes colour and intensity in: the `done/surface-radiance-cache/` IP guard (Tencent '451). A tint edit re-shades that light's patches. With the light unchanged and its reach geometry changed, the layer re-traces only patches on changed geometry and samples whose segment meets a changed triangle, by the same diff as the lightmap. Its key folds only its reach geometry, as the lightmap partition's does.
 - **SH later bounces and the gather localize through recorded ray hits.**
   - The cache keeps every later-bounce patch ray's and probe gather ray's hit as a stable triangle identity, 4 B per ray. Distance is re-intersected exactly. Records stream per chunk and are never held whole.
   - A warm bake re-traces only:
@@ -110,13 +110,14 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Ra
 - [ ] An edit that moves an upper BSP split re-traces only texels and rays on re-cut faces plus the crossing set, equals cold, and its Build Summary names the re-partition and the re-cut face count.
 - [ ] After a brush edit inside a light's reach, that light's SH patch-direct layer re-traces only patches on changed geometry and samples whose segment meets the changed triangles; a light whose reach excludes the edit hits its layer.
 - [ ] A tint or intensity change with no presence change re-traces no lightmap visibility.
-- [ ] Re-ordering a brush face's plane points, writing a brush's sides in another order, and re-cloning a rotated linked instance with no geometric change each emit the same corners in the same order and hit every entry.
+- [ ] Re-ordering a brush face's plane points, writing a brush's sides in another order, and re-cloning a rotated linked instance that holds no light, each with no geometric change, emit the same corners in the same order and hit every entry.
 - [ ] After a brush edit that meets only a texel's footprint clip segment or lead-in, never its light-ward segments, that texel re-traces, and the warm build equals cold.
 - [ ] An edit that grows the map's bounds moves no existing probe, and its SH re-trace is exactly the crossing set.
-- [ ] A local edit re-bakes only the reflection probes, camera cells and chunk light lists whose recorded inputs it touches; every other one hits.
+- [ ] A local edit that leaves the map's bounds unchanged re-bakes only the reflection probes, camera cells and chunk light lists whose recorded inputs it touches; every other one hits.
 - [ ] After a local edit, every atlas layer whose placements, layer size, contributing partitions, those lights' photometric fields and encode parameters are unchanged hits its encode memo, equals the cold build's encoded layer byte for byte, and replays the cold build's texel-step warnings.
 - [ ] A cluster payload memo hit equals the cold build's encoded payload byte for byte.
-- [ ] After a brush edit inside a light's reach, that light re-traces only texels on changed charts, texels whose segment meets the changed triangles, and texels whose cull verdict changed. The build reports the count.
+- [ ] After a brush edit inside a light's reach, that light re-traces only texels on changed charts, texels whose segment meets the changed triangles, and texels in tiles whose cull verdict changed while a changed triangle lies within the tile's cull query. The build reports the count.
+- [ ] An edit far from a tile that changes the scene-wide shaft-cull bounds (a longer triangle edge or a wider scene extent) re-traces no texel of a tile whose cull query holds no changed triangle, and the warm build equals cold.
 - [ ] After an edit that brings a triangle within a culled tile's shaft margin without meeting any of its segments, that tile's texels re-trace and count in the re-traced total, and the warm build equals cold.
 - [ ] After a local edit, the SH rays re-traced are exactly the crossing set; the build reports the count.
 
@@ -131,11 +132,12 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Ra
 - [ ] The Build Summary reports the cache footprint with the ray records, and the ray-record footprint against its ceiling.
 - [ ] At the default `--cache-max-size`, stress-street's ray records price under the ceiling, and a warm one-brush edit traces SH locally with no ceiling or eviction warning (RW-17).
 - [ ] A map priced past the ray-record ceiling bakes SH whole, byte-identical to cold, and warns by name. The ceiling never exceeds the cache budget less the spared set.
-- [ ] When the sweep evicts a map's ray records, its next Build Summary says SH traced whole because of the eviction.
+- [ ] When the sweep evicts all of a map's ray records, its next Build Summary says SH traced whole because of the eviction.
 - [ ] Evicting a map's ray records through the start-of-build sweep, at a budget too small to keep them, costs one full SH trace on its next build; the output stays byte-identical, and the build after that is local again. Evicting only some of its record chunks re-traces at most those chunks' rays (RW-3).
 - [ ] Reverting an edit, with no eviction between the builds, hits every entry it hit before the edit, with nothing re-traced; with eviction between, it re-bakes only what was evicted and equals cold (RW-4).
 - [ ] Interleaved builds of two maps in one cache each stay byte-identical to their cold builds, and neither overwrites an entry the other holds; sharing equal entries is allowed.
-- [ ] A ray-record chunk that is missing, or whose baseline digest disagrees with its entry, misses: its rays re-trace and the build equals cold, including when another build's sweep removes it mid-bake (RW-13).
+- [ ] A ray-record chunk that is missing, or whose digest disagrees with its entry's reference to it, misses: its rays re-trace and the build equals cold, including when another build's sweep removes it mid-bake (RW-13). A chunk carried forward from an older baseline, whose digest matches the reference, serves.
+- [ ] After a one-brush edit, the warm build writes only record chunks that hold a re-traced ray; every other chunk its entry references is the baseline's file, not rewritten.
 - [ ] An edit that renumbers faces and takes a map past the ray-record ceiling, then one that brings it back: each equals cold, direct lighting stays local in both, and the first build back under the ceiling traces SH whole and the next is local again (RW-11).
 - [ ] Ray records stream per chunk: a warm SH bake's measured peak stays within the SH base gate's prediction, with at most one record chunk per worker resident.
 
@@ -157,7 +159,7 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Ra
 - [ ] A local edit's progress reads mostly cached: a unit re-evaluated from records or patched without a re-trace counts cached.
 - [ ] Plain reporter lines, the Build Summary's cached share and the telemetry events carry the same counts the TUI shows. Finish events carry the final counts; a stage with no published total carries null counts (RW-10).
 - [ ] The Build Summary's totals name the fully cached stages and the fresh compute time, and the summary telemetry event carries both.
-- [ ] After a one-light edit and after a one-brush edit, the Build Summary names the changed light or source brush as the cause of each traced stage, with re-traced counts, and names no unchanged light or brush.
+- [ ] After a one-light edit and after a one-brush edit that moves no BSP split, the Build Summary names the changed light or source brush as the cause of each traced stage, with re-traced counts, and names no unchanged light or brush.
 
 **Durable record.**
 - [ ] `build_pipeline.md` states the new cache contract (§Build Cache), the tracer locality rule (§Ray traversal), and the progress presentation rules with the carried TUI conventions (§Progress reporting); no `context/lib/` doc still says a geometry edit re-keys every layer.
@@ -184,7 +186,7 @@ Targets are owner targets: a miss stops the build and reports to the owner; it i
 - **Seams:** identity and ties at `build_leaf_ordered_faces`, `primitive_sort_key`, `closest_hit`; seeds and grids at `patch_seed_id`, `probe_grid_layout_of`, the affinity grid and the chunk light-list grid; lightmap keys and payload at `LayerKeyContext`, `geometry_slice_hash`, `LayerTexel`, `IncrementalLayerAccumulator::fold_partition`, `pack_groups_into_layers`; SH at `later_bounce_sum`, `gather_patch`, `PatchGather::sample`, `DepthTileSelector`; progress at `StageProgress`, `RemainingEstimate`, `progress_bar_line`.
 - **Precedents:** the warm-cache harness in `research.md` §Measurements; `--dump-chart-hashes` for lightmap comparisons; the mover channel's near-field domain as prior region-limited SH work.
 - **Split first:** `pipeline.rs`, `geometry.rs`, `pipeline/lightmap_stage.rs`, `lightmap_layer.rs` and `tui/tui_render.rs`, each before its change.
-- **Starting values:** bar glyphs cached `▓`, fresh `█`, pending `░`; records zstd-compressed per chunk; the ceiling priced at the SH base gate beside its working-set price; record eviction oldest first.
+- **Starting values:** bar glyphs cached `▓`, fresh `█`, pending `░`; records zstd-compressed per chunk; the ceiling priced at the SH base gate beside its working-set price.
 - **Fixed costs:** measure Packing's parts first (cluster payload spool, bound resolutions, serialisation, readback); the spool is the likely memo or parallel target.
 
 ## Open questions

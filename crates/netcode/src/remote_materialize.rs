@@ -18,11 +18,11 @@ pub(super) const ACTIVE_WEAPON_SOCKET: &str = "hand_r";
 /// Whether a descriptor-backed player body is being presented to its owning
 /// viewer or to another client. `shadowOnly` is authored for the first-person
 /// owner view; peers must still see that same descriptor as a forward avatar.
-/// Either role marks a pawn's body [`BodyFrame::View`]: a player's transform
-/// stays in the view frame, so its model front takes the half turn at the body
-/// seam. A pawn is a descriptor that carries player movement, as the host's
-/// spawn decides (`descriptor_body_frame` in sim's `data_archetype.rs`); any
-/// other body keeps [`BodyFrame::Model`].
+/// On a client either role marks the body [`BodyFrame::View`]: a client reaches
+/// a role only for a player pawn, whose transform stays in the view frame, so
+/// its model front takes the half turn at the body seam. On the host the frame
+/// is fixed when the pawn's transform spawns (`descriptor_body_frame` in sim's
+/// `data_archetype.rs`), and the role step leaves it alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PlayerViewerRole {
     Local,
@@ -41,6 +41,7 @@ fn apply_player_viewer_role(
     registry: &mut EntityRegistry,
     id: EntityId,
     role: PlayerViewerRole,
+    body_frame: Option<BodyFrame>,
 ) {
     let Some(descriptor) = descriptors
         .iter()
@@ -55,17 +56,12 @@ fn apply_player_viewer_role(
         return;
     };
     let shadow_only = role.shadow_only(descriptor_shadow_only);
-    // A client reaches here only for a `pawn:` class, which the host stamps on
-    // a movement record. The host's slot accept runs for any descriptor its
-    // `entity_class` names, so a slot body without movement (an AI behaviour)
-    // keeps the model frame its spawn chose; AI facing writes that frame.
-    let body_frame = if descriptor.movement.is_some() {
-        BodyFrame::View
-    } else {
-        BodyFrame::Model
-    };
+    // `None` keeps the frame the spawn chose. The frame must agree with the
+    // frame the transform spawned in, and a re-accept (or a hot reload that
+    // adds or removes `movement`) must not re-derive it from descriptors.
     // Set on every call, not only when the mesh was just built: a re-arm or
     // re-apply keeps an existing mesh, so the frame must not wait on a rebuild.
+    let body_frame = body_frame.unwrap_or(mesh.body_frame);
     if mesh.shadow_only != shadow_only || mesh.body_frame != body_frame {
         mesh.shadow_only = shadow_only;
         mesh.body_frame = body_frame;
@@ -76,9 +72,9 @@ fn apply_player_viewer_role(
 /// Apply the peer-view policy to a descriptor-backed player mesh that another
 /// host-side spawn path already materialized. Listen-host slot pawns use the full
 /// authoritative descriptor spawn, so they need this presentation-only override
-/// without re-materializing any gameplay components. That spawn already marks a
-/// movement pawn's body [`BodyFrame::View`] by its `NetworkSlot` path, and a slot
-/// body without movement [`BodyFrame::Model`]; this step keeps each so.
+/// without re-materializing any gameplay components. That spawn already fixed
+/// the body frame with the transform (a movement pawn [`BodyFrame::View`], a
+/// slot body without movement [`BodyFrame::Model`]); this step keeps it.
 pub(super) fn apply_remote_player_viewer_role(
     entity_class: &str,
     descriptors: &[EntityTypeDescriptor],
@@ -91,6 +87,7 @@ pub(super) fn apply_remote_player_viewer_role(
         registry,
         id,
         PlayerViewerRole::Remote,
+        None,
     );
 }
 
@@ -251,6 +248,7 @@ pub(super) fn materialize_armed_local_pawn(
         registry,
         armed.entity_id,
         PlayerViewerRole::Local,
+        Some(BodyFrame::View),
     );
     !had_mesh
         && registry
@@ -286,6 +284,7 @@ pub(super) fn materialize_armed_remote_player(
             registry,
             remote.entity_id,
             PlayerViewerRole::Remote,
+            Some(BodyFrame::View),
         );
     }
     materialized
@@ -1277,6 +1276,44 @@ mod tests {
                 "moved",
                 "{role}: the live mesh was kept, not rebuilt"
             );
+        }
+    }
+
+    // The host's role step keeps the frame the slot body's transform spawned
+    // in. A re-accept after a hot reload that removed or added `movement`
+    // must not re-derive it from the current descriptors, or the body would
+    // draw half a turn from its transform.
+    #[test]
+    fn host_viewer_role_keeps_the_spawned_body_frame_whatever_the_descriptor_says_now() {
+        use postretro_entities::components::mesh::BodyFrame;
+
+        let with_movement = vec![player_mesh_descriptor("avatar")];
+        let mut without_movement = with_movement.clone();
+        without_movement[0].movement = None;
+        for (spawned, descriptors) in [
+            (BodyFrame::View, &without_movement),
+            (BodyFrame::Model, &with_movement),
+        ] {
+            let mut reg = EntityRegistry::new();
+            let id = spawn_transform_only(&mut reg);
+            assert!(
+                crate::scripting::builtins::net_descriptor::materialize_net_mesh_presentation(
+                    "avatar",
+                    descriptors,
+                    &mut reg,
+                    id,
+                    None,
+                )
+            );
+            let mut mesh = reg.get_component::<MeshComponent>(id).unwrap().clone();
+            mesh.body_frame = spawned;
+            reg.set_component(id, mesh).unwrap();
+
+            apply_remote_player_viewer_role("avatar", descriptors, &mut reg, id);
+
+            let mesh = reg.get_component::<MeshComponent>(id).unwrap();
+            assert_eq!(mesh.body_frame, spawned, "the spawn's frame stands");
+            assert!(!mesh.shadow_only, "a remote viewer still draws the body");
         }
     }
 

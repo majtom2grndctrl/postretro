@@ -64,7 +64,11 @@ The ceiling's probe stores the panel's animated light share on its −Y lobe and
 none on +Y; the floor's the reverse.
 
 The main floor probe captures from the floor's area centroid, which falls
-on the monument's plinth and moves just off its south edge. Glossy probes
-exclude no brush yet, so the monument hides most of the floor north of it
-from that point, and the build warns that the probe sees under half of its
-floor.
+on the monument's plinth and moves just off its south edge. Up-facing
+probes keep water's capture exclusion: the monument's brushes and the other
+brushes small against the floor leave the main floor probe's capture (`-v`
+logs 6 excluded brushes) and reflect in the floor only through its
+screen-space layer. The floor behind the monument
+keeps its probe term, and no "sees under half" warning appears. Wall,
+ceiling and slope probes capture every brush, so the north wall's term is
+withheld behind the pillar.

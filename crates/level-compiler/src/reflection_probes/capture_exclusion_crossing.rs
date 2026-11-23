@@ -43,6 +43,11 @@ pub(super) enum Exit {
     Open(f64),
     /// Into kept solid, or past the crossing bound.
     LeakGuard,
+    /// To the probe's reflector plane, inside the hull or its contact, at
+    /// this distance ([`ProbeExclusion::behind_from`]): the ray reads behind
+    /// the plane from there. A kept side crossed at or past it lies in the
+    /// plane's transparent faces' place, so it fills nothing.
+    Behind(f64),
 }
 
 impl ProbeExclusion<'_> {
@@ -73,6 +78,8 @@ impl ProbeExclusion<'_> {
         held: &mut HeldDepth,
     ) -> Crossing {
         let volumes = self.brushes.volumes;
+        let behind = self.behind_from(origin, direction);
+        let reaches_plane = |distance: f64| behind.filter(|&plane| distance >= plane);
         let mut reached = entry;
         let (enters, mut leaves) = self.span(self.excluded[slot], origin, direction);
         // The ray misses the hull: its hit on the face was a tolerance hit,
@@ -100,7 +107,13 @@ impl ProbeExclusion<'_> {
             let hull = &volumes[self.excluded[slot] as usize];
             let contacts = &self.contacts[slot];
             if let Some(fill) = self.fill(tracer, slot, (origin, direction), reached) {
-                return passed(Exit::Fill(fill));
+                return passed(match reaches_plane(f64::from(fill.distance)) {
+                    Some(plane) => Exit::Behind(plane),
+                    None => Exit::Fill(fill),
+                });
+            }
+            if let Some(plane) = reaches_plane(exit) {
+                return passed(Exit::Behind(plane));
             }
             // Where the ray is first inside `brush` at or past the exit, and
             // where it leaves it, when it holds the exit.

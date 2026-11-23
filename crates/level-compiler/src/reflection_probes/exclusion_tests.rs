@@ -107,6 +107,7 @@ impl ExclusionFixture {
                 face_brush: &self.face_brush,
                 geometry: &self.geometry,
                 environment_volumes: &self.environment,
+                world_faces: &[],
             },
             &self.probes,
             &ExclusionConstants::PRODUCTION,
@@ -123,6 +124,7 @@ impl ExclusionFixture {
                 face_brush: &self.face_brush,
                 geometry: &self.geometry,
                 environment_volumes: &self.environment,
+                world_faces: &[],
             },
             &self.probes,
         )
@@ -241,6 +243,7 @@ fn classify_with(brushes: &[BrushVolume], overrides: &[ReflectionCapture], width
             face_brush: &[],
             geometry: &geometry,
             environment_volumes: &environment,
+            world_faces: &[],
         },
         &[probe(width * width, Vec::new())],
     )
@@ -274,6 +277,7 @@ fn quad_brush_excluded(hull_min: [f64; 3], hull_max: [f64; 3], center: Vec3, deg
             face_brush: &[Some(0)],
             geometry: &geometry,
             environment_volumes: &environment,
+            world_faces: &[],
         },
         &[probe(100.0, vec![(0, 0)])],
     );
@@ -464,6 +468,7 @@ fn stage_sets_keep_only_brushes_touching_the_projection_box_floor_ignored() {
         face_brush: &[],
         geometry: &geometry,
         environment_volumes: &environment,
+        world_faces: &[],
     };
     let probes = [PlacedProbe {
         box_min: [0.0; 3],

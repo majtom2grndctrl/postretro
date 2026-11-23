@@ -63,7 +63,8 @@ pub(crate) fn served(
     Some(probe)
 }
 
-fn describe(source: &ReflectorSource) -> String {
+/// A reflector face as the placement warnings name it.
+pub(super) fn describe(source: &ReflectorSource) -> String {
     match source {
         ReflectorSource::Fluid { volume, face } => {
             format!("fluid face {face} of volume {volume}")

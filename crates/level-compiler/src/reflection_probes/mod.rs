@@ -61,6 +61,10 @@ mod capture_tests;
 #[cfg(test)]
 mod distance_tests;
 #[cfg(test)]
+mod exclusion_glossy_stage_tests;
+#[cfg(test)]
+mod exclusion_glossy_tests;
+#[cfg(test)]
 mod exclusion_stage_tests;
 #[cfg(test)]
 mod exclusion_tests;
@@ -72,6 +76,8 @@ mod glossy_census_tests;
 mod glossy_facing_tests;
 #[cfg(test)]
 mod glossy_placement_tests;
+#[cfg(test)]
+mod placement_cap_tests;
 #[cfg(test)]
 pub(crate) mod placement_test_fixtures;
 #[cfg(test)]
@@ -426,6 +432,7 @@ fn bake_or_load_with(
             face_brush: inputs.face_brushes,
             geometry: inputs.geometry,
             environment_volumes: inputs.environment_volumes,
+            world_faces: &world_faces,
         },
         &probes,
         constants,

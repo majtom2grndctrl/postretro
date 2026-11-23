@@ -16,7 +16,9 @@ use super::capture_point::PointClassifier;
 use super::derived::derive_probes;
 use super::facing::Facing;
 use super::hit::SceneTracer;
-use cap::{apply_probe_cap, apply_world_probe_cap};
+use cap::{
+    apply_probe_cap, binds_water, refuse_authored_water_past_cap, retain, world_probes_kept,
+};
 
 // The cap reads placement's probe records alone; a child keeps this file to
 // faces, groups and binding.
@@ -269,9 +271,11 @@ pub(crate) struct PlacementScene<'a> {
 /// in id-17 order). In order: authored capture points and their drops,
 /// binding among the kept boxes, dropping boxes that bind nothing, derived
 /// probes for the unclaimed faces and their drops, then the cap of `cap`
-/// probes. Authored probes past the cap refuse the build. Water's derived
-/// probes take the room the authored ones leave before any world probe, so
-/// world faces never cost water a probe.
+/// probes. Probes binding water come first under the cap: authored ones
+/// past it alone refuse the build, and water's derived probes take the room
+/// they leave, so world faces never cost water a probe. Probes binding
+/// world faces alone, authored or derived, take what water leaves, the
+/// smallest bound area dropping first.
 pub(crate) fn place_probes(
     volumes: &EnvironmentVolumesSection,
     authored: &[MapReflectionVolume],
@@ -282,14 +286,9 @@ pub(crate) fn place_probes(
     let mut faces = up_facing_faces(volumes);
     let fluid_count = faces.len();
     faces.extend(world_faces.iter().cloned());
+    let volumes_authored = authored;
     let authored = place_authored(&faces, authored, scene.classifier)?;
-    if authored.probes.len() > cap {
-        anyhow::bail!(
-            "{} reflection volumes keep a probe, past the {cap}-probe cap; remove or merge \
-             reflection volumes until at most {cap} remain",
-            authored.probes.len()
-        );
-    }
+    refuse_authored_water_past_cap(&authored.probes, volumes_authored, cap)?;
     let unclaimed = |range: std::ops::Range<usize>| -> Vec<&ReflectorFace> {
         faces[range.clone()]
             .iter()
@@ -297,16 +296,35 @@ pub(crate) fn place_probes(
             .filter_map(|(face, &claimed)| (!claimed).then_some(face))
             .collect()
     };
+    let authored_water = authored.probes.iter().filter(|p| binds_water(p)).count();
     let derived = derive_probes(&unclaimed(0..fluid_count), volumes, scene);
-    let mut probes = authored.probes;
-    probes.extend(apply_probe_cap(derived, cap - probes.len(), cap));
+    let derived = apply_probe_cap(derived, cap - authored_water, cap);
     let world = unclaimed(fluid_count..faces.len());
     let derived_world = derive_probes(&world, volumes, scene);
-    probes.extend(apply_world_probe_cap(
-        derived_world,
-        cap - probes.len(),
+    // Authored probes binding world faces alone, then derived world probes:
+    // one pool under the room water leaves.
+    let pool: Vec<&PlacedProbe> = authored
+        .probes
+        .iter()
+        .filter(|p| !binds_water(p))
+        .chain(&derived_world)
+        .collect();
+    let keep = world_probes_kept(
+        &pool,
+        volumes_authored,
+        cap - authored_water - derived.len(),
         cap,
-    ));
+    );
+    let (authored_world_keep, derived_world_keep) = keep.split_at(pool.len() - derived_world.len());
+    let mut authored_world_keep = authored_world_keep.iter().copied();
+    let authored_keep: Vec<bool> = authored
+        .probes
+        .iter()
+        .map(|p| binds_water(p) || authored_world_keep.next().expect("one flag per pool probe"))
+        .collect();
+    let mut probes = retain(authored.probes, &authored_keep);
+    probes.extend(derived);
+    probes.extend(retain(derived_world, derived_world_keep));
     Ok(probes)
 }
 

@@ -1,13 +1,22 @@
 // Reflection-probe capture exclusion's primary-ray trace: a ray's read through a probe's excluded hulls, fills and leak guard.
 // See: context/lib/resource_management.md §5.2 (Exclusion)
 
-use glam::Vec3;
+use glam::{DVec3, Vec3};
 
 use super::crossing::{Crossing, Exit};
 use super::{ProbeExclusion, RayOutcome};
 use crate::reflection_probes::capture_bounds::HeldDepth;
 use crate::reflection_probes::capture_fill::Fill;
 use crate::reflection_probes::hit::{FaceMask, MaskedHit, RAY_EPSILON, SceneTracer, SurfaceHit};
+use crate::reflection_probes::placement::CAPTURE_LIFT_M;
+
+/// A ray heading behind the reflector plane reads behind it from where it
+/// comes this close to the plane, along its normal: a quarter of the lift,
+/// so an excluded brush standing on the plane, whose base lies in it, is
+/// left behind it under any `f32` rounding of the plane or the capture
+/// point, and a kept side crossed this close to the plane, which would be a
+/// fill rebuilding the reflector under the brush, reads behind it too.
+pub(in crate::reflection_probes) const BEHIND_PLANE_TOLERANCE_M: f64 = CAPTURE_LIFT_M * 0.25;
 
 impl ProbeExclusion<'_> {
     /// The surface a primary ray from `origin` along unit `direction` reads.
@@ -32,7 +41,11 @@ impl ProbeExclusion<'_> {
     /// nor spends a hull pass. Kept solid that held an exit the ray passed
     /// over for a nearer excluded neighbour bounds every read after it: a
     /// kept hit, fill or exit into open space past its depth takes the leak
-    /// guard ([`HeldDepth`]). Every distance is from `origin`.
+    /// guard ([`HeldDepth`]). On a glossy probe, a ray heading behind its
+    /// reflector plane that reaches the plane inside or past an excluded
+    /// brush reads behind it instead, the excluded brushes absent and no fill
+    /// or leak guard applying ([`Self::behind_from`]). Every distance is
+    /// from `origin`.
     pub(crate) fn trace(
         &self,
         tracer: &SceneTracer<'_>,
@@ -74,6 +87,7 @@ impl ProbeExclusion<'_> {
             return hit.map_or(RayOutcome::Miss, RayOutcome::Hit);
         }
         let (origin64, direction64) = (origin.as_dvec3(), direction.as_dvec3());
+        let behind = self.behind_from(origin64, direction64);
         let brush_faces = self.brushes.faces;
         let mut min_distance = RAY_EPSILON;
         let mut first_skipped: Option<SurfaceHit> = None;
@@ -105,6 +119,20 @@ impl ProbeExclusion<'_> {
                 &ignored,
             );
             let Some(skipped) = skipped else {
+                // Past an excluded brush, a ray that reaches the reflector
+                // plane before its hit reads behind the plane.
+                if let (Some(first), Some(behind)) = (first_skipped, behind)
+                    && hit.is_none_or(|hit| f64::from(hit.distance) >= behind)
+                {
+                    return self.read_behind(
+                        tracer,
+                        (origin, direction),
+                        behind,
+                        max_distance,
+                        held,
+                        first,
+                    );
+                }
                 return self.settle(hit, first_skipped, held, origin, direction);
             };
             debug_assert!(
@@ -114,6 +142,19 @@ impl ProbeExclusion<'_> {
             // Recorded only on a crossing: a pass beside the hull that drops
             // the brush leaves it unset.
             let first = first_skipped.unwrap_or(skipped);
+            // An excluded brush behind the reflector plane is never reached.
+            if let Some(behind) = behind
+                && f64::from(skipped.distance) >= behind
+            {
+                return self.read_behind(
+                    tracer,
+                    (origin, direction),
+                    behind,
+                    max_distance,
+                    held,
+                    first,
+                );
+            }
             let slot = self.slot_of_face(skipped.face);
             debug_assert!(
                 slot.is_some(),
@@ -168,6 +209,17 @@ impl ProbeExclusion<'_> {
                         return self.filled(fill, hit, first, held, origin, direction);
                     }
                     Exit::LeakGuard => return RayOutcome::LeakGuard(first),
+                    // Inside the hull or its contact, to the reflector plane.
+                    Exit::Behind(behind) => {
+                        return self.read_behind(
+                            tracer,
+                            (origin, direction),
+                            behind,
+                            max_distance,
+                            held,
+                            first,
+                        );
+                    }
                     // Into open space inside kept solid passed over: the
                     // re-trace would read through it.
                     Exit::Open(exit) if !self.admits(held, exit) => {
@@ -243,5 +295,68 @@ impl ProbeExclusion<'_> {
             .copied()
             .flatten()?;
         self.excluded.binary_search(&brush).ok()
+    }
+
+    /// How far along the ray `(origin, unit direction)` it reads behind the
+    /// probe's reflector plane: where, heading behind the plane, it comes
+    /// within [`BEHIND_PLANE_TOLERANCE_M`] of it. `None` for a probe with no
+    /// transparent reflector plane (water's), or a ray not heading behind it.
+    ///
+    /// The plane's faces are absent from the probe's primary rays, so behind
+    /// it the probe captures only what lies under its reflector, which no
+    /// lookup reads but a horizon texel's mean. Excluded brushes stand on the
+    /// reflector: past the plane nothing hides behind them, and a ray reads
+    /// there with them absent, as through the transparent faces, with no
+    /// fill or leak guard. Crossing an excluded brush's base
+    /// therefore reads what a ray beside the brush reads through the open
+    /// reflector, not a fill rebuilding the reflector under it nor the leak
+    /// guard's brush face, so the brush leaves no capture shadow in the
+    /// horizon texels on the reflector behind it.
+    pub(in crate::reflection_probes) fn behind_from(
+        &self,
+        origin: DVec3,
+        direction: DVec3,
+    ) -> Option<f64> {
+        let plane = self.reflector_plane?;
+        let rate = plane.normal.dot(direction);
+        if rate >= 0.0 {
+            return None;
+        }
+        let ahead = plane.normal.dot(origin) - plane.height - BEHIND_PLANE_TOLERANCE_M;
+        Some((ahead / -rate).max(0.0))
+    }
+
+    /// What a ray reads behind the reflector plane from `from` along it:
+    /// the trace with the excluded brushes' faces absent as well as the
+    /// transparent ones, so neither a fill nor the leak guard applies there
+    /// and an excluded brush's base, within the tolerance of the plane,
+    /// shows nothing. Kept solid passed over before the plane (`held`)
+    /// still bounds it: the leak guard's brush `first` when the plane lies
+    /// past that depth.
+    pub(in crate::reflection_probes) fn read_behind(
+        &self,
+        tracer: &SceneTracer<'_>,
+        (origin, direction): (Vec3, Vec3),
+        from: f64,
+        max_distance: f32,
+        held: HeldDepth,
+        first: SurfaceHit,
+    ) -> RayOutcome {
+        if !self.admits(held, from) {
+            return RayOutcome::LeakGuard(first);
+        }
+        let none = FaceMask::default();
+        let absent = self.mask.union(&self.transparent);
+        tracer
+            .closest_hit_masked(
+                origin,
+                direction,
+                (from as f32).max(RAY_EPSILON),
+                max_distance,
+                &none,
+                &absent,
+            )
+            .hit
+            .map_or(RayOutcome::Miss, RayOutcome::Hit)
     }
 }

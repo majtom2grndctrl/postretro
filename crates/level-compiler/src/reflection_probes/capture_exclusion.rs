@@ -1,6 +1,8 @@
 // Reflection-probe capture exclusion: a probe's face mask, excluded-hull exit classification and the leak guard.
 // See: context/lib/resource_management.md §5.2 (Exclusion)
 
+use glam::{DVec3, Vec3};
+
 use super::capture_bounds::{HeldDepth, ProjectionBox};
 use super::capture_fill::{Fill, KeptCandidate};
 use super::hit::{FaceMask, SceneTracer, SurfaceHit};
@@ -86,6 +88,13 @@ pub(crate) struct ProbeExclusion<'a> {
     /// reflector plane ([`super::self_transparency`]); empty for water.
     transparent_faces: Vec<u32>,
     transparent: FaceMask,
+    /// The probe's facing normal: what "in front of" the reflector means.
+    facing: DVec3,
+    /// The frontmost plane of `transparent_faces` along `facing`; `None`
+    /// without them. A ray heading behind it reads past it with the
+    /// excluded brushes absent, no fill or leak guard (`trace`'s behind
+    /// read).
+    reflector_plane: Option<ReflectorPlane>,
     /// Per excluded brush, parallel to `excluded`: the brushes whose bounds
     /// touch its own within [`CONTACT_TOLERANCE_M`], among those touching the
     /// projection box. An exit point or a covering side's crossing lies within
@@ -103,6 +112,43 @@ pub(crate) struct ProbeExclusion<'a> {
     /// the no-leak oracle can show it catches the trace without it.
     #[cfg(test)]
     held_depth_check: HeldDepthCheck,
+}
+
+/// A probe's reflector plane: its transparent faces' frontmost height along
+/// its facing normal.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct ReflectorPlane {
+    pub normal: DVec3,
+    pub height: f64,
+}
+
+impl ReflectorPlane {
+    /// The frontmost of `faces` along `normal`, each at its vertices' mean
+    /// height; `None` for no face.
+    fn frontmost(tracer: &SceneTracer<'_>, normal: DVec3, faces: &[u32]) -> Option<Self> {
+        let geometry = tracer.geometry();
+        let section = &geometry.geometry;
+        faces
+            .iter()
+            .filter_map(|&face| {
+                let range = geometry.face_index_ranges.get(face as usize)?;
+                let start = range.index_offset as usize;
+                let indices = section
+                    .indices
+                    .get(start..start + range.index_count as usize)?;
+                let sum: f64 = indices
+                    .iter()
+                    .map(|&i| {
+                        Vec3::from(section.vertices[i as usize].position)
+                            .as_dvec3()
+                            .dot(normal)
+                    })
+                    .sum();
+                (!indices.is_empty()).then(|| sum / indices.len() as f64)
+            })
+            .max_by(f64::total_cmp)
+            .map(|height| Self { normal, height })
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -206,6 +252,8 @@ impl<'a> ProbeExclusion<'a> {
             mask,
             transparent_faces: Vec::new(),
             transparent: FaceMask::default(),
+            facing: probe.facing.normal(),
+            reflector_plane: None,
             contacts,
             kept,
             projection_box,
@@ -223,6 +271,7 @@ impl<'a> ProbeExclusion<'a> {
         faces: Vec<u32>,
     ) -> Self {
         self.transparent = tracer.face_mask(faces.iter().copied());
+        self.reflector_plane = ReflectorPlane::frontmost(tracer, self.facing, &faces);
         self.transparent_faces = faces;
         self
     }
@@ -230,6 +279,15 @@ impl<'a> ProbeExclusion<'a> {
     /// The faces absent from every primary ray, ascending.
     pub(crate) fn transparent_faces(&self) -> &[u32] {
         &self.transparent_faces
+    }
+
+    /// This exclusion with no reflector plane: a ray heading behind it
+    /// crosses excluded hulls as water's do, filling or taking the leak
+    /// guard at the plane. The behind read's control.
+    #[cfg(test)]
+    pub(super) fn without_behind_reads(mut self) -> Self {
+        self.reflector_plane = None;
+        self
     }
 
     /// This exclusion with reads past a [`HeldDepth`] admitted, as before

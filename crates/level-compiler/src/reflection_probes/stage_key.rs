@@ -13,7 +13,7 @@ use postretro_level_format::reflection_probes::{
 use super::capture::SUPERSAMPLE_OFFSETS;
 use super::capture_exclusion::ProbeExclusion;
 use super::emissive_factor::{AreaGlowFaces, EmissiveFaceFactors};
-use super::exclusion::ExclusionConstants;
+use super::exclusion::{ExclusionConstants, ScreenSpaceLayers, classifies};
 use super::placement::PlacedProbe;
 use super::prefilter::{colour_mip_count, key_bytes as prefilter_key_bytes};
 use super::reference::REFERENCE_MEAN_SAMPLES;
@@ -155,6 +155,14 @@ pub(super) fn cache_key(
         .collect();
     section("capture overrides", &overrides);
     section("exclusion constants", &constants.key_bytes());
+    // The floor layer's stride keys a glossy floor's thin rule; only a level
+    // with such a probe keys it, so a water-only level's key is unchanged.
+    if probes
+        .iter()
+        .any(|probe| classifies(probe) && ScreenSpaceLayers::of(probe).reads_floor_stride())
+    {
+        section("floor exclusion constants", &constants.floor_key_bytes());
+    }
     section("exclusions", &exclusion_bytes(inputs, exclusions));
     section(
         "sh volume",

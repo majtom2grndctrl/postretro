@@ -71,6 +71,7 @@ fn scene<'a>(inputs: &ReflectionProbeInputs<'a>) -> ExclusionScene<'a> {
         face_brush: inputs.face_brushes,
         geometry: inputs.geometry,
         environment_volumes: inputs.environment_volumes,
+        world_faces: &[],
     }
 }
 

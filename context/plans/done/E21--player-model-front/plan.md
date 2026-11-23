@@ -1,7 +1,7 @@
 # E21--player-model-front — plan of record
 
 mode: compact
-status: active
+status: done
 read at: 99cc0e0d5
 
 ## Corrections
@@ -42,9 +42,9 @@ None (brief has no open questions).
 | 15 Foot probes under drawn body on step/slope; model-space normal; heading = aim matches | `pose_inputs.rs` tests | achievable as stated | pass — `view_body_foot_probes_plant_the_drawn_feet_on_a_step`, `…normal_is_the_world_normal_in_the_drawn_frame`, `…match_aim_plus_turn_when_heading_is_aim`, `model_frame_body_foot_probes_keep_the_transform_rotation` |
 | 16 Host re-probe of client pawn uses presented heading + turn (R4) | `host_presentation.rs` / pose_inputs test | achievable as stated | pass — `host_seat_reprobe_plants_client_feet_under_the_presented_heading_plus_turn`, `presented_reprobe_plants_feet…` |
 | 17 Grep gate: no `--yaw 180` in `docs/` or content `license.txt`; only exo_red's `model.gltf` changes among assets | source-scanning test + `git diff --stat 83802575a -- content/` at review | achievable as stated | pass — `no_docs_page_or_content_licence_keeps_a_yaw_180_recipe`; `git diff --stat 83802575a -- content/` changes only exo_red's `model.gltf` and four `license.txt` |
-| 18 Manual: exo_red faces travel/aim, legs fold, shadow, ghost | owner, in-engine | manual | outstanding — owner, in-engine |
-| 19 Manual: feet plant strafing across a slope | owner, in-engine | manual | outstanding — owner, in-engine |
-| 20 Manual: re-convert exo_red / mutant with defaults gives +Z; `--help` says so | owner, Blender | manual | outstanding — owner, Blender |
+| 18 Manual: exo_red faces travel/aim, legs fold, shadow, ghost | owner, in-engine | manual | pass — owner, two-client run 2026-11-22: bodies face their view; legs behave as before |
+| 19 Manual: feet plant strafing across a slope | owner, in-engine | manual | pass — owner: legs and feet behave as expected |
+| 20 Manual: re-convert exo_red / mutant with defaults gives +Z; `--help` says so | owner, Blender | manual | outstanding — owner, Blender re-convert not yet run |
 
 ## Tasks
 

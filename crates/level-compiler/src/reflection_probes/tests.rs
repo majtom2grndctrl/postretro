@@ -132,6 +132,8 @@ pub(super) struct Extras {
     pub emissive_volumes: Vec<postretro_level_format::emissive::EmissiveVolumeRecord>,
     /// Id 62, when the room has an area light.
     pub area_glow: Option<postretro_level_format::area_glow::AreaGlowSection>,
+    /// `prl-build --glossy-reflections`.
+    pub glossy_reflections: bool,
 }
 
 impl Default for Extras {
@@ -148,6 +150,7 @@ impl Default for Extras {
             emissive: Vec::new(),
             emissive_volumes: Vec::new(),
             area_glow: None,
+            glossy_reflections: false,
         }
     }
 }
@@ -250,6 +253,7 @@ pub(super) fn with_inputs<R>(
         emissive_volumes: &extras.emissive_volumes,
         area_glow: extras.area_glow.as_ref(),
         prm_root: room.prm_dir.path(),
+        glossy_reflections: extras.glossy_reflections,
     })
 }
 
@@ -614,6 +618,7 @@ fn stage_key_under(
         let probes = place_probes(
             environment,
             inputs.reflection_volumes,
+            &[],
             &PlacementScene {
                 tracer: &tracer,
                 bounds: &bounds,

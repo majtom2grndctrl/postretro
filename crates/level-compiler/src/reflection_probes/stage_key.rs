@@ -115,13 +115,20 @@ pub(super) fn cache_key(
         {
             placement.extend_from_slice(&value.to_le_bytes());
         }
-        placement.extend_from_slice(&(probe.faces.len() as u64).to_le_bytes());
-        for &(volume, face) in &probe.faces {
+        placement.extend_from_slice(&(probe.fluid_faces.len() as u64).to_le_bytes());
+        for &(volume, face) in &probe.fluid_faces {
             placement.extend_from_slice(&volume.to_le_bytes());
+            placement.extend_from_slice(&face.to_le_bytes());
+        }
+        placement.extend_from_slice(&(probe.world_faces.len() as u64).to_le_bytes());
+        for face in &probe.world_faces {
             placement.extend_from_slice(&face.to_le_bytes());
         }
     }
     section("placement", &placement);
+    // The gate itself, not only the world faces it places: toggling it
+    // re-bakes even a map whose placement it leaves unchanged.
+    section("glossy reflections", &[u8::from(inputs.glossy_reflections)]);
     // Resolved values only: an edit that resolves the same keys the same.
     let overrides: Vec<u8> = inputs
         .capture_override
@@ -265,10 +272,11 @@ pub(super) fn cache_key(
     ))
 }
 
-/// Per probe: its excluded brushes and their post-cut faces (the mask), each
-/// excluded hull's planes (its exit test) and contacts, and every kept
-/// contact candidate's post-cut faces (the fill's pool), planes (kept solid)
-/// and sides (the fill's covering test, material and projection). CSG hides
+/// Per probe: its transparent faces, its excluded brushes and their post-cut
+/// faces (the mask), each excluded hull's planes (its exit test) and
+/// contacts, and every kept contact candidate's post-cut faces (the fill's
+/// pool), planes (kept solid) and sides (the fill's covering test, material
+/// and projection). CSG hides
 /// what an excluded hull buries, so the geometry alone does not necessarily
 /// tell a flush pillar from a sunk one.
 fn exclusion_bytes(
@@ -283,6 +291,7 @@ fn exclusion_bytes(
         }
     };
     for exclusion in exclusions {
+        u32s(&mut out, exclusion.transparent_faces());
         let excluded = exclusion.excluded();
         u32s(&mut out, excluded);
         for (slot, &brush) in excluded.iter().enumerate() {

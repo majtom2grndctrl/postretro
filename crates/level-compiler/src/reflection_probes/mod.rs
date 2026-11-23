@@ -1,6 +1,7 @@
 //! Reflection-probe capture stage (PRL id 54): place authored and derived
-//! probes over up-facing fluid faces, capture each probe's static world into
-//! an octahedral colour tile and a distance tile.
+//! probes over up-facing fluid faces and, behind `--glossy-reflections`,
+//! glossy world floors; capture each probe's static world into an
+//! octahedral colour tile and a distance tile.
 //! See: context/lib/resource_management.md §5 · build_pipeline.md §Compiler pipeline, §Build Cache
 
 mod animated_direct;
@@ -20,6 +21,7 @@ mod exclusion;
 mod exclusion_underside;
 mod glossy_census;
 mod glossy_materials;
+mod glossy_placement;
 mod hit;
 mod lightmap_sample;
 pub(crate) mod placement;
@@ -29,6 +31,7 @@ mod probe_log;
 mod reference;
 mod roster;
 mod sdf_lights;
+mod self_transparency;
 mod sh_sample;
 mod shading;
 mod share;
@@ -59,6 +62,8 @@ mod exclusion_tests;
 mod glossy_census_prl_tests;
 #[cfg(test)]
 mod glossy_census_tests;
+#[cfg(test)]
+mod glossy_placement_tests;
 #[cfg(test)]
 pub(crate) mod placement_test_fixtures;
 #[cfg(test)]
@@ -98,7 +103,7 @@ use box_fit::WorldBounds;
 use capture_brushes::{BrushFaces, CaptureBrushes};
 use capture_exclusion::ProbeExclusion;
 use capture_point::PointClassifier;
-use capture_visibility::warn_hidden_water;
+use capture_visibility::warn_hidden_reflectors;
 use delta_sample::DeltaShSampler;
 use emissive_factor::{AreaGlowFaces, EmissiveFaceFactors};
 use exclusion::{ExclusionConstants, ExclusionScene, classify_probes_within_boxes};
@@ -113,6 +118,7 @@ use probe_capture::capture_section;
 use probe_log::log_probes;
 use roster::{check_roster, references};
 use sdf_lights::SdfLights;
+use self_transparency::transparent_faces;
 use sh_sample::{PRODUCTION_PROBE_OCCLUSION, ShVolumeSampler};
 use shading::CaptureScene;
 use share::log_negative_references;
@@ -150,7 +156,9 @@ const STAGE_ID: &str = "reflection_probes";
 /// emissive volume `max × colour`; the key gains each volume's factor and
 /// faces.
 /// 16: id 54 version 3: six lobes (−Y appended, zero for water), a colour
-/// mip count (1), and a world binding list (empty).
+/// mip count (1), and a world binding list. Glossy placement added no
+/// version: the key gained the gate, each probe's world faces and its
+/// transparent faces, so no earlier entry can hit.
 const STAGE_VERSION: u32 = 16;
 
 /// What the stage reads. Everything here enters its cache key.
@@ -211,6 +219,10 @@ pub(crate) struct ReflectionProbeInputs<'a> {
     /// light's glow, `_glow` keying this stage and no lighting bake.
     pub area_glow: Option<&'a AreaGlowSection>,
     pub prm_root: &'a Path,
+    /// `prl-build --glossy-reflections`: glossy world floors take derived
+    /// probes. Off, every map bakes as it did before glossy placement, its
+    /// glossy materials included.
+    pub glossy_reflections: bool,
 }
 
 /// The bindings placement gives `environment` over a compiled static world,
@@ -231,6 +243,7 @@ pub(crate) fn placed_bindings(
     let probes = place_probes(
         environment,
         authored,
+        &[],
         &PlacementScene {
             tracer: &tracer,
             bounds: &bounds,
@@ -256,6 +269,7 @@ pub(crate) fn bake_or_load_reflection_probes(
         control,
         &ExclusionConstants::PRODUCTION,
         classify_probes_within_boxes,
+        Reflectors::SelfTransparent,
     )
 }
 
@@ -273,6 +287,7 @@ pub(crate) fn bake_or_load_under(
         control,
         constants,
         classify_probes_within_boxes,
+        Reflectors::SelfTransparent,
     )
 }
 
@@ -290,7 +305,39 @@ pub(crate) fn bake_or_load_unfiltered(
         control,
         &ExclusionConstants::PRODUCTION,
         |_, probes, _| vec![Vec::new(); probes.len()],
+        Reflectors::SelfTransparent,
     )
+}
+
+/// The stage with glossy probes' primary rays under `reflectors`: tests
+/// compare the self-transparent capture with the self-occluded ones it
+/// exists to avoid.
+#[cfg(test)]
+pub(crate) fn bake_or_load_with_reflectors(
+    inputs: &ReflectionProbeInputs<'_>,
+    reflectors: Reflectors,
+) -> anyhow::Result<Option<ReflectionProbesSection>> {
+    bake_or_load_with(
+        inputs,
+        None,
+        &BakeControl::unrestricted(),
+        &ExclusionConstants::PRODUCTION,
+        classify_probes_within_boxes,
+        reflectors,
+    )
+}
+
+/// What a glossy probe's primary rays pass through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reflectors {
+    /// Every face in its reflector plane, bound or not: production.
+    SelfTransparent,
+    /// Nothing: its own floor is in its capture.
+    #[cfg(test)]
+    Opaque,
+    /// Its bound faces alone: a coplanar matte face stays in its capture.
+    #[cfg(test)]
+    BoundOnly,
 }
 
 /// The stage, each placed probe's excluded set from `classify` under
@@ -301,17 +348,13 @@ fn bake_or_load_with(
     control: &BakeControl,
     constants: &ExclusionConstants,
     classify: impl FnOnce(&ExclusionScene<'_>, &[PlacedProbe], &ExclusionConstants) -> Vec<Vec<u32>>,
+    reflectors: Reflectors,
 ) -> anyhow::Result<Option<ReflectionProbesSection>> {
-    // Placement binds no glossy world face yet: the census reports the probes
-    // they will ask for, on every build, water or not.
-    glossy_census::report_census(
-        inputs.geometry,
-        inputs.texture_keys,
-        inputs.prm_root,
-        control.governor(),
-    );
+    // The census line reports on every build, gate on or off.
+    let world_faces = glossy_placement::glossy_world_faces(inputs, control.governor());
     if inputs.reflection_volumes.is_empty()
         && up_facing_faces(inputs.environment_volumes).is_empty()
+        && world_faces.is_empty()
     {
         return Ok(None);
     }
@@ -337,6 +380,7 @@ fn bake_or_load_with(
     let probes = place_probes(
         inputs.environment_volumes,
         inputs.reflection_volumes,
+        &world_faces,
         &PlacementScene {
             tracer: &tracer,
             bounds: &bounds,
@@ -390,10 +434,20 @@ fn bake_or_load_with(
         face_brushes: inputs.face_brushes,
         faces: &brush_faces,
     };
+    let transparent = match reflectors {
+        Reflectors::SelfTransparent => transparent_faces(inputs.geometry, &probes, &world_faces),
+        #[cfg(test)]
+        Reflectors::Opaque => vec![Vec::new(); probes.len()],
+        #[cfg(test)]
+        Reflectors::BoundOnly => probes.iter().map(|p| p.world_faces.clone()).collect(),
+    };
     let exclusions: Vec<ProbeExclusion<'_>> = probes
         .iter()
         .zip(&excluded)
-        .map(|(probe, set)| ProbeExclusion::new(&tracer, brushes, set, probe))
+        .zip(transparent)
+        .map(|((probe, set), faces)| {
+            ProbeExclusion::new(&tracer, brushes, set, probe).with_transparent_faces(&tracer, faces)
+        })
         .collect();
     for (index, exclusion) in exclusions.iter().enumerate() {
         log::info!(
@@ -423,7 +477,7 @@ fn bake_or_load_with(
     {
         log::info!("[cache] reflection_probes hit");
         log_probes(&section, &reports);
-        warn_hidden_water(&section, &probes, inputs.environment_volumes);
+        warn_hidden_reflectors(&section, &probes, inputs.environment_volumes, &world_faces);
         return Ok(Some(section));
     }
     log::info!("[cache] reflection_probes miss");
@@ -475,6 +529,6 @@ fn bake_or_load_with(
         cache.put(&key, &cache_payload(&section, &reports));
     }
     log_probes(&section, &reports);
-    warn_hidden_water(&section, &probes, inputs.environment_volumes);
+    warn_hidden_reflectors(&section, &probes, inputs.environment_volumes, &world_faces);
     Ok(Some(section))
 }

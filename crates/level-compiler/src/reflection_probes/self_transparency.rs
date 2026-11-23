@@ -1,0 +1,121 @@
+// Reflection-probe self-transparency: the static faces in a glossy probe's own reflector plane, absent from its primary rays.
+// See: context/lib/resource_management.md §5.4 (Placement)
+
+use glam::DVec3;
+
+use crate::geometry::GeometryResult;
+
+use super::placement::{
+    PLANE_TOLERANCE_M, PlacedProbe, ReflectorFace, ReflectorSource, UP_FACING_MIN_COS,
+};
+
+/// Each static face's plane as its triangles give it.
+pub(crate) struct FacePlanes {
+    /// Per id-17 face, its unit winding normal and area centroid; `None` for
+    /// a face with no triangle or no area.
+    planes: Vec<Option<(DVec3, DVec3)>>,
+}
+
+impl FacePlanes {
+    pub(crate) fn new(geometry: &GeometryResult) -> Self {
+        let section = &geometry.geometry;
+        let position =
+            |index: u32| DVec3::from(section.vertices[index as usize].position.map(f64::from));
+        let planes = geometry
+            .face_index_ranges
+            .iter()
+            .map(|range| {
+                let start = range.index_offset as usize;
+                let indices = section
+                    .indices
+                    .get(start..start + range.index_count as usize)?;
+                let (mut winding, mut weighted, mut area) = (DVec3::ZERO, DVec3::ZERO, 0.0);
+                for &[a, b, c] in indices.as_chunks::<3>().0 {
+                    let (a, b, c) = (position(a), position(b), position(c));
+                    let cross = (b - a).cross(c - a);
+                    let twice_area = cross.length();
+                    winding += cross;
+                    weighted += (a + b + c) / 3.0 * twice_area;
+                    area += twice_area;
+                }
+                let normal = winding.try_normalize()?;
+                (area > f64::EPSILON).then(|| (normal, weighted / area))
+            })
+            .collect();
+        Self { planes }
+    }
+
+    /// The static faces in the plane of `probe`'s bound world faces, facing
+    /// as they do, ascending; empty for a probe binding none. `world_faces`
+    /// holds the placed world faces in id-17 order.
+    ///
+    /// The capture point sits 2 mm off that plane, so a face in it fills the
+    /// texels at the capture's horizon with hits a few centimetres away, and
+    /// the capture-shadow test then withholds the reflector's own fragments
+    /// beyond them. Nothing in the plane can show in the reflection, which
+    /// leaves the plane, so every face there is transparent, bound or not:
+    /// water is likewise absent from every capture, and a flush inlay's
+    /// surround or a matte strip crossing a glossy floor casts no capture
+    /// shadow either. Faces facing the other way are back faces from the
+    /// capture point, which the trace already skips.
+    pub(crate) fn reflector_plane_faces(
+        &self,
+        probe: &PlacedProbe,
+        world_faces: &[ReflectorFace],
+    ) -> Vec<u32> {
+        let bound: Vec<&ReflectorFace> = probe
+            .world_faces
+            .iter()
+            .filter_map(|&face| {
+                let source = ReflectorSource::World { face };
+                let at = world_faces
+                    .binary_search_by_key(&source, |f| f.source)
+                    .ok()?;
+                Some(&world_faces[at])
+            })
+            .collect();
+        let Some(normal) = bound
+            .iter()
+            .map(|face| face.geometry.normal * face.geometry.area)
+            .sum::<DVec3>()
+            .try_normalize()
+        else {
+            return Vec::new();
+        };
+        let (low, high) = bound
+            .iter()
+            .map(|face| face.geometry.centroid.dot(normal))
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), h| {
+                (lo.min(h), hi.max(h))
+            });
+        self.planes
+            .iter()
+            .enumerate()
+            .filter_map(|(face, plane)| {
+                let (face_normal, centroid) = (*plane)?;
+                let height = centroid.dot(normal);
+                (face_normal.dot(normal) >= UP_FACING_MIN_COS
+                    && height > low - PLANE_TOLERANCE_M
+                    && height < high + PLANE_TOLERANCE_M)
+                    .then_some(face as u32)
+            })
+            .collect()
+    }
+}
+
+/// Each probe's transparent faces ([`FacePlanes::reflector_plane_faces`]),
+/// parallel to `probes`: empty for a probe binding no world face.
+pub(crate) fn transparent_faces(
+    geometry: &GeometryResult,
+    probes: &[PlacedProbe],
+    world_faces: &[ReflectorFace],
+) -> Vec<Vec<u32>> {
+    if probes.iter().all(|probe| probe.world_faces.is_empty()) {
+        return vec![Vec::new(); probes.len()];
+    }
+    let planes = FacePlanes::new(geometry);
+    probes
+        .iter()
+        .map(|probe| planes.reflector_plane_faces(probe, world_faces))
+        .collect()
+}

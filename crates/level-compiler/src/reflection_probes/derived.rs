@@ -1,4 +1,4 @@
-// Derived reflection probes: one per group of unclaimed up-facing faces whose fitted boxes match.
+// Derived reflection probes: one per group of unclaimed up-facing reflector faces whose fitted boxes match.
 // See: context/lib/resource_management.md §5.1
 
 use glam::DVec3;
@@ -8,7 +8,8 @@ use rayon::prelude::*;
 use super::box_fit::{fit_box, fit_rays};
 use super::capture_point::capture_point_over;
 use super::placement::{
-    CAPTURE_LIFT_M, PlacedProbe, PlacementScene, UpFacingFace, plane_heights, plane_of,
+    CAPTURE_LIFT_M, PlacedProbe, PlacementScene, ReflectorFace, ReflectorSource,
+    WORLD_SOURCE_ENTITY, plane_heights, plane_of,
 };
 
 /// Two faces' fitted boxes match when each of their six bounds agrees within
@@ -20,17 +21,21 @@ pub(crate) const FIT_MATCH_TOLERANCE_M: f64 = 0.25;
 
 type FittedBox = (DVec3, DVec3);
 
-/// Derived probes for `faces` (the unclaimed ones, in id-52 order), in fluid
-/// entity order, then by each group's first face. Each face fits its own box
-/// from its own area centroid; a group is a connected component of the
-/// box-match relation among one fluid entity's faces at one plane height, so
-/// face order never changes it. The group stores the union box and captures
-/// from its horizontal area centroid, 2 mm above its plane, moved clear of a
-/// wall within [`super::capture_point::CAPTURE_CLEARANCE_M`]. A probe whose
-/// point is in solid, inside any fluid or outside the hull drops, warned
-/// with its fluid entity; its faces bind nothing.
+/// Derived probes for `faces`: the unclaimed fluid faces in id-52 order, or
+/// the glossy world floors in id-17 order. Water's probes come in fluid
+/// entity order, then by each group's first face; the static world is one
+/// source. Each face fits its own box from its own area centroid; a group is
+/// a connected component of the box-match relation among one source's faces
+/// at one plane height, so face order never changes it, and a matte strip
+/// or a non-glossy surround splitting a floor into pieces never splits its
+/// probe: probe boundaries belong behind occluders, not in open floor. The
+/// group stores the union box and captures from its horizontal area
+/// centroid, 2 mm above its plane, moved clear of a wall within
+/// [`super::capture_point::CAPTURE_CLEARANCE_M`]. A probe whose point is in
+/// solid, inside any fluid or outside the hull drops, warned with its
+/// source; its faces bind nothing.
 pub(crate) fn derive_probes(
-    faces: &[&UpFacingFace],
+    faces: &[&ReflectorFace],
     volumes: &EnvironmentVolumesSection,
     scene: &PlacementScene<'_>,
 ) -> Vec<PlacedProbe> {
@@ -49,9 +54,12 @@ pub(crate) fn derive_probes(
     let mut probes = Vec::new();
     let mut start = 0;
     while start < faces.len() {
-        let volume = faces[start].volume;
-        let end = start + faces[start..].partition_point(|f| f.volume == volume);
-        let source_entity = volumes.volumes[volume as usize].source_entity;
+        let source = probe_source(faces[start]);
+        let end = start + faces[start..].partition_point(|f| probe_source(f) == source);
+        let source_entity = match source {
+            Some(volume) => volumes.volumes[volume as usize].source_entity,
+            None => WORLD_SOURCE_ENTITY,
+        };
         let heights = plane_heights(faces[start..end].iter().map(|f| f.geometry.plane_height()));
         let mut groups: Vec<Vec<usize>> = Vec::new();
         for &plane in &heights {
@@ -74,14 +82,23 @@ pub(crate) fn derive_probes(
     probes
 }
 
+/// The source a face's derived probe is grouped under: its fluid volume, or
+/// `None` for the static world.
+fn probe_source(face: &ReflectorFace) -> Option<u32> {
+    match face.source {
+        ReflectorSource::Fluid { volume, .. } => Some(volume),
+        ReflectorSource::World { .. } => None,
+    }
+}
+
 fn group_probe(
     source_entity: u32,
-    faces: &[&UpFacingFace],
+    faces: &[&ReflectorFace],
     boxes: &[FittedBox],
     group: &[usize],
     scene: &PlacementScene<'_>,
 ) -> Option<PlacedProbe> {
-    let members: Vec<&UpFacingFace> = group.iter().map(|&i| faces[i]).collect();
+    let members: Vec<&ReflectorFace> = group.iter().map(|&i| faces[i]).collect();
     let (mut lo, mut hi) = boxes[group[0]];
     for &i in group {
         lo = lo.min(boxes[i].0);
@@ -102,11 +119,19 @@ fn group_probe(
     let capture_point = match scene.classifier.settle(raw, box_min, box_max, &members) {
         Ok(point) => point,
         Err((point, fault)) => {
-            log::warn!(
-                "[ReflectionProbes] derived probe of fluid entity {source_entity}: capture \
-                 point {:?} is {fault}; dropped, its faces reflect nothing",
-                point.to_array(),
-            );
+            match members[0].world_face() {
+                None => log::warn!(
+                    "[ReflectionProbes] derived probe of fluid entity {source_entity}: capture \
+                     point {:?} is {fault}; dropped, its faces reflect nothing",
+                    point.to_array(),
+                ),
+                Some(face) => log::warn!(
+                    "[ReflectionProbes] derived probe of glossy world face {face} and {} more: \
+                     capture point {:?} is {fault}; dropped, its faces reflect nothing",
+                    members.len() - 1,
+                    point.to_array(),
+                ),
+            }
             return None;
         }
     };
@@ -117,7 +142,8 @@ fn group_probe(
         box_max: box_max.to_array(),
         capture_point: capture_point.to_array(),
         bound_area: members.iter().map(|m| m.geometry.area).sum(),
-        faces: members.iter().map(|m| (m.volume, m.face)).collect(),
+        fluid_faces: members.iter().filter_map(|m| m.fluid_face()).collect(),
+        world_faces: members.iter().filter_map(|m| m.world_face()).collect(),
     })
 }
 

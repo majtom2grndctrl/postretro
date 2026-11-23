@@ -17,7 +17,7 @@ use super::capture::{
     F16_MIN_POSITIVE, SUPERSAMPLE_OFFSETS, TILE_INTERIOR, distance_bits, encode_distance_tile,
     inverse_l1_distance, octahedral_direction,
 };
-use super::capture_visibility::{CAPTURE_SHADOW_MARGIN, DistanceTile, warn_hidden_water};
+use super::capture_visibility::{CAPTURE_SHADOW_MARGIN, DistanceTile, warn_hidden_reflectors};
 use super::placement::PlacedProbe;
 use super::reflection_probes_test_fixtures::{
     GeometryBuilder, fluid_volume, rect, up_rect, volumes,
@@ -288,13 +288,14 @@ fn a_capture_point_that_sees_under_half_its_water_warns() {
         box_max: record.box_max,
         capture_point: record.capture_point,
         bound_area: 0.0,
-        faces: section
+        world_faces: Vec::new(),
+        fluid_faces: section
             .fluid_bindings
             .iter()
             .map(|b| (b.volume, b.face))
             .collect(),
     };
-    warn_hidden_water(&section, &[derived], &l_pool());
+    warn_hidden_reflectors(&section, &[derived], &l_pool(), &[]);
     logs.assert_logged_once(LogLevel::Warn, "probe 0 of entity 5: its capture point");
     logs.assert_logged_once(
         LogLevel::Warn,

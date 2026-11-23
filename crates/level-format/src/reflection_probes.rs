@@ -99,8 +99,8 @@ pub struct ReflectionProbesSection {
     pub atlas_format: u32,
     /// Colour mips per probe, at least 1; every mip whole 4×4 blocks.
     pub colour_mip_count: u32,
-    /// Authored probes in map entity order, then derived probes in fluid
-    /// entity order.
+    /// Authored probes in map entity order, then derived water probes in
+    /// fluid entity order, then derived glossy world-face probes.
     pub probes: Vec<ReflectionProbeRecord>,
     /// Fluid faces in EnvironmentVolumes (id 52) numbering.
     pub fluid_bindings: Vec<ReflectionProbeFluidBinding>,

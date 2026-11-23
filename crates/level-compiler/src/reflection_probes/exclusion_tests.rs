@@ -76,6 +76,7 @@ impl ExclusionFixture {
             place_probes(
                 &environment,
                 &map.reflection_volumes,
+                &[],
                 &PlacementScene {
                     tracer: &tracer,
                     bounds: &bounds,
@@ -216,7 +217,8 @@ fn probe(bound_area: f64, faces: Vec<(u32, u32)>) -> PlacedProbe {
         box_max: [100.0; 3],
         capture_point: [0.0; 3],
         bound_area,
-        faces,
+        fluid_faces: faces,
+        world_faces: Vec::new(),
     }
 }
 
@@ -815,7 +817,12 @@ fn deck_between_two_bound_planes_is_kept_over_the_lower_water_and_excluded_under
         );
         assert_eq!(fixture.probes.len(), 1, "{:?}", fixture.probes);
         assert!(fixture.probes[0].authored);
-        assert_eq!(fixture.probes[0].faces.len(), 2, "{:?}", fixture.probes[0]);
+        assert_eq!(
+            fixture.probes[0].fluid_faces.len(),
+            2,
+            "{:?}",
+            fixture.probes[0]
+        );
         let brush = fixture.brush(deck.0, deck.1);
         let excluded = fixture.only_probe_excluded();
         assert_eq!(!excluded.contains(&brush), kept, "{deck:?}: {excluded:?}");

@@ -6,7 +6,7 @@ use glam::{DVec3, Vec3};
 use crate::map_data::MapReflectionVolume;
 
 use super::capture_point::{PointClassifier, capture_point_over};
-use super::placement::{PLANE_TOLERANCE_M, PlacedProbe, UpFacingFace, plane_heights, tied};
+use super::placement::{PLANE_TOLERANCE_M, PlacedProbe, ReflectorFace, plane_heights, tied};
 
 /// The authored probes kept, in map entity order, and which faces (indexed
 /// as the faces passed in) they claimed.
@@ -42,7 +42,7 @@ impl Candidate<'_> {
 /// kept box that binds nothing drops too: it claimed nothing, so nothing
 /// rebinds.
 pub(crate) fn place_authored(
-    faces: &[UpFacingFace],
+    faces: &[ReflectorFace],
     authored: &[MapReflectionVolume],
     classifier: &PointClassifier<'_>,
 ) -> anyhow::Result<AuthoredPlacement> {
@@ -56,7 +56,7 @@ pub(crate) fn place_authored(
             max,
             capture: DVec3::ZERO,
         };
-        let inside: Vec<&UpFacingFace> = faces
+        let inside: Vec<&ReflectorFace> = faces
             .iter()
             .filter(|face| candidate.contains(face.geometry.centroid))
             .collect();
@@ -123,10 +123,11 @@ pub(crate) fn place_authored(
             box_max: candidate.volume.max,
             capture_point: candidate.capture.as_vec3().to_array(),
             bound_area: members.iter().map(|&i| faces[i].geometry.area).sum(),
-            faces: members
+            fluid_faces: members
                 .iter()
-                .map(|&i| (faces[i].volume, faces[i].face))
+                .filter_map(|&i| faces[i].fluid_face())
                 .collect(),
+            world_faces: Vec::new(),
         });
     }
     Ok(AuthoredPlacement { probes, claimed })
@@ -152,13 +153,13 @@ fn warn_binds_no_face(volume: &MapReflectionVolume) {
 /// a wall.
 fn authored_capture_point<'f>(
     candidate: &Candidate<'_>,
-    inside: &[&'f UpFacingFace],
-) -> anyhow::Result<(DVec3, Vec<&'f UpFacingFace>)> {
+    inside: &[&'f ReflectorFace],
+) -> anyhow::Result<(DVec3, Vec<&'f ReflectorFace>)> {
     let lowest = inside
         .iter()
         .map(|face| face.geometry.plane_height())
         .fold(f64::INFINITY, f64::min);
-    let lowest_faces: Vec<&UpFacingFace> = inside
+    let lowest_faces: Vec<&ReflectorFace> = inside
         .iter()
         .copied()
         .filter(|face| face.geometry.plane_height() - lowest < PLANE_TOLERANCE_M)

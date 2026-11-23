@@ -1,14 +1,10 @@
 // Glossy world-face census: reflector faces grouped by plane and edge contact, the probe count they would ask for.
 // See: context/lib/resource_management.md §5.1, §5.4
 
-use std::collections::HashMap;
-use std::path::Path;
-
 use glam::DVec3;
 use postretro_level_format::reflection_probes::MAX_REFLECTION_PROBES;
 
 use crate::geometry::GeometryResult;
-use crate::governor::Governor;
 
 use super::glossy_materials::GlossyMaterials;
 use super::placement::{PLANE_TOLERANCE_M, UP_FACING_MIN_COS};
@@ -75,20 +71,15 @@ pub(crate) fn take_census(geometry: &GeometryResult, materials: &GlossyMaterials
     }
 }
 
-/// Reads each material `geometry` uses once and logs the census's line:
-/// the stage's report until placement binds glossy faces.
-pub(crate) fn report_census(
-    geometry: &GeometryResult,
-    texture_keys: &HashMap<String, [u8; 32]>,
-    prm_root: &Path,
-    governor: &Governor,
-) {
-    let materials = GlossyMaterials::read(geometry, texture_keys, prm_root, governor);
-    log_census(&take_census(geometry, &materials));
+/// Logs the census's line under `materials`' verdicts: on every build, the
+/// opt-in check whether or not glossy placement runs.
+pub(crate) fn report_census(geometry: &GeometryResult, materials: &GlossyMaterials) {
+    log_census(&take_census(geometry, materials));
 }
 
-/// The census's report line. Placement does not bind glossy faces yet; the
-/// group count is the probe estimate they will ask for against the cap.
+/// The census's report line. The group count is the probe estimate glossy
+/// faces ask for against the cap; placement, when it runs, groups floors by
+/// plane and fitted box instead, so its count can differ.
 fn log_census(census: &GlossyCensus) {
     log::info!(
         "[ReflectionProbes] glossy census: {} of {} material(s) reflect; {} world face(s) on {} \

@@ -9,7 +9,7 @@ use postretro_level_format::environment_volumes::{EnvironmentBrush, EnvironmentV
 
 use crate::partition::{BspTree, find_leaf_for_point};
 
-use super::placement::{CAPTURE_LIFT_M, UpFacingFace};
+use super::placement::{CAPTURE_LIFT_M, ReflectorFace};
 
 /// A centroid moved onto the water lands this far inside the face it lands
 /// on, toward that face's own centroid (at most halfway): a point exactly on
@@ -34,7 +34,7 @@ const OVER_WATER_EPSILON_M: f64 = 1.0e-6;
 /// Horizontal area centroid of `faces`, [`CAPTURE_LIFT_M`] above `plane`.
 /// A centroid not over any of their water moves to the nearest point on
 /// them, inset by [`NEAREST_POINT_INSET_M`]. `faces` is non-empty.
-pub(crate) fn capture_point_over(faces: &[&UpFacingFace], plane: f64) -> DVec3 {
+pub(crate) fn capture_point_over(faces: &[&ReflectorFace], plane: f64) -> DVec3 {
     let mut area = 0.0;
     let mut weighted = DVec2::ZERO;
     for face in faces {
@@ -43,7 +43,7 @@ pub(crate) fn capture_point_over(faces: &[&UpFacingFace], plane: f64) -> DVec3 {
         weighted += DVec2::new(g.centroid.x, g.centroid.z) * g.area;
     }
     let centroid = weighted / area;
-    let mut nearest: Option<(f64, DVec2, &UpFacingFace)> = None;
+    let mut nearest: Option<(f64, DVec2, &ReflectorFace)> = None;
     for face in faces {
         let (point, distance) = nearest_point_on_polygon(centroid, &face.outline);
         // Strict: ties go to the earlier face, so the point is order-stable
@@ -187,7 +187,7 @@ impl<'a> PointClassifier<'a> {
         raw: DVec3,
         box_min: Vec3,
         box_max: Vec3,
-        water: &[&UpFacingFace],
+        water: &[&ReflectorFace],
     ) -> Result<Vec3, (Vec3, PointFault)> {
         if let Some(fault) = self.own_fault(raw) {
             return Err((raw.as_vec3(), fault));
@@ -283,7 +283,7 @@ impl<'a> PointClassifier<'a> {
 }
 
 /// Whether `point` lies over any of `faces`' water, horizontally.
-fn over_water(point: DVec3, faces: &[&UpFacingFace]) -> bool {
+fn over_water(point: DVec3, faces: &[&ReflectorFace]) -> bool {
     let p = DVec2::new(point.x, point.z);
     faces
         .iter()
@@ -352,7 +352,7 @@ mod tests {
             let classifier =
                 PointClassifier::new(&fixture.tree, &fixture.exterior, &fixture.environment);
             let faces = fixture.up_faces();
-            let water: Vec<&UpFacingFace> = faces.iter().collect();
+            let water: Vec<&ReflectorFace> = faces.iter().collect();
             let (box_min, box_max) = engine_box([48.0, 48.0, 0.0], [216.0, 208.0, 96.0]);
             let raw = engine([144.3, 128.0, 32.0]) + DVec3::Y * CAPTURE_LIFT_M;
             assert_eq!(classifier.fault(raw), Some(PointFault::Crowded));

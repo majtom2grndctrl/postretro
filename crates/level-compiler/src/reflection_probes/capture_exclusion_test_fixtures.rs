@@ -401,6 +401,7 @@ impl CaptureFixture {
             emissive_volumes: &[],
             area_glow: None,
             prm_root: self.prm_dir.path(),
+            glossy_reflections: false,
         })
     }
 

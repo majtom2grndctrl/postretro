@@ -142,6 +142,7 @@ pub(crate) struct ExclusionScene<'a> {
 /// `Never`, or follows the rule (`Auto`) and is smaller than the probe's
 /// threshold in the reflector's plane, at least the floor thick along its
 /// normal, and has no underside over the probe's water. `Always` keeps.
+/// A probe the rule does not classify ([`classifies`]) excludes nothing.
 /// Every brush of the map is classified for every probe, under the
 /// production constants.
 #[cfg(test)]
@@ -194,6 +195,9 @@ fn classify(
     probes
         .iter()
         .map(|probe| {
+            if !classifies(probe) {
+                return Vec::new();
+            }
             let width = water_width(probe);
             let (threshold, floor) = (constants.size_threshold(width), constants.thin_floor(width));
             let water = bound_water(scene.environment_volumes, probe, &basis);
@@ -220,6 +224,14 @@ fn classify(
                 .collect()
         })
         .collect()
+}
+
+/// Whether the rule classifies `probe`'s brushes. Its width and underside
+/// tests read bound water alone, so a probe binding a glossy world face
+/// excludes nothing and captures every static brush until they read its
+/// bound world faces too.
+pub(crate) fn classifies(probe: &PlacedProbe) -> bool {
+    probe.world_faces.is_empty()
 }
 
 /// W: the side of a square holding the probe's bound water, in metres.

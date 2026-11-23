@@ -52,7 +52,7 @@ pub(super) fn bound_water(
     basis: &PlaneBasis,
 ) -> Vec<WaterFace> {
     probe
-        .faces
+        .fluid_faces
         .iter()
         .filter_map(|&(volume, face)| {
             let surface = environment

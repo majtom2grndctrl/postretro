@@ -2227,6 +2227,7 @@ fn run_after_parsing(
             emissive_volumes: &emissive_section.volumes,
             area_glow: area_glow_section.as_ref(),
             prm_root: &prm_root,
+            glossy_reflections: args.glossy_reflections,
         },
         stage_cache.as_ref(),
         &reflection_control,

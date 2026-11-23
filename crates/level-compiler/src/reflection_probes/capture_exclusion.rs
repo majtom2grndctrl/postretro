@@ -82,6 +82,10 @@ pub(crate) struct ProbeExclusion<'a> {
     excluded: Vec<u32>,
     /// Their surviving faces.
     mask: FaceMask,
+    /// Faces absent from every primary ray, sorted: a glossy probe's
+    /// reflector plane ([`super::self_transparency`]); empty for water.
+    transparent_faces: Vec<u32>,
+    transparent: FaceMask,
     /// Per excluded brush, parallel to `excluded`: the brushes whose bounds
     /// touch its own within [`CONTACT_TOLERANCE_M`], among those touching the
     /// projection box. An exit point or a covering side's crossing lies within
@@ -200,12 +204,32 @@ impl<'a> ProbeExclusion<'a> {
             brushes,
             excluded,
             mask,
+            transparent_faces: Vec::new(),
+            transparent: FaceMask::default(),
             contacts,
             kept,
             projection_box,
             #[cfg(test)]
             held_depth_check: HeldDepthCheck::Bounds,
         }
+    }
+
+    /// This exclusion with `faces` (sorted id-17 faces) absent from every
+    /// primary ray, as if the static world lacked them. Shadow rays and the
+    /// box fit trace the whole world, so they still see them.
+    pub(crate) fn with_transparent_faces(
+        mut self,
+        tracer: &SceneTracer<'_>,
+        faces: Vec<u32>,
+    ) -> Self {
+        self.transparent = tracer.face_mask(faces.iter().copied());
+        self.transparent_faces = faces;
+        self
+    }
+
+    /// The faces absent from every primary ray, ascending.
+    pub(crate) fn transparent_faces(&self) -> &[u32] {
+        &self.transparent_faces
     }
 
     /// This exclusion with reads past a [`HeldDepth`] admitted, as before
@@ -278,9 +302,10 @@ impl<'a> ProbeExclusion<'a> {
     }
 
     /// The surface a primary ray from `origin` along unit `direction` reads.
-    /// With nothing excluded this is the plain closest hit. Otherwise each
-    /// excluded brush the ray skips is crossed in turn, its hull exit read by
-    /// the neighbour the ray is inside first past it: another excluded brush
+    /// Transparent faces are absent throughout. With nothing excluded this
+    /// is the plain closest hit. Otherwise each excluded brush the ray skips
+    /// is crossed in turn, its hull exit read by the neighbour the ray is
+    /// inside first past it: another excluded brush
     /// continues from that brush's exit, and kept solid takes the leak guard.
     /// Into empty space it traces on from the exit under the same mask.
     /// Before its exit is classified, a ray that crosses into a kept brush
@@ -322,9 +347,22 @@ impl<'a> ProbeExclusion<'a> {
     ) -> RayOutcome {
         *hull_passes = 0;
         if self.is_empty() {
-            return tracer
-                .closest_hit(origin, direction, max_distance)
-                .map_or(RayOutcome::Miss, RayOutcome::Hit);
+            let hit = if self.transparent.is_empty() {
+                tracer.closest_hit(origin, direction, max_distance)
+            } else {
+                let none = FaceMask::default();
+                tracer
+                    .closest_hit_masked(
+                        origin,
+                        direction,
+                        RAY_EPSILON,
+                        max_distance,
+                        &none,
+                        &self.transparent,
+                    )
+                    .hit
+            };
+            return hit.map_or(RayOutcome::Miss, RayOutcome::Hit);
         }
         let (origin64, direction64) = (origin.as_dvec3(), direction.as_dvec3());
         let brush_faces = self.brushes.faces;
@@ -333,9 +371,9 @@ impl<'a> ProbeExclusion<'a> {
         // The least depth of kept solid passed over at any exit so far.
         let mut held = HeldDepth::NONE;
         // The excluded brushes the ray passes beside, and their faces, which
-        // the trace ignores from then on.
+        // the trace ignores from then on beside the transparent ones.
         let mut beside: Vec<u32> = Vec::new();
-        let mut ignored = FaceMask::default();
+        let mut ignored = self.transparent.clone();
         // Each hull pass moves past one excluded hull, so the excluded set
         // bounds them; a ray re-entering hulls past that takes the guard, as
         // does a grazing ray that spends its passes re-entering the same
@@ -410,7 +448,7 @@ impl<'a> ProbeExclusion<'a> {
                     let passed = beside
                         .iter()
                         .flat_map(|&b| brush_faces.of(b).iter().copied());
-                    ignored = tracer.face_mask(passed);
+                    ignored = tracer.face_mask(passed).union(&self.transparent);
                 }
                 // A pass beside the hull reads as a crossing would.
                 Crossing::Through(exit) | Crossing::Beside(Some(exit)) => match exit {

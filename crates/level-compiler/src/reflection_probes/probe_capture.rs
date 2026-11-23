@@ -12,7 +12,7 @@ use crate::bake_control::BakeControl;
 
 use super::capture::{RowCapture, TILE_INTERIOR, capture_row, encode_distance_tile, encode_tile};
 use super::capture_exclusion::ProbeExclusion;
-use super::placement::{PlacedProbe, fluid_bindings};
+use super::placement::{PlacedProbe, fluid_bindings, world_bindings};
 use super::shading::CaptureScene;
 use super::share::{ShareReport, ShareSums};
 
@@ -124,8 +124,7 @@ pub(super) fn capture_probes(
             })
             .collect(),
         fluid_bindings: fluid_bindings(probes),
-        // No world face binds until glossy placement lands.
-        world_bindings: Vec::new(),
+        world_bindings: world_bindings(probes),
         tiles: tiles.concat(),
         distance_format: REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
         distances,

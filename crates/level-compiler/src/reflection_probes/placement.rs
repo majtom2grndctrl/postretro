@@ -1,9 +1,11 @@
-// Reflection-probe placement: up-facing fluid faces, authored and derived probes, drops, binding and the cap.
+// Reflection-probe placement: up-facing reflector faces, authored and derived probes, drops, binding and the cap.
 // See: context/lib/resource_management.md §5.1
 
 use glam::{DVec2, DVec3, Vec3};
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
-use postretro_level_format::reflection_probes::ReflectionProbeFluidBinding;
+use postretro_level_format::reflection_probes::{
+    ReflectionProbeFluidBinding, ReflectionProbeWorldBinding,
+};
 
 use crate::governor::Governor;
 use crate::map_data::MapReflectionVolume;
@@ -87,19 +89,46 @@ impl FaceGeometry {
     }
 }
 
-/// An up-facing fluid face in EnvironmentVolumes (id 52) numbering.
+/// Where a reflector face comes from: the numbering its binding uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum ReflectorSource {
+    /// A fluid surface face, in EnvironmentVolumes (id 52) numbering.
+    Fluid { volume: u32, face: u32 },
+    /// A static world face whose material reflects, in Geometry (id 17)
+    /// numbering.
+    World { face: u32 },
+}
+
+/// An up-facing face a probe can bind: water's, or a glossy world floor's.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct UpFacingFace {
-    pub volume: u32,
-    pub face: u32,
+pub(crate) struct ReflectorFace {
+    pub source: ReflectorSource,
     pub geometry: FaceGeometry,
     /// The polygon seen from above, `(x, z)` per vertex.
     pub outline: Vec<DVec2>,
 }
 
+impl ReflectorFace {
+    /// `(volume, face)` of a fluid face; `None` for a world face.
+    pub(crate) fn fluid_face(&self) -> Option<(u32, u32)> {
+        match self.source {
+            ReflectorSource::Fluid { volume, face } => Some((volume, face)),
+            ReflectorSource::World { .. } => None,
+        }
+    }
+
+    /// The id-17 face of a world face; `None` for a fluid face.
+    pub(crate) fn world_face(&self) -> Option<u32> {
+        match self.source {
+            ReflectorSource::World { face } => Some(face),
+            ReflectorSource::Fluid { .. } => None,
+        }
+    }
+}
+
 /// Every up-facing fluid face, in volume then face order. Side, bottom and
 /// sloped faces bind nothing.
-pub(crate) fn up_facing_faces(volumes: &EnvironmentVolumesSection) -> Vec<UpFacingFace> {
+pub(crate) fn up_facing_faces(volumes: &EnvironmentVolumesSection) -> Vec<ReflectorFace> {
     let mut out = Vec::new();
     for (volume, record) in volumes.volumes.iter().enumerate() {
         for (face, surface) in record.surface_faces.iter().enumerate() {
@@ -111,9 +140,11 @@ pub(crate) fn up_facing_faces(volumes: &EnvironmentVolumesSection) -> Vec<UpFaci
             if let Some(geometry) = FaceGeometry::from_polygon(&points)
                 && geometry.is_up_facing()
             {
-                out.push(UpFacingFace {
-                    volume: volume as u32,
-                    face: face as u32,
+                out.push(ReflectorFace {
+                    source: ReflectorSource::Fluid {
+                        volume: volume as u32,
+                        face: face as u32,
+                    },
                     geometry,
                     outline: points.iter().map(|p| DVec2::new(p.x, p.z)).collect(),
                 });
@@ -153,7 +184,8 @@ pub(crate) fn plane_of(clusters: &[f64], height: f64) -> f64 {
 /// One probe before capture.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PlacedProbe {
-    /// The authored box's entity, or the fluid entity of a derived probe.
+    /// The authored box's entity, the fluid entity of a derived water probe,
+    /// or [`WORLD_SOURCE_ENTITY`] for a derived world probe.
     pub source_entity: u32,
     /// Whether a `reflection_volume` placed it, rather than derivation.
     pub authored: bool,
@@ -162,9 +194,15 @@ pub(crate) struct PlacedProbe {
     pub capture_point: [f32; 3],
     /// Summed area of the faces it binds; the cap keeps the largest.
     pub bound_area: f64,
-    /// Bound faces as `(volume, face)`, ascending.
-    pub faces: Vec<(u32, u32)>,
+    /// Bound fluid faces as `(volume, face)`, ascending.
+    pub fluid_faces: Vec<(u32, u32)>,
+    /// Bound static world faces in id-17 numbering, ascending.
+    pub world_faces: Vec<u32>,
 }
+
+/// A derived world probe's `source_entity`: worldspawn, as its faces belong
+/// to the static world rather than one entity.
+pub(crate) const WORLD_SOURCE_ENTITY: u32 = 0;
 
 impl PlacedProbe {
     pub(crate) fn capture_point_vec3(&self) -> Vec3 {
@@ -181,14 +219,19 @@ pub(crate) struct PlacementScene<'a> {
     pub governor: &'a Governor,
 }
 
-/// Every kept probe: authored probes in map entity order, then derived probes
-/// in fluid entity order. In order: authored capture points and their drops,
+/// Every kept probe: authored probes in map entity order, then derived water
+/// probes in fluid entity order, then derived world probes over
+/// `world_faces` (glossy world floors in id-17 order; authored boxes claim
+/// none of them). In order: authored capture points and their drops,
 /// binding among the kept boxes, dropping boxes that bind nothing, derived
 /// probes for the unclaimed faces and their drops, then the cap of `cap`
-/// probes. Authored probes past the cap refuse the build.
+/// probes. Authored probes past the cap refuse the build. Water's derived
+/// probes take the room the authored ones leave before any world probe, so
+/// world faces never cost water a probe.
 pub(crate) fn place_probes(
     volumes: &EnvironmentVolumesSection,
     authored: &[MapReflectionVolume],
+    world_faces: &[ReflectorFace],
     scene: &PlacementScene<'_>,
     cap: usize,
 ) -> anyhow::Result<Vec<PlacedProbe>> {
@@ -201,7 +244,7 @@ pub(crate) fn place_probes(
             authored.probes.len()
         );
     }
-    let unclaimed: Vec<&UpFacingFace> = faces
+    let unclaimed: Vec<&ReflectorFace> = faces
         .iter()
         .zip(&authored.claimed)
         .filter_map(|(face, &claimed)| (!claimed).then_some(face))
@@ -209,6 +252,13 @@ pub(crate) fn place_probes(
     let derived = derive_probes(&unclaimed, volumes, scene);
     let mut probes = authored.probes;
     probes.extend(apply_probe_cap(derived, cap - probes.len(), cap));
+    let world: Vec<&ReflectorFace> = world_faces.iter().collect();
+    let derived_world = derive_probes(&world, volumes, scene);
+    probes.extend(apply_world_probe_cap(
+        derived_world,
+        cap - probes.len(),
+        cap,
+    ));
     Ok(probes)
 }
 
@@ -220,6 +270,34 @@ pub(crate) fn place_probes(
 /// tolerance is not a total order. The kept probes stay in their order.
 /// Dropped probes' faces bind nothing; one warning names the count.
 fn apply_probe_cap(probes: Vec<PlacedProbe>, limit: usize, cap: usize) -> Vec<PlacedProbe> {
+    let dropped = probes.len().saturating_sub(limit);
+    let kept = keep_largest(probes, limit);
+    if dropped > 0 {
+        log::warn!(
+            "[ReflectionProbes] {dropped} derived probe(s) past the {cap}-probe cap dropped, \
+             smallest bound water first; their faces reflect nothing"
+        );
+    }
+    kept
+}
+
+/// [`apply_probe_cap`] for derived world probes, in the room water leaves:
+/// the smallest bound area drops first.
+fn apply_world_probe_cap(probes: Vec<PlacedProbe>, limit: usize, cap: usize) -> Vec<PlacedProbe> {
+    let dropped = probes.len().saturating_sub(limit);
+    let kept = keep_largest(probes, limit);
+    if dropped > 0 {
+        log::warn!(
+            "[ReflectionProbes] {dropped} glossy world probe(s) past the {cap}-probe cap \
+             dropped, smallest bound area first; their faces reflect nothing"
+        );
+    }
+    kept
+}
+
+/// At most `limit` of `probes`, largest bound area first by the tie rule of
+/// [`apply_probe_cap`], in their order.
+fn keep_largest(probes: Vec<PlacedProbe>, limit: usize) -> Vec<PlacedProbe> {
     if probes.len() <= limit {
         return probes;
     }
@@ -234,11 +312,6 @@ fn apply_probe_cap(probes: Vec<PlacedProbe>, limit: usize, cap: usize) -> Vec<Pl
             .expect("a probe is left while fewer than `limit` are kept");
         keep[pick] = true;
     }
-    log::warn!(
-        "[ReflectionProbes] {} derived probe(s) past the {cap}-probe cap dropped, smallest bound \
-         water first; their faces reflect nothing",
-        probes.len() - limit
-    );
     probes
         .into_iter()
         .zip(keep)
@@ -246,17 +319,37 @@ fn apply_probe_cap(probes: Vec<PlacedProbe>, limit: usize, cap: usize) -> Vec<Pl
         .collect()
 }
 
-/// Every kept probe's faces as bindings, ascending by `(volume, face)`.
+/// Every kept probe's fluid faces as bindings, ascending by `(volume, face)`.
 pub(crate) fn fluid_bindings(probes: &[PlacedProbe]) -> Vec<ReflectionProbeFluidBinding> {
     let mut out: Vec<ReflectionProbeFluidBinding> = probes
         .iter()
         .enumerate()
         .flat_map(|(probe, placed)| {
             placed
-                .faces
+                .fluid_faces
                 .iter()
                 .map(move |&(volume, face)| ReflectionProbeFluidBinding {
                     volume,
+                    face,
+                    probe: probe as u32,
+                })
+        })
+        .collect();
+    out.sort_unstable();
+    out
+}
+
+/// Every kept probe's world faces as bindings, ascending by face. A world
+/// face joins one derived group, so each face binds once.
+pub(crate) fn world_bindings(probes: &[PlacedProbe]) -> Vec<ReflectionProbeWorldBinding> {
+    let mut out: Vec<ReflectionProbeWorldBinding> = probes
+        .iter()
+        .enumerate()
+        .flat_map(|(probe, placed)| {
+            placed
+                .world_faces
+                .iter()
+                .map(move |&face| ReflectionProbeWorldBinding {
                     face,
                     probe: probe as u32,
                 })

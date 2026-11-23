@@ -20,7 +20,7 @@ use super::box_fit::{WorldBounds, fit_box, fit_rays};
 use super::capture_point::PointClassifier;
 use super::hit::SceneTracer;
 use super::placement::{
-    CAPTURE_LIFT_M, PlacedProbe, PlacementScene, UpFacingFace, place_probes, up_facing_faces,
+    CAPTURE_LIFT_M, PlacedProbe, PlacementScene, ReflectorFace, place_probes, up_facing_faces,
 };
 
 /// Quake map units to engine meters.
@@ -154,6 +154,7 @@ impl PlacementFixture {
         place_probes(
             &self.environment,
             &self.authored,
+            &[],
             &PlacementScene {
                 tracer: &tracer,
                 bounds: &bounds,
@@ -164,12 +165,12 @@ impl PlacementFixture {
         )
     }
 
-    pub(crate) fn up_faces(&self) -> Vec<UpFacingFace> {
+    pub(crate) fn up_faces(&self) -> Vec<ReflectorFace> {
         up_facing_faces(&self.environment)
     }
 
     /// The box one face fits on its own.
-    pub(crate) fn face_fit(&self, face: &UpFacingFace) -> (DVec3, DVec3) {
+    pub(crate) fn face_fit(&self, face: &ReflectorFace) -> (DVec3, DVec3) {
         let tracer = SceneTracer::new(&self.bvh, &self.primitives, &self.geometry);
         let origin = face.geometry.centroid + DVec3::Y * CAPTURE_LIFT_M;
         fit_box(&tracer, origin, &self.bounds(), &fit_rays())

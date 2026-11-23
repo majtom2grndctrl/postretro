@@ -1,6 +1,6 @@
 # E10--npc-weapon-mounts — research
 
-Read at bb7323fc5, split from `drafts/E10--npc-equipment-sets/research.md`. Read at 73b072de3 (no source change since bb7323fc5): §Muzzle pose. Read at f29bc577d (no source change since 73b072de3): §Blocked muzzle. Findings that inform the brief; the brief carries the conclusions.
+Read at bb7323fc5, split from `drafts/E10--npc-equipment-sets/research.md`. Read at 73b072de3 (no source change since bb7323fc5): §Muzzle pose. Read at f29bc577d (no source change since 73b072de3): §Blocked muzzle. Read at e57fcf5ea (no source change since f29bc577d): §Rename consumers. Findings that inform the brief; the brief carries the conclusions.
 
 ## NPC shot origin
 Owner-observed 2026-11-23 on `movement-feel`: the `rifle_trooper` (white armor, `rodin_sci-fi_trooper_m`) fires from above its head. Pre-existing: `enemy_eye` dates from `3d45c494e` (2026-08-23, enemy static LOS fire gate), and E21 did not touch it.
@@ -63,6 +63,29 @@ Owner ruling, 2026-11-23, after `/validate-plan` returned Under-scoped: a muzzle
 - E21 re-seated the AR_4 trooper and warrior bakes (`content/dev/models/ar_4/`). The warrior's rifle moved out of its torso. The trooper's bake scaled 1.41×, to 0.859 m, so its support hand reaches the handguard: the rig's hands sit ~0.54 m apart, wider than the stock AR_4's 0.29 m from grip to muzzle. Content scale standards are on the roadmap under Epic 21.
 - No AR_4 bake carries a node socket (read at 73b072de3: no node `extras` in any of the three). The cyberpunk viewmodels do: the rifle's `model.gltf` has a `muzzle` node with `extras.socket = "muzzle"`.
 
+## Rename consumers
+Every consumer of `mesh.weaponMounts`, read at e57fcf5ea. The owner moved the rename into this brief (2026-11-23).
+
+| Layer | Symbols | Where |
+|---|---|---|
+| Descriptor type | `MeshDescriptor.weapon_mounts`, `RawMeshDescriptor.weapon_mounts`, `WeaponMountDescriptor` (`weapon`, `attachments`), `MeshDescriptor::weapon_mount`, `MeshDescriptor::weapon_mount_models` | `crates/entities/src/data_descriptors/types/weapon_mounts.rs`, `entity.rs` (validation calls `validate_weapon_mounts` from the `RawMeshDescriptor` conversion) |
+| Key vocabulary | `MESH_DESCRIPTOR_KEYS` (lists `"weaponMounts"`), `WEAPON_MOUNT_KEYS` (`"weapon"`, `"attachments"`), `check_mesh_key`, `check_weapon_mount_key`, `weapon_mount_shape_error`, `validate_weapon_mounts`; error text names `components.mesh.weaponMounts[i]` | `weapon_mounts.rs` |
+| Runtime readers | `weapon_mounts_from_js`, `reject_unknown_mesh_keys`, Luau twins; each `entity.rs` reads the `"weaponMounts"` key | `crates/scripting-core/src/data_descriptors/{js,lua}/mesh_weapon_mounts.rs`, `{js,lua}/entity.rs` |
+| SDK type registration | `MeshDescriptor` field `weaponMounts?`, type `WeaponMountDescriptor`; placement field docs name `mesh.weaponMounts` | `crates/sim/src/scripting/primitives/mod.rs`, `primitives/manifest.rs` |
+| Drift guard | `mesh_sdk_fields_match_the_keys_the_descriptor_readers_accept` compares the SDK fields with `MESH_DESCRIPTOR_KEYS` and `WEAPON_MOUNT_KEYS` | `crates/sim/src/scripting/typedef/tests/surface.rs`; fixtures `expected.d.ts`, `expected.d.luau` |
+| Typedef templates | weapon-handle docs naming `components.mesh.weaponMounts[].weapon` | `crates/scripting-core/src/typedef/templates/sdk_lib.d.ts`, `sdk_lib.luau` |
+| SDK | `lowerWeaponMountReferences`; `MeshDescriptor.weaponMounts`, `WeaponMountDescriptor` | `sdk/lib/data_script.ts`, `.luau`; `sdk/types/postretro.d.ts`, `.d.luau` |
+| Pawn writer | `update_weapon_mount_attachments` → `compose_mounted_attachments` (reads `weapon_mounts`, `weapon_mount`), reached from `synchronize_weapon_owner_attachments`, `synchronize_weapon_attachment_for_pawn`, `apply_local_weapon_attachments`, `snapshot_apply.rs` | `crates/netcode/src/weapon_mounts.rs` |
+| Install check | `check_weapon_mount_tables` (reads `weapon_mounts`, `weapon_mount`), called from `lifecycle_world_cpu.rs` | `crates/sim/src/scripting_systems/weapon_mounts.rs` |
+| Preload | `weapon_presentation_models` (reads `weapon_mount_models`), with `level_load/model_prediction.rs` | `crates/sim/src/scripting/builtins/data_archetype.rs` |
+| Struct literals | `weapon_mounts: None` in `MeshDescriptor` builders | `netcode/src/lib.rs`, `remote_materialize.rs`, `postretro/src/main.rs`, `mod_digest.rs`, `mesh_render.rs`, `scripting-core/src/refresh_plan.rs`, `runtime/core.rs`, `net_descriptor.rs`, `wieldable_inventory.rs`, `sim/src/sim/touch.rs`, `data_archetype_test_fixtures.rs` |
+| Tests | mount tables built or asserted | `netcode/src/weapon_mounts_{tests,fire_tests,path_tests,reload_tests}.rs`, `enemy_replication_harness_test.rs`; `postretro/src/client_weapon/tests.rs`, `late_baseline_tests.rs`, `level_load/{model_tests,weapon_mount_content_tests}.rs`, `startup/lifecycle_{beside,load}_tests.rs`; `scripting-core/src/data_descriptors/tests/weapon_mounts.rs`, `runtime/staged_preflight/tests.rs`, `runtime/weapon_mount_reload_tests.rs`, `staged_manifest/weapon_mount_manifest_tests.rs`; `sim/src/scripting_systems/weapon_mounts_tests.rs`, `data_archetype.rs` tests |
+| Content | `mesh.weaponMounts` on the player; a comment pointing at it | `content/dev/scripts/player.ts`, `coop-presentation-entities.ts` (the `.js` beside them are ignored build output) |
+| Human docs | `docs/weapon-mounts.md`, `docs/scripting-reference.md`, `docs/character-animation.md` | |
+| Context library | `entity_model.md` (Components, Weapon vocabulary, Weapon mounts), `resource_management.md` §7, `networking.md` §Weapon placement is content, `index.md` router | |
+
+The `weapon_mount` names in `crates/model/src/mount*` and `crates/tool/src/mount/` belong to the mount solver (`solve-weapon-mount`), not the table; they stay.
+
 ## One rifle for players and NPCs
 - The dev enemy rifles (`enemy-rifle.ts`) all fire projectiles at 20 m/s: `enemy_rifle` (10 damage, 12 m), `enemy_rifle_long` (10 damage, 20 m) and `enemy_rifle_burst` (6 damage, three shots 120 ms apart, 12 m). The owner treats the slow, dodgeable shot as balance.
 - `reference_rifle` (`reference-rifle.ts`) is hitscan, 9 damage, 80 m, with `muzzleOffset` and a first-person placement. The AI admits projectile weapons only, so NPCs cannot wield it as authored.
@@ -87,3 +110,7 @@ Owner ruling, 2026-11-23, after `/validate-plan` returned Under-scoped: a muzzle
 Owner rulings, 2026-11-23: NPC shots launch from the carried weapon's muzzle, a built-in weapon's from a body socket named by a `mesh.weaponMounts` entry without `attachments` (the owner's reason: it avoids a precedent mutually exclusive with melee weapons, which later briefs expand on). A missing mount entry is loud, as in E21. Two carried weapons may share a socket when their entries name the same model, for now; consolidating such a pair into one modal weapon goes to `drafts/E16--persistent-firing-modes/`. One rifle for players and NPCs waits for `drafts/descriptor-instance-overrides/`. After the split: the muzzle pose uses game-tick clip time; an entry names `attachments` or `muzzle`, never both, and neither rejects; missing-muzzle behavior is delegated.
 
 A second `/validate-plan` returned Under-scoped (2026-11-23). Owner rulings: a blocked muzzle whiffs with no eye fallback, and sight, perception and target choice stay on the eye; the blocked-muzzle rivals and the superseded E16 first cut are recorded; the one-model-per-socket rule carries its reason; the art-is-gameplay foreclosure is noted. Order of the enemy-weapon briefs: this one, then `drafts/E16--persistent-firing-modes/`, then `drafts/E10--npc-equipment-sets/`.
+
+Later owner rulings, 2026-11-23, made while settling gear in `drafts/E10--npc-equipment-sets/`:
+- One `mesh.mounts` table, owned by this brief: E21's `weaponMounts` renamed and keyed by `item`, for every item a character carries or wears. The reason matches the `muzzle` entry's: no precedent that excludes melee. This brief's items are weapons; the equipment-sets brief adds gear.
+- A missing muzzle fires from the eye: a bake without a `muzzle` socket, a missing body socket, an unresolved clip, or (in the equipment-sets brief) a gun displaced by gear. Authoring errors warn once at load. A blocked muzzle still whiffs.

@@ -12,7 +12,7 @@ Owner-requested capability (2026-11-23): an author reuses one weapon with tuning
 - **One weapon vocabulary.** An override yields a `WeaponDescriptor`, with no NPC weapon kind and no branch on actor kind (`entity_model.md` §2). The AI's rules stand: projectile weapons only, primary lane only, no reload. The override is what fits the rifle to them, by setting resolution and projectile, replacing `primary`, and clearing `secondary` and `resource`. The engine never strips a resource or picks a lane for an NPC.
 - **Maps select, never tune** (`entity_model.md` §4). No map key overrides a weapon, and `DescriptorMapOverride` stays light and emitter presentation. A placement reaches an overridden weapon only by selecting what an archetype declares, as E10 sets do.
 - **Every peer resolves an override from its own mod content by name.** The NPC shot reaches clients only as a `projectile:<name>` class resolved against local descriptors, and player sounds and viewmodel resolve locally by the tuning row's name. So an overridden weapon has a name a peer can resolve. Gameplay fields already ride the host's tuning row. No change to `WIRE_VERSION`, `SNAPSHOT_VERSION`, `TUNING_PAYLOAD_EPOCH` or the mod digest (`networking.md` §What gates, and what replicates instead).
-- **References take handles.** An overridden weapon is a value accepted wherever a weapon handle goes: `inventory.loadout`, `mesh.weaponMounts`, and the attack, set and guard references E10 adds (`scripting.md` §1, Handles over strings).
+- **References take handles.** An overridden weapon is a value accepted wherever a weapon handle goes: `inventory.loadout`, `mesh.mounts`, and the attack, set and guard references E10 adds (`scripting.md` §1, Handles over strings).
 - **First consumers ship with it.** The enemy rifles become overrides of the reference rifle. The incendiary rifle becomes one too, dropping the duplicate mount entry it carries in `player.ts`. Every attack, loadout and trap map that names them migrates in the same change (pre-stable, `index.md`).
 - **Non-goals.**
   - Per-instance runtime overrides on a live weapon: augments and rolls own them.
@@ -31,7 +31,7 @@ Owner-requested capability (2026-11-23): an author reuses one weapon with tuning
 - [ ] A composed weapon that fails validation rejects load, naming the override and the field, in both runtimes. A projectile resolution with no projectile block is one case. An override whose base is not a weapon rejects load.
 
 **Identity** (rows follow the identity question's recommendation)
-- [ ] A character whose `weaponMounts` lists only the base mounts the base's bake while wielding an override, and logs no missing-entry warning. With its own entry, the override's entry wins. A character listing neither warns once, as today.
+- [ ] A character whose `mesh.mounts` lists only the base mounts the base's bake while wielding an override, and logs no missing-entry warning. With its own entry, the override's entry wins. A character listing neither warns once, as today.
 - [ ] Two attacks on one NPC naming two different overrides of one base keep separate cadence and state, as two weapons do today.
 - [ ] A save or level change carrying an overridden player weapon restores the override, not the base.
 
@@ -51,7 +51,7 @@ Owner-requested capability (2026-11-23): an author reuses one weapon with tuning
 - Seams:
   - Composition: the SDK's weapon-reference lowering in `defineEntity` (`sdk/lib/data_script.ts`, Luau twin) and its Rust readers `data_descriptors/js/entity.rs` and `lua/entity.rs`.
   - Validation: `WeaponDescriptor` validation in `combat/weapon_validation.rs`.
-  - Mount lookup: `MeshDescriptor::weapon_mount` via `compose_mounted_attachments` (`crates/netcode/src/weapon_mounts.rs`), on both peers. Model preload: `weapon_presentation_models` (`data_archetype.rs`). Mount warnings: `crates/sim/src/scripting_systems/weapon_mounts.rs`.
+  - Mount lookup (`mesh.mounts` after `drafts/E10--npc-weapon-mounts/` renames E21's table): `MeshDescriptor::weapon_mount` via `compose_mounted_attachments` (`crates/netcode/src/weapon_mounts.rs`), on both peers. Model preload: `weapon_presentation_models` (`data_archetype.rs`). Mount warnings: `crates/sim/src/scripting_systems/weapon_mounts.rs`.
   - Credit default: `resolve_credit_source`.
   - AI: `resolve_projectile_attacks` and `AiWeaponControllers::sync` need no change when a variant has its own name.
 - Shape recommended for the owner: a named variant that keeps its own canonical name and records its base. A candidate surface, not decided:
@@ -63,7 +63,7 @@ Owner-requested capability (2026-11-23): an author reuses one weapon with tuning
     clear: ["secondary", "resource"], // Luau tables cannot hold nil
   });
   ```
-- Strongest rival: no mechanism at all. Keep spreading, and list each variant in every rig's `weaponMounts`. It costs one duplicate entry per variant per rig, plus a split identity when E10's `carries` guard lands. If the owner accepts that cost, this brief folds into E10 as content.
+- Strongest rival: no mechanism at all. Keep spreading, and list each variant in every rig's `mesh.mounts`. It costs one duplicate entry per variant per rig, plus a split identity when E10's `carries` guard lands. If the owner accepts that cost, this brief folds into E10 as content.
 - First slice: lineage in the mount lookup, proved by the incendiary rifle dropping its duplicate entry. It falsifies the riskiest assumption, that the mount is the only consumer needing the base.
 - Files past ~800 lines this may extend: `data_archetype.rs`, `net_descriptor.rs`, `sdk/lib/data_script.ts`. Split first where this adds a block.
 - Derivation, the name-keyed consumer table and the three scopes compared: `research.md`.
@@ -72,7 +72,7 @@ Owner-requested capability (2026-11-23): an author reuses one weapon with tuning
 - Override scope: per reference (an attack, set or loadout entry carries field overrides) or a derived identity that records its base? Per instance is out under Non-goals. Recommendation: derived identity. Every name-keyed path then works unchanged: wire, saves, traps, AI state, projectile class. Per reference must mint a name for the projectile class anyway. It loses the override when the weapon is carried, saved or picked up, and no trap map can name it. — owner: owner — **blocks build**
 - Which fields an override may set. Recommendation: any `weapon` field. Replacement is whole-value per top-level field, so `projectile` and `primary` replace wholesale. An explicit clear list empties optional blocks. Non-weapon components inherit from the base unchanged. — owner: owner — **blocks build**
 - Identity semantics, consumer by consumer. Recommendation:
-  - The mount lookup falls back to the base when the variant has no entry.
+  - The `mesh.mounts` lookup falls back to the base's entry when the variant has no entry.
   - Default credit is the base's resolved credit: "the rifle killed you".
   - Everything else keys on the variant itself: AI weapon state, E10's `carries`, pickup ownership, carried loadout, saves, the wire and traps.
   - — owner: owner — **blocks build**

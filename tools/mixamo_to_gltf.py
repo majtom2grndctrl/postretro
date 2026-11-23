@@ -28,8 +28,8 @@ MCH_* driver tracks) are dropped; real animation comes from the clips.
 
 The default output faces glTF +Z, the front of every model the engine places
 (context/lib/entity_model.md section 4). Use --yaw when a model was exported
-facing a non-standard direction: it rotates about the vertical axis on top of
-the standard facing flip.
+facing a non-standard direction: it is the only turn about the vertical axis.
+A standard Mixamo export already fronts +Z, so the default applies no turn.
 
 --in-place pins the named clips' root (Hips) to its first key on the ground
 plane, keeping vertical motion: a lunge or leap then ends where it started.
@@ -140,12 +140,13 @@ def parse_args():
     parser.add_argument(
         "--yaw", type=float, default=0.0,
         metavar="DEGREES",
-        help="Extra rotation about the vertical axis, applied on top of the "
-             "standard facing flip. The default output now faces +Z, the "
-             "engine's model front, so a standard Mixamo export needs no "
-             "flag. Use when a model was exported facing a different way "
-             "(e.g. --yaw 90 for a model turned a quarter-turn). Default 0 "
-             "(no extra rotation). The default changed: a recipe kept "
+        help="Rotation about the vertical axis; the only turn the converter "
+             "applies. The default output faces +Z, the engine's model "
+             "front, and a standard Mixamo export already fronts +Z, so it "
+             "needs no flag. Use when a model was exported facing a "
+             "different way (e.g. --yaw 90 for a model turned a "
+             "quarter-turn). Default 0 (no turn). The default changed: a "
+             "recipe kept "
              "outside the repo that passed --yaw 180 to reach +Z now yields "
              "-Z; drop the flag."
     )
@@ -582,9 +583,10 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None, yaw=
     # facing a non-standard direction; it folds into flip_z so every
     # downstream use (armature bake, mesh bake, root-bone re-bake in Phase 4)
     # stays consistent.
+    # flip_z is the --yaw turn (identity unless --yaw).
     flip_z = Matrix.Rotation(math.radians(yaw), 4, 'Z')
     if yaw:
-        print(f"  Applying extra yaw: {yaw} deg (about vertical axis)")
+        print(f"  Applying yaw: {yaw} deg (about vertical axis)")
 
     arm_world = base_armature.matrix_world.copy()
     baked_transform = flip_z @ arm_world
@@ -644,7 +646,7 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None, yaw=
     #
     # For the ROOT bone (no parent), the "local" is the armature-space
     # matrix itself, which needs the flip_z rotation applied (the rest pose
-    # was flipped, so the animated pose must be too).
+    # was turned by --yaw, identity by default, so the animated pose must be too).
     #
     # We compute pose deltas (Blender's pbone TRS = offset from rest):
     #   child:  pose_delta = old_rest_local.inv() @ old_anim_local
@@ -696,7 +698,7 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None, yaw=
                 else:
                     # Root bone: "local" IS the armature-space matrix.
                     # Convert from old armature space (cm, original orientation)
-                    # to new armature space (meters, flipped) via baked_transform.
+                    # to new armature space (meters, turned by --yaw) via baked_transform.
                     # baked_transform carries arm_world's 0.01 scale, but
                     # transform_apply normalized that out of rest poses — so
                     # strip scale to match.
@@ -757,7 +759,7 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None, yaw=
         print(f"  {action.name}: frames {int(frame_range[0])}-{int(frame_range[1])}")
 
 
-def flip_eye_geometry(inset=0.0):
+def flip_eye_geometry(inset=0.0, yaw=0.0):
     """Rotate each eyeball 180 deg about its own vertical axis so the iris
     faces the front of the head.
 
@@ -773,7 +775,8 @@ def flip_eye_geometry(inset=0.0):
     so all eye material slots live on one object.
 
     `inset` (meters) then pushes the eyeballs backward into the sockets so the
-    now-forward-facing cornea does not bulge past the eyelids.
+    now-forward-facing cornea does not bulge past the eyelids. `yaw` is the
+    --yaw the body was baked with; it turns the inset direction with the face.
     """
     mesh_obj = get_mesh()
     if not mesh_obj:
@@ -841,13 +844,18 @@ def flip_eye_geometry(inset=0.0):
 
     # Push the eyeballs back into their sockets. After the spin, the sphere's
     # rounded front hemisphere sits proud of the eyelids; a small backward
-    # translation seats the cornea behind the lids. The head faces Blender +Y
-    # at this stage (the flip_z bake maps the face to glTF +Z, the model front), so
-    # "into the skull" is -Y. Translation does not affect normals.
+    # translation seats the cornea behind the lids. The face points along
+    # flip_z applied to Blender -Y (a standard export faces -Y, glTF +Z), so
+    # "into the skull" is flip_z applied to +Y: (-sin yaw, cos yaw), which is
+    # +Y at the default yaw 0. Translation does not affect normals.
     if inset:
+        rad = math.radians(yaw)
+        dx, dy = -math.sin(rad), math.cos(rad)
         for i in eye_vert_idx:
-            verts[i].co.y -= inset
-        print(f"  --fix-eyes: inset eyes {inset:.3f}m into sockets (-Y)")
+            verts[i].co.x += inset * dx
+            verts[i].co.y += inset * dy
+        print(f"  --fix-eyes: inset eyes {inset:.3f}m into sockets "
+              f"(dir {dx:.3f}, {dy:.3f})")
 
     if loop_normals is not None:
         for li in eye_loop_idx:
@@ -1077,7 +1085,7 @@ def main():
     merge_animations(args.input_dir, args.scale, args.base, args.exclude_meshes, args.yaw,
                      library=args.library)
     if args.fix_eyes:
-        flip_eye_geometry(inset=args.eye_inset)
+        flip_eye_geometry(inset=args.eye_inset, yaw=args.yaw)
     if args.strip_face:
         strip_facial_bones()
     if not args.library:

@@ -1,5 +1,6 @@
 // Mesh component: model handle and presentation state for mesh entities.
-// See: context/lib/scripting.md §10.3 (Mesh Animation)
+// See: context/lib/scripting.md §10.3 (Mesh Animation) ·
+//      context/lib/entity_model.md §4 (Facing convention)
 
 use glam::{Mat4, Quat, Vec3};
 use postretro_foundation::PoseInputs;
@@ -175,6 +176,13 @@ impl MeshComponent {
     /// transform's own rotation, then the body-frame turn. A stateless mesh's
     /// pose inputs are foot-probe defaults (heading 0), so its heading never
     /// replaces the transform yaw.
+    ///
+    /// `heading_yaw` is the lower-body travel direction (folded toward aim
+    /// while backpedalling); the pose modifier twists the upper body by
+    /// aim - heading, so gameplay and replicated transforms keep the aim yaw.
+    /// `update_pose_inputs` already maps a non-finite transform yaw to 0, so
+    /// the non-finite fallback to the transform only matters for pose inputs
+    /// written elsewhere.
     pub fn presentation_rotation(&self, transform_rotation: Quat) -> Quat {
         let heading = self
             .animation

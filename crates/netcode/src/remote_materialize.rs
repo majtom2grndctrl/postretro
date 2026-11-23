@@ -18,8 +18,11 @@ pub(super) const ACTIVE_WEAPON_SOCKET: &str = "hand_r";
 /// Whether a descriptor-backed player body is being presented to its owning
 /// viewer or to another client. `shadowOnly` is authored for the first-person
 /// owner view; peers must still see that same descriptor as a forward avatar.
-/// Either role marks the body [`BodyFrame::View`]: a player's transform stays in
-/// the view frame, so its model front takes the half turn at the body seam.
+/// Either role marks a pawn's body [`BodyFrame::View`]: a player's transform
+/// stays in the view frame, so its model front takes the half turn at the body
+/// seam. A pawn is a descriptor that carries player movement, as the host's
+/// spawn decides (`descriptor_body_frame` in sim's `data_archetype.rs`); any
+/// other body keeps [`BodyFrame::Model`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PlayerViewerRole {
     Local,
@@ -39,23 +42,33 @@ fn apply_player_viewer_role(
     id: EntityId,
     role: PlayerViewerRole,
 ) {
-    let Some(descriptor_shadow_only) = descriptors
+    let Some(descriptor) = descriptors
         .iter()
         .find(|descriptor| descriptor.canonical_name.as_deref() == Some(entity_class))
-        .and_then(|descriptor| descriptor.mesh.as_ref())
-        .map(|mesh| mesh.shadow_only)
     else {
+        return;
+    };
+    let Some(descriptor_shadow_only) = descriptor.mesh.as_ref().map(|mesh| mesh.shadow_only) else {
         return;
     };
     let Ok(mut mesh) = registry.get_component::<MeshComponent>(id).cloned() else {
         return;
     };
     let shadow_only = role.shadow_only(descriptor_shadow_only);
+    // A client reaches here only for a `pawn:` class, which the host stamps on
+    // a movement record. The host's slot accept runs for any descriptor its
+    // `entity_class` names, so a slot body without movement (an AI behaviour)
+    // keeps the model frame its spawn chose; AI facing writes that frame.
+    let body_frame = if descriptor.movement.is_some() {
+        BodyFrame::View
+    } else {
+        BodyFrame::Model
+    };
     // Set on every call, not only when the mesh was just built: a re-arm or
     // re-apply keeps an existing mesh, so the frame must not wait on a rebuild.
-    if mesh.shadow_only != shadow_only || mesh.body_frame != BodyFrame::View {
+    if mesh.shadow_only != shadow_only || mesh.body_frame != body_frame {
         mesh.shadow_only = shadow_only;
-        mesh.body_frame = BodyFrame::View;
+        mesh.body_frame = body_frame;
         let _ = registry.set_component(id, mesh);
     }
 }
@@ -63,8 +76,9 @@ fn apply_player_viewer_role(
 /// Apply the peer-view policy to a descriptor-backed player mesh that another
 /// host-side spawn path already materialized. Listen-host slot pawns use the full
 /// authoritative descriptor spawn, so they need this presentation-only override
-/// without re-materializing any gameplay components. That spawn already marks
-/// the body [`BodyFrame::View`] by its `NetworkSlot` path; this step keeps it so.
+/// without re-materializing any gameplay components. That spawn already marks a
+/// movement pawn's body [`BodyFrame::View`] by its `NetworkSlot` path, and a slot
+/// body without movement [`BodyFrame::Model`]; this step keeps each so.
 pub(super) fn apply_remote_player_viewer_role(
     entity_class: &str,
     descriptors: &[EntityTypeDescriptor],

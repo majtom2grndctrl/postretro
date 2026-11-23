@@ -1341,8 +1341,8 @@ fn first_child_index(skeleton: &Skeleton, joint_index: usize) -> Option<usize> {
 /// (`body_frame.model_rotation`, a half turn for a view-frame player body,
 /// nothing for a model-frame entity), translated to `position + origin_offset`.
 /// Hit zones, socket anchors and overlay anchors place the model here, so a
-/// player's sit on its aim yaw plus the turn; gameplay never reads the
-/// presentation heading. The draw differs only for an animated body:
+/// player's zones and anchors sit on its aim yaw plus the turn; gameplay never
+/// reads the presentation heading. The draw differs only for an animated body:
 /// it turns by the lower-body heading instead of the transform rotation
 /// (`MeshComponent::presentation_rotation`), and foot ground probes follow the
 /// draw. Non-finite transforms are not authoritative for precise capsules, so

@@ -98,6 +98,7 @@ fn fixture(display_copy: bool) -> (EntityRegistry, EntityId, HitZoneStore) {
     let id = registry.spawn(Transform {
         position: placement.origin,
         rotation: data_archetype::descriptor_spawn_rotation(
+            &descriptor,
             &placement,
             DescriptorSpawnPath::MapPlacement,
         ),

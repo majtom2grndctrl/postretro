@@ -3703,7 +3703,7 @@ fn foot_probe_transform_accepts_small_positive_uniform_and_nonuniform_scales() {
         };
         let model_to_world = model_matrix(&transform, Vec3::ZERO, Default::default()).unwrap();
         assert!(
-            super::foot_probe_inverse(&transform, &model_to_world).is_some(),
+            super::foot_probe_inverse(&transform, transform.rotation, &model_to_world).is_some(),
             "positive finite scale {scale:?} has a finite inverse"
         );
     }

@@ -426,3 +426,60 @@ fn presented_reprobe_plants_feet_under_the_presented_heading_plus_turn() {
     assert_eq!(probed.heading_yaw, presented_heading);
     assert_eq!(probed.aim_yaw, presented_aim);
 }
+
+// Acceptance (player body front, first drawn frame; pin R1): a listen host
+// re-probes a client pawn accepted on a render frame that ran no fixed tick, so
+// no pose pass has written its inputs. The probe seeds aim and heading from the
+// probed transform's yaw, so the body draws facing it, not down a zero heading.
+#[test]
+fn unposed_view_body_probe_seeds_aim_and_heading_from_the_transform_yaw() {
+    const YAW: f32 = 1.3;
+    let world = step_world();
+    let (mut registry, id, store) = leg_body(BodyFrame::View, YAW, YAW);
+    let mut mesh = registry.get_component::<MeshComponent>(id).unwrap().clone();
+    mesh.pose_inputs = None;
+    registry.set_component(id, mesh).unwrap();
+    let transform = *registry.get_component::<Transform>(id).unwrap();
+
+    super::update_foot_ground_probes_for(
+        &mut registry,
+        id,
+        transform,
+        &world,
+        &[],
+        &MoverTickStateTable::default(),
+        &store,
+        0.0,
+    );
+
+    let probed = inputs(&registry, id);
+    assert!(
+        (probed.aim_yaw - YAW).abs() < EPS && (probed.heading_yaw - YAW).abs() < EPS,
+        "aim {} and heading {} take the transform yaw {YAW}",
+        probed.aim_yaw,
+        probed.heading_yaw
+    );
+    assert_eq!(probed.aim_pitch, PoseInputs::default().aim_pitch);
+
+    // The feet still plant under the drawn body.
+    let drawn = BodyFrame::View.model_rotation(Quat::from_rotation_y(YAW));
+    let expected = reference_feet(&world, placement(&transform, drawn));
+    assert_eq!(probed.foot_count, 2);
+    assert_probe_eq(probed.feet[0], expected[0], "left foot");
+    assert_probe_eq(probed.feet[1], expected[1], "right foot");
+
+    let front = registry
+        .get_component::<MeshComponent>(id)
+        .unwrap()
+        .presentation_rotation(transform.rotation)
+        * Vec3::Z;
+    let along_aim = Quat::from_rotation_y(YAW) * Vec3::NEG_Z;
+    assert!(
+        (front - along_aim).length() < EPS,
+        "model +Z draws along Ry(θ)·(−Z): {front:?} vs {along_aim:?}"
+    );
+    assert!(
+        (along_aim - Vec3::NEG_Z).length() > 0.5,
+        "the fixture tells the transform yaw from a zero heading"
+    );
+}

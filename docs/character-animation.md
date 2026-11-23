@@ -121,7 +121,9 @@ python3 tools/rest_to_library.py content/mymod/models/ghoul/model.gltf
 ```
 
 Each joint takes the library's rest rotation, and the mesh moves into that pose
-with its own skin weights. The character's bone lengths stay its own. The script
+with its own skin weights. The root joint keeps its own facing: it takes the
+library root's tilt but not its turn, so a character facing +Z stays +Z on a
+library that faces −Z. The character's bone lengths stay its own. The script
 needs Python with `numpy` but not Blender, and rewrites the model in place.
 Rerunning the conversion undoes it, so run it again after any reconversion.
 

@@ -31,7 +31,11 @@ Packaging notes (PostRetro):
   The export is deterministic: rerun, it reproduces library.gltf and
   library.bin byte for byte (checked 2026-11-15, with and without
   --factory-startup; rechecked 2026-11-16 after adding jab_quick, which
-  left every earlier clip's keys and buffer bytes unchanged).
+  left every earlier clip's keys and buffer bytes unchanged). Those checks
+  used the pre-E21 converter with the half-turn yaw flag it then needed for
+  +Z facing. Today's default produces the same +Z facing without the flag,
+  so the recipe above should still reproduce the library (expected, not
+  re-verified).
 * The converter's default output faces +Z, the front AI facing aims, matching
   the bound Mutant model; root motion then runs the way the model faces.
 * smash and hit_reaction are pinned in place: the jump attack lands 1.6 m

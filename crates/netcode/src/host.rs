@@ -788,6 +788,69 @@ mod tests {
         assert_eq!(accepted[0], accepted[1], "a re-accept keeps the live pawn");
     }
 
+    // A slot whose `player_spawn` names a descriptor without player movement
+    // (an AI behaviour) is no pawn: the wire would not class it `pawn:`, and AI
+    // facing writes model-frame rotations. Its spawn takes the model frame and
+    // the host's viewer-role step keeps the body `Model`, so it draws forward.
+    #[test]
+    fn descriptor_accept_of_a_non_movement_slot_body_keeps_it_model() {
+        use crate::scripting::builtins::data_archetype_test_fixtures::{
+            behavior_enemy_descriptor, placement,
+        };
+        use postretro_entities::Transform;
+        use postretro_entities::components::mesh::{BodyFrame, MeshComponent};
+
+        const CLIENT_ID: u64 = 45;
+        let descriptors = [behavior_enemy_descriptor("grunt")];
+        let mut spawn = placement("player_spawn", &[("entity_class", "grunt")]);
+        spawn.angles = glam::Vec3::new(0.0, 1.1, 0.0);
+        let spawn_points = [spawn];
+
+        let mut registry = EntityRegistry::new();
+        let mut allocator = NetworkIdAllocator::new();
+        let mut replicable = ReplicableSet::new();
+        let mut slot_pawns = SlotPawns::new();
+        let mut command_queues = HostCommandQueues::new();
+        let mut owners = MovementOwners::new();
+        let mut weapon_owners = WeaponOwners::new();
+        let mut open_shots = OpenAuthorizedShots::new();
+        let mut pending_hit_declarations = PendingHitDeclarations::new();
+        let mut weaponless_fire_logged = std::collections::HashSet::new();
+
+        let body = host_handle_accept_descriptor_at_placement(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &mut slot_pawns,
+            &mut command_queues,
+            &mut owners,
+            &mut weapon_owners,
+            &mut open_shots,
+            &mut pending_hit_declarations,
+            &mut weaponless_fire_logged,
+            CLIENT_ID,
+            &spawn_points,
+            0,
+            &descriptors,
+            None,
+            None,
+        )
+        .expect("descriptor accept spawns the slot body");
+        let rotation = registry.get_component::<Transform>(body).unwrap().rotation;
+        assert_eq!(
+            rotation,
+            spawn_points[0].model_rotation_quat(),
+            "a non-movement slot body spawns in the model frame"
+        );
+        let mesh = registry.get_component::<MeshComponent>(body).unwrap();
+        assert_eq!(mesh.body_frame, BodyFrame::Model);
+        assert!(
+            (mesh.presentation_rotation(rotation) * glam::Vec3::Z)
+                .abs_diff_eq(spawn_points[0].rotation_quat() * glam::Vec3::NEG_Z, 1e-6),
+            "model +Z draws along the placement arrow"
+        );
+    }
+
     #[test]
     fn ordered_participation_then_demotion_leaves_no_host_pawn() {
         use postretro_net::handshake::HoldingCause;

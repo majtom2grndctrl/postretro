@@ -7,7 +7,7 @@ use postretro_foundation::NavAgentParams;
 
 use super::client::ClientReplication;
 use super::scripting_systems::hit_zones::HitZoneStore;
-use super::{client, descriptor_class, remote_materialize};
+use super::{client, descriptor_class, remote_materialize, weapon_mounts};
 
 pub(super) fn materialize_remote_entities(
     remotes: &[client::RemoteEntityMaterialize],
@@ -127,9 +127,10 @@ pub(super) fn materialize_remote_entities(
             );
         }
         let attachment_changed = remote.weapon_attachment_changed
-            && remote_materialize::update_active_weapon_attachment(
+            && weapon_mounts::update_weapon_mount_attachments(
                 registry,
                 remote.entity_id,
+                entity_class,
                 descriptors,
                 remote.active_weapon_archetype.as_deref(),
                 hit_zone_store,

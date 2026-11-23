@@ -616,15 +616,16 @@ reproduce the shooter's authoritative fire origin from the same placement (see b
 Placement never reads client-local view-feel state.
 
 The third-person avatar weapon mount does not read placement. Observers see the weapon
-posed by the avatar hand socket; the FP viewmodel is a screen-space presentation. The
-two vantages legitimately diverge — the shooter's authored FP placement versus
-observers' socket pose — and the TP mount carries no placement offset. Art owns its
-placement in the prop or socket. Placement is the base position; render-rate view-feel
-sway/bob is a separate overlay composed on top (owned by movement), excluded from
-authority. Decided, not yet built: each peer resolves the third-person mount from the
+posed by the sockets the wielder's `mesh.weaponMounts` entry names; the FP viewmodel is
+a screen-space presentation. The two vantages legitimately diverge — the shooter's
+authored FP placement versus observers' socket pose — and the TP mount carries no
+placement offset. Art owns its fit in the rig's bake. Placement is the base position;
+render-rate view-feel sway/bob is a separate overlay composed on top (owned by
+movement), excluded from authority. Each peer resolves the third-person mount from the
 replicated active weapon and the pawn's class against its own descriptors, so no mount
-data crosses the wire. Today the weapon's own third-person model mounts at a fixed hand
-socket.
+data crosses the wire; peers with differing descriptors present differently. Gameplay
+never reads a mount: fire origin and hit tests ignore it. NPC carried weapons stay
+host-only; an NPC shows its weapon through base `mesh.attachments`.
 
 **Fire origin composes on placement.** When a projectile weapon supplies a
 model-local `muzzleOffset`, its authoritative origin is the weapon's muzzle

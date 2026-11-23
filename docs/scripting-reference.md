@@ -208,6 +208,7 @@ levels.
 | `canonicalName` | `string` (optional) | The `.map` classname this archetype matches. Omit it for descriptors that are not directly map-placeable. Built-in classnames (e.g. `billboard_emitter`) take precedence. |
 | `components.emitter` | `ComponentValue` (optional) | Emitter component attached at spawn. Use `smokeEmitter`, `sparkEmitter`, or `emitter()`. |
 | `components.light` | `{ color: [r, g, b], range: number, intensity: number, is_dynamic: boolean }` (optional) | Light component attached at spawn. Descriptor-spawned lights are always treated as dynamic regardless of `is_dynamic`. |
+| `components.mesh` | `MeshDescriptor` (optional) | The entity's model, plus optional socket `attachments`, per-weapon `weaponMounts` and animation states. Unknown keys fail the load. See [Character weapon mounts](#character-weapon-mounts) and [Player locomotion animation states](#player-locomotion-animation-states). |
 | `components.behavior` | `BehaviorGraphDescriptor` (optional) | Authored enemy behavior statechart — hierarchical activities, motion/action verbs, candidate eligibility, and ordered transition guards. It owns acquisition and stand-down policy. See [`components.behavior`](#componentsbehavior). |
 | `components.lifeStates` | life-state descriptor (optional) | Named player capability profiles, an `initial` state and optional `rejoin` map. Requires player movement. See [Player life states](#player-life-states). |
 
@@ -382,6 +383,79 @@ defineEntity({
   },
 });
 ```
+
+### Character weapon mounts
+
+A character holds its active weapon through `components.mesh.weaponMounts`: one
+entry per weapon it may wield, naming the props it mounts while that weapon is
+active. Each prop is a bake fitted to this character's rig; see
+`docs/weapon-mounts.md` for making one. Weapons carry no third-person model of
+their own, only a first-person `viewmodel`.
+
+```typescript
+import { referencePistolEntity as pistol } from "./reference-pistol";
+import { referenceRifleEntity as rifle } from "./reference-rifle";
+
+defineEntity({
+  canonicalName: "player",
+  components: {
+    mesh: {
+      model: "models/exo_red/model.gltf",
+      weaponMounts: [
+        { weapon: rifle, attachments: { hand_r: "models/cyberpunk_weapons/rifle/exo_red.gltf" } },
+        { weapon: pistol, attachments: { hand_r: "models/cyberpunk_weapons/pistol/exo_red.gltf" } },
+      ],
+    },
+    inventory: { loadout: [rifle, pistol] },
+  },
+});
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `weapon` | weapon `defineEntity` value | The weapon this entry is for, as in `inventory.loadout`. Each weapon appears at most once. |
+| `attachments` | `{ [socket]: string }` | Socket name → content-relative model path, mounted while the weapon is active. Must be non-empty. Paths use forward slashes and stay inside the content root. |
+
+The mounted props are `mesh.attachments`, then the active weapon's entry; the
+entry wins on a socket both name. A weapon switch swaps one entry's sockets for
+the other's in one step. When the weapon leaves, its sockets return to
+`mesh.attachments`, or empty. An entry may name any sockets the model has, not
+only `hand_r`.
+
+Leave `weaponMounts` out for a character whose weapon is part of its model, like
+a robot with a gun arm: it mounts no weapon and logs nothing. Declaring the
+table, even empty, turns missing data into warnings. Each warns once per
+character and weapon per level load:
+
+- A loadout weapon with no entry warns at level load.
+- Any other weapon with no entry, such as a pickup, warns the first time the
+  character wields it. It mounts nothing.
+- A socket the character's model lacks warns, naming the character, weapon and
+  socket, and draws nothing there. The entry's other sockets still mount.
+- A listed model that fails to load warns. The entry's other sockets still mount.
+- An entry whose weapon name matches no weapon warns and mounts nothing.
+
+These fail the mod's load:
+
+- An unknown key inside `mesh`, such as a misspelled `weaponMount`. The error
+  names the key and the character.
+- The same weapon in two entries.
+- An empty `attachments` map.
+- A model path that is absolute, uses backslashes or climbs out with `..`.
+- A `weapon` value that is not a weapon's `defineEntity` value.
+- `thirdPersonModel` on a weapon descriptor, which is no longer a field.
+
+Every listed model loads with the level, so a switch never waits on a load. A
+hot-reload edit to the table logs a warning and applies at the next level load,
+like any other `mesh` edit. A local player's `shadowOnly` covers its mounts too,
+so you see the weapon in your body's shadow. Mounts are presentation only: shots
+still start from the first-person placement and `muzzleOffset`, and hit tests
+ignore them. In co-op each machine resolves the mount from the replicated active
+weapon and its own copy of the descriptors.
+
+Weapons NPCs carry still mount through `mesh.attachments`.
+
+The same keys work in Luau tables.
 
 ---
 
@@ -995,6 +1069,8 @@ Attach a `weapon` block to an entity descriptor to define a weapon archetype.
 A weapon can be equipped by name in a loadout or placed by its canonical
 classname as a world item. Add `components.mesh` for its world appearance and
 `components.touchable` for pickup; its `mode` selects automatic or use-button pickup.
+How a character holds the weapon in third person belongs to the character, not
+the weapon: see [Character weapon mounts](#character-weapon-mounts).
 
 ```typescript
 defineEntity({

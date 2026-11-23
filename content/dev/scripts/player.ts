@@ -10,6 +10,21 @@ import {
   referencePlasmaBoltEntity,
   referenceRocketEntity,
 } from "./reference-projectiles";
+import {
+  wieldableFixtureAutoEntity,
+  wieldableFixturePressEntity,
+} from "./wieldable-fixture-weapons";
+import {
+  coopHealthWeaponEntity,
+  coopHeatTestEntity,
+} from "./coop-presentation-entities";
+
+// exo_red's third-person mounts: each bake is fitted to exo_red's `hand_r`
+// with `postretro-tool solve-weapon-mount`, kept beside its weapon's viewmodel
+// and named for the rig (docs/weapon-mounts.md).
+const EXO_RED_MOUNT = (weaponFolder: string) => ({
+  hand_r: `models/cyberpunk_weapons/${weaponFolder}/exo_red.gltf`,
+});
 
 export const playerEntity = defineEntity({
   canonicalName: "player",
@@ -74,7 +89,21 @@ export const playerEntity = defineEntity({
     mesh: {
       model: "models/exo_red/model.gltf",
       shadowOnly: true,
-      // exo_red declares a `hand_r` socket for the runtime third-person weapon.
+      // One entry per weapon this character may wield; a weapon without one
+      // mounts nothing and warns.
+      weaponMounts: [
+        { weapon: referenceShotgunEntity, attachments: EXO_RED_MOUNT("shotgun") },
+        { weapon: referencePistolEntity, attachments: EXO_RED_MOUNT("pistol") },
+        { weapon: referenceRifleEntity, attachments: EXO_RED_MOUNT("rifle") },
+        { weapon: referencePlasmaBoltEntity, attachments: EXO_RED_MOUNT("rpg") },
+        { weapon: referenceRocketEntity, attachments: EXO_RED_MOUNT("sci_fi_weapon") },
+        // Spreads the reference rifle, so it shares the rifle's bake.
+        { weapon: incendiaryRifleEntity, attachments: EXO_RED_MOUNT("rifle") },
+        { weapon: wieldableFixtureAutoEntity, attachments: EXO_RED_MOUNT("smg") },
+        { weapon: wieldableFixturePressEntity, attachments: EXO_RED_MOUNT("shotgun") },
+        { weapon: coopHealthWeaponEntity, attachments: EXO_RED_MOUNT("smg") },
+        { weapon: coopHeatTestEntity, attachments: EXO_RED_MOUNT("smg") },
+      ],
       animations: {
         idle: { clip: "idle", loop: true, crossfadeMs: 50 },
         walk_forward: {

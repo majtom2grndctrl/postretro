@@ -96,6 +96,12 @@ pub use splash_march::{MarchRelease, host_step_splash_marches};
 #[cfg(test)]
 mod teleport_tests;
 pub mod weapon_cues;
+// Third-person weapon mounts: the one writer, its host and single-player
+// synchronizers, and the connected client's own-pawn apply.
+mod weapon_mounts;
+pub use weapon_mounts::{
+    synchronize_weapon_attachment_for_pawn, synchronize_weapon_owner_attachments,
+};
 // M15 Phase 3.5: the replicated-slot schema/fingerprint/lowering, the engine
 // production (`HostStateReplication`) and client apply (`ClientStateApply`) glue. The
 // schema is the only place the engine maps `StateSlotId <-> dotted name`; the net
@@ -342,62 +348,6 @@ use crate::movement::{MovementCollisionSource, MovementEvents};
 use crate::sim::SimCommand;
 use crate::weapon::{ActivationOutcome, WeaponImpact};
 use tuning_payload::decode_tuning_payload;
-
-/// Synchronize dirty pawn inventory changes into third-person presentation
-/// attachments immediately before snapshot production. `WeaponOwners` is only the
-/// dirty attachment queue; each drain resolves the active instance from live pawn
-/// inventory before mirroring its descriptor identity onto the pawn mesh.
-pub fn synchronize_weapon_owner_attachments(
-    registry: &mut EntityRegistry,
-    weapon_owners: &mut WeaponOwners,
-    descriptors: &[EntityTypeDescriptor],
-    hit_zone_store: &crate::scripting_systems::hit_zones::HitZoneStore,
-) -> Vec<EntityId> {
-    weapon_owners
-        .take_attachment_changes(registry)
-        .into_iter()
-        .filter_map(|(pawn, weapon)| {
-            let active_weapon_archetype = weapon.and_then(|weapon| {
-                registry
-                    .get_component::<DescriptorProvenance>(weapon)
-                    .ok()
-                    .map(|provenance| provenance.canonical_name.clone())
-            });
-            remote_materialize::update_active_weapon_attachment(
-                registry,
-                pawn,
-                descriptors,
-                active_weapon_archetype.as_deref(),
-                hit_zone_store,
-            )
-            .then_some(pawn)
-        })
-        .collect()
-}
-
-/// Synchronize one local pawn's third-person attachment from its active inventory
-/// weapon. Single-player has no dirty attachment queue, and the listen host installs
-/// its own pawn before the regular pre-snapshot synchronization can run.
-pub fn synchronize_weapon_attachment_for_pawn(
-    registry: &mut EntityRegistry,
-    pawn: EntityId,
-    descriptors: &[EntityTypeDescriptor],
-    hit_zone_store: &crate::scripting_systems::hit_zones::HitZoneStore,
-) -> bool {
-    let active_weapon_archetype = active_wieldable_for_pawn(registry, pawn).and_then(|weapon| {
-        registry
-            .get_component::<DescriptorProvenance>(weapon)
-            .ok()
-            .map(|provenance| provenance.canonical_name.clone())
-    });
-    remote_materialize::update_active_weapon_attachment(
-        registry,
-        pawn,
-        descriptors,
-        active_weapon_archetype.as_deref(),
-        hit_zone_store,
-    )
-}
 
 /// Default listen port for `--host` when no port is supplied.
 pub const DEFAULT_HOST_PORT: u16 = 27015;
@@ -1144,16 +1094,14 @@ pub fn client_receive_and_apply(
         // The local pawn's world body is shadow-only, but it still needs the same
         // third-person weapon silhouette as peers see. Its viewmodel remains separate
         // from this presentation-only attachment path.
-        for update in &outcome.local_weapon_attachments {
-            frame_outcome.materialized_remote_entity_presentation |=
-                remote_materialize::update_active_weapon_attachment(
-                    registry,
-                    update.entity_id,
-                    descriptors,
-                    update.active_weapon_archetype.as_deref(),
-                    hit_zone_store,
-                );
-        }
+        frame_outcome.materialized_remote_entity_presentation |=
+            weapon_mounts::apply_local_weapon_attachments(
+                &outcome.local_weapon_attachments,
+                replication,
+                registry,
+                descriptors,
+                hit_zone_store,
+            );
         // Each non-local descriptor entity needing materialization is handled here, where
         // the shared descriptor table is in scope (the net-facing apply is descriptor-blind).
         // The host-stamped class distinguishes pawn paths from descriptor-world copies,
@@ -2721,9 +2669,8 @@ mod tests {
     use super::*;
     use glam::Vec3;
     use postretro_entities::components::health::Hitbox;
-    use postretro_entities::components::mesh::MeshAttachment;
     use postretro_entities::components::weapon::{ReloadFeedback, WeaponComponent};
-    use postretro_entities::provenance::{DescriptorComponentKind, DescriptorSpawnPath};
+    use postretro_entities::provenance::DescriptorSpawnPath;
     use postretro_foundation::{
         KnockbackDescriptor, ResolutionMode, SplashDescriptor, WeaponDescriptor,
     };
@@ -3950,112 +3897,6 @@ mod tests {
 
     // Regression: host level reset reconstructed the allocator and reused old
     // NetworkIds while the transport connection survived.
-
-    #[test]
-    fn host_weapon_owner_sync_reads_weapon_provenance_and_clears_unloaded_prop() {
-        let mut registry = EntityRegistry::new();
-        let pawn = registry.spawn(Transform::default());
-        let mut mesh = MeshComponent::stateless("models/player/model.gltf".to_string());
-        mesh.attachments.push(MeshAttachment::unresolved(
-            remote_materialize::ACTIVE_WEAPON_SOCKET.to_string(),
-            "models/old_weapon/model.gltf".to_string(),
-        ));
-        registry.set_component(pawn, mesh).unwrap();
-
-        let weapon = registry.spawn(Transform::default());
-        registry
-            .set_component(
-                weapon,
-                DescriptorProvenance {
-                    canonical_name: "reference_pistol".to_string(),
-                    owned_components: [DescriptorComponentKind::Weapon].into_iter().collect(),
-                    map_overrides: Default::default(),
-                    spawn_path: DescriptorSpawnPath::DefaultWeapon,
-                },
-            )
-            .unwrap();
-        let descriptors = vec![EntityTypeDescriptor {
-            life_states: None,
-            ghost: false,
-            faction: None,
-            tolerance: None,
-            canonical_name: Some("reference_pistol".to_string()),
-            inventory: None,
-            light: None,
-            emitter: None,
-            movement: None,
-            weapon: Some(WeaponDescriptor {
-                sounds: None,
-                knockback: None,
-                damage: 1.0,
-                pellet_count: 1,
-                spread_degrees: 0.0,
-                bloom_per_shot_degrees: 0.0,
-                bloom_max_degrees: 0.0,
-                bloom_decay_degrees_per_second: 0.0,
-                bloom_decay_delay_ms: 0.0,
-                movement_spread_degrees: 0.0,
-                spread_vertical_bias: 0.0,
-                range: 1.0,
-                primary: postretro_foundation::WeaponActivationDescriptor::single(
-                    postretro_foundation::ActivationTrigger::Press,
-                    1.0,
-                ),
-                secondary: None,
-                resolution: ResolutionMode::Hitscan,
-                projectile: None,
-                splash: None,
-                credit_source: None,
-                third_person_model: Some("models/pistol/model.gltf".to_string()),
-                viewmodel: None,
-                placement: None,
-                muzzle_offset: None,
-                resource: None,
-                lower_ms: 0,
-                raise_ms: 0,
-                block_during_reload: None,
-                damage_type: None,
-            }),
-            touchable: None,
-            mesh: None,
-            health: None,
-            behavior: None,
-        }];
-        let mut weapon_owners = WeaponOwners::new();
-        set_active_inventory(&mut registry, pawn, weapon);
-        weapon_owners.mark_attachment_dirty(pawn);
-
-        let changed = synchronize_weapon_owner_attachments(
-            &mut registry,
-            &mut weapon_owners,
-            &descriptors,
-            &crate::scripting_systems::hit_zones::HitZoneStore::new(),
-        );
-        assert_eq!(changed, vec![pawn]);
-        assert_eq!(
-            active_wieldable_for_pawn(&registry, pawn),
-            Some(weapon),
-            "draining presentation changes preserves inventory provenance"
-        );
-        assert!(
-            registry
-                .get_component::<MeshComponent>(pawn)
-                .unwrap()
-                .attachments
-                .is_empty(),
-            "an unavailable third-person descriptor model clears the old hand prop"
-        );
-        assert!(
-            synchronize_weapon_owner_attachments(
-                &mut registry,
-                &mut weapon_owners,
-                &descriptors,
-                &crate::scripting_systems::hit_zones::HitZoneStore::new(),
-            )
-            .is_empty(),
-            "unchanged ownership performs no per-frame mesh synchronization"
-        );
-    }
 
     fn authorized_test_shot(
         shot_id: ShotId,

@@ -206,6 +206,74 @@ fn connected_client_prediction_covers_replicated_placements() {
     }
 }
 
+/// The dev mod's descriptors with the dev player's `mesh.weaponMounts`
+/// replaced by `table`.
+fn dev_descriptors_with_player_table(
+    table: Vec<postretro_entities::data_descriptors::WeaponMountDescriptor>,
+) -> Vec<EntityTypeDescriptor> {
+    let mut descriptors = dev_descriptors();
+    let player = descriptors
+        .iter_mut()
+        .find(|descriptor| descriptor.canonical_name.as_deref() == Some("player"))
+        .expect("the dev mod registers the player");
+    player.mesh.as_mut().expect("the dev player has a mesh").weapon_mounts = Some(table);
+    descriptors
+}
+
+// E21 M6: a mount joins its holder only on a weapon switch, so the install
+// sweep and the prediction must both carry every model a table lists, on
+// both net roles, before any pawn wields the weapon.
+#[test]
+fn every_weapon_mount_table_model_is_swept_and_predicted_on_both_roles() {
+    let descriptors = dev_descriptors_with_player_table(vec![
+        postretro_entities::data_descriptors::WeaponMountDescriptor {
+            weapon: "reference_rifle".to_string(),
+            attachments: [("back".to_string(), PROP_MODEL.to_string())].into(),
+        },
+    ]);
+    let placements = vec![record("player_spawn", &[], 0)];
+    for connected_client in [false, true] {
+        let (real, _) = real_sweep(placements.clone(), &descriptors, connected_client);
+        let predicted = predict_level_models(
+            &placements,
+            &prediction_inputs(&descriptors, connected_client),
+        );
+        assert!(
+            real.contains(&PROP_MODEL.to_string()),
+            "connected {connected_client}: the table model is in the install sweep"
+        );
+        assert!(
+            predicted.contains(&PROP_MODEL.to_string()),
+            "connected {connected_client}: the table model is predicted"
+        );
+    }
+}
+
+// E21 M1: a character that declares a table warns at level install for each
+// loadout weapon it lacks, naming both, once per install on each peer.
+#[test]
+fn level_install_warns_once_for_a_loadout_weapon_the_player_table_lacks() {
+    let descriptors = dev_descriptors_with_player_table(Vec::new());
+    let loadout_weapon = descriptors
+        .iter()
+        .find(|descriptor| descriptor.canonical_name.as_deref() == Some("player"))
+        .and_then(|player| player.inventory.as_ref())
+        .and_then(|inventory| inventory.loadout.first().cloned())
+        .expect("the dev player carries a loadout");
+    let warning = format!(
+        "[Weapon mounts] entity `player` has no weaponMounts entry for weapon `{loadout_weapon}`; it mounts nothing"
+    );
+    for connected_client in [false, true] {
+        let logs = postretro_test_log_capture::LogCapture::start();
+        let _ = real_sweep(
+            vec![record("player_spawn", &[], 0)],
+            &descriptors,
+            connected_client,
+        );
+        logs.assert_logged_once(log::Level::Warn, &warning);
+    }
+}
+
 /// A streamed-lightmap fixture whose map-entity section places `records`.
 pub(crate) fn write_level_with_entities(
     records: Vec<MapEntityRecord>,

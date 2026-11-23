@@ -17,6 +17,33 @@ const animatedMesh = {
   defaultState: "idle",
 };
 
+// Wieldable co-op fixtures, exported so player descriptors can name them in
+// `mesh.weaponMounts` (scripts/player.ts).
+export const coopHealthWeaponEntity = defineEntity({ canonicalName: "coop_health_weapon", components: {
+  health: { max: 48, hitbox: { halfExtents: [0.3, 0.2, 0.5], offset: [0, 0.2, 0] } },
+  mesh: { model: SMG }, touchable: { mode: "press", radius: 1 },
+  weapon: {
+    damage: 8, range: 48, resolution: "hitscan", thirdPersonModel: SMG, viewmodel: SMG,
+    damageType: ballistic,
+    muzzleOffset: [0, 0.274, -0.567],
+    primary: { trigger: "press", recoveryMs: 240, steps: [activation.shot()] },
+    resource: { kind: "ammo", type: "bullets.coop_fixture", magazine: 9, reserve: 27, reloadMs: 450, reloadStyle: "magazine" },
+    sounds: { fire: "weapons/pistol_fire", dryFire: "weapons/dry_fire" },
+  },
+} });
+
+export const coopHeatTestEntity = defineEntity({ canonicalName: "coop_heat_test", components: {
+  mesh: { model: SMG }, touchable: { mode: "press", radius: 1 },
+  weapon: {
+    damage: 1, range: 48, resolution: "hitscan", thirdPersonModel: SMG, viewmodel: SMG,
+    damageType: ballistic,
+    muzzleOffset: [0, 0.274, -0.567],
+    primary: { trigger: "hold", recoveryMs: 150, steps: [activation.shot()] },
+    resource: { kind: "heat", heatPerShot: 25, overheatAt: 100, coolPerSecond: 20, coolDelayMs: 500 },
+    sounds: { fire: "weapons/pistol_fire" },
+  },
+} });
+
 export const coopPresentationEntities = [
   defineEntity({ canonicalName: "coop_light_only", components: { light } }),
   defineEntity({ canonicalName: "coop_lit_prop", components: { light, mesh: animatedMesh } }),
@@ -35,29 +62,8 @@ export const coopPresentationEntities = [
   defineEntity({ canonicalName: "coop_invisible_target", components: {
     health: { max: 48, hitbox: { halfExtents: [0.4, 0.9, 0.4], offset: [0, 0.9, 0] } },
   } }),
-  defineEntity({ canonicalName: "coop_health_weapon", components: {
-    health: { max: 48, hitbox: { halfExtents: [0.3, 0.2, 0.5], offset: [0, 0.2, 0] } },
-    mesh: { model: SMG }, touchable: { mode: "press", radius: 1 },
-    weapon: {
-      damage: 8, range: 48, resolution: "hitscan", thirdPersonModel: SMG, viewmodel: SMG,
-      damageType: ballistic,
-      muzzleOffset: [0, 0.274, -0.567],
-      primary: { trigger: "press", recoveryMs: 240, steps: [activation.shot()] },
-      resource: { kind: "ammo", type: "bullets.coop_fixture", magazine: 9, reserve: 27, reloadMs: 450, reloadStyle: "magazine" },
-      sounds: { fire: "weapons/pistol_fire", dryFire: "weapons/dry_fire" },
-    },
-  } }),
-  defineEntity({ canonicalName: "coop_heat_test", components: {
-    mesh: { model: SMG }, touchable: { mode: "press", radius: 1 },
-    weapon: {
-      damage: 1, range: 48, resolution: "hitscan", thirdPersonModel: SMG, viewmodel: SMG,
-      damageType: ballistic,
-      muzzleOffset: [0, 0.274, -0.567],
-      primary: { trigger: "hold", recoveryMs: 150, steps: [activation.shot()] },
-      resource: { kind: "heat", heatPerShot: 25, overheatAt: 100, coolPerSecond: 20, coolDelayMs: 500 },
-      sounds: { fire: "weapons/pistol_fire" },
-    },
-  } }),
+  coopHealthWeaponEntity,
+  coopHeatTestEntity,
 ];
 
 // Preserve the existing dummy XP payout, while this map's dummy specialization

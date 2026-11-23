@@ -584,6 +584,12 @@ pub(crate) fn install_world_cpu_with_models(
     // still before `levelLoad`.
     mesh_clip_tables.clear();
     hit_zone_store.clear();
+    // After the clear, so each table warning repeats once per level load and a
+    // loadout weapon warned here stays quiet at its first wield.
+    crate::scripting_systems::weapon_mounts::check_weapon_mount_tables(
+        &descriptors,
+        hit_zone_store,
+    );
     let models = {
         let registry = script_ctx.registry.borrow();
         let mut models = crate::distinct_mesh_models(&registry);

@@ -1,6 +1,6 @@
 # local-edit-warm-builds
 
-Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Ray traversal, §Source-format neutrality, §Compiler pipeline step 12 (Exact skips), §Progress reporting, controls, and logging, §Id-51 consumers · `docs/level_design.md` §Compiling Your Map · `done/surface-radiance-cache/` · `done/incremental-bake-per-element/` · `done/level-compiler-tui/` · background: `context/research/gi-rtx-lite/ip-check.md` · read at 3703dd164
+Brief · resumable · ready (owner signed off 2026-11-23) · reads: `context/lib/build_pipeline.md` §Build Cache, §Ray traversal, §Source-format neutrality, §Compiler pipeline step 12 (Exact skips), §Progress reporting, controls, and logging, §Id-51 consumers · `docs/level_design.md` §Compiling Your Map · `done/surface-radiance-cache/` · `done/incremental-bake-per-element/` · `done/level-compiler-tui/` · background: `context/research/gi-rtx-lite/ip-check.md` · read at 3703dd164
 
 ## Problem
 **Basis.** Owner-observed defect in the authoring loop: editing a linked group that has a single instance — an ordinary local edit — invalidates the lightmap and SH caches, and the build cannot show why. On stress-street, raising one brush in one lamp instance costs 234 s warm against 21 s for a no-op. Every cache stage misses, though 99.5% of lightmap texels come out byte-identical (`research.md` §Measurements).

@@ -18,7 +18,6 @@ export const referenceShotgunEntity = defineEntity({
       range: 64.0,
       primary: { trigger: "press", recoveryMs: 700.0, steps: [activation.shot()] },
       resolution: "hitscan",
-      thirdPersonModel: "models/cyberpunk_weapons/shotgun/model.gltf",
       viewmodel: "models/cyberpunk_weapons/shotgun/model.gltf",
       placement: shotgunPlacement,
       // Authored from the viewmodel's rigid `muzzle` socket.

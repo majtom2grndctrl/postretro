@@ -1,9 +1,9 @@
-// Shared descriptor-presentation materialization and runtime attachment updates
-// for local and remote player entities.
+// Shared descriptor-presentation materialization for local and remote player
+// entities.
 // See: context/lib/networking.md
 
 use postretro_combat_model::TuningPayload;
-use postretro_entities::components::mesh::{MeshAttachment, MeshComponent};
+use postretro_entities::components::mesh::{BodyFrame, MeshComponent};
 use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
 use postretro_entities::{EntityId, EntityRegistry, EntityTypeDescriptor};
 use postretro_foundation::NavAgentParams;
@@ -11,13 +11,14 @@ use postretro_foundation::NavAgentParams;
 use super::client::{ArmedLocalPawn, RemoteEntityMaterialize};
 use super::descriptor_class::decode_replicated_descriptor_class;
 
-/// Reserved socket for the dynamic third-person active-weapon prop. Descriptor
-/// attachments on other sockets remain untouched when an active weapon changes.
-pub(super) const ACTIVE_WEAPON_SOCKET: &str = "hand_r";
-
 /// Whether a descriptor-backed player body is being presented to its owning
 /// viewer or to another client. `shadowOnly` is authored for the first-person
 /// owner view; peers must still see that same descriptor as a forward avatar.
+/// On a client either role marks the body [`BodyFrame::View`]: a client reaches
+/// a role only for a player pawn, whose transform stays in the view frame, so
+/// its model front takes the half turn at the body seam. On the host the frame
+/// is fixed when the pawn's transform spawns (`descriptor_body_frame` in sim's
+/// `data_archetype.rs`), and the role step leaves it alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PlayerViewerRole {
     Local,
@@ -36,21 +37,30 @@ fn apply_player_viewer_role(
     registry: &mut EntityRegistry,
     id: EntityId,
     role: PlayerViewerRole,
+    body_frame: Option<BodyFrame>,
 ) {
-    let Some(descriptor_shadow_only) = descriptors
+    let Some(descriptor) = descriptors
         .iter()
         .find(|descriptor| descriptor.canonical_name.as_deref() == Some(entity_class))
-        .and_then(|descriptor| descriptor.mesh.as_ref())
-        .map(|mesh| mesh.shadow_only)
     else {
+        return;
+    };
+    let Some(descriptor_shadow_only) = descriptor.mesh.as_ref().map(|mesh| mesh.shadow_only) else {
         return;
     };
     let Ok(mut mesh) = registry.get_component::<MeshComponent>(id).cloned() else {
         return;
     };
     let shadow_only = role.shadow_only(descriptor_shadow_only);
-    if mesh.shadow_only != shadow_only {
+    // `None` keeps the frame the spawn chose. The frame must agree with the
+    // frame the transform spawned in, and a re-accept (or a hot reload that
+    // adds or removes `movement`) must not re-derive it from descriptors.
+    // Set on every call, not only when the mesh was just built: a re-arm or
+    // re-apply keeps an existing mesh, so the frame must not wait on a rebuild.
+    let body_frame = body_frame.unwrap_or(mesh.body_frame);
+    if mesh.shadow_only != shadow_only || mesh.body_frame != body_frame {
         mesh.shadow_only = shadow_only;
+        mesh.body_frame = body_frame;
         let _ = registry.set_component(id, mesh);
     }
 }
@@ -58,7 +68,9 @@ fn apply_player_viewer_role(
 /// Apply the peer-view policy to a descriptor-backed player mesh that another
 /// host-side spawn path already materialized. Listen-host slot pawns use the full
 /// authoritative descriptor spawn, so they need this presentation-only override
-/// without re-materializing any gameplay components.
+/// without re-materializing any gameplay components. That spawn already fixed
+/// the body frame with the transform (a movement pawn [`BodyFrame::View`], a
+/// slot body without movement [`BodyFrame::Model`]); this step keeps it.
 pub(super) fn apply_remote_player_viewer_role(
     entity_class: &str,
     descriptors: &[EntityTypeDescriptor],
@@ -71,64 +83,8 @@ pub(super) fn apply_remote_player_viewer_role(
         registry,
         id,
         PlayerViewerRole::Remote,
+        None,
     );
-}
-
-/// Replace the dynamic active-weapon attachment on a player mesh. The descriptor
-/// lookup deliberately resolves only the shared-visible canonical archetype; no
-/// owner-private weapon component state crosses this presentation seam.
-///
-/// A model missing from the level's preloaded CPU model set clears the socket instead
-/// of leaving a stale attachment behind. The caller runs the existing binding resolver
-/// after a `true` return, which fills the transient [`AttachmentBinding::Skinned`]
-/// cache from the holder's authored `hand_r` socket.
-pub(super) fn update_active_weapon_attachment(
-    registry: &mut EntityRegistry,
-    pawn: EntityId,
-    descriptors: &[EntityTypeDescriptor],
-    active_weapon_archetype: Option<&str>,
-    hit_zone_store: &crate::scripting_systems::hit_zones::HitZoneStore,
-) -> bool {
-    let Ok(mut mesh) = registry.get_component::<MeshComponent>(pawn).cloned() else {
-        return false;
-    };
-
-    let desired_model = active_weapon_archetype
-        .and_then(|archetype| {
-            descriptors
-                .iter()
-                .find(|descriptor| descriptor.canonical_name.as_deref() == Some(archetype))
-        })
-        .and_then(|descriptor| descriptor.weapon.as_ref())
-        .and_then(|weapon| weapon.third_person_model.as_deref())
-        .filter(|model| !model.is_empty())
-        .filter(|model| hit_zone_store.get_by_name(model).is_some());
-
-    let socket_attachments: Vec<_> = mesh
-        .attachments
-        .iter()
-        .filter(|attachment| attachment.socket == ACTIVE_WEAPON_SOCKET)
-        .collect();
-    let already_matches = match desired_model {
-        Some(model) => {
-            socket_attachments.len() == 1 && socket_attachments[0].model.as_str() == model
-        }
-        None => socket_attachments.is_empty(),
-    };
-    if already_matches {
-        return false;
-    }
-
-    mesh.attachments
-        .retain(|attachment| attachment.socket != ACTIVE_WEAPON_SOCKET);
-    if let Some(model) = desired_model {
-        mesh.attachments.push(MeshAttachment::unresolved(
-            ACTIVE_WEAPON_SOCKET.to_string(),
-            model.to_string(),
-        ));
-    }
-    let _ = registry.set_component(pawn, mesh);
-    true
 }
 
 /// Materialize the descriptor-backed presentation for a `local_player` baseline this
@@ -231,6 +187,7 @@ pub(super) fn materialize_armed_local_pawn(
         registry,
         armed.entity_id,
         PlayerViewerRole::Local,
+        Some(BodyFrame::View),
     );
     !had_mesh
         && registry
@@ -266,6 +223,7 @@ pub(super) fn materialize_armed_remote_player(
             registry,
             remote.entity_id,
             PlayerViewerRole::Remote,
+            Some(BodyFrame::View),
         );
     }
     materialized
@@ -351,9 +309,7 @@ mod tests {
     use super::*;
     use crate::sprite_collection::derive_collection_id;
     use glam::{Quat, Vec3};
-    use postretro_entities::components::mesh::{
-        AnimationState, AttachmentBinding, InterruptPolicy, MeshComponent,
-    };
+    use postretro_entities::components::mesh::{AnimationState, InterruptPolicy, MeshComponent};
     use postretro_entities::{ComponentKind, EntityId, MeshDescriptor, Transform};
     use postretro_foundation::{
         AirParams, CapsuleParams, FallParams, GroundParams, NavAgentParams,
@@ -362,7 +318,6 @@ mod tests {
         SpeedParams, WeaponDescriptor,
     };
     use std::collections::HashMap;
-    use std::sync::Arc;
 
     /// A minimal descriptor carrying only a two-state animated mesh, mirroring the
     /// validated descriptor shape a remote enemy materializes from.
@@ -402,6 +357,7 @@ mod tests {
                 animations: states,
                 default_state: Some("idle".to_string()),
                 locomotion: None,
+                weapon_mounts: None,
             }),
             health: None,
             behavior: None,
@@ -452,44 +408,6 @@ mod tests {
             swim: None,
             vault: None,
             view_feel: None,
-        });
-        descriptor
-    }
-
-    fn third_person_weapon_descriptor(classname: &str, model: &str) -> EntityTypeDescriptor {
-        let mut descriptor = enemy_mesh_descriptor(classname);
-        descriptor.mesh = None;
-        descriptor.weapon = Some(WeaponDescriptor {
-            sounds: None,
-            knockback: None,
-            damage: 1.0,
-            pellet_count: 1,
-            spread_degrees: 0.0,
-            bloom_per_shot_degrees: 0.0,
-            bloom_max_degrees: 0.0,
-            bloom_decay_degrees_per_second: 0.0,
-            bloom_decay_delay_ms: 0.0,
-            movement_spread_degrees: 0.0,
-            spread_vertical_bias: 0.0,
-            range: 1.0,
-            primary: postretro_foundation::WeaponActivationDescriptor::single(
-                postretro_foundation::ActivationTrigger::Press,
-                1.0,
-            ),
-            secondary: None,
-            resolution: ResolutionMode::Hitscan,
-            projectile: None,
-            splash: None,
-            credit_source: None,
-            third_person_model: Some(model.to_string()),
-            viewmodel: None,
-            placement: None,
-            muzzle_offset: None,
-            resource: None,
-            lower_ms: 0,
-            raise_ms: 0,
-            block_during_reload: None,
-            damage_type: None,
         });
         descriptor
     }
@@ -555,7 +473,6 @@ mod tests {
             }),
             splash: None,
             credit_source: None,
-            third_person_model: None,
             viewmodel: None,
             placement: None,
             muzzle_offset: None,
@@ -566,69 +483,6 @@ mod tests {
             damage_type: None,
         });
         descriptor
-    }
-
-    fn test_hit_zones(
-        sockets: HashMap<String, postretro_model::gltf_loader::SocketBinding>,
-    ) -> crate::scripting_systems::hit_zones::ModelHitZones {
-        crate::scripting_systems::hit_zones::ModelHitZones::for_test(
-            Arc::new(postretro_model::skeleton::Skeleton::default()),
-            Arc::new(Vec::new()),
-            Vec::new(),
-            sockets,
-            None,
-            Vec::new(),
-            Arc::new(postretro_model::pose_modifier::PoseModifierStack::default()),
-        )
-    }
-
-    fn attachment_store() -> crate::scripting_systems::hit_zones::HitZoneStore {
-        use postretro_model::skeleton::{Joint, RestLocal, Skeleton};
-
-        let mut store = crate::scripting_systems::hit_zones::HitZoneStore::new();
-        let mut holder = test_hit_zones(HashMap::from([(
-            ACTIVE_WEAPON_SOCKET.to_string(),
-            postretro_model::gltf_loader::SocketBinding::SkinnedJoint(3),
-        )]));
-        holder.skeleton = Arc::new(Skeleton {
-            joints: vec![
-                Joint {
-                    parent: None,
-                    inverse_bind: glam::Mat4::IDENTITY.to_cols_array_2d(),
-                    rest_local: RestLocal::default(),
-                },
-                Joint {
-                    parent: Some(0),
-                    inverse_bind: glam::Mat4::IDENTITY.to_cols_array_2d(),
-                    rest_local: RestLocal {
-                        translation: Vec3::new(0.25, 0.0, 0.0),
-                        ..RestLocal::default()
-                    },
-                },
-                Joint {
-                    parent: Some(1),
-                    inverse_bind: glam::Mat4::IDENTITY.to_cols_array_2d(),
-                    rest_local: RestLocal {
-                        translation: Vec3::new(0.0, 0.5, 0.0),
-                        ..RestLocal::default()
-                    },
-                },
-                Joint {
-                    parent: Some(2),
-                    inverse_bind: glam::Mat4::IDENTITY.to_cols_array_2d(),
-                    rest_local: RestLocal {
-                        translation: Vec3::new(0.0, 0.0, 0.75),
-                        ..RestLocal::default()
-                    },
-                },
-            ],
-        });
-        store.insert_for_test(postretro_model::ModelHandle::from("decraniated"), holder);
-        store.insert_for_test(
-            postretro_model::ModelHandle::from("models/pistol/model.gltf"),
-            test_hit_zones(HashMap::new()),
-        );
-        store
     }
 
     fn spawn_transform_only(reg: &mut EntityRegistry) -> EntityId {
@@ -959,65 +813,6 @@ mod tests {
     }
 
     #[test]
-    fn active_weapon_attachment_resolves_the_descriptor_hand_socket() {
-        let descriptors = vec![
-            player_mesh_descriptor("co_op_avatar"),
-            third_person_weapon_descriptor("reference_pistol", "models/pistol/model.gltf"),
-            third_person_weapon_descriptor("missing_pistol", "models/missing/model.gltf"),
-        ];
-        let store = attachment_store();
-        let mut registry = EntityRegistry::new();
-        let pawn = spawn_transform_only(&mut registry);
-        let request = RemoteEntityMaterialize {
-            network_id: postretro_net::wire::NetworkId(9),
-            entity_id: pawn,
-            entity_class: "co_op_avatar".to_string(),
-            initial_animation_state: None,
-            active_weapon_archetype: None,
-            weapon_attachment_changed: false,
-        };
-        assert!(materialize_armed_remote_player(
-            &request,
-            &descriptors,
-            &mut registry,
-            None,
-        ));
-        assert!(update_active_weapon_attachment(
-            &mut registry,
-            pawn,
-            &descriptors,
-            Some("reference_pistol"),
-            &store,
-        ));
-        crate::sim::resolve_mesh_entity_bindings_for_entities(
-            &mut registry,
-            &crate::scripting_systems::mesh_anim::MeshClipTables::default(),
-            &store,
-            [pawn],
-        );
-        let mesh = registry.get_component::<MeshComponent>(pawn).unwrap();
-        assert_eq!(mesh.attachments.len(), 1);
-        assert_eq!(mesh.attachments[0].socket, ACTIVE_WEAPON_SOCKET);
-        assert_eq!(mesh.attachments[0].model, "models/pistol/model.gltf");
-        assert_eq!(mesh.attachments[0].binding, AttachmentBinding::Skinned(3));
-        assert!(update_active_weapon_attachment(
-            &mut registry,
-            pawn,
-            &descriptors,
-            Some("missing_pistol"),
-            &store,
-        ));
-        assert!(
-            registry
-                .get_component::<MeshComponent>(pawn)
-                .unwrap()
-                .attachments
-                .is_empty(),
-            "a descriptor model absent from the preloaded CPU store clears the old prop"
-        );
-    }
-
-    #[test]
     fn materialize_armed_local_pawn_attaches_descriptor_mesh_with_movement() {
         let descriptors = vec![player_mesh_descriptor("co_op_avatar")];
         let mut reg = EntityRegistry::new();
@@ -1085,6 +880,217 @@ mod tests {
             reg.has_component_kind(id, ComponentKind::PlayerMovement),
             Ok(false)
         );
+    }
+
+    /// A snapshot-spawned entity whose transform rotation is `rotation`.
+    fn spawn_rotated(reg: &mut EntityRegistry, rotation: Quat) -> EntityId {
+        let id = spawn_transform_only(reg);
+        reg.set_component(
+            id,
+            Transform {
+                position: Vec3::new(1.0, 2.0, 3.0),
+                rotation,
+                scale: Vec3::ONE,
+            },
+        )
+        .unwrap();
+        id
+    }
+
+    fn remote_request(
+        entity_id: EntityId,
+        network_id: u32,
+        class: &str,
+    ) -> RemoteEntityMaterialize {
+        RemoteEntityMaterialize {
+            network_id: postretro_net::wire::NetworkId(network_id),
+            entity_id,
+            entity_class: class.to_string(),
+            initial_animation_state: None,
+            active_weapon_archetype: None,
+            weapon_attachment_changed: false,
+        }
+    }
+
+    // The client roles. The host tags both player bodies `pawn:`, and each
+    // viewer-role step marks the body the view frame: the client's own pawn and
+    // a remote avatar front model +Z along the view, along the aim yaw until a
+    // lower-body heading lands, then along it. A world copy of the same player
+    // descriptor arrives tagged `descriptor:` with a model-frame transform and
+    // draws as placed (pin R3). The frame comes from the local materialization;
+    // nothing on the wire carries it.
+    #[test]
+    fn client_player_bodies_front_model_plus_z_along_the_view_and_a_world_copy_stays_model() {
+        use postretro_entities::PoseInputs;
+        use postretro_entities::components::mesh::{BodyFrame, MODEL_FRONT_TO_VIEW_FORWARD};
+
+        let descriptors = vec![player_mesh_descriptor("co_op_avatar")];
+        let (aim, heading) = (1.3_f32, 0.4_f32);
+        let mut reg = EntityRegistry::new();
+
+        let own = spawn_rotated(&mut reg, Quat::from_rotation_y(aim));
+        materialize_armed_local_pawn(
+            &ArmedLocalPawn {
+                network_id: postretro_net::wire::NetworkId(10),
+                entity_id: own,
+                entity_class: Some("pawn:co_op_avatar".to_string()),
+            },
+            &descriptors,
+            &mut reg,
+            descriptors[0].movement.as_ref(),
+            None,
+            false,
+            &Default::default(),
+        );
+        let avatar = spawn_rotated(&mut reg, Quat::from_rotation_y(aim));
+        assert!(materialize_armed_remote_player(
+            &remote_request(avatar, 11, "pawn:co_op_avatar"),
+            &descriptors,
+            &mut reg,
+            None,
+        ));
+
+        for (pawn, role) in [(own, "client own pawn"), (avatar, "client remote avatar")] {
+            let rotation = reg.get_component::<Transform>(pawn).unwrap().rotation;
+            let mut mesh = reg.get_component::<MeshComponent>(pawn).unwrap().clone();
+            assert_eq!(mesh.body_frame, BodyFrame::View, "{role}");
+            assert!(
+                (mesh.presentation_rotation(rotation) * Vec3::Z)
+                    .abs_diff_eq(Quat::from_rotation_y(aim) * Vec3::NEG_Z, 1e-6),
+                "{role}: model +Z along Ry(aim)*(-Z) on its first drawn frame"
+            );
+            mesh.pose_inputs = Some(PoseInputs {
+                aim_yaw: aim,
+                heading_yaw: heading,
+                ..Default::default()
+            });
+            assert!(
+                (mesh.presentation_rotation(rotation) * Vec3::Z)
+                    .abs_diff_eq(Quat::from_rotation_y(heading) * Vec3::NEG_Z, 1e-6),
+                "{role}: model +Z along Ry(heading)*(-Z)"
+            );
+        }
+
+        let placed = Quat::from_rotation_y(aim) * MODEL_FRONT_TO_VIEW_FORWARD;
+        let copy = spawn_rotated(&mut reg, placed);
+        assert!(materialize_armed_remote_enemy(
+            &remote_request(copy, 12, "descriptor:co_op_avatar"),
+            &descriptors,
+            &mut reg,
+            None,
+        ));
+        let copy_mesh = reg.get_component::<MeshComponent>(copy).unwrap();
+        assert_eq!(copy_mesh.body_frame, BodyFrame::Model);
+        assert_eq!(
+            copy_mesh.presentation_rotation(placed),
+            placed,
+            "a world copy of a player descriptor draws as placed, unturned"
+        );
+    }
+
+    // A re-arm or re-apply keeps a mesh that already exists (the mesh helper
+    // returns early), so the viewer-role step marks the body frame on every
+    // call, never only when it builds the mesh. A rejoin's re-arm, or a body
+    // some earlier step materialized, still draws turned and keeps its live
+    // animation state.
+    #[test]
+    fn client_viewer_role_marks_an_existing_player_mesh_view_without_rebuilding_it() {
+        use postretro_entities::components::mesh::BodyFrame;
+
+        let descriptors = vec![player_mesh_descriptor("co_op_avatar")];
+        let mut reg = EntityRegistry::new();
+        let own = spawn_transform_only(&mut reg);
+        let avatar = spawn_transform_only(&mut reg);
+        for id in [own, avatar] {
+            assert!(
+                crate::scripting::builtins::net_descriptor::materialize_net_mesh_presentation(
+                    "co_op_avatar",
+                    &descriptors,
+                    &mut reg,
+                    id,
+                    None,
+                )
+            );
+            let mut mesh = reg.get_component::<MeshComponent>(id).unwrap().clone();
+            assert_eq!(
+                mesh.body_frame,
+                BodyFrame::Model,
+                "fixture: the shared descriptor mesh carries no frame"
+            );
+            mesh.animation.as_mut().unwrap().current_state = "moved".to_string();
+            reg.set_component(id, mesh).unwrap();
+        }
+
+        let armed = ArmedLocalPawn {
+            network_id: postretro_net::wire::NetworkId(10),
+            entity_id: own,
+            entity_class: Some("pawn:co_op_avatar".to_string()),
+        };
+        for rebuild_movement in [false, true] {
+            materialize_armed_local_pawn(
+                &armed,
+                &descriptors,
+                &mut reg,
+                descriptors[0].movement.as_ref(),
+                None,
+                rebuild_movement,
+                &Default::default(),
+            );
+        }
+        assert!(materialize_armed_remote_player(
+            &remote_request(avatar, 11, "pawn:co_op_avatar"),
+            &descriptors,
+            &mut reg,
+            None,
+        ));
+
+        for (id, role) in [(own, "own pawn"), (avatar, "remote avatar")] {
+            let mesh = reg.get_component::<MeshComponent>(id).unwrap();
+            assert_eq!(mesh.body_frame, BodyFrame::View, "{role}");
+            assert_eq!(
+                mesh.animation.as_ref().unwrap().current_state,
+                "moved",
+                "{role}: the live mesh was kept, not rebuilt"
+            );
+        }
+    }
+
+    // The host's role step keeps the frame the slot body's transform spawned
+    // in. A re-accept after a hot reload that removed or added `movement`
+    // must not re-derive it from the current descriptors, or the body would
+    // draw half a turn from its transform.
+    #[test]
+    fn host_viewer_role_keeps_the_spawned_body_frame_whatever_the_descriptor_says_now() {
+        use postretro_entities::components::mesh::BodyFrame;
+
+        let with_movement = vec![player_mesh_descriptor("avatar")];
+        let mut without_movement = with_movement.clone();
+        without_movement[0].movement = None;
+        for (spawned, descriptors) in [
+            (BodyFrame::View, &without_movement),
+            (BodyFrame::Model, &with_movement),
+        ] {
+            let mut reg = EntityRegistry::new();
+            let id = spawn_transform_only(&mut reg);
+            assert!(
+                crate::scripting::builtins::net_descriptor::materialize_net_mesh_presentation(
+                    "avatar",
+                    descriptors,
+                    &mut reg,
+                    id,
+                    None,
+                )
+            );
+            let mut mesh = reg.get_component::<MeshComponent>(id).unwrap().clone();
+            mesh.body_frame = spawned;
+            reg.set_component(id, mesh).unwrap();
+
+            apply_remote_player_viewer_role("avatar", descriptors, &mut reg, id);
+
+            let mesh = reg.get_component::<MeshComponent>(id).unwrap();
+            assert_eq!(mesh.body_frame, spawned, "the spawn's frame stands");
+            assert!(!mesh.shadow_only, "a remote viewer still draws the body");
+        }
     }
 
     // A remote enemy's mesh derives its zero-phase loops from the

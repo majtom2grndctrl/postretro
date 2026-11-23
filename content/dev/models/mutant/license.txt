@@ -12,8 +12,8 @@ Model License:
 
 Packaging notes (PostRetro):
 * Character downloaded from Adobe Mixamo as FBX (with skin, T-pose) and bound
-  to clip_libraries/mixamo_brute with mixamo_to_gltf.py --yaw 180
-  --clip-library, so it faces +Z as AI facing expects. It ships mesh and
+  to clip_libraries/mixamo_brute with mixamo_to_gltf.py --clip-library. The
+  converter's default output faces +Z, as AI facing expects. It ships mesh and
   skeleton only.
 * Base color only: the normal map and the KHR_materials_specular factor were
   dropped (the engine reads the diffuse slot alone), and the diffuse map was

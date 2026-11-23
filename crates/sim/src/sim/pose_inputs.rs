@@ -3,6 +3,7 @@
 // See: context/lib/entity_model.md §5 · context/lib/movement.md
 
 use super::*;
+use postretro_entities::components::mesh::BodyFrame;
 
 /// Select authoritative player locomotion after movement resolves. Remote-owned host
 /// pawns carry no brain, so without this pass their descriptor default (`idle`) would
@@ -701,7 +702,15 @@ pub(super) fn is_foot_probe_candidate(mesh: &MeshComponent, hit_zone_store: &Hit
 }
 
 /// Probe one candidate's feet from `transform` (`None` publishes no contacts)
-/// and write them into its `PoseInputs`.
+/// and write them into its `PoseInputs`. The model sits where it is drawn:
+/// `transform.position + origin_offset` at `transform.scale`, turned by
+/// [`foot_probe_rotation`], so the probes plant the drawn feet.
+///
+/// The aim and heading fields are read-modify-written. An animated mesh with no
+/// pose inputs yet takes them from `transform` ([`unposed_pose_inputs`]) rather
+/// than zero: a listen host re-probes a client pawn accepted on a render frame
+/// that ran no fixed tick, and an animated body draws at its heading, so a zero
+/// heading would draw it at yaw 0, not where it faces, until the next pose pass.
 #[allow(clippy::too_many_arguments)] // a flat parameter list keeps this a leaf helper.
 pub(super) fn write_foot_ground_probes(
     registry: &mut EntityRegistry,
@@ -719,34 +728,41 @@ pub(super) fn write_foot_ground_probes(
     let zones = hit_zone_store.get_by_name(&mesh.model);
     let mut foot_count = 0;
     let mut feet = [FootProbe::default(); MAX_FEET];
-    if let (Some(zones), Some(transform)) = (zones, transform)
-        && let Some(model_to_world) = model_matrix(&transform, mesh.origin_offset)
-        && let Some(world_to_model) = foot_probe_inverse(&transform, &model_to_world)
-    {
-        let world_joints =
-            sample_world_pose_for_probe(zones, mesh.animation.as_ref(), anim_time, id.to_raw());
-        if let Some(world_joints) = world_joints.as_ref() {
-            foot_count = zones.legs.len().min(MAX_FEET);
-            let downward_reach = FOOT_PLANTING_REACH * transform.scale.y;
-            let upward_allowance = FOOT_PENETRATION_ALLOWANCE * transform.scale.y;
-            for (slot, leg) in zones.legs.iter().take(foot_count).enumerate() {
-                feet[slot] = probe_foot(
-                    leg.foot_joint,
-                    world_joints,
-                    &model_to_world,
-                    &world_to_model,
-                    downward_reach,
-                    upward_allowance,
-                    collision_world,
-                    mover_colliders,
-                    mover_poses,
-                );
+    if let (Some(zones), Some(transform)) = (zones, transform) {
+        let model_rotation = foot_probe_rotation(mesh, transform.rotation);
+        if let Some(model_to_world) =
+            model_matrix_at(&transform, model_rotation, mesh.origin_offset)
+            && let Some(world_to_model) =
+                foot_probe_inverse(&transform, model_rotation, &model_to_world)
+        {
+            let world_joints =
+                sample_world_pose_for_probe(zones, mesh.animation.as_ref(), anim_time, id.to_raw());
+            if let Some(world_joints) = world_joints.as_ref() {
+                foot_count = zones.legs.len().min(MAX_FEET);
+                let downward_reach = FOOT_PLANTING_REACH * transform.scale.y;
+                let upward_allowance = FOOT_PENETRATION_ALLOWANCE * transform.scale.y;
+                for (slot, leg) in zones.legs.iter().take(foot_count).enumerate() {
+                    feet[slot] = probe_foot(
+                        leg.foot_joint,
+                        world_joints,
+                        &model_to_world,
+                        &world_to_model,
+                        downward_reach,
+                        upward_allowance,
+                        collision_world,
+                        mover_colliders,
+                        mover_poses,
+                    );
+                }
             }
         }
     }
 
-    // Read-modify-write: keep the aim/heading fields update_pose_inputs set.
-    let mut new_inputs = mesh.pose_inputs.unwrap_or_default();
+    // Read-modify-write: keep the aim/heading fields update_pose_inputs set. A
+    // mesh with none yet takes them from the probed transform (see the doc).
+    let mut new_inputs = mesh
+        .pose_inputs
+        .unwrap_or_else(|| unposed_pose_inputs(mesh, transform));
     new_inputs.feet = feet;
     new_inputs.foot_count = foot_count as u8;
     if mesh.pose_inputs == Some(new_inputs) {
@@ -757,6 +773,45 @@ pub(super) fn write_foot_ground_probes(
     };
     mesh.pose_inputs = Some(new_inputs);
     let _ = registry.set_component(id, mesh);
+}
+
+/// Pose inputs for a mesh [`update_pose_inputs`] has not reached. An animated
+/// mesh with a transform takes that pass's no-target fallback: aim and heading
+/// both on the transform's yaw, so the body draws where the transform faces.
+/// The probe placed such a mesh at the transform's own rotation, which for an
+/// upright transform is that yaw, so the feet stay under the drawn body; a
+/// tilted transform probes no contacts. A stateless mesh never draws its
+/// heading and keeps the zero default, as does a missing transform.
+fn unposed_pose_inputs(
+    mesh: &MeshComponent,
+    transform: Option<postretro_entities::Transform>,
+) -> PoseInputs {
+    let Some(transform) = transform.filter(|_| mesh.animation.is_some()) else {
+        return PoseInputs::default();
+    };
+    let (yaw, _, _) = transform.rotation.to_euler(EulerRot::YXZ);
+    let yaw = if yaw.is_finite() { yaw } else { 0.0 };
+    PoseInputs {
+        aim_yaw: yaw,
+        heading_yaw: yaw,
+        ..PoseInputs::default()
+    }
+}
+
+/// Rotation the foot probes place the model at. A view-frame body (a player)
+/// probes under its drawn rotation, [`MeshComponent::presentation_rotation`]:
+/// the lower-body heading its pose inputs carry at probe time, plus the body
+/// turn. A model-frame body keeps its transform rotation and never takes the
+/// turn; an upright enemy's drawn heading is that rotation's own yaw.
+/// See: context/lib/entity_model.md §4 (Facing convention)
+pub(super) fn foot_probe_rotation(
+    mesh: &MeshComponent,
+    transform_rotation: glam::Quat,
+) -> glam::Quat {
+    match mesh.body_frame {
+        BodyFrame::Model => transform_rotation,
+        BodyFrame::View => mesh.presentation_rotation(transform_rotation),
+    }
 }
 
 /// Probe one foot: transform its animated model-space origin to world, cast a
@@ -835,21 +890,26 @@ pub(super) fn is_walkable_ground_normal(normal: Vec3) -> bool {
     normal.is_finite() && normal.y >= COS_WALKABLE
 }
 
-/// Foot contacts use model-space height, so v1 supports upright entities with
+/// Foot contacts use model-space height, so v1 supports upright placements with
 /// positive, invertible scale (uniform or non-uniform). Tilted models would make
 /// a world-down ray change model XZ while the current `FootProbe` stores only a
 /// height; singular transforms have no valid inverse. Both report fresh misses.
+/// Upright is read from `model_to_world`'s own up axis, and normalization from
+/// `model_rotation`, the composed rotation that matrix was built from (see
+/// [`foot_probe_rotation`]), so both hold for the rotation the probe actually
+/// places the model at. A model-frame body's is its transform rotation.
 pub(super) fn foot_probe_inverse(
     transform: &postretro_entities::Transform,
+    model_rotation: glam::Quat,
     model_to_world: &Mat4,
 ) -> Option<Mat4> {
     if !transform.scale.is_finite()
         || transform.scale.min_element() <= 0.0
-        || !transform.rotation.is_normalized()
+        || !model_rotation.is_normalized()
     {
         return None;
     }
-    let model_up = transform.rotation * Vec3::Y;
+    let model_up = model_to_world.y_axis.truncate().normalize_or_zero();
     if model_up.dot(Vec3::Y) < 1.0 - 1.0e-5 {
         return None;
     }
@@ -860,3 +920,7 @@ pub(super) fn foot_probe_inverse(
         .all(|value| value.is_finite())
         .then_some(inverse)
 }
+
+#[cfg(test)]
+#[path = "pose_inputs_body_frame_tests.rs"]
+mod body_frame_tests;

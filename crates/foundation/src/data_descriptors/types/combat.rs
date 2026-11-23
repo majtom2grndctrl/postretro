@@ -438,10 +438,6 @@ pub struct WeaponDescriptor {
     /// projectiles and splash. Absent, the mod's default type, if any.
     #[serde(default)]
     pub damage_type: Option<crate::AuthoredHandle>,
-    /// Optional content-relative rigid prop model mounted at the pawn's third-person hand socket.
-    /// Uses forward slashes and may not be absolute or contain parent traversal.
-    #[serde(default, rename = "thirdPersonModel")]
-    pub third_person_model: Option<String>,
     /// Optional content-relative model rendered by the first-person viewmodel pass.
     /// Uses forward slashes and may not be absolute or contain parent traversal.
     #[serde(default)]
@@ -587,7 +583,6 @@ mod tests {
             projectile: None,
             splash: None,
             credit_source: credit_source.map(str::to_string),
-            third_person_model: None,
             viewmodel: None,
             placement: None,
             muzzle_offset: None,
@@ -1401,27 +1396,20 @@ mod tests {
             "C:models/model.gltf",
             r"\\server\share\model.gltf",
         ] {
-            for field in ["thirdPersonModel", "viewmodel"] {
-                let mut descriptor = weapon_descriptor(None);
-                if field == "thirdPersonModel" {
-                    descriptor.third_person_model = Some(invalid.to_string());
-                } else {
-                    descriptor.viewmodel = Some(invalid.to_string());
-                }
-                let error = descriptor.validate().unwrap_err().to_string();
-                assert!(
-                    error.contains(field),
-                    "unexpected error for {invalid:?}: {error}"
-                );
-                assert!(
-                    error.contains("content-relative"),
-                    "unexpected error for {invalid:?}: {error}"
-                );
-            }
+            let mut descriptor = weapon_descriptor(None);
+            descriptor.viewmodel = Some(invalid.to_string());
+            let error = descriptor.validate().unwrap_err().to_string();
+            assert!(
+                error.contains("viewmodel"),
+                "unexpected error for {invalid:?}: {error}"
+            );
+            assert!(
+                error.contains("content-relative"),
+                "unexpected error for {invalid:?}: {error}"
+            );
         }
 
         let mut valid = weapon_descriptor(None);
-        valid.third_person_model = Some("models/smg/model.gltf".to_string());
         valid.viewmodel = Some("./models/smg/view.gltf".to_string());
         assert!(valid.validate().is_ok());
     }

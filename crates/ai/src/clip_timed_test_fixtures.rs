@@ -139,6 +139,7 @@ pub(super) fn rig(specs: Vec<ClipSpec>) -> (MeshComponent, HitZoneStore, MeshCli
         shadow_only: false,
         attachments: Vec::new(),
         pose_inputs: None,
+        body_frame: Default::default(),
     };
     let mut tables = MeshClipTables::new();
     let metadata: Vec<_> = clips

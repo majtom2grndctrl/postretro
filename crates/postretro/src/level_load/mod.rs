@@ -39,6 +39,8 @@ mod stages_tests;
 pub(crate) mod test_support;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod weapon_mount_content_tests;
 
 use std::sync::Arc;
 

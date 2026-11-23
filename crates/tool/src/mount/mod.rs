@@ -14,8 +14,10 @@ use std::path::Path;
 use glam::{Mat4, Vec3};
 use postretro_model::gltf_loader::{LoadedModel, load_model};
 use postretro_model::mount::{
-    MountAxes, MountConfidence, MountDetection, MountVerification, corrective_delta,
-    corrective_delta_for_axes, detect_weapon_mount, read_muzzle_offset_in_model,
+    DeclaredMountCheckError, MountAxes, MountConfidence, MountDetection, MountVerification,
+    REFERENCE_MOUNT_CLIP, REFERENCE_MOUNT_TIME, blender_to_gltf_rotation, blender_xyz_rotation,
+    check_declared_mount, corrective_delta, corrective_delta_for_axes, detect_weapon_mount,
+    failed_mount_metrics, gltf_to_blender_rotation, read_muzzle_offset_in_model,
     resolve_socket_frame_in_model, verify_mount,
 };
 
@@ -23,13 +25,9 @@ mod args;
 mod blender;
 
 use args::{
-    MountCheckThresholds, SolveWeaponMountArgs, parse_read_muzzle_offset_args,
-    parse_solve_weapon_mount_args, usage,
+    SolveWeaponMountArgs, parse_read_muzzle_offset_args, parse_solve_weapon_mount_args, usage,
 };
-use blender::{
-    blender_to_gltf_rotation, blender_xyz_euler_degrees, blender_xyz_rotation,
-    compose_declared_axes_into_baked_frame, emitted_blender_command, gltf_to_blender_rotation,
-};
+use blender::{blender_xyz_euler_degrees, emitted_blender_command};
 
 pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
     if let Some(viewmodel_path) = parse_read_muzzle_offset_args(&args)? {
@@ -160,51 +158,45 @@ fn read_muzzle_offset_command(viewmodel_path: &Path) -> Result<i32, String> {
 }
 
 /// Check a baked weapon against its holder socket without invoking Blender.
+///
+/// The declared (VERIFIED) verdict is `postretro_model::mount`'s; this prints
+/// it. Geometric detection (UNVERIFIED) is an assist and stays here.
 fn check_weapon_mount(
     args: &SolveWeaponMountArgs,
     weapon: &LoadedModel,
     socket_matrix: Mat4,
 ) -> Result<i32, String> {
     let declared_axes = args.cli_axes()?.or(weapon.mount);
-    let (verification, status) = match declared_axes {
+    let (verification, failures, status) = match declared_axes {
         Some(declared_axes) => {
             let applied_euler = applied_check_euler(weapon.mount, args.current_euler)?;
-            let baked_axes = compose_declared_axes_into_baked_frame(declared_axes, applied_euler);
-            let baked_frame = baked_axes
-                .frame()
-                .map_err(|error| format!("compose declared weapon axes: {error}"))?;
-
-            println!(
-                "Declared raw-source axes: barrel {}  up {}",
-                format_vec3(declared_axes.barrel),
-                format_vec3(declared_axes.up),
-            );
-            println!(
-                "Composed baked-frame axes: barrel {}  up {}",
-                format_vec3(baked_axes.barrel),
-                format_vec3(baked_axes.up),
-            );
-            (
-                verify_mount(socket_matrix, baked_frame)
-                    .map_err(|error| format!("verify declared weapon mount: {error}"))?,
-                "VERIFIED",
-            )
+            let check =
+                check_declared_mount(socket_matrix, declared_axes, applied_euler, args.thresholds);
+            let baked_axes = match &check {
+                Ok(check) => check.baked_axes,
+                Err(DeclaredMountCheckError::Verify { baked_axes, .. }) => *baked_axes,
+                Err(error) => return Err(error.to_string()),
+            };
+            print_declared_and_composed_axes(declared_axes, baked_axes);
+            let check = check.map_err(|error| error.to_string())?;
+            (check.verification, check.failures, "VERIFIED")
         }
         None => {
             let detection = detect_weapon_mount(weapon)
                 .map_err(|error| format!("detect weapon mount geometry: {error}"))?;
             println!("UNVERIFIED geometric assist — no declared barrel/up axes were found.");
             print_detected_baked_frame(detection);
+            let verification = verify_mount(socket_matrix, detection.frame)
+                .map_err(|error| format!("verify geometric weapon mount: {error}"))?;
             (
-                verify_mount(socket_matrix, detection.frame)
-                    .map_err(|error| format!("verify geometric weapon mount: {error}"))?,
+                verification,
+                failed_mount_metrics(verification, args.thresholds),
                 "UNVERIFIED",
             )
         }
     };
 
     print_mount_metrics(verification);
-    let failures = failed_mount_metrics(verification, args.thresholds);
     if failures.is_empty() {
         println!("{status}: mount check passed.");
         Ok(0)
@@ -212,6 +204,19 @@ fn check_weapon_mount(
         println!("{status}: mount check failed: {}", failures.join(", "));
         Ok(1)
     }
+}
+
+fn print_declared_and_composed_axes(declared_axes: MountAxes, baked_axes: MountAxes) {
+    println!(
+        "Declared raw-source axes: barrel {}  up {}",
+        format_vec3(declared_axes.barrel),
+        format_vec3(declared_axes.up),
+    );
+    println!(
+        "Composed baked-frame axes: barrel {}  up {}",
+        format_vec3(baked_axes.barrel),
+        format_vec3(baked_axes.up),
+    );
 }
 
 fn applied_check_euler(
@@ -228,27 +233,6 @@ fn current_bake_euler(
     cli_euler: Option<[f32; 3]>,
 ) -> Option<[f32; 3]> {
     cli_euler.or_else(|| persisted_mount.and_then(|mount| mount.euler))
-}
-
-fn failed_mount_metrics(
-    verification: MountVerification,
-    thresholds: MountCheckThresholds,
-) -> Vec<&'static str> {
-    let mut failures = Vec::new();
-    if !verification.barrel_dot_forward.is_finite()
-        || verification.barrel_dot_forward < thresholds.min_barrel_dot
-    {
-        failures.push("barrel·+Z");
-    }
-    if !verification.barrel_dot_up.is_finite()
-        || verification.barrel_dot_up.abs() > thresholds.max_barrel_y
-    {
-        failures.push("|barrel·+Y|");
-    }
-    if !verification.up_dot_up.is_finite() || verification.up_dot_up < thresholds.min_up_dot {
-        failures.push("up·+Y");
-    }
-    failures
 }
 
 fn print_mount_metrics(verification: MountVerification) {
@@ -284,14 +268,15 @@ fn print_detected_baked_frame(detection: MountDetection) {
 fn print_non_reference_mount_pose_note(clip: &str, time: f32) {
     if !is_reference_mount_pose(clip, time) {
         println!(
-            "NOTE: pose (clip {clip:?}, time {}) is not the reference (clip \"idle_aiming\", time 0). A rigid bake is exact only at this pose or the reference, not both; wrist-reorienting poses such as limitator \"reloading\" need a skinned weapon.",
+            "NOTE: pose (clip {clip:?}, time {}) is not the reference (clip {REFERENCE_MOUNT_CLIP:?}, time {}). A rigid bake is exact only at this pose or the reference, not both; wrist-reorienting poses such as limitator \"reloading\" need a skinned weapon.",
             format_number(time),
+            REFERENCE_MOUNT_TIME,
         );
     }
 }
 
 fn is_reference_mount_pose(clip: &str, time: f32) -> bool {
-    clip == "idle_aiming" && time == 0.0
+    clip == REFERENCE_MOUNT_CLIP && time == REFERENCE_MOUNT_TIME
 }
 
 fn format_number(value: f32) -> String {
@@ -318,6 +303,7 @@ fn format_confidence(confidence: MountConfidence) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_model::mount::MountThresholds;
     use std::path::PathBuf;
     use std::process::Command;
 
@@ -446,40 +432,6 @@ converter.postprocess_gltf(
     }
 
     #[test]
-    fn mount_check_names_each_out_of_tolerance_metric() {
-        let verification = MountVerification {
-            barrel_world: Vec3::Z,
-            up_world: Vec3::Y,
-            barrel_dot_forward: 0.998,
-            barrel_dot_up: -0.03,
-            up_dot_up: 0.998,
-        };
-
-        assert_eq!(
-            failed_mount_metrics(verification, MountCheckThresholds::default()),
-            ["barrel·+Z", "|barrel·+Y|", "up·+Y"]
-        );
-    }
-
-    #[test]
-    fn mount_check_rejects_non_finite_metrics() {
-        // Regression: NaN comparisons were all false, so invalid metrics could
-        // be reported as a passing check.
-        let verification = MountVerification {
-            barrel_world: Vec3::splat(f32::NAN),
-            up_world: Vec3::splat(f32::NAN),
-            barrel_dot_forward: f32::NAN,
-            barrel_dot_up: f32::NAN,
-            up_dot_up: f32::NAN,
-        };
-
-        assert_eq!(
-            failed_mount_metrics(verification, MountCheckThresholds::default()),
-            ["barrel·+Z", "|barrel·+Y|", "up·+Y"]
-        );
-    }
-
-    #[test]
     fn prop_writer_output_loads_and_checks_without_cli_axes_or_euler() {
         // Regression: the normal prop writer -> model loader -> declared check
         // seam must persist intent without a second hand-authored JSON shape.
@@ -555,6 +507,208 @@ converter.postprocess_gltf(
         let error = check_weapon_mount(&args, &weapon, Mat4::from_scale(Vec3::new(-1.0, 1.0, 1.0)))
             .expect_err("reflected sockets cannot produce trusted checks");
         assert!(error.contains("determinant must be positive"));
+    }
+
+    fn content_models() -> PathBuf {
+        crate_root().join("../../content/dev/models")
+    }
+
+    /// The committed exo_red weapon bakes, listed rather than scanned so a
+    /// missing bake fails instead of shrinking the set.
+    const EXO_RED_BAKE_WEAPONS: [&str; 6] =
+        ["pistol", "rifle", "shotgun", "smg", "rpg", "sci_fi_weapon"];
+
+    fn exo_red_bake(weapon: &str) -> PathBuf {
+        content_models()
+            .join("cyberpunk_weapons")
+            .join(weapon)
+            .join("exo_red.gltf")
+    }
+
+    /// `solve-weapon-mount <holder> --weapon <bake> --mount-joint hand_r --check`,
+    /// run in-process through the command's own entry point.
+    fn hand_r_mount_check(holder: &Path, weapon: &Path) -> Result<i32, String> {
+        run(vec![
+            holder.as_os_str().to_owned(),
+            OsString::from("--weapon"),
+            weapon.as_os_str().to_owned(),
+            OsString::from("--mount-joint"),
+            OsString::from("hand_r"),
+            OsString::from("--check"),
+        ])
+    }
+
+    /// exo_red's `mixamorig:Hips` rest rotation before its re-face, ≈ Ry(180°),
+    /// as the text committed at 83802575a spelled it.
+    const EXO_RED_PRE_REFACE_HIPS_REST: &str =
+        "-3.8753523400579266e-15, 1, 2.6843682832122795e-08, 7.549789415861596e-08";
+
+    /// `document` with the `mixamorig:Hips` node's rotation replaced by
+    /// `rotation`. Asserts the committed rest is identity, so the patch starts
+    /// from the re-faced asset.
+    fn with_hips_rest(document: &str, rotation: &str) -> String {
+        let name = "\"mixamorig:Hips\"";
+        assert_eq!(document.matches(name).count(), 1, "one Hips node");
+        let after_name = document.find(name).expect("Hips node") + name.len();
+        let key = document[after_name..]
+            .find("\"rotation\"")
+            .expect("a rotation after the Hips name")
+            + after_name;
+        assert_eq!(
+            document[after_name..key].trim(),
+            ",",
+            "the Hips node's own rotation follows its name"
+        );
+        let open = key + document[key..].find('[').expect("rotation array") + 1;
+        let close = open + document[open..].find(']').expect("rotation array end");
+        let committed: Vec<f32> = document[open..close]
+            .split(',')
+            .map(|value| value.trim().parse().expect("numeric rotation"))
+            .collect();
+        assert_eq!(
+            committed,
+            [0.0, 0.0, 0.0, 1.0],
+            "the committed exo_red is re-faced: Hips rest identity"
+        );
+        format!("{}{rotation}{}", &document[..open], &document[close..])
+    }
+
+    /// A −Z exo_red, as it was at 83802575a: the committed model with its Hips
+    /// rest set back to Ry(180°), written under `scratch` beside copies of its
+    /// buffer and of the `mixamo_rifle` library, mirroring the content layout so
+    /// its relative `clipLibrary` reference resolves. Textures are left out; a
+    /// missing base color only blanks a material key, which the check never reads.
+    fn write_minus_z_exo_red(scratch: &Path) -> PathBuf {
+        let models = content_models();
+        let source = std::fs::read_to_string(models.join("exo_red/model.gltf"))
+            .expect("exo_red document reads");
+        let body = scratch.join("exo_red");
+        std::fs::create_dir_all(&body).expect("scratch body folder");
+        std::fs::write(
+            body.join("model.gltf"),
+            with_hips_rest(&source, EXO_RED_PRE_REFACE_HIPS_REST),
+        )
+        .expect("-Z exo_red document writes");
+        std::fs::copy(models.join("exo_red/model.bin"), body.join("model.bin"))
+            .expect("exo_red buffer copies");
+        let library = scratch.join("clip_libraries/mixamo_rifle");
+        std::fs::create_dir_all(&library).expect("scratch library folder");
+        for file in ["library.gltf", "library.bin"] {
+            std::fs::copy(
+                models.join("clip_libraries/mixamo_rifle").join(file),
+                library.join(file),
+            )
+            .unwrap_or_else(|error| panic!("mixamo_rifle {file} copies: {error}"));
+        }
+        body.join("model.gltf")
+    }
+
+    #[test]
+    fn every_committed_exo_red_bake_verifies_on_exo_red() {
+        // exo_red fronts glTF +Z, the holder front the check assumes, so each
+        // bake solved for it reports VERIFIED.
+        let holder = content_models().join("exo_red/model.gltf");
+        for weapon in EXO_RED_BAKE_WEAPONS {
+            let bake = exo_red_bake(weapon);
+            let declared = load_model(&bake)
+                .unwrap_or_else(|error| panic!("{weapon} bake loads: {error}"))
+                .mount;
+            assert!(
+                declared.is_some_and(|mount| mount.euler.is_some()),
+                "{weapon}: the bake declares its axes and applied euler, so its check is VERIFIED"
+            );
+            assert_eq!(
+                hand_r_mount_check(&holder, &bake),
+                Ok(0),
+                "{weapon}: VERIFIED: mount check passed on exo_red"
+            );
+        }
+    }
+
+    /// The `uri` of every buffer `gltf` declares, in order.
+    fn buffer_uris(gltf: &Path) -> Vec<String> {
+        let text = std::fs::read_to_string(gltf)
+            .unwrap_or_else(|error| panic!("{} reads: {error}", gltf.display()));
+        let document: serde_json::Value = serde_json::from_str(&text)
+            .unwrap_or_else(|error| panic!("{} parses: {error}", gltf.display()));
+        document["buffers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|buffer| buffer["uri"].as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn every_moved_ar_4_rig_bake_declares_its_mount_and_verifies_on_its_rig() {
+        // Each rig's bake lives beside the shared ar_4 source, named for its
+        // rig, with a buffer named for itself.
+        let ar_4 = content_models().join("ar_4");
+        for rig in ["limitator", "rodin_sci-fi_trooper_m", "cyberpunk_warrior_f"] {
+            assert_eq!(
+                buffer_uris(&ar_4.join(format!("{rig}.gltf"))),
+                [format!("{rig}.bin")],
+                "{rig}: the bake's only buffer is its own {rig}.bin"
+            );
+        }
+        // limitator's bake declares no `extras.mount`, so only the moved
+        // bakes have a declared mount to verify.
+        for rig in ["rodin_sci-fi_trooper_m", "cyberpunk_warrior_f"] {
+            let bake = ar_4.join(format!("{rig}.gltf"));
+            let holder = content_models().join(rig).join("model.gltf");
+            let declared = load_model(&bake)
+                .unwrap_or_else(|error| panic!("{rig} bake loads: {error}"))
+                .mount;
+            assert!(
+                declared.is_some_and(|mount| mount.euler.is_some()),
+                "{rig}: the bake declares its axes and applied euler"
+            );
+            assert_eq!(
+                hand_r_mount_check(&holder, &bake),
+                Ok(0),
+                "{rig}: VERIFIED: mount check passed on its rig"
+            );
+        }
+        assert!(
+            !ar_4.join("model.gltf").exists(),
+            "ar_4 holds named bakes, no model.gltf"
+        );
+    }
+
+    #[test]
+    fn exo_red_bake_check_fails_on_a_minus_z_exo_red() {
+        // The check discriminates: on the pre-re-face exo_red (Hips rest
+        // Ry(180°), front −Z) every bake's barrel points back along −Z.
+        let scratch = tempfile::tempdir().expect("scratch dir");
+        let holder_path = write_minus_z_exo_red(scratch.path());
+        let holder = load_model(&holder_path).expect("-Z exo_red loads and binds");
+        let socket = resolve_socket_frame_in_model(&holder, "idle_aiming", "hand_r", 0.0)
+            .expect("-Z exo_red resolves hand_r");
+        for weapon in EXO_RED_BAKE_WEAPONS {
+            let bake = exo_red_bake(weapon);
+            assert_eq!(
+                hand_r_mount_check(&holder_path, &bake),
+                Ok(1),
+                "{weapon}: the check fails on a -Z exo_red"
+            );
+            let declared = load_model(&bake)
+                .unwrap_or_else(|error| panic!("{weapon} bake loads: {error}"))
+                .mount
+                .expect("declared axes");
+            let euler = declared.euler.expect("applied euler");
+            let check =
+                check_declared_mount(socket.matrix, declared, euler, MountThresholds::default())
+                    .expect("mount verifies");
+            assert!(
+                check.verification.barrel_dot_forward < -0.9,
+                "{weapon}: barrel·+Z on a -Z exo_red is {}",
+                check.verification.barrel_dot_forward
+            );
+            assert!(
+                check.failures.contains(&"barrel·+Z"),
+                "{weapon}: the failure names barrel·+Z"
+            );
+        }
     }
 
     #[test]

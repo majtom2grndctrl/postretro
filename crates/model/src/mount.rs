@@ -3,9 +3,13 @@
 
 //! Design-time mount math in the raw glTF frame.
 //!
-//! Blender conversion deliberately stays outside this module. The socket resolver
-//! uses the regular model loader and neutral pose sampler so its reference-pose
-//! frame is the same frame used by runtime attachments.
+//! Blender conversion lives here only as far as the declared-axes check
+//! ([`check_declared_mount`]) needs it to turn a persisted `extras.mount.euler`
+//! into the baked frame: the XYZ Euler composition and the glTF/Blender basis
+//! change, which the tool's solver shares. Euler decomposition and bake
+//! commands belong to the authoring tool. The socket resolver uses the regular
+//! model loader and neutral pose sampler so its reference-pose frame is the same
+//! frame used by runtime attachments.
 
 use std::path::Path;
 
@@ -15,6 +19,15 @@ use thiserror::Error;
 use crate::anim::{Loop, sample_clip_looped_world_modified};
 use crate::gltf_loader::{LoadedModel, ModelLoadError, SocketBinding, load_model};
 
+mod check;
+
+pub use check::{
+    DeclaredMountCheck, DeclaredMountCheckError, MountThresholds, REFERENCE_MOUNT_CLIP,
+    REFERENCE_MOUNT_TIME, blender_to_gltf_rotation, blender_xyz_rotation, check_declared_mount,
+    check_declared_weapon_mount, compose_declared_axes_into_baked_frame, failed_mount_metrics,
+    gltf_to_blender_rotation,
+};
+
 const MIN_DIRECTION_LENGTH_SQUARED: f32 = 1.0e-12;
 const SOCKET_ORTHONORMAL_EPSILON: f32 = 1.0e-4;
 const LOW_CONFIDENCE_RADIUS_RATIO: f32 = 1.5;
@@ -22,8 +35,8 @@ const LOW_CONFIDENCE_ELONGATION: f32 = 2.0;
 
 /// Author-declared weapon axes in raw-source weapon-local glTF space.
 ///
-/// `euler` records a Blender-tool value for the caller's benefit. The model
-/// crate neither interprets nor converts it.
+/// `euler` records the Blender XYZ Euler, in degrees, the bake applied. Only
+/// the declared-axes check reads it ([`compose_declared_axes_into_baked_frame`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MountAxes {
     pub barrel: Vec3,

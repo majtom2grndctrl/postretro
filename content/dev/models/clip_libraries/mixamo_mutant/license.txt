@@ -24,10 +24,10 @@ Packaging notes (PostRetro):
   Where the pack and the earlier hand-picked download hold the same clip
   frame for frame, one copy is kept.
 * Built with:
-    mixamo_to_gltf.py --library --base Mutant.fbx --yaw 180 \
+    mixamo_to_gltf.py --library --base Mutant.fbx \
       --in-place smash smash_b hit_reaction
-* --yaw 180 turns the rig to face +Z, the front AI facing aims, so root motion
-  runs the way bound bodies face.
+* The converter's default output faces +Z, the front AI facing aims, so root
+  motion runs the way bound bodies face.
 * smash, smash_b and hit_reaction are pinned in place: the jump attacks land
   1.6 m forward and the hit reaction staggers 1 m back, so the body would snap
   back when the clip ended. Deaths keep their motion: they hold the last frame.

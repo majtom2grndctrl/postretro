@@ -3553,6 +3553,209 @@ mod tests {
         }
     }
 
+    // --- exo_red re-face (E21 player model front) ----------------------------
+
+    /// The engine's body-seam half turn, `postretro_entities::components::mesh::
+    /// MODEL_FRONT_TO_VIEW_FORWARD`, which this crate sits below and cannot name.
+    /// A player body draws at `Ry(yaw) * BODY_SEAM_HALF_TURN`; the pre-change
+    /// path drew `Ry(yaw)` alone.
+    const BODY_SEAM_HALF_TURN: Quat = Quat::from_xyzw(0.0, 1.0, 0.0, 0.0);
+
+    /// exo_red's `mixamorig:Hips` rest rotation (xyzw) before the re-face,
+    /// ≈ Ry(180°), exactly as committed at 83802575a.
+    const EXO_RED_PRE_REFACE_HIPS_REST: [f64; 4] = [
+        -3.8753523400579266e-15,
+        1.0,
+        2.6843682832122795e-08,
+        7.549789415861596e-08,
+    ];
+
+    fn exo_red_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../content/dev/models/exo_red/model.gltf")
+    }
+
+    /// The pre-change reference body, built in memory: the committed exo_red
+    /// with its Hips rest set back to Ry(180°), bound to `mixamo_rifle` by the
+    /// same parse a file load runs. Only the document changes; its buffer and the
+    /// library are the ones the committed model reads.
+    fn load_exo_red_pre_reface() -> LoadedModel {
+        let path = exo_red_path();
+        let ModelSources {
+            document,
+            buffers,
+            document_digest,
+            material_keys,
+            library,
+        } = read_model_sources(&path).expect("exo_red sources read");
+        assert!(library.is_some(), "exo_red binds a clip library");
+        let mut root = document.into_json();
+        let hips = root
+            .nodes
+            .iter_mut()
+            .find(|node| node.name.as_deref() == Some("mixamorig:Hips"))
+            .expect("exo_red has a mixamorig:Hips joint");
+        hips.rotation = Some(gltf::json::scene::UnitQuaternion(
+            EXO_RED_PRE_REFACE_HIPS_REST.map(|value| value as f32),
+        ));
+        let document = gltf::Document::from_json(root).expect("patched exo_red validates");
+        load_model_from_sources(
+            &path,
+            ModelSources {
+                document,
+                buffers,
+                document_digest,
+                material_keys,
+                library,
+            },
+        )
+        .expect("pre-re-face exo_red loads and binds mixamo_rifle")
+    }
+
+    fn named_clip<'a>(model: &'a LoadedModel, name: &str) -> &'a AnimationClip {
+        model
+            .clips
+            .iter()
+            .find(|clip| clip.name == name)
+            .unwrap_or_else(|| panic!("clip `{name}` binds"))
+    }
+
+    #[test]
+    fn exo_red_bound_to_mixamo_rifle_faces_plus_z_in_idle() {
+        // E21 player model front: exo_red, the player reference body, fronts
+        // glTF +Z like the mutant and decraniated bodies, by their check: in
+        // `idle` the left hand is on the +X side of the right. The pre-re-face
+        // copy (Hips rest Ry(180°)) fails the same check, so it discriminates.
+        use crate::anim::{Loop, sample_clip_looped_world};
+        let hand_spread = |model: &LoadedModel| {
+            let hand = |socket: &str| match model.sockets.get(socket) {
+                Some(SocketBinding::SkinnedJoint(joint)) => *joint,
+                _ => panic!("exo_red: {socket} socket on a skinned joint"),
+            };
+            let mut world = Vec::new();
+            sample_clip_looped_world(
+                named_clip(model, "idle"),
+                &model.skeleton,
+                0.0,
+                Loop::Clamp,
+                &mut world,
+            );
+            world[hand("hand_l")].w_axis.x - world[hand("hand_r")].w_axis.x
+        };
+
+        let refaced = load_model(&exo_red_path()).expect("exo_red loads");
+        let spread = hand_spread(&refaced);
+        assert!(
+            spread > 0.1,
+            "exo_red faces +Z (left hand {spread:.2} m on +X of the right)"
+        );
+
+        let reference = load_exo_red_pre_reface();
+        let spread = hand_spread(&reference);
+        assert!(
+            spread < -0.1,
+            "the pre-re-face exo_red faces -Z (left hand {spread:.2} m on +X of the right)"
+        );
+    }
+
+    #[test]
+    fn exo_red_refaced_body_draws_every_joint_where_the_pre_change_body_drew() {
+        // E21 player model front: the re-face (Hips rest → identity) plus the
+        // body seam's half turn is a visual no-op. Against the pre-change draw
+        // (Hips rest Ry(180°), drawn at Ry(yaw) with no turn), every posed joint
+        // keeps its world rotation, and its world position moves under 1 mm:
+        // binding turns the body about the Hips rest point (z ≈ 0.36 mm), not
+        // the model origin. Checked plain and through the aim-pitch bend and
+        // upper/lower split the draw applies, which act in joint-local frames.
+        use crate::anim::{Loop, sample_clip_looped_world_modified};
+        use glam::Vec4;
+        use postretro_foundation::pose::PoseInputs;
+        const ROTATION_TOLERANCE: f32 = 1e-4;
+        const POSITION_TOLERANCE_M: f32 = 1e-3;
+        const STEPS: usize = 8;
+
+        let refaced = load_model(&exo_red_path()).expect("exo_red loads");
+        let reference = load_exo_red_pre_reface();
+        assert_eq!(
+            refaced.skeleton.joints.len(),
+            reference.skeleton.joints.len()
+        );
+
+        let (mut new_pose, mut old_pose) = (Vec::new(), Vec::new());
+        let mut worst_rotation = 0.0_f32;
+        let mut worst_position = 0.0_f32;
+        for clip_name in ["idle_aiming", "run_forward"] {
+            let (new_clip, old_clip) = (
+                named_clip(&refaced, clip_name),
+                named_clip(&reference, clip_name),
+            );
+            assert!((new_clip.duration - old_clip.duration).abs() < 1e-6);
+            for step in 0..=STEPS {
+                let t = new_clip.duration * step as f32 / STEPS as f32;
+                for heading in [0.0_f32, 0.9, -2.4] {
+                    let aimed = PoseInputs {
+                        aim_pitch: 0.35,
+                        aim_yaw: heading + 0.6,
+                        heading_yaw: heading,
+                        ..PoseInputs::default()
+                    };
+                    for inputs in [None, Some(&aimed)] {
+                        sample_clip_looped_world_modified(
+                            new_clip,
+                            &refaced.skeleton,
+                            t,
+                            Loop::Clamp,
+                            &refaced.pose_stack,
+                            inputs,
+                            &mut new_pose,
+                        );
+                        sample_clip_looped_world_modified(
+                            old_clip,
+                            &reference.skeleton,
+                            t,
+                            Loop::Clamp,
+                            &reference.pose_stack,
+                            inputs,
+                            &mut old_pose,
+                        );
+                        let new_draw =
+                            Mat4::from_quat(Quat::from_rotation_y(heading) * BODY_SEAM_HALF_TURN);
+                        let old_draw = Mat4::from_quat(Quat::from_rotation_y(heading));
+                        for (joint, (new_joint, old_joint)) in
+                            new_pose.iter().zip(&old_pose).enumerate()
+                        {
+                            let (_, new_rotation, new_position) =
+                                (new_draw * *new_joint).to_scale_rotation_translation();
+                            let (_, old_rotation, old_position) =
+                                (old_draw * *old_joint).to_scale_rotation_translation();
+                            // Sign-aware chordal gap: q and -q are one rotation.
+                            let (a, b) = (Vec4::from(new_rotation), Vec4::from(old_rotation));
+                            let rotation_gap = (a - b).length().min((a + b).length());
+                            let position_gap = new_position.distance(old_position);
+                            let context = format!(
+                                "`{clip_name}` t={t:.3}s yaw={heading} aimed={} joint {joint}",
+                                inputs.is_some()
+                            );
+                            assert!(
+                                rotation_gap < ROTATION_TOLERANCE,
+                                "{context}: world rotation {rotation_gap} off the pre-change draw"
+                            );
+                            assert!(
+                                position_gap < POSITION_TOLERANCE_M,
+                                "{context}: world position {position_gap} m off the pre-change draw"
+                            );
+                            worst_rotation = worst_rotation.max(rotation_gap);
+                            worst_position = worst_position.max(position_gap);
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!(
+            "exo_red re-face: worst joint rotation gap {worst_rotation:e}, position gap {worst_position:e} m"
+        );
+    }
+
     // --- Submesh range partition (multi-primitive split bookkeeping) -------
 
     #[test]

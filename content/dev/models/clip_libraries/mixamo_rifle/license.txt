@@ -19,8 +19,11 @@ Packaging notes (PostRetro):
     mixamo_to_gltf.py --input-dir <staged folder> --base exo_red.fbx       --library --strip-face \
       --event firing_rifle:kick=0
   See docs/character-animation.md.
-* A rebuild with today's script differs from the committed bake only on
-  mixamorig:Throat, which no clip keys and no vertex follows (checked
-  2026-11-14).
+* The committed library faces -Z: it was built with the converter's pre-E21
+  default, which faced -Z. A rebuild with today's script faces +Z and binds
+  the same way, since a library may differ from its mesh by a root-only yaw
+  (context/lib/resource_management.md section 7). Otherwise a rebuild differs
+  from the committed bake only on mixamorig:Throat, which no clip keys and no
+  vertex follows (checked 2026-11-14).
 * Clip event (--event above): firing_rifle kick at 0 ms, where the gun
   hand drops and the spine starts to pitch back with the recoil.

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use glam::{Mat4, Quat, Vec3};
 use postretro_entities::components::mesh::{
-    AnimationState, AttachmentBinding, InterruptPolicy, MeshAnimation, MeshAttachment,
+    AnimationState, AttachmentBinding, BodyFrame, InterruptPolicy, MeshAnimation, MeshAttachment,
     MeshComponent, resolve_pending_animation_stamps,
 };
 use postretro_entities::{EntityRegistry, PoseInputs, SlotTable, SlotValue, Transform};
@@ -89,13 +89,16 @@ fn mapping() -> SeamlessMapping {
     )
 }
 
-/// A pawn with a rigidly mounted third-person weapon.
+/// A player pawn with a rigidly mounted third-person weapon. Its transform
+/// stays in the view frame, so its body is marked [`BodyFrame::View`] as every
+/// player materialization marks it.
 fn spawn_pawn(registry: &mut EntityRegistry, at: Vec3) -> EntityId {
     let id = registry.spawn(Transform {
         position: at,
         ..Default::default()
     });
-    let mut mesh = MeshComponent::stateless("models/pawn.gltf".to_string());
+    let mut mesh =
+        MeshComponent::stateless("models/pawn.gltf".to_string()).with_body_frame(BodyFrame::View);
     mesh.attachments = vec![MeshAttachment {
         socket: "hand".to_string(),
         model: "models/gun.gltf".to_string(),
@@ -205,9 +208,16 @@ impl Fixture {
 }
 
 /// The real draw's holder transform for the source pose: what the ghost maps.
-fn real_holder_transform() -> Mat4 {
+/// A player body (`View`) draws its model front along the view forward, so its
+/// holder takes the half turn; a model-bodied member (`Model`) draws at its
+/// rotation unturned.
+fn real_holder_transform(frame: BodyFrame) -> Mat4 {
     let source = source_pose();
-    Mat4::from_scale_rotation_translation(source.scale, source.rotation, source.position)
+    Mat4::from_scale_rotation_translation(
+        source.scale,
+        frame.model_rotation(source.rotation),
+        source.position,
+    )
 }
 
 #[test]
@@ -254,10 +264,18 @@ fn pawn_ghost_group_carries_its_weapon_attachment_at_the_mapped_transform() {
     let instances = fixture.collector.instances();
     assert_eq!(instances.len(), 2, "holder then its weapon, one group");
     let mapped = mapping().matrix();
-    let holder = mapped * real_holder_transform();
+    let holder = mapped * real_holder_transform(BodyFrame::View);
     let weapon = holder * Mat4::from_translation(SOCKET);
     assert!(instances[0].transform.abs_diff_eq(holder, 1e-5));
     assert!(instances[1].transform.abs_diff_eq(weapon, 1e-5));
+    let ghost_view_forward = mapping().rotation() * source_pose().rotation * Vec3::NEG_Z;
+    assert!(
+        instances[0]
+            .transform
+            .transform_vector3(Vec3::Z)
+            .abs_diff_eq(ghost_view_forward, 1e-5),
+        "the ghost body fronts model +Z along the mapped view forward"
+    );
     assert_eq!(instances[0].model.as_str(), "models/pawn.gltf");
     assert_eq!(instances[1].model.as_str(), "models/gun.gltf");
     let seed = pawn.to_raw();
@@ -352,8 +370,8 @@ fn aim_pitch_socket_store() -> HitZoneStore {
     store
 }
 
-/// A pawn of [`AIMING_HOLDER`] at the source pose aiming at `aim_pitch`, its
-/// third-person weapon on the socket the pitch bends.
+/// A player pawn of [`AIMING_HOLDER`] at the source pose aiming at
+/// `aim_pitch`, its third-person weapon on the socket the pitch bends.
 fn aiming_pawn(registry: &mut EntityRegistry, aim_pitch: f32) -> EntityId {
     let id = registry.spawn(source_pose());
     let mut states = HashMap::new();
@@ -375,10 +393,16 @@ fn aiming_pawn(registry: &mut EntityRegistry, aim_pitch: f32) -> EntityId {
         AIMING_HOLDER.to_string(),
         MeshAnimation::new(states, "idle".to_string()),
     );
+    // A player's pose inputs stay in the view frame: aim and heading are its
+    // view yaw, and the body takes the turn at the draw.
+    let (view_yaw, _, _) = source_pose().rotation.to_euler(glam::EulerRot::YXZ);
     mesh.pose_inputs = Some(PoseInputs {
         aim_pitch,
+        aim_yaw: view_yaw,
+        heading_yaw: view_yaw,
         ..Default::default()
     });
+    mesh.body_frame = BodyFrame::View;
     mesh.attachments = vec![MeshAttachment {
         socket: "hand".to_string(),
         model: "models/gun.gltf".to_string(),
@@ -389,10 +413,12 @@ fn aiming_pawn(registry: &mut EntityRegistry, aim_pitch: f32) -> EntityId {
     id
 }
 
-// A ghost pawn presents its real draw carried through the mapping: the body,
-// the aim pitch its pose modifiers bend by, and the third-person weapon on the
-// socket that pitch bends. The mapping turns yaw only, so the pitch passes
-// through: the weapon sits on the ghost holder as the source's aim pitch places it.
+// A ghost pawn presents its real draw carried through the mapping: the body
+// turned to front model +Z along its view, the aim pitch its pose modifiers
+// bend by, and the third-person weapon on the socket that pitch bends. The
+// mapping turns yaw only, so the pitch passes through: the weapon sits on the
+// ghost holder as the source's aim pitch places it. The ghost composes the
+// mapping onto the real turned draw and never turns the body a second time.
 #[test]
 fn a_ghost_pawn_presents_its_mapped_real_draw_aim_pitch_and_weapon_included() {
     let store = aim_pitch_socket_store();
@@ -454,6 +480,14 @@ fn a_ghost_pawn_presents_its_mapped_real_draw_aim_pitch_and_weapon_included() {
             ghost[0].pose_inputs.map(|inputs| inputs.aim_pitch),
             Some(aim_pitch),
             "the aim pitch passes through the mapping"
+        );
+        let ghost_view_forward = mapping().rotation() * source_pose().rotation * Vec3::NEG_Z;
+        assert!(
+            ghost[0]
+                .transform
+                .transform_vector3(Vec3::Z)
+                .abs_diff_eq(ghost_view_forward, 1e-4),
+            "pitch {aim_pitch}: the ghost body fronts model +Z along the mapped view forward"
         );
         let socket = ghost[0].transform.inverse() * ghost[1].transform;
         let bent = Mat4::from_translation(Vec3::new(3.0, 0.0, 0.0))
@@ -864,8 +898,10 @@ fn zero_opacity_ghost_draws_nothing_and_meshless_members_are_skipped() {
 }
 
 // A model-bodied projectile ghosts through this collector like any meshed
-// member: its mesh at the mapped transform, presented as a ghost. A sprite
-// body ghosts through the billboard ghost collector instead.
+// member: its mesh at the mapped transform, presented as a ghost. Its rotation
+// already faces its model front, so the ghost draws it unturned; only a
+// player body takes the body seam's turn. A sprite body ghosts through the
+// billboard ghost collector instead.
 #[test]
 fn a_model_bodied_projectile_ghosts_through_the_skinned_ghost_path() {
     let mut registry = EntityRegistry::new();
@@ -888,11 +924,10 @@ fn a_model_bodied_projectile_ghosts_through_the_skinned_ghost_path() {
         instances[0].presentation,
         MeshPresentation::Ghost(_)
     ));
-    assert!(
-        instances[0]
-            .transform
-            .abs_diff_eq(mapping().matrix() * real_holder_transform(), 1e-4)
-    );
+    assert!(instances[0].transform.abs_diff_eq(
+        mapping().matrix() * real_holder_transform(BodyFrame::Model),
+        1e-4
+    ));
 }
 
 // Wiring: a ghost's tint strobing white and black at 10 Hz at steady

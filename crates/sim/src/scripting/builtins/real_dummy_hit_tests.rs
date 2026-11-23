@@ -98,6 +98,7 @@ fn fixture(display_copy: bool) -> (EntityRegistry, EntityId, HitZoneStore) {
     let id = registry.spawn(Transform {
         position: placement.origin,
         rotation: data_archetype::descriptor_spawn_rotation(
+            &descriptor,
             &placement,
             DescriptorSpawnPath::MapPlacement,
         ),
@@ -192,7 +193,6 @@ fn pistol() -> (WeaponComponent, WeaponPlacementDescriptor) {
         projectile: None,
         splash: None,
         credit_source: None,
-        third_person_model: None,
         viewmodel: None,
         placement: Some(placement.clone()),
         muzzle_offset: Some([0.0, 0.225, -0.574]),
@@ -275,7 +275,7 @@ fn real_dummy_torso_aim_hits_local_and_mesh_only_display_copy() {
             .unwrap_or(torso);
         let target_model = (pose[torso].w_axis.truncate() + pose[child].w_axis.truncate()) * 0.5;
         let transform = registry.get_component::<Transform>(id).unwrap();
-        let target = model_matrix(transform, mesh.origin_offset)
+        let target = model_matrix(transform, mesh.origin_offset, mesh.body_frame)
             .unwrap()
             .transform_point3(target_model);
         let player = map_placement("player_spawn", "player", "288 256 24");

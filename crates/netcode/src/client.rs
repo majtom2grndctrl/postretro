@@ -690,17 +690,18 @@ pub(crate) struct RemoteEntityMaterialize {
     /// active enemy does not miss the initial non-default animation state.
     pub(crate) initial_animation_state: Option<String>,
     /// A changed shared-visible active-weapon archetype, including an initial
-    /// unarmed `None`, requires the descriptor-aware caller to refresh the dynamic
-    /// `hand_r` attachment after it materializes the mesh.
+    /// unarmed `None`, requires the descriptor-aware caller to recompose the
+    /// pawn's weapon-mount attachments after it materializes the mesh.
     pub(crate) active_weapon_archetype: Option<String>,
-    /// Distinguishes an attachment update to `None` (clear the hand socket) from a
+    /// Distinguishes an attachment update to `None` (base attachments only) from a
     /// normal mesh-materialization request with no weapon state change.
     pub(crate) weapon_attachment_changed: bool,
 }
 
 /// An applied local-player active-weapon update. The local pawn's body is not a
 /// `remote_entities` materialization request, but its shadow-only third-person mesh
-/// must receive the same dynamic `hand_r` attachment.
+/// must receive the same weapon-mount attachments. The apply resolves them
+/// against the class the pawn armed with, so no class rides this update.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LocalWeaponAttachmentUpdate {
     pub(crate) entity_id: EntityId,

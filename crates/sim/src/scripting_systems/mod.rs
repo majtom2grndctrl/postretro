@@ -25,6 +25,7 @@ mod system_step_tests;
 pub mod trigger_volume_bridge;
 pub mod ui_proxy;
 pub mod vignette_decay;
+pub mod weapon_mounts;
 
 /// Linear-interpolated curve evaluation over `[0, 1]`. Shared by the emitter
 /// bridge (spin animation) and the particle sim (size/opacity curves). Empty

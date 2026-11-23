@@ -3,6 +3,7 @@
 pub(crate) use postretro_sim::scripting_systems::{
     flash_decay, hit_zones, mesh_anim, particle_sim, reaction_scheduler, shake_decay,
     slot_accumulators, system_reactions, trigger_volume_bridge, ui_proxy, vignette_decay,
+    weapon_mounts,
 };
 
 pub(crate) fn eval_curve(curve: &[f32], t: f32) -> f32 {

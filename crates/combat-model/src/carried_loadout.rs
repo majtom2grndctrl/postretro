@@ -195,7 +195,6 @@ impl WieldableTuningPayload {
             lower_ms: self.lower_ms,
             raise_ms: self.raise_ms,
             credit_source: None,
-            third_person_model: None,
             viewmodel: None,
             sounds: None,
             placement: None,

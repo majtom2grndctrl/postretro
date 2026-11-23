@@ -12,7 +12,9 @@ skinning, as Blender's "apply pose as rest pose" does). Inverse binds are
 rewritten to match, so the character renders unchanged until a clip plays,
 and then plays the library's clips as authored.
 
-Joints match by exact name. Joints the library lacks keep their rotation.
+Joints match by exact name. Joints the library lacks keep their rotation. The
+root joint keeps its own facing: it takes the library root's tilt but not its
+yaw about the vertical, so a +Z character stays +Z on a library that faces -Z.
 Both documents must use the same bone convention (Mixamo rigs do: each child
 offset lies along its parent's +Y); a mismatch shows as a distorted skeleton.
 
@@ -44,6 +46,38 @@ def quat_to_matrix(q):
         [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
         [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
     ])
+
+
+def quat_mul(a, b):
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return np.array([
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    ])
+
+
+def quat_conj(q):
+    return np.array([-q[0], -q[1], -q[2], q[3]])
+
+
+def keep_root_yaw(mesh_rotation, library_rotation, up):
+    """The library's root rest rotation, turned about `up` to the mesh's yaw.
+
+    Splits mesh × library⁻¹ into a swing and a twist about `up` and keeps the
+    twist, so the result matches the library's pitch and roll but faces where
+    the mesh's root faced. `up` is the vertical axis in the root's parent frame.
+    """
+    library_rotation = np.array(library_rotation, dtype=np.float64)
+    relative = quat_mul(np.array(mesh_rotation, dtype=np.float64), quat_conj(library_rotation))
+    twist = np.append(np.dot(relative[:3], up) * up, relative[3])
+    length = np.linalg.norm(twist)
+    if length < 1e-9:
+        return library_rotation  # a half turn about a horizontal axis has no yaw to keep
+    turned = quat_mul(twist / length, library_rotation)
+    return turned / np.linalg.norm(turned)
 
 
 def local_matrix(node):
@@ -122,15 +156,30 @@ def rest_to_library(model_path):
     # Old and new rest poses, as world matrices per node. Only joint rotations
     # change; non-joint ancestors keep their transforms.
     old_locals = {i: local_matrix(n) for i, n in enumerate(gltf["nodes"])}
+    old_world = world_matrices(gltf, old_locals)
+    parents = node_parents(gltf)
+    joint_set = set(joints)
     matched = 0
     for j in joints:
         node = gltf["nodes"][j]
         rotation = library_rotations.get(node.get("name"))
-        if rotation is not None:
-            node["rotation"] = list(rotation)
-            matched += 1
+        if rotation is None:
+            continue
+        parent = parents.get(j)
+        if parent not in joint_set:
+            # A root keeps its own facing: a yaw-only difference from the
+            # library's root rest is allowed, and binding carries it as a
+            # whole-body turn (context/lib/resource_management.md §7). Copying
+            # the library's yaw would turn a +Z mesh to a -Z library's front.
+            # Up is model +Y, expressed in the root's parent frame.
+            parent_frame = np.eye(3) if parent is None else old_world(parent)[:3, :3]
+            up = np.linalg.solve(parent_frame, [0.0, 1.0, 0.0])
+            up /= np.linalg.norm(up)
+            rotation = keep_root_yaw(node.get("rotation", [0, 0, 0, 1]), rotation, up)
+        node["rotation"] = [float(c) for c in rotation]
+        matched += 1
     new_locals = {i: local_matrix(n) for i, n in enumerate(gltf["nodes"])}
-    old_world, new_world = world_matrices(gltf, old_locals), world_matrices(gltf, new_locals)
+    new_world = world_matrices(gltf, new_locals)
 
     old_ibm = acc.read(skin["inverseBindMatrices"]).reshape(-1, 4, 4).transpose(0, 2, 1)
     # Each joint's move from the old bind to the new rest, in model space.

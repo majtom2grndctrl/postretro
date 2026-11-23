@@ -921,7 +921,6 @@ mod tests {
                 projectile: Some(descriptor()),
                 splash: None,
                 credit_source: None,
-                third_person_model: None,
                 viewmodel: None,
                 placement: None,
                 muzzle_offset: None,

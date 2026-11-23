@@ -40,7 +40,7 @@ use crate::scripting_systems::hit_zones::ModelHitZones;
 /// A small skinned model with hit zones, all buffers in `data:` URIs.
 const ZONES: &str = "models/pose-modifier-fixture/joint_zones.gltf";
 /// A textured rifle: an external buffer and four base-color PNGs.
-const RIFLE: &str = "models/ar_4/model.gltf";
+const RIFLE: &str = "models/ar_4/limitator.gltf";
 /// A textured, animated enemy bound to a clip library.
 const BRUTE: &str = "models/mutant/model.gltf";
 /// A prop no dev descriptor names.
@@ -297,7 +297,7 @@ fn model_cache_key_tracks_file_content() {
     copy_dir(&source, &b);
     let prm_root = scratch.path().join("prm");
     std::fs::create_dir_all(&prm_root).unwrap();
-    let sources = read_model_sources(&a.join("model.gltf")).expect("the rifle reads");
+    let sources = read_model_sources(&a.join("limitator.gltf")).expect("the rifle reads");
     assert!(
         sources.buffers().count() >= 1,
         "the rifle has an external buffer"
@@ -309,9 +309,9 @@ fn model_cache_key_tracks_file_content() {
     }
 
     let params = ModelInstallParams::default();
-    let base = key_of(&a.join("model.gltf"), &prm_root, params);
+    let base = key_of(&a.join("limitator.gltf"), &prm_root, params);
     assert_eq!(base.version(), MODEL_CONTENT_KEY_VERSION);
-    let gltf = b.join("model.gltf");
+    let gltf = b.join("limitator.gltf");
     let key = || key_of(&gltf, &prm_root, params);
     assert_eq!(
         key(),
@@ -322,7 +322,7 @@ fn model_cache_key_tracks_file_content() {
     assert_edit_misses("gltf", &gltf, |bytes| bytes.push(b'\n'), key, base);
     assert_edit_misses(
         "buffer",
-        &b.join("model.bin"),
+        &b.join("limitator.bin"),
         |bytes| {
             let last = bytes.len() - 1;
             bytes[last] ^= 0xFF;
@@ -1105,7 +1105,7 @@ fn forced_model_miss_loads_and_logs_once() {
     assert_eq!(fallback.misses(), 1, "counted once per load");
     capture.assert_logged_once(
         log::Level::Warn,
-        "model prediction missed 'models/ar_4/model.gltf'",
+        "model prediction missed 'models/ar_4/limitator.gltf'",
     );
 }
 

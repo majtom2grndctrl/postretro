@@ -1,6 +1,6 @@
 # E10--npc-equipment-sets
 
-Brief · resumable · draft, third reshape applied; owner API review pending · Epic 10 · reads: `context/lib/entity_model.md` §2 (Weapon vocabulary, Defense layers and damage types), §4, §7c · `context/lib/scripting.md` §1 (Authoring API style), §2, §11, §12 · `context/lib/networking.md` §Version gates, engine-randomness posture · `context/lib/resource_management.md` §7 (Sockets) · depends on `ready/E21--character-weapon-mounts` (builds after it lands) · read at e761fb13
+Brief · resumable · draft, third reshape applied; owner API review pending · Epic 10 · reads: `context/lib/entity_model.md` §2 (Weapon vocabulary, Defense layers and damage types), §4, §7c · `context/lib/scripting.md` §1 (Authoring API style), §2, §11, §12 · `context/lib/networking.md` §Version gates, engine-randomness posture · `context/lib/resource_management.md` §7 (Sockets) · depends on `E21--character-weapon-mounts` (done) · read at e761fb13
 
 ## Problem
 Owner-requested capability (2026-11-13 roadmap item "Weapon-gated enemy attacks"; confirmed 2026-11-22): a modder or level designer equips individual NPCs of one archetype differently, and equipment can change during play. One grunt carries a burst rifle, the next a marksman rifle and armor. Today an enemy's weapons are fixed in its archetype's attack rows, its armor in its `health` block, its visible gun in `mesh.attachments`. No placement key, spawner key or script step varies any of them, so each combination needs its own archetype and map classname, a spawner releases only one, and nothing can change what an NPC carries at runtime. When done:
@@ -197,9 +197,9 @@ NPC mount list on the snapshot entity record, bitcode like the record's other fi
   - Spawn: `attach_descriptor_components` (placement key read, composition). Spawner: the per-copy loop in `spawn_resolved_spawners` and the key read in `entity_spawner.rs`; `next_spawn_count` is claimed after attach today.
   - Draw seed: `behavior_draw_seed` / `BehaviorDrawSalt`.
   - Layers: `DefenseLayersComponent::from_descriptor` / `refreshed`. Reapply the instance's capacity overrides after the refresh. Base expression parameters (`DefenseParameters`) stay keyed by canonical name; overrides are literal.
-  - Attachments: compose into `MeshComponent::with_attachments`, rebind via `resolve_mesh_entity_bindings_for_entities`. Model upload: `distinct_mesh_models` / `resolved_spawner_mesh_models` must cover every weapon mount and set gear an archetype lists.
+  - Attachments: compose into `MeshComponent::with_attachments`, rebind via `resolve_mesh_entity_bindings_for_entities`. Model upload: `weapon_presentation_models` already sweeps every descriptor's weapon mounts. Set gear needs a sweep over every set an archetype lists; `distinct_mesh_models` / `resolved_spawner_mesh_models` read only base models and attachments.
   - Weapon handles: `inventory.loadout` already takes weapon `defineEntity` values; follow how the SDK lowers those to canonical names. `AttackParams` in `sdk/types/postretro.d.ts` and its Luau twin change shape.
-  - Wire: `RawEntityRecord`, `active_weapon_archetype` and its validator. Client: `materialize_net_mesh_presentation`, with `synchronize_weapon_attachment_for_pawn` as the live-update precedent.
+  - Wire: `RawEntityRecord`, `active_weapon_archetype` and its validator. Client: `materialize_net_mesh_presentation`, with `update_weapon_mount_attachments` (`crates/netcode/src/weapon_mounts.rs`) as the live-update precedent.
   - Guard read precedent: `attackTurnFree`. Group step precedent: `applyStatus`.
 - Shape chosen: carried weapons, a composed mount list and layer capacities as per-instance state; sets as rig-independent authoring bundles; weapon mounts per archetype; an engine row skip.
 - Rivals:
@@ -215,3 +215,6 @@ NPC mount list on the snapshot entity record, bitcode like the record's other fi
 
 ## Open questions
 - The tick on which an equip cancels a running burst relative to the fire proposal. — **delegated**
+- NPC shot origin: does this brief move NPC rifle shots off the AI eye, and onto which point? A held-weapon muzzle would make gameplay read a mount (`networking.md` §Weapon placement is content). Evidence, options and costs: `research.md` §NPC shot origin. — owner: owner (raised 2026-11-23) — **blocks build**
+- One rifle for players and NPCs: do NPCs wield `reference_rifle` through `mesh.weaponMounts`, retiring the `enemy_rifle*` weapons (`entity_model.md` §2, one weapon vocabulary)? If so, where does NPC tuning live: attack-side scaling or a variant weapon? Facts: `research.md` §One rifle for players and NPCs. — owner: owner (raised 2026-11-23) — **blocks build**
+- Missing mount entry for a set weapon: silent or loud? The Load rules Decision says a set weapon with no mount entry loads and mounts nothing. E21's contract for a declared `mesh.weaponMounts` table warns once per character and weapon that lacks an entry (`entity_model.md` §2, Weapon mounts). — owner: owner (raised 2026-11-23) — **blocks build**

@@ -181,4 +181,40 @@ mod tests {
         assert!(BUNDLE_TREES.contains(&CORE_TREE));
         assert_eq!(BUNDLE_TREES, ["sdk", "docs", "tools", "core"]);
     }
+
+    /// The converter's default output faces +Z, so a recipe that passes
+    /// `--yaw 180` to reach +Z now yields -Z. No doc or content licence may
+    /// keep one (E21--player-model-front).
+    #[test]
+    fn no_docs_page_or_content_licence_keeps_a_yaw_180_recipe() {
+        fn scan(dir: &Path, wanted: &dyn Fn(&Path) -> bool, hits: &mut Vec<PathBuf>) {
+            for entry in fs::read_dir(dir).expect("directory reads") {
+                let path = entry.expect("entry reads").path();
+                if path.is_dir() {
+                    scan(&path, wanted, hits);
+                } else if wanted(&path) {
+                    let text = fs::read_to_string(&path).unwrap_or_default();
+                    if text.contains("--yaw 180") {
+                        hits.push(path);
+                    }
+                }
+            }
+        }
+
+        // Resolved at run time, like the other tool tests: a shippable binary
+        // never bakes the build machine's path (`main.rs` source scan).
+        let root = PathBuf::from(
+            std::env::var("CARGO_MANIFEST_DIR")
+                .expect("cargo sets CARGO_MANIFEST_DIR for its own test runs"),
+        )
+        .join("../..");
+        let mut hits = Vec::new();
+        scan(&root.join("docs"), &|_| true, &mut hits);
+        scan(
+            &root.join("content"),
+            &|path| path.file_name().is_some_and(|name| name == "license.txt"),
+            &mut hits,
+        );
+        assert!(hits.is_empty(), "stale `--yaw 180` recipe in: {hits:?}");
+    }
 }

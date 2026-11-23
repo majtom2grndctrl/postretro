@@ -1,4 +1,7 @@
-//! The glTF↔Blender basis change and the bake command the solver emits.
+//! Blender Euler decomposition and the bake command the solver emits.
+//!
+//! The basis change and the forward Euler convention live in
+//! `postretro_model::mount`, which the declared check shares.
 //!
 //! The tool never invokes Blender. It solves the corrective rotation against the
 //! engine's sampled socket frame and prints the command that performs the bake,
@@ -7,36 +10,14 @@
 //!
 //! See: context/lib/resource_management.md §7
 
-use glam::{Mat3, Vec3};
+use glam::Mat3;
 use postretro_model::mount::MountAxes;
 
 use super::args::SolveWeaponMountArgs;
 use super::format_number;
 
-/// glTF-to-Blender basis change for rotation operators. The columns map
-/// `(x, y, z)` to `(x, -z, y)`, so a corrective rotation needs a two-sided
-/// similarity transform rather than a one-sided vector conversion.
-pub(super) fn gltf_to_blender_rotation(rotation: Mat3) -> Mat3 {
-    let map = gltf_to_blender_basis();
-    map * rotation * map.transpose()
-}
-
-pub(super) fn blender_to_gltf_rotation(rotation: Mat3) -> Mat3 {
-    let map = gltf_to_blender_basis();
-    map.transpose() * rotation * map
-}
-
-fn gltf_to_blender_basis() -> Mat3 {
-    Mat3::from_cols(Vec3::X, Vec3::Z, -Vec3::Y)
-}
-
-/// Blender's `XYZ` Euler mode applies `Rz * Ry * Rx`.
-pub(super) fn blender_xyz_rotation(euler_degrees: [f32; 3]) -> Mat3 {
-    Mat3::from_rotation_z(euler_degrees[2].to_radians())
-        * Mat3::from_rotation_y(euler_degrees[1].to_radians())
-        * Mat3::from_rotation_x(euler_degrees[0].to_radians())
-}
-
+/// Decompose a Blender-space rotation into Blender `XYZ` Euler degrees, the
+/// inverse of `postretro_model::mount::blender_xyz_rotation`.
 pub(super) fn blender_xyz_euler_degrees(rotation: Mat3) -> [f32; 3] {
     let sine_y = (-rotation.x_axis.z).clamp(-1.0, 1.0);
     let y = sine_y.asin();
@@ -55,20 +36,6 @@ pub(super) fn blender_xyz_euler_degrees(rotation: Mat3) -> [f32; 3] {
         ((-rotation.y_axis.x).atan2(rotation.y_axis.y), 0.0)
     };
     [x.to_degrees(), y.to_degrees(), z.to_degrees()]
-}
-
-/// Compose raw-source declared axes through the rotation baked into the weapon.
-pub(super) fn compose_declared_axes_into_baked_frame(
-    declared_axes: MountAxes,
-    applied_blender_euler: [f32; 3],
-) -> MountAxes {
-    let applied_gltf_rotation =
-        blender_to_gltf_rotation(blender_xyz_rotation(applied_blender_euler));
-    MountAxes {
-        barrel: applied_gltf_rotation * declared_axes.barrel,
-        up: applied_gltf_rotation * declared_axes.up,
-        euler: None,
-    }
 }
 
 pub(super) fn emitted_blender_command(
@@ -128,25 +95,14 @@ fn shell_quote(value: &str) -> String {
 mod tests {
     use super::super::args::parse_solve_weapon_mount_args;
     use super::*;
+    use glam::Vec3;
+    use postretro_model::mount::{
+        blender_to_gltf_rotation, blender_xyz_rotation, gltf_to_blender_rotation,
+    };
     use std::ffi::OsString;
 
     fn os_args(args: &[&str]) -> Vec<OsString> {
         args.iter().map(OsString::from).collect()
-    }
-
-    #[test]
-    fn declared_check_composes_applied_euler_forward_into_baked_frame() {
-        let baked_axes = compose_declared_axes_into_baked_frame(
-            MountAxes {
-                barrel: Vec3::Y,
-                up: Vec3::Z,
-                euler: None,
-            },
-            [90.0, 0.0, 0.0],
-        );
-
-        assert_vec3_close(baked_axes.barrel, Vec3::Z);
-        assert_vec3_close(baked_axes.up, -Vec3::Y);
     }
 
     #[test]
@@ -230,20 +186,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn gltf_to_blender_similarity_maps_axes_and_rotation_operators_on_both_sides() {
-        let basis = gltf_to_blender_basis();
-        assert_eq!(basis * Vec3::X, Vec3::X);
-        assert_eq!(basis * Vec3::Y, Vec3::Z);
-        assert_eq!(basis * Vec3::Z, -Vec3::Y);
-
-        let gltf_rotation = Mat3::from_rotation_y(std::f32::consts::FRAC_PI_2);
-        assert_mat3_close(
-            gltf_to_blender_rotation(gltf_rotation),
-            Mat3::from_rotation_z(std::f32::consts::FRAC_PI_2),
-        );
-    }
-
     fn assert_mat3_close(actual: Mat3, expected: Mat3) {
         const EPSILON: f32 = 1.0e-5;
         for (actual, expected) in actual
@@ -256,13 +198,5 @@ mod tests {
                 "expected {expected}, got {actual}",
             );
         }
-    }
-
-    fn assert_vec3_close(actual: Vec3, expected: Vec3) {
-        const EPSILON: f32 = 1.0e-5;
-        assert!(
-            actual.abs_diff_eq(expected, EPSILON),
-            "expected {expected:?}, got {actual:?}",
-        );
     }
 }

@@ -14,8 +14,8 @@ Packaging notes (PostRetro):
 * scene.gltf is the Sketchfab export, unchanged (used by the target dummy and
   the animation demo).
 * model.gltf / model.bin are the shadow hunter's body: the same mesh with its
-  Mixamo-named skeleton, converted with mixamo_to_gltf.py (scale 100,
-  --yaw 180) and bound to clip_libraries/mixamo_mutant. Then:
+  Mixamo-named skeleton, converted with mixamo_to_gltf.py (scale 100)
+  and bound to clip_libraries/mixamo_mutant. Then:
     - lifted 0.936 m so the soles sit at y = 0 (the export's origin was at
       mid-body);
     - hit zones stripped: the converter zones only head and legs, and a ray

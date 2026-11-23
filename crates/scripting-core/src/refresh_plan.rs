@@ -975,7 +975,6 @@ mod tests {
                 projectile: None,
                 splash: None,
                 credit_source: None,
-                third_person_model: None,
                 viewmodel: None,
                 placement: None,
                 muzzle_offset: None,
@@ -1239,6 +1238,7 @@ mod tests {
                 animations: Default::default(),
                 default_state: None,
                 locomotion: None,
+                weapon_mounts: None,
             });
             let old = [descriptor];
             let mut new = old.clone();
@@ -2368,6 +2368,7 @@ mod tests {
             animations: descriptor_states,
             default_state: Some("idle".into()),
             locomotion: None,
+            weapon_mounts: None,
         };
 
         let make_descriptor = |name: &str| EntityTypeDescriptor {
@@ -2458,6 +2459,7 @@ mod tests {
             shadow_only: false,
             attachments: Vec::new(),
             pose_inputs: None,
+            body_frame: Default::default(),
         };
         registry.set_component(id, live).unwrap();
         registry

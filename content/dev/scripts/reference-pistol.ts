@@ -22,7 +22,6 @@ export const referencePistolEntity = defineEntity({
       bloomDecayDelayMs: 90,
       movementSpreadDegrees: 1.5,
       spreadVerticalBias: 0.0,
-      thirdPersonModel: "models/cyberpunk_weapons/pistol/model.gltf",
       viewmodel: "models/cyberpunk_weapons/pistol/model.gltf",
       placement: pistolPlacement,
       // Authored from the viewmodel's rigid `muzzle` socket. Hitscan ignores

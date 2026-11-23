@@ -1210,4 +1210,242 @@ mod tests {
             "feet plant on the source floor under the drawn body, got {contact}"
         );
     }
+
+    // Acceptance (pin R4): the fixed tick probes a connected client's player
+    // body under the live travel heading; the host seat draws it from a delayed
+    // sample whose heading had not yet turned. The re-probe after present must
+    // plant the feet under the presented heading plus the body turn, so a step
+    // under one foot reads the presented side, not the live one.
+    #[test]
+    fn host_seat_reprobe_plants_client_feet_under_the_presented_heading_plus_turn() {
+        use crate::collision::CollisionWorld;
+        use crate::kinematic_mover::MoverTickStateTable;
+        use crate::scripting_systems::hit_zones::{HitZoneStore, ModelHitZones};
+        use postretro_entities::components::mesh::{
+            AnimationState, BodyFrame, InterruptPolicy, MeshAnimation,
+        };
+        use postretro_foundation::{PlayerMovementComponent, PoseInputs};
+        use postretro_model::pose_modifier::{JointMask, LegChain, PoseModifierStack};
+        use postretro_model::skeleton::{AnimationClip, Joint, RestLocal, Skeleton};
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        // Feet off the body's vertical axis: model +X is the left foot.
+        const FOOT_L: Vec3 = Vec3::new(0.25, -0.7, 0.0);
+        const FOOT_R: Vec3 = Vec3::new(-0.25, -0.7, 0.0);
+        // Aim held through every tick; travel strafes a radian off it until the
+        // newest tick, which runs straight down the aim.
+        const AIM: f32 = 0.2;
+        const STRAFE: f32 = AIM + 1.0;
+        // Ground at y = 0 for x < STEP_X, STEP_HEIGHT beyond it.
+        const STEP_X: f32 = -0.17;
+        const STEP_HEIGHT: f32 = 0.2;
+        // Model origin height above the low floor.
+        const MODEL_Y: f32 = 1.0;
+
+        let (mut points, mut triangles) = (Vec::new(), Vec::new());
+        for (x0, x1, y) in [(-50.0, STEP_X, 0.0), (STEP_X, 50.0, STEP_HEIGHT)] {
+            let base = points.len() as u32;
+            points.extend([
+                Vec3::new(x0, y, -50.0),
+                Vec3::new(x1, y, -50.0),
+                Vec3::new(x1, y, 50.0),
+                Vec3::new(x0, y, 50.0),
+            ]);
+            triangles.extend([[base, base + 2, base + 1], [base, base + 3, base + 2]]);
+        }
+        let world = CollisionWorld::from_triangles_for_test(points, triangles);
+        let step_ground = |x: f32| if x < STEP_X { 0.0 } else { STEP_HEIGHT };
+
+        // Root plus two feet at rest; one clip with no tracks poses the rest.
+        let joint = |parent, translation| Joint {
+            parent,
+            inverse_bind: glam::Mat4::IDENTITY.to_cols_array_2d(),
+            rest_local: RestLocal {
+                translation,
+                ..RestLocal::default()
+            },
+        };
+        let leg = |foot_joint: usize| {
+            let mut chain_mask = JointMask::new();
+            assert!(chain_mask.insert(0) && chain_mask.insert(foot_joint));
+            LegChain {
+                chain_mask,
+                foot_joint,
+            }
+        };
+        let mut store = HitZoneStore::new();
+        store.insert_for_test(
+            postretro_model::ModelHandle::from("two_legs".to_string()),
+            ModelHitZones::for_test(
+                Arc::new(Skeleton {
+                    joints: vec![
+                        joint(None, Vec3::ZERO),
+                        joint(Some(0), FOOT_L),
+                        joint(Some(0), FOOT_R),
+                    ],
+                }),
+                Arc::new(vec![AnimationClip {
+                    name: "idle".to_string(),
+                    duration: 1.0,
+                    joints: Vec::new(),
+                    travel_speed: None,
+                    events: Vec::new(),
+                }]),
+                vec![None, None, None],
+                HashMap::new(),
+                None,
+                vec![leg(1), leg(2)],
+                Arc::new(PoseModifierStack::default()),
+            ),
+        );
+
+        let mut states = HashMap::new();
+        states.insert(
+            "idle".to_string(),
+            AnimationState {
+                clip: "idle".into(),
+                looping: true,
+                crossfade_ms: 0.0,
+                interrupt: InterruptPolicy::Smooth,
+                travel_speed: None,
+                max_playback_rate: None,
+                scale_with_speed: true,
+                playback_rate: None,
+                clip_index: Some(0),
+            },
+        );
+        let mut mesh =
+            MeshComponent::animated("two_legs".into(), MeshAnimation::new(states, "idle".into()))
+                .with_body_frame(BodyFrame::View);
+        mesh.pose_inputs = Some(PoseInputs::default());
+
+        // The capsule centre sits a sole above the model origin; the pose pass
+        // seats the mesh there.
+        let movement = crate::predict_reconcile_harness_test_fixtures::component();
+        let sole = movement.capsule.half_height + movement.capsule.radius;
+        let pose = Transform {
+            position: Vec3::new(0.0, MODEL_Y + sole, 0.0),
+            ..pose_at(0.0, AIM)
+        };
+        let mut registry = EntityRegistry::new();
+        let mut owners = MovementOwners::default();
+        let mut allocator = NetworkIdAllocator::new();
+        let mut buffer = RemoteInterpolationBuffer::default();
+        // The host's own pawn is the local one, so the client pawn takes the
+        // remote-aim branch of the pose pass, as on a listen host.
+        let host_pawn = registry.spawn(pose_at(20.0, 0.0));
+        registry.set_component(host_pawn, movement.clone()).unwrap();
+        registry.mark_local_player_pawn(host_pawn).unwrap();
+        let (pawn, _) = spawn_owned_pawn(&mut registry, &mut owners, &mut allocator, 7, pose);
+        registry.set_component(pawn, mesh).unwrap();
+        registry.set_component(pawn, movement).unwrap();
+
+        let travel = |yaw: f32| Quat::from_rotation_y(yaw) * Vec3::NEG_Z * 5.0;
+        let set_velocity = |registry: &mut EntityRegistry, velocity: Vec3| {
+            let mut movement = registry
+                .get_component::<PlayerMovementComponent>(pawn)
+                .unwrap()
+                .clone();
+            movement.velocity = velocity;
+            registry.set_component(pawn, movement).unwrap();
+        };
+        // Ticks 0..=3 strafe; tick 4 turns travel onto the aim. Position and aim
+        // hold, so only the heading separates the live and presented bodies.
+        for tick in 0..4 {
+            set_velocity(&mut registry, travel(STRAFE));
+            record_client_pawn_poses(&mut buffer, &owners, &allocator, &registry, tick);
+        }
+        set_velocity(&mut registry, travel(AIM));
+        record_client_pawn_poses(&mut buffer, &owners, &allocator, &registry, 4);
+
+        // The fixed tick's pose pass: live heading, live probes.
+        let movers = MoverTickStateTable::default();
+        let empty = HashMap::new();
+        let remote_aims = HashMap::from([(pawn, (0.0, AIM))]);
+        crate::sim::update_presentation_pose_inputs(
+            &mut registry,
+            &world,
+            &[],
+            &movers,
+            &store,
+            0.0,
+            crate::sim::PresentationPoseInputs {
+                camera_aim: (0.0, 0.0),
+                remote_player_aims: &remote_aims,
+                remote_aim_pitches: &empty,
+                remote_heading_yaws: &empty,
+                remote_network_ids: &HashMap::new(),
+                local_pawn_owns_direction: false,
+            },
+        );
+        let inputs = |registry: &EntityRegistry| {
+            registry
+                .get_component::<MeshComponent>(pawn)
+                .unwrap()
+                .pose_inputs
+                .unwrap()
+        };
+        // Expected contact heights for the feet placed at `heading` plus the
+        // body turn, at the pawn's model origin.
+        let feet_under = |heading: f32| {
+            let rotation = BodyFrame::View.model_rotation(Quat::from_rotation_y(heading));
+            [FOOT_L, FOOT_R].map(|foot| step_ground((rotation * foot).x) - MODEL_Y)
+        };
+        let live = feet_under(AIM);
+        let presented = feet_under(STRAFE);
+        assert!(
+            (live[0] - presented[0]).abs() > 0.1,
+            "fixture: the live and presented headings put the left foot on \
+             different sides of the step ({live:?} vs {presented:?})"
+        );
+        let ticked = inputs(&registry);
+        assert!((ticked.heading_yaw - AIM).abs() < 1.0e-5, "live heading");
+        assert_eq!(ticked.foot_count, 2);
+        for (slot, foot) in ticked.feet.iter().take(2).enumerate() {
+            assert!(foot.hit, "live foot {slot} finds ground");
+            assert!(
+                (foot.contact_height - live[slot]).abs() < 1.0e-3,
+                "live foot {slot}: {} under the live heading, expected {}",
+                foot.contact_height,
+                live[slot]
+            );
+        }
+
+        // Delayed presentation (target 2.5) draws the strafing samples; the
+        // re-probe reads the heading present wrote.
+        present_client_pawns(&buffer, &owners, &allocator, &mut registry, 5, 0.5);
+        let drawn = *registry.get_component::<Transform>(pawn).unwrap();
+        assert!(
+            (drawn.position - pose.position).length() < POS_EPS,
+            "drawn where the live pose stands"
+        );
+        assert!(
+            (inputs(&registry).heading_yaw - STRAFE).abs() < 1.0e-5,
+            "present wrote the delayed sample's heading"
+        );
+        probe_presented_client_pawn_feet(
+            &owners,
+            &mut registry,
+            &world,
+            &[],
+            &movers,
+            &store,
+            0.25,
+        );
+        let reprobed = inputs(&registry);
+        assert_eq!(reprobed.foot_count, 2);
+        assert!((reprobed.heading_yaw - STRAFE).abs() < 1.0e-5);
+        for (slot, foot) in reprobed.feet.iter().take(2).enumerate() {
+            assert!(foot.hit, "foot {slot} finds ground");
+            assert!(
+                (foot.contact_height - presented[slot]).abs() < 1.0e-3,
+                "foot {slot}: {} should sit under the presented heading plus turn \
+                 ({}), not the live heading ({})",
+                foot.contact_height,
+                presented[slot],
+                live[slot]
+            );
+        }
+    }
 }

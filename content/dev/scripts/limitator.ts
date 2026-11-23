@@ -192,7 +192,7 @@ export const limitatorEntity = defineEntity({
     mesh: {
       model: "models/limitator/model.gltf",
       attachments: {
-        hand_r: "models/ar_4/model.gltf",
+        hand_r: "models/ar_4/limitator.gltf",
       },
       animations: {
         idle: { clip: "idle", loop: true },

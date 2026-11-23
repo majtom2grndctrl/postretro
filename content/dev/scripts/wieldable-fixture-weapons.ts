@@ -13,7 +13,6 @@ export const wieldableFixtureAutoEntity = defineEntity({
       range: 48.0,
       primary: { trigger: "press", recoveryMs: 240.0, steps: [activation.shot()] },
       resolution: "hitscan",
-      thirdPersonModel: SMG_MODEL,
       viewmodel: SMG_MODEL,
       // Authored from the SMG viewmodel's rigid `muzzle` socket.
       muzzleOffset: [0.0, 0.274, -0.567],
@@ -40,7 +39,6 @@ export const wieldableFixturePressEntity = defineEntity({
       range: 48.0,
       primary: { trigger: "press", recoveryMs: 600.0, steps: [activation.shot()] },
       resolution: "hitscan",
-      thirdPersonModel: SHOTGUN_MODEL,
       viewmodel: SHOTGUN_MODEL,
       // Authored from the shotgun viewmodel's rigid `muzzle` socket.
       muzzleOffset: [0.0, 0.34, -1.137],

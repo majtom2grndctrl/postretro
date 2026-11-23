@@ -467,8 +467,11 @@ pub(super) fn overlay_anchor(
         .get_component::<postretro_entities::components::mesh::MeshComponent>(entity)
         .ok()?;
     let bound = hit_zones.get_by_name(&mesh.model)?.derived_bound?;
-    let model_to_world =
-        crate::scripting_systems::hit_zones::model_matrix(transform, mesh.origin_offset)?;
+    let model_to_world = crate::scripting_systems::hit_zones::model_matrix(
+        transform,
+        mesh.origin_offset,
+        mesh.body_frame,
+    )?;
     let local_top = glam::Vec3::new(
         (bound.min.x + bound.max.x) * 0.5,
         bound.max.y,

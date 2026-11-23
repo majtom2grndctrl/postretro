@@ -69,9 +69,7 @@ Three options edit clips as the library is written, so a rebuild repeats them:
   last pose.
 
 All three apply to a library or to a character that keeps its own clips, never
-with `--clip-library`. When the characters on a library all need the same
-`--yaw`, build the library with it too, so root motion such as a lunge runs the
-way they face.
+with `--clip-library`.
 
 ## Bind a character
 
@@ -89,8 +87,9 @@ character's clips and records the library in the document's extras:
 { "extras": { "clipLibrary": "../clip_libraries/mixamo_rifle/library.gltf" } }
 ```
 
-If the character faces the wrong way in game, pass `--yaw 180`. AI turns a
-model's +Z toward its target.
+The converter's default output faces +Z, the front of every model in the engine:
+AI turns a model's +Z toward its target. A library's root motion follows the
+character it binds to, so the library needs no matching `--yaw`.
 
 Descriptors do not change. `clip: "run_forward"` resolves as it would for a clip
 inside the model.
@@ -122,7 +121,9 @@ python3 tools/rest_to_library.py content/mymod/models/ghoul/model.gltf
 ```
 
 Each joint takes the library's rest rotation, and the mesh moves into that pose
-with its own skin weights. The character's bone lengths stay its own. The script
+with its own skin weights. The root joint keeps its own facing: it takes the
+library root's tilt but not its turn, so a character facing +Z stays +Z on a
+library that faces −Z. The character's bone lengths stay its own. The script
 needs Python with `numpy` but not Blender, and rewrites the model in place.
 Rerunning the conversion undoes it, so run it again after any reconversion.
 
@@ -170,13 +171,15 @@ Weapon mounts are solved against a pose. If you change a clip a mount depends on
 
 ```bash
 bin/postretro-tool solve-weapon-mount content/mymod/models/trooper/model.gltf \
-  --weapon content/mymod/models/rifle/model.gltf \
+  --weapon content/mymod/models/rifle/trooper.gltf \
   --mount-joint hand_r \
   --check
 ```
 
-A rigid mount is solved against one character's hand. Characters whose hands
-differ need their own bake of the weapon. See `docs/weapon-mounts.md`.
+A rigid mount is solved against one character's hand, so each rig has its own
+bake of each weapon, named for the rig: `rifle/trooper.gltf` above fits the
+`trooper` model. A character lists its bakes in `mesh.weaponMounts`. Check every
+bake a changed clip affects. See `docs/weapon-mounts.md`.
 
 ## Licence
 

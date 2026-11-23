@@ -1,5 +1,6 @@
-// The frame's glossy world overlay: its draw gate, its one pass after the
-// skinned-mesh pass and before the Ghost Pass, and its D_static lifecycle.
+// The frame's glossy world overlay: its draw gate, the coplanar-mover guard and
+// its one pass after the skinned-mesh pass and before the Ghost Pass, and its
+// D_static lifecycle.
 // See: context/lib/rendering_pipeline.md §7.3a (Glossy world faces)
 
 use super::glossy_overlay::{GLOSSY_OVERLAY_MATERIAL_GROUP, glossy_overlay_draws};
@@ -30,9 +31,10 @@ impl Renderer {
     }
 
     /// Record the overlay over the frame's glossy camera ranges into
-    /// `scene_color`, when [`Self::glossy_overlay_probe_term_draws`] holds.
-    /// Scene colour loads and blends additively; scene depth is attached
-    /// read-only for the Equal test.
+    /// `scene_color`, when [`Self::glossy_overlay_probe_term_draws`] holds,
+    /// after the coplanar-mover guard on a frame with mover draws. Scene
+    /// colour loads and blends additively; scene depth is attached read-only
+    /// for the Equal test.
     pub(super) fn record_glossy_overlay_pass(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -54,6 +56,19 @@ impl Renderer {
         else {
             return;
         };
+        // The coplanar-mover guard: this frame's movers mark D_static, which
+        // forward cleared and wrote this frame, so a mover face coplanar with
+        // a glossy face takes no term (pins P15, P23).
+        if let Some(static_diffuse) = glossy.static_diffuse_view() {
+            full.glossy_overlay.guard().record(
+                encoder,
+                static_diffuse,
+                &full.depth_view,
+                &full.uniform_bind_group,
+                &full.kinematic_brush,
+                &level.kinematic,
+            );
+        }
         let timestamps = full
             .frame_timing
             .as_ref()

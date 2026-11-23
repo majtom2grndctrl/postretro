@@ -196,22 +196,69 @@ pub(super) fn with_floor<R>(
     probes: Option<&ReflectionProbesSection>,
     use_geometry: impl FnOnce(&LevelGeometry<'_>) -> R,
 ) -> R {
+    with_floor_indexed(probes, None, use_geometry)
+}
+
+/// [`with_floor`] with `cell_draw_index` as its cell draw index, so a frame's
+/// culled cells pick its camera ranges.
+pub(super) fn with_floor_indexed<R>(
+    probes: Option<&ReflectionProbesSection>,
+    cell_draw_index: Option<&postretro_level_loader::CellDrawIndex>,
+    use_geometry: impl FnOnce(&LevelGeometry<'_>) -> R,
+) -> R {
+    with_faces(&floor_faces(), probes, cell_draw_index, use_geometry)
+}
+
+/// One face of a fixture level: its quad, its normal (octahedral) and its
+/// material bucket.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct FixtureFace {
+    pub corners: [[f32; 3]; 4],
+    pub normal_oct: [u16; 2],
+    pub bucket: u32,
+}
+
+/// The floor's faces, [`FACES`] at y = 0, facing up, in face order.
+pub(super) fn floor_faces() -> Vec<FixtureFace> {
+    FACES
+        .into_iter()
+        .zip(FACE_BUCKETS)
+        .map(|((x, z), bucket)| FixtureFace {
+            corners: [
+                [x[0], 0.0, z[0]],
+                [x[1], 0.0, z[0]],
+                [x[1], 0.0, z[1]],
+                [x[0], 0.0, z[1]],
+            ],
+            normal_oct: UP_OCT,
+            bucket,
+        })
+        .collect()
+}
+
+/// A level of `faces` (one BVH leaf each, in face order, buckets ascending),
+/// lent to `use_geometry`.
+pub(super) fn with_faces<R>(
+    faces: &[FixtureFace],
+    probes: Option<&ReflectionProbesSection>,
+    cell_draw_index: Option<&postretro_level_loader::CellDrawIndex>,
+    use_geometry: impl FnOnce(&LevelGeometry<'_>) -> R,
+) -> R {
+    assert!(
+        faces.is_sorted_by_key(|face| face.bucket),
+        "leaves sort by bucket"
+    );
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
     let mut leaves = Vec::new();
-    for (face, (x, z)) in FACES.into_iter().enumerate() {
+    let (mut low, mut high) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+    for face in faces {
         let base = vertices.len() as u32;
-        let corners = [
-            [x[0], 0.0, z[0]],
-            [x[1], 0.0, z[0]],
-            [x[1], 0.0, z[1]],
-            [x[0], 0.0, z[1]],
-        ];
-        for position in corners {
+        for position in face.corners {
             vertices.push(WorldVertex {
                 position,
                 base_uv: MAGENTA_UV,
-                normal_oct: UP_OCT,
+                normal_oct: face.normal_oct,
                 tangent_packed: [0; 2],
                 lightmap_uv: [0; 2],
                 lightmap_block: 0,
@@ -219,12 +266,19 @@ pub(super) fn with_floor<R>(
             });
         }
         let first = indices.len() as u32;
-        // Both windings: back-face culling keeps the one facing up.
+        // Both windings: back-face culling keeps the one facing the camera.
         indices.extend([0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2].map(|index| base + index));
+        let corners = face.corners.map(Vec3::from);
+        let (min, max) = corners
+            .iter()
+            .fold((corners[0], corners[0]), |(min, max), &c| {
+                (min.min(c), max.max(c))
+            });
+        (low, high) = (low.min(min), high.max(max));
         leaves.push(BvhLeaf {
-            aabb_min: [x[0] - 0.1, -0.1, z[0] - 0.1],
-            aabb_max: [x[1] + 0.1, 0.1, z[1] + 0.1],
-            material_bucket_id: FACE_BUCKETS[face],
+            aabb_min: (min - 0.1).to_array(),
+            aabb_max: (max + 0.1).to_array(),
+            material_bucket_id: face.bucket,
             index_offset: first,
             index_count: 12,
             cell_id: 0,
@@ -232,7 +286,7 @@ pub(super) fn with_floor<R>(
             chunk_range_count: 0,
         });
     }
-    let (aabb_min, aabb_max) = ([-3.1, -0.1, 0.9], [3.1, 0.1, 16.1]);
+    let (aabb_min, aabb_max) = ((low - 0.1).to_array(), (high + 0.1).to_array());
     let mut nodes = vec![BvhNode {
         aabb_min,
         aabb_max,
@@ -256,7 +310,7 @@ pub(super) fn with_floor<R>(
         bounds_min: Vec3::from(aabb_min),
         bounds_max: Vec3::from(aabb_max),
         face_start: 0,
-        face_count: FACES.len() as u32,
+        face_count: faces.len() as u32,
         portal_ref_start: 0,
         portal_ref_count: 0,
         is_solid: false,
@@ -293,7 +347,7 @@ pub(super) fn with_floor<R>(
         shadowmask_atlas: None,
         sdf_atlas: None,
         lightmap_mode: postretro_level_loader::LightmapMode::Shadowed,
-        cell_draw_index: None,
+        cell_draw_index,
         kinematic_geometry: None,
         cells: &cells,
         texture_materials: &[],

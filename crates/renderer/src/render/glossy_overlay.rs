@@ -1,12 +1,17 @@
 // The glossy world overlay pass: its pipelines (one per reflection style) over
-// its own layout, forward's static-diffuse forms, and the frame's draw gate.
+// its own layout, forward's static-diffuse forms, the coplanar-mover guard,
+// and the frame's draw gate.
 // See: context/lib/rendering_pipeline.md §7.3a (Glossy world faces), §10
 
 mod level;
+mod mover_guard;
 mod pipeline;
 
 pub use level::GLOSSY_STATIC_DIFFUSE;
 pub(crate) use level::{GlossyLevelLayout, GlossyLevelState};
+#[cfg(test)]
+pub(crate) use mover_guard::GLOSSY_MOVER_GUARD_SHADER;
+pub(crate) use mover_guard::GlossyMoverGuard;
 #[cfg(test)]
 pub(crate) use pipeline::glossy_overlay_blend_state;
 pub(crate) use pipeline::{
@@ -18,6 +23,7 @@ use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQual
 use postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle;
 use postretro_render_cpu::frame_uniforms::LightTermMask;
 
+use super::kinematic_brush::KinematicBrushPass;
 use super::renderer_init_pipelines::ForwardStaticDiffusePipelines;
 use crate::compute_cull::{ComputeCullPipeline, SetTextureFn};
 use pipeline::overlay_pipeline;
@@ -101,11 +107,12 @@ impl GlossyOverlayPipelines {
 }
 
 /// The overlay pass, built at full init: its pipelines, its two own layouts,
-/// the probe sampler, and forward's static-diffuse forms. Level state (the
-/// probe stream, the probe group and the D_static target) belongs to the
-/// level set.
+/// the probe sampler, forward's static-diffuse forms and the coplanar-mover
+/// guard. Level state (the probe stream, the probe group and the D_static
+/// target) belongs to the level set.
 pub(crate) struct GlossyOverlayPass {
     pipelines: GlossyOverlayPipelines,
+    guard: GlossyMoverGuard,
     #[cfg(test)]
     pipeline_layout: wgpu::PipelineLayout,
     level_layout: GlossyLevelLayout,
@@ -121,6 +128,7 @@ impl GlossyOverlayPass {
         uniform_layout: &wgpu::BindGroupLayout,
         material_layout: &wgpu::BindGroupLayout,
         forward: ForwardStaticDiffusePipelines,
+        movers: &KinematicBrushPass,
     ) -> Self {
         let probe_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Glossy Overlay Probe BGL"),
@@ -162,6 +170,7 @@ impl GlossyOverlayPass {
             pixel: style("fs_pixel"),
             smooth: style("fs_smooth"),
         };
+        let guard = GlossyMoverGuard::new(device, movers, forward.format);
         let level_layout = GlossyLevelLayout {
             probe_layout,
             inputs_layout,
@@ -170,6 +179,7 @@ impl GlossyOverlayPass {
         };
         Self {
             pipelines,
+            guard,
             #[cfg(test)]
             pipeline_layout,
             level_layout,
@@ -188,6 +198,11 @@ impl GlossyOverlayPass {
     /// other bucket masks it.
     pub(crate) fn forward_forms(&self) -> &ForwardStaticDiffusePipelines {
         &self.forward
+    }
+
+    /// The coplanar-mover guard, recorded ahead of the overlay.
+    pub(crate) fn guard(&self) -> &GlossyMoverGuard {
+        &self.guard
     }
 
     /// Record the overlay's draws over the frame's glossy camera ranges in
@@ -259,3 +274,7 @@ mod tests;
 #[cfg(test)]
 #[path = "glossy_overlay_mip_tests.rs"]
 mod mip_tests;
+
+#[cfg(test)]
+#[path = "glossy_overlay_gate_tests.rs"]
+mod gate_tests;

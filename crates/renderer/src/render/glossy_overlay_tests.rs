@@ -263,7 +263,9 @@ fn overlay_reads_its_probe_from_the_binding_and_lights_through_the_sums() {
 // pixel, W the texel's Fresnel × `_s` × sharpness fade times the
 // capture-shadow weight, R coloured as the highlight; additive over the scene
 // colour. A texel whose weight is 0 adds nothing and reads no normal map and
-// runs no probe search. One entry per reflection style over one shading.
+// runs no probe search; nor does a pixel this frame's mover guard marked,
+// which reads the mark only after the weight (pins P15, P23). One entry per
+// reflection style over one shading.
 #[test]
 fn overlay_adds_the_weighted_reflection_minus_static_diffuse() {
     for (entry, pixel) in [("fs_pixel", "true"), ("fs_smooth", "false")] {
@@ -281,7 +283,8 @@ fn overlay_adds_the_weighted_reflection_minus_static_diffuse() {
          letderivatives=glossy_overlay_derivatives(in);\
          letdepth=glossy_overlay_march(in,derivatives);\
          lettexel=glossy_overlay_texel(depth.uv,derivatives.ddx,derivatives.ddy);\
-         iftexel.mask<=0.0{returnvec3<f32>(0.0);}\
+         iftexel.mask<=0.0||glossy_overlay_mover_covered(in.clip_position.xy){\
+         returnvec3<f32>(0.0);}\
          letsurface=glossy_overlay_surface(in,derivatives,depth,pixel);\
          returnglossy_overlay_delta(in,texel,surface);}"
     );
@@ -457,8 +460,12 @@ fn overlay_gate_needs_tier_mask_ready_level_and_a_glossy_range() {
     assert!(!glossy_overlay_draws(Off, all, true, true));
 }
 
-// The overlay records after the skinned-mesh pass and before the Ghost Pass
-// and every translucent pass; forward precedes it.
+// Acceptance row 46 (recording order), pin P12: the overlay records after
+// forward, the mover pass and the skinned-mesh pass, and before the Ghost
+// Pass, the planar mirror, the fluid passes, billboards, billboard ghosts
+// and the fog composite, so each of those draws over its result and nothing
+// it draws is dimmed by the reflection weight. The coplanar-mover guard
+// records inside the overlay's recording, ahead of the overlay's pass.
 #[test]
 fn overlay_records_after_the_skinned_mesh_pass_and_before_the_ghost_pass() {
     let frame = squashed(include_str!("renderer_render_frame.rs"));
@@ -474,9 +481,26 @@ fn overlay_records_after_the_skinned_mesh_pass_and_before_the_ghost_pass() {
         at("self.record_glossy_overlay_pass("),
         at("label:Some(\"GhostPass\")"),
         at("self.record_planar_reflection_pass("),
+        at("self.record_fluid_surface_passes("),
+        at("label:Some(\"BillboardSpritePass\")"),
+        at("label:Some(\"BillboardGhostPass\")"),
+        at("label:Some(\"FogCompositePass\")"),
     ];
     assert!(order.is_sorted(), "{order:?}");
+    assert!(at("label:Some(\"KinematicBrushPass\")") < at("self.record_glossy_overlay_pass("));
     assert_eq!(frame.matches("self.record_glossy_overlay_pass(").count(), 1);
+    let glossy = squashed(include_str!("renderer_glossy_frame.rs"));
+    let guard = glossy
+        .find(".guard().record(")
+        .expect("the overlay records the guard");
+    let overlay = glossy
+        .find("label:Some(\"GlossyOverlayPass\")")
+        .expect("the overlay's pass");
+    assert!(
+        guard < overlay,
+        "the guard marks D_static before the overlay reads it"
+    );
+    assert_eq!(glossy.matches(".guard().record(").count(), 1);
 }
 
 // Acceptance row 30: a character's promoted-light shadow is forward's

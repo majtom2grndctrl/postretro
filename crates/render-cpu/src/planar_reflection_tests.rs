@@ -1082,3 +1082,6 @@ fn planar_plane_areas_on_baked_maps() {
         }
     }
 }
+
+#[path = "planar_reflection_glossy_tests.rs"]
+mod glossy;

@@ -162,6 +162,14 @@ mod glossy_overlay_frame_test;
 #[cfg(test)]
 mod glossy_overlay_frame_test_fixtures;
 #[cfg(test)]
+mod glossy_overlay_gate_frame_fixtures;
+#[cfg(test)]
+mod glossy_overlay_guard_frame_test;
+#[cfg(test)]
+mod glossy_overlay_lifecycle_frame_test;
+#[cfg(test)]
+mod glossy_overlay_mirror_frame_test;
+#[cfg(test)]
 mod glossy_overlay_room_frame_test;
 #[cfg(test)]
 mod glossy_overlay_room_frame_test_fixtures;

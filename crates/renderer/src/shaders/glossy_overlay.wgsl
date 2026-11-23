@@ -91,7 +91,9 @@ struct FluidProbeSums {
 
 // --- Group 3: the frame's inputs: forward's static diffuse, read at the
 // fragment's own pixel, and the linear-clamp sampler the probe reads take
-// (named as the fluid shader names the one it borrows).
+// (named as the fluid shader names the one it borrows). D_static's alpha is
+// the coplanar-mover guard's mark: 0 as forward clears and writes it, 1 where
+// this frame's mover guard pass found a mover.
 @group(3) @binding(0) var static_diffuse: texture_2d<f32>;
 @group(3) @binding(1) var sh_atlas_sampler: sampler;
 
@@ -319,6 +321,13 @@ fn glossy_overlay_static_diffuse(frag_xy: vec2<f32>) -> vec3<f32> {
     return textureLoad(static_diffuse, vec2<u32>(frag_xy), 0).rgb;
 }
 
+// Whether this frame's mover guard marked this fragment's own pixel: a mover
+// shaded it, so the mover pass's output stands there. Only a mover face
+// coplanar with the glossy face reaches here; one in front fails Equal.
+fn glossy_overlay_mover_covered(frag_xy: vec2<f32>) -> bool {
+    return textureLoad(static_diffuse, vec2<u32>(frag_xy), 0).a > 0.5;
+}
+
 // The overlay's addition at this fragment for a texel of nonzero weight:
 // Fresnel from the surface's view against the flat face normal, as water's,
 // so a pixel-style texel is one uniform block.
@@ -333,12 +342,13 @@ fn glossy_overlay_delta(in: GlossyVertexOutput, texel: GlossyTexel,
 
 // One style's overlay addition: forward's march picks the texel, a texel of
 // zero weight (no `_s`, at or below the sharpness floor) adds nothing and
-// reads nothing more, and the style picks where the reflection starts.
+// reads nothing more, a pixel this frame's movers cover adds nothing, and the
+// style picks where the reflection starts.
 fn glossy_overlay_shade(in: GlossyVertexOutput, pixel: bool) -> vec3<f32> {
     let derivatives = glossy_overlay_derivatives(in);
     let depth = glossy_overlay_march(in, derivatives);
     let texel = glossy_overlay_texel(depth.uv, derivatives.ddx, derivatives.ddy);
-    if texel.mask <= 0.0 {
+    if texel.mask <= 0.0 || glossy_overlay_mover_covered(in.clip_position.xy) {
         return vec3<f32>(0.0);
     }
     let surface = glossy_overlay_surface(in, derivatives, depth, pixel);

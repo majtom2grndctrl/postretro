@@ -75,6 +75,10 @@ pub(crate) struct KinematicBrushPass {
     beauty_pipelines: MoverBeautyPipelines,
     /// Depth-only `vs_depth` pipeline recorded into a view's depth pre-pass.
     depth_pipeline: wgpu::RenderPipeline,
+    /// The module and layout `depth_pipeline` builds from: the clip path a
+    /// coverage pipeline (`coverage.rs`) shares, so they cannot drift.
+    clip_module: wgpu::ShaderModule,
+    clip_layout: wgpu::PipelineLayout,
     instance_buffer: wgpu::Buffer,
     instance_capacity: usize,
     instance_bind_group_layout: wgpu::BindGroupLayout,
@@ -580,6 +584,8 @@ impl KinematicBrushPass {
         Self {
             beauty_pipelines,
             depth_pipeline,
+            clip_module: shader,
+            clip_layout: depth_pipeline_layout,
             instance_buffer,
             instance_capacity: 1,
             instance_bind_group_layout,
@@ -1003,24 +1009,7 @@ impl KinematicBrushPass {
         level: &KinematicLevelState,
         view: MoverView,
     ) {
-        if !self.has_draws(level) {
-            return;
-        }
-        pass.set_pipeline(&self.depth_pipeline);
-        pass.set_bind_group(3, &self.instance_bind_group, &[]);
-        pass.set_vertex_buffer(0, level.vertex_buffer.slice(..));
-        pass.set_index_buffer(level.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        for active in self.view_draws(level, view) {
-            let range = level.mover_index_ranges[active.mover_draw_index];
-            if range.index_count == 0 {
-                continue;
-            }
-            pass.draw_indexed(
-                range.index_start..range.index_start + range.index_count,
-                0,
-                active.instance_index..active.instance_index + 1,
-            );
-        }
+        self.record_clip(pass, level, view, &self.depth_pipeline);
     }
 
     /// `view`'s mover colour draws, `Equal` against the depth
@@ -1172,6 +1161,8 @@ fn mover_reaches_mirror(
     let top = glam::Vec3::select(normal.cmpge(glam::Vec3::ZERO), world.max, world.min);
     aabb_in_planes(world.min, world.max, cull_planes) && normal.dot(top) + clip_plane.w >= 0.0
 }
+
+mod coverage;
 
 #[cfg(test)]
 #[path = "kinematic_brush_backface_tests.rs"]

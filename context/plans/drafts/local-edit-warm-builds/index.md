@@ -98,25 +98,27 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Ra
 - [ ] a seal turned into a leak, and back;
 - [ ] a light added, deleted, moved, re-tinted, and dimmed to zero;
 - [ ] a sun light moved;
-- [ ] a linked group with one instance edited;
+- [ ] a brush edited in a linked group that has a single instance;
 - [ ] a linked group updated through TrenchBroom's transform-and-reclone path, rotated instances included;
 - [ ] two coincident faces with different textures, then an edit elsewhere that renumbers faces (RW-5);
 - [ ] a `_lightmap_scale` change on one brush, moving no geometry (RW-6);
 - [ ] an edit elsewhere that changes the atlas layer size, leaving some layer's placements unchanged (RW-7);
 - [ ] every static light dimmed to zero, then a brush edit, then one light restored (RW-12).
 - [ ] Two local edits, each built warm in turn: the second build re-traces only the samples and rays its own edit reaches, and equals a cold build of the twice-edited map (RW-1).
-- [ ] Two edits in different places between builds re-trace exactly the union of their re-trace sets, and the build equals cold (RW-14).
-- [ ] Two worktrees of one map, each with its own edit, built alternately on one cache: each build equals its cold build and re-traces at most the union of both edits' re-trace sets (RW-16).
+- [ ] Two edits in different places between builds re-trace exactly the union of their re-trace sets and direct diff samples, and the build equals cold (RW-14).
+- [ ] Two worktrees of one map, each with its own edit, built alternately on one cache: each build equals its cold build and re-traces at most the union of both edits' re-trace sets and direct diff samples (RW-16).
 
 **Locality.**
 - [ ] After a local brush edit that renumbers faces and moves other charts in the atlas, a light whose reach excludes the edit hits every lightmap entry it had.
 - [ ] A renumbering-only edit that moves no BSP split, with no geometry near any light, hits every per-light lightmap, SH delta and mover entry.
-- [ ] An edit that moves an upper BSP split re-traces only texels and rays on re-cut faces plus the re-trace set, equals cold, and its Build Summary names the re-partition and the re-cut face count.
+- [ ] An edit that moves an upper BSP split re-traces only texels and rays on re-cut faces, the texels and samples the lightmap and patch-direct diffs name, and the re-trace set; equals cold, and its Build Summary names the re-partition and the re-cut face count.
 - [ ] After a brush edit inside a light's reach, that light's SH patch-direct layer re-traces only patches on changed geometry and samples whose segment meets the changed triangles; a light whose reach excludes the edit hits its layer.
 - [ ] A tint or intensity change with no presence change re-traces no lightmap visibility.
 - [ ] Re-ordering a brush face's plane points, writing a brush's sides in another order, and re-cloning a rotated linked instance that holds no light, each with no geometric change, emit the same corners in the same order and hit every entry.
 - [ ] After a brush edit that meets only a texel's footprint clip segment or lead-in, never its light-ward segments, that texel re-traces, and the warm build equals cold.
 - [ ] An edit that grows the map's bounds moves no existing probe, and its SH re-trace is exactly the re-trace set.
+- [ ] After a brush edit inside one light's reach, every SH delta entry (ids 27, 41, 45), mover pose memo, mover light-probe memo and probe-direct memo whose recorded inputs exclude the edit hits, and the warm build equals cold.
+- [ ] An edit that changes only the cut-face estimate of a cut parent whose sub-faces span two layers, or only a light's id-40 membership, re-bakes the ShadowmaskAtlas output of every layer holding that cut parent or that light's channels, and the warm build equals cold.
 - [ ] A local edit re-bakes only the reflection probes, camera cells, direct SH volume entries, scatter entries, animated weight-map entries and cut-face estimates whose recorded inputs it touches; every other one hits.
 - [ ] After a local edit, every atlas layer whose placements, layer size, contributing partitions, those lights' photometric fields and encode parameters are unchanged hits its encode memo, equals the cold build's encoded layer byte for byte, and replays the cold build's texel-step warnings.
 - [ ] A cluster payload memo hit equals the cold build's encoded payload byte for byte.
@@ -128,7 +130,7 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Ra
 **Refusals.**
 - [ ] A stale entry from an older stage version, or a truncated or corrupt ray record, misses and re-bakes. It never serves.
 - [ ] After a tracer-epoch or stage-version bump, no entry or ray record written before it serves as a baseline: every sample and ray re-traces, and the build equals cold (RW-2).
-- [ ] A build killed while writing ray records, before its SH entry lands: the next build equals cold and re-traces at most the re-trace set plus the rays of chunks that fail their digest (RW-15).
+- [ ] A build killed while writing ray records, before its SH entry lands: the next build equals cold and re-traces at most the re-trace set, the direct diff samples, and the rays of chunks that fail their digest (RW-15).
 - [ ] An edit far from a cached ray's segment never re-traces it; an edit across it always does.
 - [ ] A tracer test pins the locality rule: an answer never changes when a triangle whose padded bounds miss the segment is added or removed, including when two triangles tie at the hit distance and the change renumbers every other triangle.
 
@@ -137,6 +139,7 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Ra
 - [ ] At the default `--cache-max-size`, stress-street's ray records price under the ceiling, and a warm one-brush edit traces SH locally with no ceiling or eviction warning (RW-17).
 - [ ] A map priced past the ray-record ceiling bakes SH whole, byte-identical to cold, and warns by name. The ceiling never exceeds the cache budget less the spared set.
 - [ ] When the sweep evicts all of a map's ray records, its next Build Summary says SH traced whole because of the eviction.
+- [ ] When the sweep evicts some of a map's record chunks, its next Build Summary names the SH rays traced because of the eviction, counted apart from the re-trace set.
 - [ ] Evicting a map's ray records through the start-of-build sweep, at a budget too small to keep them, costs one full SH trace on its next build; the output stays byte-identical, and the build after that is local again. Evicting only some of its record chunks re-traces at most those chunks' rays (RW-3).
 - [ ] Reverting an edit, with no eviction between the builds, hits every entry it hit before the edit, with nothing re-traced; with eviction between, it re-bakes only what was evicted and equals cold (RW-4).
 - [ ] Interleaved builds of two maps in one cache each stay byte-identical to their cold builds, and neither overwrites an entry the other holds; sharing equal entries is allowed.
@@ -172,7 +175,7 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Ra
 ### Manual
 Targets are owner targets: a miss stops the build and reports to the owner; it is not an executor tuning loop. Runs use default worker count and default `--cache-max-size`, timed as wall time from launch to exit, warm from a copy of the baseline cache.
 - [ ] On any machine but the reference container, a one-brush edit in one group instance or a one-light edit on stress-street takes at most twice that machine's no-op.
-- [ ] stress-street, dev profile, 4-core reference container: no-op ≤ 12 s, and each of those edits ≤ 45 s.
+- [ ] stress-street, dev profile, 4-core reference container: no-op ≤ 12 s, and a one-brush edit in one group instance and a one-light edit each ≤ 45 s.
 - [ ] The 23-instance linked-lamp brush edit is reported beside the one-instance edit, with each stage's re-traced work, which scales with the instances touched.
 - [ ] stress-warren-crates, same setup: the no-op, one-brush and one-light edits, each reported against its stress-street target.
 - [ ] stress-street on a Mac with the SDK's release-profile prl-build: the same runs, reported.
@@ -181,7 +184,7 @@ Targets are owner targets: a miss stops the build and reports to the owner; it i
 ## Path
 - **First slice.** Stable identity for faces, patches and triangles, plus the SH ray record, proven on stress-street. Measure:
   - warm equals cold after the arm edit;
-  - re-trace count against the crossing count in `research.md`;
+  - re-trace count against the re-trace set, with the crossing count in `research.md` as its floor;
   - re-evaluation time;
   - record size at 4 B per ray;
   - how many light origins a 23-instance linked-lamp re-save moves (reported).

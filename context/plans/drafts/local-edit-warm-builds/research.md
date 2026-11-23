@@ -175,7 +175,7 @@ Orderings the Acceptance rows cite.
 
 | id | scenario | ordering | expected outcome |
 |---|---|---|---|
-| RW-1 | Chained warm edits | cold A → warm e1 → warm e2 (no cold between) | The e2 build re-traces only e2's samples and crossing rays; no chunk e1 left unchanged misses; equals cold of A+e1+e2 |
+| RW-1 | Chained warm edits | cold A → warm e1 → warm e2 (no cold between) | The e2 build re-traces only e2's direct diff samples and e2's re-trace set; no chunk e1 left unchanged misses; equals cold of A+e1+e2 |
 | RW-2 | Tracer or stage version bump | build → bump `TRACER_EPOCH` or a stage version → build, records present, no geometry edit | No pre-bump entry or record serves as a baseline; every sample and ray re-traces; equals cold |
 | RW-3 | Record eviction by sweep | build → next build's sweep evicts all or some ray-record chunks → build → build | All evicted: one full SH trace, then local again. Some evicted: at most those chunks' rays re-trace. Equals cold throughout |
 | RW-4 | Revert | A → B (success) → A | No eviction between: every entry A hit before hits, nothing re-traced. Sweep evicts A-only entries between: those re-bake, equals cold |
@@ -188,7 +188,7 @@ Orderings the Acceptance rows cite.
 | RW-11 | Ceiling crossing | renumbering edit takes map past ceiling → edit back under → local edit | Past: SH whole, no records written, warns by name, direct local. Back: SH whole, records written, no warning. Next: local. Equals cold each time |
 | RW-12 | Zero bounce source | every static light dimmed to zero → brush edit → one light restored | No later-bounce records exist after the zero build; the restore build traces the rays it needs; no absent record reads as a miss; equals cold |
 | RW-13 | Chunk gone mid-bake | this build looks up baseline → another build's sweep removes a chunk → this build reads it | That chunk's rays re-trace; equals cold |
-| RW-14 | Two edits, one build | e1 and e2 in different places → one warm build | Re-trace = union of both crossing sets; equals cold |
-| RW-15 | Kill mid-record write | build killed after some record chunks, before SH entry → rebuild | Equals cold; re-trace ≤ crossing set + rays of chunks failing digest |
-| RW-16 | Two worktrees, one map | W1 edits e1, W2 edits e2, built alternately on one cache | Each equals its cold build; each re-traces at most the union of e1's and e2's crossing sets |
+| RW-14 | Two edits, one build | e1 and e2 in different places → one warm build | Re-trace = union of both re-trace sets and direct diff samples; equals cold |
+| RW-15 | Kill mid-record write | build killed after some record chunks, before SH entry → rebuild | Equals cold; re-trace ≤ re-trace set + direct diff samples + rays of chunks failing digest |
+| RW-16 | Two worktrees, one map | W1 edits e1, W2 edits e2, built alternately on one cache | Each equals its cold build; each re-traces at most the union of e1's and e2's re-trace sets and direct diff samples |
 | RW-17 | Default budget fit | empty cache, default `--cache-max-size` → cold stress-street → warm one-brush edit | Spared set plus ray records priced under the budget; SH local; no ceiling or eviction warning |

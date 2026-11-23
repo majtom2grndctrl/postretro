@@ -3,6 +3,7 @@
 // See: context/lib/testing_guide.md · context/lib/rendering_pipeline.md §7.3a
 
 use super::*;
+use crate::render::SCENE_COLOR_FORMAT;
 use crate::render::gpu_test_harness::wgsl_function;
 
 const OVERLAY_WGSL: &str = include_str!("../shaders/glossy_overlay.wgsl");

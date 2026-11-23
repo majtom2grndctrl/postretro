@@ -162,3 +162,9 @@ Engineering research on 2026-11-23; not legal advice.
 - Drettakis & Sillion (SIGGRAPH 1997).
 
 **Cited-by patent.** NVIDIA US11922567B2 is live. Its claim 1 covers server-computed indirect lighting sent to a client, which does not reach a build cache.
+
+## Rivals, continued (second direction review)
+- **Content-keyed per-(light, chart or patch chunk) direct entries over the shaft geometry, with diff records for SH only.**
+  - Gains: direct light stays a pure memo, a revert hits for free, and no reach geometry is stored per light.
+  - Costs: a whole chart re-traces where per-sample grain re-traces single texels, and the cache runs two models.
+  - Not chosen. SH needs the diff model regardless, because its rays are unbounded. Writing every patched entry under its full content key restores free reverts and shared-cache safety inside one model.

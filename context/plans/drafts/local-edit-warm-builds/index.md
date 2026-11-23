@@ -5,7 +5,7 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Pr
 ## Problem
 **Basis.** Owner-observed defect in the authoring loop: an edit's rebuild costs what the whole map costs, and the build cannot show why. After a TrenchBroom linked-group update, prl-build rebuilds as if the cache were empty. On stress-street, raising one brush in one lamp instance costs 234 s warm against 21 s for a no-op. Every cache stage misses, though 99.5% of lightmap texels come out byte-identical (`research.md` §Measurements).
 
-**Cause.** Cache keys, seeds and tie-breaks are built from global identity: BSP leaf and cell order, global face and vertex indices, a whole-atlas fingerprint, and a probe grid anchored to the map's bounds. Any edit renumbers them. On top of that, the SH base volume is one entry whose gather re-traces every ray after any light or geometry edit. Linked groups only make this frequent: one edit lands in every instance.
+**Cause.** Cache keys, seeds and tie-breaks are built from global identity: BSP leaf and cell order, global face and vertex indices, a whole-atlas fingerprint, and a probe grid anchored to the map's bounds. Any edit renumbers them. On top of that, the SH base volume is one entry whose gather re-traces every ray after any light or geometry edit. Linked groups only make this frequent: one edit lands in every instance. Even a no-op pays fixed passes that no cache covers: Packing alone is half of it.
 
 **Why it can't be seen.** Hits and fresh work share one progress counter, so the author can't see what an edit cost, and hits make the ETA wrong.
 
@@ -38,6 +38,12 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Pr
   - Everything else is re-evaluated from the records, in the cold bake's order.
   - The depth-tile top-K is reselected every build from per-probe scores.
   - Rival rejected on measurement: re-gathering the dirty closure reaches 100% of an open map (`research.md` §SH dependency spread).
+- **The cache contract changes.** A diff-patched entry is no longer a pure memo whose key covers every input, so §Build Cache (Key composition, Determinism invariant) states the new contract:
+  - Every entry, patched or fresh, is written under the full content key of what it now holds. An exact key match still hits outright, so reverting an edit is free and maps sharing a cache never overwrite each other.
+  - On a miss, the bake looks up the nearest baseline for the same stable identity, diffs against it, and writes a new entry. It never mutates the baseline.
+  - Each record chunk names the baseline geometry digest it was traced on. A chunk whose digest disagrees is a miss, so a killed or mixed write never serves.
+  - Rival: content-keyed per-(light, chart) direct entries hashing the shaft geometry, with diffs for SH only. It keeps the old memo for direct light but re-traces whole charts and runs two cache models. One model is chosen because SH needs the diff model anyway, its rays being unbounded (`research.md` §Rivals).
+- **The tracer contracts its locality.** §Ray traversal's Answer contract gains a rule: a ray's answer depends only on triangles whose τ-padded bounds meet its segment, and ties break by stable identity. Every crossing test relies on that rule. A test pins it, so a tracer change cannot silently break warm equals cold.
 - **No visibility relation is added.** SH locality comes from ray records, never from a cell-to-cell relation. The no-PVS rule stands (`build_pipeline.md` §Id-51 consumers).
 - **Cascade stages go per-entry, keyed on the stable identities they read:**
   - indirect (id 27) and direct (ids 41, 45) SH deltas: reach-local geometry, not the whole world;
@@ -49,7 +55,11 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Pr
   - Packing's cluster payload spool is memoised per cluster chunk and parallelised.
   - The uncached passes after id 34 are memoised or parallelised until the targets hold.
   - Byte output is unchanged.
-- **Cache footprint is bounded and visible.** The ray records have a per-map disk ceiling, set at build from the stress fixtures. It is sized against `--cache-max-size`'s spared-set rule (§Build Cache, Eviction), since every live map's records are spared. The Build Summary reports the footprint against it, and an overrun is a named warning. The cache stays disposable.
+- **The ray-record footprint is priced before tracing.**
+  - Ray counts are known in advance (patches × rays per patch, plus valid probes × rays per probe), so the record size is priced at the SH gate, as the working-set gate prices memory (`development_guide.md` §1.4).
+  - A map whose records would pass the per-map ceiling bakes its SH as one whole entry, as today. It stays exact, and the Build Summary names the warning.
+  - Records are exempt from the spared set: they are evicted first, oldest first. Losing them costs one full SH trace, never correctness.
+  - The Build Summary reports the footprint against the ceiling.
 - **This reverses documented choices.**
   - "A geometry edit re-keys every layer" is retired, from `build_pipeline.md` §Build Cache and from the decisions of `done/incremental-bake-per-element/` and `done/surface-radiance-cache/`. Those plans named finer geometry locality as future work; this brief is that work.
   - `incremental-bake-per-element` also ruled out primary-ray-hit caching. The SH ray records lift that ruling.
@@ -106,10 +116,15 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Pr
 **Refusals.**
 - [ ] A stale entry from an older stage version, or a truncated or corrupt ray record, misses and re-bakes. It never serves.
 - [ ] An edit far from a cached ray's segment never re-traces it; an edit across it always does.
+- [ ] A tracer test pins the locality rule: an answer never changes when a triangle whose padded bounds miss the segment is added or removed.
 
 **Footprint.**
 - [ ] The Build Summary reports the cache footprint with the ray records.
-- [ ] Exceeding the ceiling warns by name.
+- [ ] A map priced past the ray-record ceiling bakes SH whole, byte-identical to cold, and warns by name.
+- [ ] Evicting a map's ray records costs one full SH trace on its next build; the output stays byte-identical.
+- [ ] Reverting an edit hits every entry it hit before the edit, with nothing re-traced.
+- [ ] Two maps sharing one cache directory never serve each other's entries.
+- [ ] A ray-record chunk whose baseline digest disagrees with its entry misses.
 
 **Progress accounting.**
 - [ ] Accounting is correct for each kind of stage: all hits, all fresh, mixed, whole-stage hit, and zero units.
@@ -134,6 +149,8 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Pr
   - re-evaluation time;
   - record size at 4 B per ray.
   This falsifies the riskiest assumptions: that re-evaluation is cheap and that a re-intersected distance is bit-exact.
+  - If the distance is not bit-exact, records grow to 8 B (triangle plus distance). That is an owner check on the footprint.
+  - If re-evaluation is not cheap, stop and report to the owner before building the rest of the SH half.
 - **Seams:**
   - `build_leaf_ordered_faces`, `primitive_sort_key` and `closest_hit` (identity and ties);
   - `patch_seed_id` and `probe_grid_layout_of`;

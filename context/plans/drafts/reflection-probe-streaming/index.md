@@ -1,6 +1,8 @@
 # reflection-probe-streaming
 
 > **Status (2026-11-22):** `reflection-probe-seams` is retired (`roadmap.md`, Fluid Rendering). Every nearby-probe, blend and seams section-54 reference below is stale; drop them when this draft is next grounded.
+>
+> **Glossy world faces (2026-11-22).** `glossy-world-reflections` makes static world faces probe readers, behind `prl-build --glossy-reflections` until this brief lands (owner). Its census (`plan.md` Block there) found production-scale maps needing up to about 2229 world-face probes, many in trim-heavy rooms, so one camera cell's fit set can pass a 256-slot pool of 128² tiles. World faces never read sharper than colour mip 2 (32²), so a world-face probe class captured at 32² and packed many per layer (about 3.4 KiB each) is a candidate pool shape here. Per-cell fit counts on that content are unmeasured.
 
 Brief · resumable · reads: `context/lib/index.md` §1.1 · `rendering_pipeline.md` §Cluster SH residency, §4 (Lightmap cell-block residency), §7.3a, §7.8, §10 · `boot_sequence.md` §1 (Settling) · `build_pipeline.md` §PRL section IDs · `resource_management.md` §5 · `development_guide.md` §1.4 · `testing_guide.md` §Resource bounds · read at 949a79411 · builds after `reflection-probes` lands · **build when** the next stress map with reflections is authored, or any shipped map drops probes at the cap, whichever comes first
 

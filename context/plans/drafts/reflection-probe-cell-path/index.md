@@ -1,9 +1,9 @@
 # reflection-probe-cell-path
 
-Brief · resumable · reads: `context/lib/rendering_pipeline.md` §2, §7.3a, §10; `context/lib/resource_management.md` §5.3; `context/lib/testing_guide.md` §Resource bounds · read at c0dfd54b · builds after `reflection-probe-fluid-pass-performance` and the shape measurements (Open questions); the cell-pool shape also needs counsel on `../../ready/reflection-probe-fluid-pass-performance/ip-check.md` §For counsel 3 and 5
+Brief · resumable · reads: `context/lib/rendering_pipeline.md` §2, §7.3a, §10; `context/lib/resource_management.md` §5.3; `context/lib/testing_guide.md` §Resource bounds · read at c0dfd54b · builds after `reflection-probe-fluid-pass-performance` and the shape measurements (Open questions); the cell-pool shape also needs counsel on `../../done/reflection-probe-fluid-pass-performance/ip-check.md` §For counsel 3 and 5
 
 ## Problem
-Developer-raised, from the cell-rate spike and the `fluid-base-pass-cost` landing runs. On the Radeon Pro 5300M, the Mac perf target (§10), the reflection is now most of the reflecting fluid pass: 10.2 ms over reflection-free at e24 near 4K and 12.7 ms on the probes map (`../../ready/reflection-probe-fluid-pass-performance/research.md` §Evidence). In pixel style the reflection is one value per water texel cell, yet every pixel computes it, and every hidden pixel's cell would too if computed apart from the depth-tested draw. Done means pixel-style water whose cells cover enough pixels pays per visible cell, not per pixel. Pixel-style reflecting water at the near and probes views at 4K then costs within a millisecond of reflection-free, and looks the same within the parity bounds below. The payoff at the Mac's default extents, Auto and 1440p, is unmeasured since the base-pass landing, and so is a screen-space rival's (Open questions).
+Developer-raised, from the cell-rate spike and the `fluid-base-pass-cost` landing runs. On the Radeon Pro 5300M, the Mac perf target (§10), the reflection is now most of the reflecting fluid pass: 10.2 ms over reflection-free at e24 near 4K and 12.7 ms on the probes map (`../../done/reflection-probe-fluid-pass-performance/research.md` §Evidence). In pixel style the reflection is one value per water texel cell, yet every pixel computes it, and every hidden pixel's cell would too if computed apart from the depth-tested draw. Done means pixel-style water whose cells cover enough pixels pays per visible cell, not per pixel. Pixel-style reflecting water at the near and probes views at 4K then costs within a millisecond of reflection-free, and looks the same within the parity bounds below. The payoff at the Mac's default extents, Auto and 1440p, is unmeasured since the base-pass landing, and so is a screen-space rival's (Open questions).
 
 ## Decisions
 - **Shape not yet chosen (owner, 2026-11-22).** The texture-space cell pool below is the drafted shape, and a screen-space probe-term target is its rival (Path). The shape measurements in Open questions choose between them, or park the work. The Decisions below are refined after that, and the brief re-runs `/validate-plan`.
@@ -26,7 +26,7 @@ Developer-raised, from the cell-rate spike and the `fluid-base-pass-cost` landin
   - It is allocated only while an installed fluid level has a probe-bound face under pixel style. It allocates or releases on level install, unload and a committed style switch, and rebuilds with the scene targets on an extent change (§7.3a Install).
   - Written and read in one frame, with every read record written that frame. It holds no history and no precomputed intersections, so `plans/done/reflection-probes`' no-history gate extends to it.
 - **Cell-path look.** Its fade decides once, at the cell centre. A cell straddling its fade threshold no longer splits its reflection; the albedo still splits. This diverges from §7.3a Style's split sentence and from §7.3a Capture's fixed pixel style; both change at promotion.
-- **IP fences (owner, 2026-11-22), from `../../ready/reflection-probe-fluid-pass-performance/ip-check.md` §Lever C.**
+- **IP fences (owner, 2026-11-22), from `../../done/reflection-probe-fluid-pass-performance/ip-check.md` §Lever C.**
   - Cell resolution stays fixed by the water's texel grid. No per-face level of detail, mip level or cell size comes from distance, projected area or the pixels-per-cell estimate, which picks a path only (Qualcomm '166, EP4409531B1).
   - A face packs whole texel rows and columns, clipped only to bound the pool. No face is resampled to fit a budget.
   - The hidden-cell test runs inline in the invocation that evaluates the cell. No pass writes a per-cell or per-tile visibility bitfield that a later dispatch or allocation reads. No any-visible flag gates a dispatch. Visible cells are never compacted into indirect dispatch arguments or into the pool (Intel '475, Qualcomm '715).
@@ -116,13 +116,13 @@ Orderings cite `research.md` §Pins.
   - **Decision rule (proposed; owner confirms):**
     - Park the work if (1) finds no view over the owner's 1 ms bar at Auto or 1440p.
     - Otherwise take the screen-space target, unless the cell path beats it by more than 1 ms at Auto or 1440p on some view, or counsel has cleared questions 3 and 5.
-  - **IP basis for that default (2026-11-22).** The claims pass recorded in `../../ready/reflection-probe-fluid-pass-performance/ip-check.md` found no filing that reads on the screen-space target as Qualcomm '166 reads on the cell pool:
+  - **IP basis for that default (2026-11-22).** The claims pass recorded in `../../done/reflection-probe-fluid-pass-performance/ip-check.md` found no filing that reads on the screen-space target as Qualcomm '166 reads on the cell pool:
     - Every reduced-resolution family charted needs an element the target lacks.
     - Dated art covers it (§Shape B).
     - Its constraints are the shipped screen-space layer's IP rules, plus keeping the probe term and SSR separate quantities if they share a target.
     - The pass was a keyword sweep, not a classification search, and read Intel's coarse-pixel family only in part.
   - **Fences by shape.** If the target wins, ip-check §Shape B's fences join the Decisions. If the cell pool wins, §Lever C's Oxide fences join the IP fences above: no fallback buffer for overflowed draws, and no GPU hashed allocation or work queue.
-- IP line for the cell pool's sizing and allocation, needed only if the cell pool wins: `../../ready/reflection-probe-fluid-pass-performance/ip-check.md` §For counsel 3 (Qualcomm '166 and EP4409531B1) and 5 (Qualcomm '715). Owner: Dan, with counsel — **blocks build**
+- IP line for the cell pool's sizing and allocation, needed only if the cell pool wins: `../../done/reflection-probe-fluid-pass-performance/ip-check.md` §For counsel 3 (Qualcomm '166 and EP4409531B1) and 5 (Qualcomm '715). Owner: Dan, with counsel — **blocks build**
 - Cutoff and margin values — **delegated**.
 - Hidden-cell footprint test form — **delegated**: the executor picks it and reports the measured saving.
 - How the pool binds to the fluid pass when not allocated: placeholder binding, following `fluid-ssr-reflections`, or a rebuild on allocation. Both group-5 instances (SSR and planar) carry it — **delegated**.

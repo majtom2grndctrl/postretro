@@ -89,7 +89,7 @@ Recommended direction after an independent review (2026-10-23). Today's stack, f
 | World indirect | SH grid with Chebyshev weighting | Base and deltas gathered from the surface radiance cache; classification and relocation (1) | Patch radiosity, probe-to-patch links, bounce in the lightmap |
 | Entity, mover, billboard direct | Direct SH (ids 35/41/45), billboard scatter (47/48), promotion crossfade | Door factor in the direct-SH compose; slab shadows on entity receivers | — |
 | Entity indirect, fog | SH grid, shrunk by graft 1 | Navmesh-guided coarsening; portal-gated reach for fog | Per-cell probes (leaf seams, Square Enix '372) |
-| Reflections | Water probes, SSR, planar spike | Glossy world surfaces (5), after counsel on Tencent WO claim 1 | — |
+| Reflections | Water probes, SSR, planar spike | Glossy world surfaces (5): ready as `glossy-world-reflections`; owner accepted the WO claim-1 reading, so counsel does not gate it | — |
 | Doors, movers | `sealed_portal_ids`, `blocked_portals` flood, promotion | Door classification and influence graph; light → cell reach for runtime lights | — |
 | Streaming | Shared read issuer, lightmap cell blocks, SH clusters | Door masks page as per-cell blocks beside lightmap and shadowmask; seam hints derived from door and choke portals | No third streaming system |
 

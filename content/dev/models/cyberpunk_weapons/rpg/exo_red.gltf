@@ -1,0 +1,155 @@
+{
+	"asset": {
+		"generator": "Khronos glTF Blender I/O v5.2.41",
+		"version": "2.0"
+	},
+	"scene": 0,
+	"scenes": [
+		{
+			"name": "Scene",
+			"nodes": [
+				0
+			]
+		}
+	],
+	"nodes": [
+		{
+			"mesh": 0,
+			"name": "rpg ammo.001",
+			"extras": {
+				"mount": {
+					"barrel": [
+						0.0,
+						0.0,
+						-1.0
+					],
+					"up": [
+						0.0,
+						1.0,
+						0.0
+					],
+					"euler": [
+						71.611732,
+						2.943644,
+						80.080856
+					]
+				}
+			}
+		}
+	],
+	"materials": [
+		{
+			"doubleSided": true,
+			"name": "Material.002",
+			"pbrMetallicRoughness": {
+				"baseColorTexture": {
+					"index": 0
+				},
+				"metallicFactor": 0
+			}
+		}
+	],
+	"meshes": [
+		{
+			"name": "Cube.037",
+			"primitives": [
+				{
+					"attributes": {
+						"POSITION": 0,
+						"NORMAL": 1,
+						"TEXCOORD_0": 2
+					},
+					"indices": 3,
+					"material": 0
+				}
+			]
+		}
+	],
+	"textures": [
+		{
+			"sampler": 0,
+			"source": 0
+		}
+	],
+	"images": [
+		{
+			"mimeType": "image/png",
+			"name": "texture",
+			"uri": "texture.png"
+		}
+	],
+	"accessors": [
+		{
+			"bufferView": 0,
+			"componentType": 5126,
+			"count": 344,
+			"max": [
+				0.3821791112422943,
+				0.8266124725341797,
+				0.2095097303390503
+			],
+			"min": [
+				-0.19250667095184326,
+				-0.39993351697921753,
+				-0.10602729022502899
+			],
+			"type": "VEC3"
+		},
+		{
+			"bufferView": 1,
+			"componentType": 5126,
+			"count": 344,
+			"type": "VEC3"
+		},
+		{
+			"bufferView": 2,
+			"componentType": 5126,
+			"count": 344,
+			"type": "VEC2"
+		},
+		{
+			"bufferView": 3,
+			"componentType": 5123,
+			"count": 516,
+			"type": "SCALAR"
+		}
+	],
+	"bufferViews": [
+		{
+			"buffer": 0,
+			"byteLength": 4128,
+			"byteOffset": 0,
+			"target": 34962
+		},
+		{
+			"buffer": 0,
+			"byteLength": 4128,
+			"byteOffset": 4128,
+			"target": 34962
+		},
+		{
+			"buffer": 0,
+			"byteLength": 2752,
+			"byteOffset": 8256,
+			"target": 34962
+		},
+		{
+			"buffer": 0,
+			"byteLength": 1032,
+			"byteOffset": 11008,
+			"target": 34963
+		}
+	],
+	"samplers": [
+		{
+			"magFilter": 9728,
+			"minFilter": 9984
+		}
+	],
+	"buffers": [
+		{
+			"byteLength": 12040,
+			"uri": "exo_red.bin"
+		}
+	]
+}

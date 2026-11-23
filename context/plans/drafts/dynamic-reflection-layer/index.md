@@ -24,7 +24,7 @@ What the owner wants: dynamic content shows in reflections, softened by the same
 
 ## Open before drafting
 
-- Owner sign-off on a screen-space march on world faces, which reverses glossy's probe-only ruling.
+- Owner sign-off on a screen-space march on walls, ceilings and slopes. Up-facing glossy floors already have one (glossy-world-reflections, owner 2026-11-22): blurred, reading the opaque scene without specular, showing on-screen movers and characters.
 - Counsel on '451 for delta tiles and for the shipped share ratio (`plans/done/reflection-probes/ip-check.md`, Watch), and on the glow-SSR fences.
 - Cost of a permanently open SSR gate on the 5300M.
 - Dynamic lights: no candidate shows them. Their specular on glossy faces is the direct fix, and it belongs with forward's light loop, not this layer.

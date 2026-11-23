@@ -469,7 +469,7 @@ fn fluid_pipeline_fragment_uniforms_and_samplers_stay_within_limits() {
             [4, 0, 1, 1],
             [0, 5, 1, 0],
             [3, 3, 1, 1],
-            [2, 0, 2, 0],
+            [2, 0, 3, 0],
             [2, 0, 1, 0],
         ],
         "fluid FRAGMENT bindings changed"
@@ -477,8 +477,8 @@ fn fluid_pipeline_fragment_uniforms_and_samplers_stay_within_limits() {
     let total = |slot: usize| fragment.iter().map(|group| group[slot]).sum::<u32>();
     assert_eq!(
         total(2),
-        7,
-        "six uniforms before probes, plus the share table"
+        8,
+        "six uniforms before probes, plus the share table and the live-lighting sums"
     );
     assert_eq!(
         total(0),
@@ -495,6 +495,10 @@ fn fluid_pipeline_fragment_uniforms_and_samplers_stay_within_limits() {
     assert!(total(3) <= limits.max_samplers_per_shader_stage);
     assert!(
         postretro_render_cpu::fluid_surface::reflection::FLUID_PROBE_TABLE_BYTES as u64
+            <= limits.max_uniform_buffer_binding_size
+    );
+    assert!(
+        postretro_render_cpu::fluid_surface::reflection::FLUID_PROBE_SUMS_BYTES as u64
             <= limits.max_uniform_buffer_binding_size
     );
 }
@@ -523,6 +527,75 @@ fn fluid_reflection_pipeline_fragment_bindings_stay_within_limits() {
     assert!(total(0) <= limits.max_sampled_textures_per_shader_stage);
     assert!(total(2) <= limits.max_uniform_buffers_per_shader_stage);
     assert!(total(3) <= limits.max_samplers_per_shader_stage);
+}
+
+// Acceptance row 9 (reflection-probe-fluid-pass-performance): the sums pass
+// owns a compute layout of 0 the shared camera group, 1 the shared SH group
+// and 2 its own (the sums it writes, the share table it reads). Its compute
+// stage stays within the downlevel defaults. It widens no shared group: the
+// shared entries it reads already carry COMPUTE (SH compose and fog read
+// them), and its own entries are COMPUTE-only, so no render stage is charged
+// for them. Fluid group 4's sums entry stays FRAGMENT-only.
+#[test]
+fn fluid_sums_pipeline_compute_bindings_stay_within_limits() {
+    use crate::render::fluid_reflection_probes::fluid_sums_pass_bind_group_layout_entries;
+    let groups = fluid_surface::probe_sums::fluid_sums_pipeline_bind_group_layout_entries();
+    let compute: Vec<[u32; 4]> = groups
+        .iter()
+        .map(|entries| stage_inventory(entries, wgpu::ShaderStages::COMPUTE))
+        .collect();
+    // (sampled textures, storage buffers, uniform buffers, samplers) per group.
+    let sh_compute = stage_inventory(
+        &crate::render::sh_volume::sh_bind_group_layout_entries(),
+        wgpu::ShaderStages::COMPUTE,
+    );
+    assert_eq!(
+        compute,
+        [[0, 0, 1, 0], sh_compute, [0, 1, 1, 0]],
+        "sums COMPUTE bindings changed"
+    );
+    let total = |slot: usize| compute.iter().map(|group| group[slot]).sum::<u32>();
+    let limits = wgpu::Limits::default();
+    assert!(total(0) <= limits.max_sampled_textures_per_shader_stage);
+    assert!(
+        total(1) <= limits.max_storage_buffers_per_shader_stage,
+        "{compute:?}"
+    );
+    assert!(total(2) <= limits.max_uniform_buffers_per_shader_stage);
+    assert!(total(3) <= limits.max_samplers_per_shader_stage);
+    assert!(
+        postretro_render_cpu::fluid_surface::reflection::FLUID_PROBE_SUMS_BYTES as u64
+            <= limits.max_storage_buffer_binding_size
+    );
+
+    // The shared entries the sums shader reads (group 0 binding 0, SH
+    // bindings 11 and 12) carried COMPUTE before it: nothing was widened.
+    let camera = &groups[0][0];
+    assert!(camera.visibility.contains(wgpu::ShaderStages::COMPUTE));
+    for binding in [
+        postretro_render_cpu::sh_volume::BIND_ANIM_DESCRIPTORS,
+        postretro_render_cpu::sh_volume::BIND_ANIM_SAMPLES,
+    ] {
+        let entry = groups[1]
+            .iter()
+            .find(|entry| entry.binding == binding)
+            .expect("SH entry");
+        assert_eq!(
+            entry.visibility,
+            wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE
+        );
+    }
+    for entry in fluid_sums_pass_bind_group_layout_entries() {
+        assert_eq!(entry.visibility, wgpu::ShaderStages::COMPUTE);
+    }
+    let group_4 = fluid_surface::fluid_params_bind_group_layout_entries();
+    let sums = group_4
+        .iter()
+        .find(|entry| {
+            entry.binding == crate::render::fluid_reflection_probes::FLUID_PROBE_SUMS_BINDING
+        })
+        .expect("group 4 sums");
+    assert_eq!(sums.visibility, wgpu::ShaderStages::FRAGMENT);
 }
 
 /// Per-stage binding inventory of one BGL: (sampled textures, storage

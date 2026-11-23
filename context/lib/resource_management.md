@@ -87,7 +87,7 @@ The material enum and prefix derivation are implemented. Behavior hooks are plan
 | **Bullet impact particles** | Planned. |
 | **Ricochet behavior** | Planned. |
 | **Decal selection** | Planned. |
-| **Environment-mapped reflections** | Fluid surfaces only (§5). No material reads probes: the forward pass has no free sampled-texture binding. |
+| **Environment-mapped reflections** | Fluid surfaces only (§5). The forward pass has no free sampled-texture binding for probes. Decided, not yet built: glossy static world faces read them through their own overlay pass (§5.4). |
 
 Each behavior is a property of the material enum variant. Which prefixes carry which flags is a content concern — the engine provides the mechanism.
 
@@ -103,7 +103,7 @@ Optional sibling textures provide per-texel surface properties. Suffixes are app
 
 ### 4.1 Specular Maps (Epic 5)
 
-Per-texel specular intensity modulates the direct lighting highlight.
+Per-texel specular intensity modulates the direct lighting highlight. Decided, not yet built: it also masks and scales glossy reflection, so a material without `_s` never reflects (§5.4).
 
 - **Naming:** `{name}_s.png` suffix.
 - **Format:** R8Unorm (sampled as `.r` in shader). The slot widens to two-channel `Rg8Unorm` when a `{name}_h.png` height sibling is present (§4.6), and to four-channel `Rgba8Unorm` when a `{name}_p.png` smoothness or `{name}_t.png` tint sibling is present (§4.7). Specular is `.r` in every form.
@@ -322,7 +322,9 @@ slot rather than slots of their own.
   epsilon sits below sRGB byte 1's linear value, so of 8-bit albedos only black
   takes the white fallback. Without `_t`, specular multiplies raw albedo.
   Diffuse never changes: tint is a metallic map's specular half, without its
-  diffuse suppression (`rendering_pipeline.md` §13).
+  diffuse suppression (`rendering_pipeline.md` §13). Decided, not yet built:
+  on a glossy face the reflection weight, which tint raises, fades static
+  diffuse (§5.4).
 - **Color space and dimensions:** as for `_h` (§4.6): an `sRGB` or `iCCP`
   chunk, or a non-unit `gAMA`, fails the build. `_p` must match the diffuse,
   `_s` and `_h`; `_t` must match those and `_p`. Each mismatch is a hard bail
@@ -387,7 +389,7 @@ slot rather than slots of their own.
 
 ## 5. Reflection Probes
 
-A reflection probe is a compile-time capture of the static world, stored for distance-corrected, box-projected lookup. The record is reflector-agnostic: a capture point, a world-space projection box, a full-sphere octahedral colour tile and a distance tile beside it. Both tiles share a fixed engine tile size (128, carried in the section header, so a later authored size is additive) and the SH atlas's direction mapping and border convention (`rendering_pipeline.md` §4, Indirect). Water is its only reader (`rendering_pipeline.md` §7.3a); a later glass or polished-stone reader takes its base reflectance from its material.
+A reflection probe is a compile-time capture of the static world, stored for distance-corrected, box-projected lookup. The record is reflector-agnostic: a capture point, a world-space projection box, a full-sphere octahedral colour tile and a distance tile beside it. Both tiles share a fixed engine tile size (128, carried in the section header, so a later authored size is additive) and the SH atlas's direction mapping and border convention (`rendering_pipeline.md` §4, Indirect). Water is its only reader today (`rendering_pipeline.md` §7.3a). Decided, not yet built: glossy static world faces read it too, at an engine-owned base reflectance until a `materials.toml` override exists (§5.4).
 
 ### 5.1 Placement
 
@@ -431,9 +433,20 @@ PRL id 54 carries probes, tiles and face bindings (`build_pipeline.md` §PRL sec
 | Distance array | R16Float `texture_2d_array`, the same layers |
 | Share table | One uniform laid out at the cap, written once at install: per probe its box, capture point and layer, then its light entries with shares packed unorm10 RGB per lobe |
 | Probe index | Third fluid vertex buffer, one probe index per vertex, written once at install from the face bindings |
-| Live-lighting sums | Decided, not yet built. One RGB sum per lobe per probe at the cap, 20 480 B. A compute pass rewrites them each frame with a reflecting draw; the fluid fragment reads them as a uniform. Never written into the share table or tiles (`rendering_pipeline.md` §7.3a Live lighting) |
+| Live-lighting sums | One RGB sum per lobe per probe at the cap, 20 480 B, one buffer with storage and uniform usage. A compute pass rewrites every installed probe's sums each frame with a reflecting draw; the fluid fragment reads them as a uniform. Never written into the share table or tiles (`rendering_pipeline.md` §7.3a Live lighting) |
 
-At the cap the arrays cost 12 MiB (colour 4 194 304 B BC6H, distance 8 388 608 B) and the table 61 456 B; the probe-index buffer costs 4 B per fluid vertex. A level with fluid surfaces and no usable id 54 binds a 1×1 one-layer dummy for each array and a zeroed table, and no face samples them.
+At the cap the arrays cost 12 MiB (colour 4 194 304 B BC6H, distance 8 388 608 B), the table 61 456 B and the sums 20 480 B; the probe-index buffer costs 4 B per fluid vertex. A level with fluid surfaces and no usable id 54 binds a 1×1 one-layer dummy for each array, a zeroed table and zeroed sums, and no face samples them; the sums pass never dispatches over it.
+
+
+### 5.4 Glossy World Faces (decided, not yet built)
+
+Probes bind static world faces whose material passes the opt-in: `_p` above an engine-owned sharpness floor and `_s` non-zero on some texel. Runtime: `rendering_pipeline.md` §7.3a Glossy world faces.
+
+- **Placement.** One probe per coplanar glossy face group, its capture point lifted along the face normal. Bound reflector faces are transparent to their own probe's primary rays, as water is absent from captures. A `reflection_volume` may claim glossy faces; a box whose faces face several ways makes one probe per facing. Probe boundaries go behind occluders, an authoring rule: probes never blend.
+- **Exclusion.** Up-facing probes, water's and glossy floors', keep §5.2's exclusion, since a screen-space layer draws what it drops. A glossy-floor probe's thin rule keys to the floor layer's coarsest stride; a probe binding water and a glossy floor, to the coarser of the two. A probe binding walls, ceilings or slopes captures every static brush.
+- **Cap.** Past 256, probes binding only world faces drop first, authored or derived, smallest bound area first, and the warning names their faces; water keeps every probe it has. Authored probes refuse the build only when those binding water pass the cap alone.
+- **Format.** Id 54 version 3: six lobes (−Y appended after water's five), a prefiltered colour mip chain per tile down to 4², and a world-face binding list in id-17 numbering beside the fluid list.
+- **Residency.** Probe records, tiles and the live-lighting sums leave the fluid surfaces' ownership and gain a memory-ledger row.
 
 ---
 
@@ -468,7 +481,7 @@ Skinned or static 3D models are the character/prop alternative to billboard spri
 
 Weapon `viewmodel` assets and third-person weapon models resolve through the same content-root join as mesh models. Their descriptor paths must be non-empty, use forward slashes, remain relative, and contain no `..` segment. Windows drive, UNC, and backslash forms are invalid on every platform.
 
-**Geometry renders at its authored glTF scale.** The loader consumes vertex POSITION as world-space geometry — no node-transform bake into vertices, no import-time normalization or fit-to-size. World units are meters (idTech2 map geometry converts at 1 unit = 0.0254 m; models are authored directly in meters). Author characters at final size (~2 m tall) with the origin between the feet (`y = 0`) — the standing foot-level pivot the reference enemy fixture uses. Skinned meshes render their rest (bind) pose at raw POSITION too, so bind-pose geometry must already be final-scale; a model left in a large export coordinate space renders at that raw scale until baked down.
+**Geometry renders at its authored glTF scale.** The loader consumes vertex POSITION as world-space geometry — no node-transform bake into vertices, no import-time normalization or fit-to-size. World units are meters (idTech2 map geometry converts at 1 unit = 0.0254 m; models are authored directly in meters). Author characters at final size (~2 m tall), facing glTF +Z (`entity_model.md` §4), with the origin between the feet (`y = 0`) — the standing foot-level pivot the reference enemy fixture uses. Skinned meshes render their rest (bind) pose at raw POSITION too, so bind-pose geometry must already be final-scale; a model left in a large export coordinate space renders at that raw scale until baked down.
 
 **One mesh node per model.** The loader loads a single glTF mesh — sibling mesh nodes are ignored, so a multi-mesh export renders only its first chunk. Multiple primitives within that mesh are supported: each becomes a submesh drawn with its own material (the reference models pack several). Exports that split geometry across mesh nodes — one per material, common from Sketchfab/Rodin — must be merged into one mesh whose primitives carry the per-material split. TANGENT is optional and strictly validated: one degenerate tangent rejects the whole model, so omit tangents rather than ship near-degenerate ones (only base color is consumed regardless).
 
@@ -494,7 +507,7 @@ Solver uses a rigid, proper socket frame at its reference pose. Invalid, sheared
 **Shared clip libraries.** A clip library is a mesh-less glTF of named joints, their rest TRS, and clips. A skinned model names one through document-level `extras.clipLibrary`, a path relative to the model. Characters then ship as mesh and skeleton: adding a clip is one library edit, not a per-character rebuild. Authoring: `docs/character-animation.md`.
 
 - **Binding.** The model loader binds at load, into ordinary per-model clips in the mesh's joint order. Runtime consumers never see a library.
-- **Contract.** Joints match by exact name. Library tracks are deltas from the library's rest, composed with the mesh's rest; a rig whose clips are not rest-relative cannot use a library. Root translation scales by the ratio of root rest heights. Non-root translation and all scale drop, so proportions stay the mesh's. Composition keeps the mesh's rest offset in every frame, so a mesh posed unlike its library (an A-pose on a T-pose library) plays every clip off by that difference. Matching rests is content work, not a load-time retarget: `tools/rest_to_library.py` re-rests a bound mesh onto its library's rotations, re-skinning the mesh into that pose.
+- **Contract.** Joints match by exact name. Library tracks are deltas from the library's rest, composed with the mesh's rest; a rig whose clips are not rest-relative cannot use a library. Root translation scales by the ratio of root rest heights. Non-root translation and all scale drop, so proportions stay the mesh's. Composition keeps the mesh's rest offset in every frame, so a mesh posed unlike its library (an A-pose on a T-pose library) plays every clip off by that difference. Matching rests is content work, not a load-time retarget: `tools/rest_to_library.py` re-rests a bound mesh onto its library's rotations, re-skinning the mesh into that pose. One mismatch is allowed: a root-only yaw. Composition carries it as a whole-body turn, root motion included, so a +Z mesh may bind a library authored facing −Z. The turn pivots about the root's rest point, not the model origin.
 - **Precedence.** Embedded clips stay valid and list first. A same-named embedded clip overrides the library's, silently.
 - **Clip events.** A glTF animation's `extras.events` lists `{ name, time }`, seconds from the clip's start, with room for an `end`. Names start with a letter or underscore and hold letters, digits and underscores. They are case-sensitive and unique within a clip. Descriptor `action.at` checks the same rule. Events belong to the clip, never the descriptor, so every character on a library shares them, and an overriding embedded clip replaces them with its own. `mixamo_to_gltf.py --event` writes them before trims run. Each trim keeps the events inside its half-open span, `[start, end)`, shifted by its start key. So an event on a cut's key belongs to the trim starting there, at time 0, never to the windup ending there. A malformed list warns, and the clip loads with no events. Host-only: clips stay outside the compatibility digest (`networking.md`). Consumer: `entity_model.md` §7c, Clip-timed attacks.
 - **Raw data.** A model's joints and rest stay raw on load. Only two rewrites touch tracks: binding composes library tracks, and root-motion neutralization rewrites a model's own root tracks.

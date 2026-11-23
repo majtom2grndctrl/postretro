@@ -16,20 +16,19 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Ra
 ## Decisions
 - **Exactness holds.** Warm equals cold under the Determinism invariant (`build_pipeline.md` §Build Cache), with its carve-outs as they are. The retired approximate warm path stays retired (`done/surface-radiance-cache/`).
 - **Stable geometry identity is the foundation.**
-  - Faces, charts, patches, triangles and probes are identified by content: the source brush side plus the fragment's world-space geometry. Traversal order never identifies them.
+  - Faces, charts, patches, triangles and probes are identified by content: the source brush side plus the fragment's world-space geometry. Traversal order never identifies them. A face is its source brush side plus its fragment polygon. A face re-cut because an edit moved a BSP split is a changed face: re-traced exactly, and named in the Build Summary as a re-partition.
   - Triangle corners are emitted in a canonical order, in cold and warm bakes alike. Re-saved but unchanged geometry keeps its identity, and a re-intersected distance stays bit-exact.
   - Every key, seed and tie-break that reads a global index today reads the stable identity instead: patch and chart seeds, soft-visibility seeds, and closest-hit ties.
-  - The probe, affinity and chunk light-list grids anchor to one world-fixed lattice. The probe lattice snaps at the affinity grid's multiple of probe spacing, so growing the map's bounds moves no existing probe, affinity cell or chunk.
+  - The probe and affinity grids anchor to one world-fixed lattice, snapped at the affinity grid's multiple of probe spacing, so growing the map's bounds moves no existing probe or affinity cell. The chunk light-list grid keeps its bounds anchor and deliberate half-cell pad; that stage is cheap to re-run.
   - Baked bytes change once. No runtime format change beyond what identity forces (pre-stable).
-- **Light positions snap to a canonical quantum.** The compiler's canonical light record rounds each light's position to a fixed quantum after the format adapter, so every front end gets it (`build_pipeline.md` §Source-format neutrality). TrenchBroom's lower-precision origin rewrite in rotated linked instances then re-bakes nothing it did not really move. The quantum is no coarser than one map unit, and `docs/level_design.md` names it.
 - **Lightmap and shadowmask light localize per sample.**
   - Partitions are cached per light, keyed on the light's geometric fields and the shared bake parameters. Intensity and colour enter only through record presence.
   - Each entry records the reach geometry it was baked against. A warm build diffs that against the current reach geometry and re-derives every texel's segments (light-ward, footprint clip and lead-in) from its chart-local seed.
-  - It re-traces only texels on changed charts, texels whose segment meets a changed triangle, and texels whose exact-skip cull verdict changed. Visibility is any-hit, so every other texel is exact as stored.
+  - It re-traces only texels on changed charts, texels whose segment meets a changed triangle, and texels in tiles whose exact-skip cull verdict changed while a changed triangle lies within that tile's cull query. Visibility is any-hit, so every other texel is exact as stored.
   - An embedded-emitter flag flip re-bakes that light whole.
   - Partitions store chart-relative texels, remapped through the current placement at fold.
   - Encoded atlas layers and ShadowmaskAtlas output are memoised per atlas layer. The key covers the layer's placements, its contributing partitions, those lights' photometric fields and the encode parameters. Each memo carries its texel-step report.
-- **SH patch-direct layers stay keyed on the whole light.** They store radiance, which bakes colour and intensity in: the `done/surface-radiance-cache/` IP guard (Tencent '451). They re-key on stable identity and reach-local geometry like the direct layers above. A tint edit re-shades that light's patches.
+- **SH patch-direct layers stay keyed on the whole light and localize per sample.** They store radiance, which bakes colour and intensity in: the `done/surface-radiance-cache/` IP guard (Tencent '451). A tint edit re-shades that light's patches. With the light unchanged and its reach geometry changed, the layer re-traces only patches on changed geometry and samples whose segment meets a changed triangle, by the same diff as the lightmap.
 - **SH later bounces and the gather localize through recorded ray hits.**
   - The cache keeps every later-bounce patch ray's and probe gather ray's hit as a stable triangle identity, 4 B per ray. Distance is re-intersected exactly. Records stream per chunk and are never held whole.
   - A warm bake re-traces only:
@@ -41,7 +40,7 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Ra
 - **The cache contract changes.** §Build Cache (Key composition, Determinism invariant) states it:
   - Every entry, patched or fresh, is written under the full content key of what it now holds. An exact match hits outright, so a revert is free.
   - On a miss, the bake diffs against the nearest baseline with the same stable identity, stage version and tracer epoch, and writes a new entry. It never mutates the baseline.
-  - Each record chunk names its baseline geometry digest. A patched entry carries every unchanged chunk forward under its own digest. A chunk whose digest disagrees is a miss.
+  - Each record chunk names its baseline geometry digest. A patched entry references each unchanged chunk by that chunk's own digest and rewrites nothing. A chunk whose digest disagrees with the entry's reference is a miss.
   - One diff model serves direct and SH alike (`research.md` §Rivals).
 - **The tracer contracts its locality.** §Ray traversal's Answer contract gains a rule: a ray's answer depends only on triangles whose τ-padded bounds meet its segment, and ties break by stable identity.
 - **No visibility relation is added.** The no-PVS rule stands (`build_pipeline.md` §Id-51 consumers).
@@ -55,7 +54,7 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Ra
 - **The ray-record footprint is priced before tracing.**
   - The per-map ceiling is priced against `--cache-max-size` less the spared set, so the budget never holds records it cannot keep.
   - A map priced past it bakes SH as one whole entry, exact, with a named warning.
-  - Ray records are exempt from the spared set and evict before other entries. When they are evicted, the Build Summary says SH traced whole because of it.
+  - Ray records are exempt from the spared set and evict with other unspared entries, oldest first. When a map's records are evicted, its Build Summary says SH traced whole because of it.
   - The Build Summary reports the footprint against the ceiling.
 - **This reverses documented choices.**
   - "A geometry edit re-keys every layer" leaves `build_pipeline.md` §Build Cache and the decisions of `done/incremental-bake-per-element/` and `done/surface-radiance-cache/`; both named finer geometry locality as future work.
@@ -66,11 +65,11 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Ra
   - Ray directions stay fixed and are never chosen or weighted by a record.
   - Records carry no per-light coefficient, and the cache never reaches PRL.
 - **Progress accounting.**
-  - Each stage counts cached and fresh units. A unit is fresh only if it traced this build. Units served from cache, re-evaluated from records, patched without a re-trace, or proven to need no work count cached.
+  - Each stage counts cached and fresh units. A unit is fresh if this build computed it: traced it, or, in a stage that does not trace, ran its work rather than reading or replaying a stored result. Units served from cache, re-evaluated from records, patched without a re-trace, or proven to need no work count cached.
   - Every stage reports, whole-stage memo hits included.
   - ETA is pending units × the fresh-unit rate over unpaused fresh time. With nothing fresh yet, no ETA is shown.
 - **Progress presentation.** Rationale in `research.md` §Progress presentation.
-  - **The bar** runs cached, then fresh, then pending. Each segment differs by glyph shape as well as colour, and a nonzero segment always gets at least one cell. Fresh takes the primary accent.
+  - **The bar** runs cached, then fresh, then pending. Each segment differs by glyph shape as well as colour, and a nonzero segment always gets at least one cell. The bar needs at least three cells; a narrower layout drops it. Fresh takes the primary accent.
   - **Colour.** Theme-relative named colours only. `NO_COLOR` drops colour and keeps the glyphs.
   - **Counts** read cached / fresh / total in SI with three significant digits: exact below 1,000, then lowercase `k`, uppercase `M`, `G`, `T`, `P`, `E`, rounding carried (999,500 → `1.00M`).
   - **Narrow widths** drop labels first, then counts, then percent. The bar goes last.
@@ -80,7 +79,8 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Ra
 - **The build explains its cost.** For each stage that traced, the Build Summary names what caused it: changed lights by entity, changed geometry by source brush, and the samples and rays re-traced.
 - **Conventions become durable.**
   - These rules, plus the presentation rules of `done/level-compiler-tui/`, land in `build_pipeline.md` §Progress reporting.
-  - `docs/level_design.md` §Compiling Your Map tells authors how to read the progress bar and the summary, and which edits cost the most.
+  - `docs/level_design.md` §Compiling Your Map tells authors how to read the progress bar and the summary, and which edits cost the most, re-saving rotated linked instances among them.
+- **Non-goal: canonicalising light origins.** TrenchBroom's lower-precision origin rewrite in rotated linked instances moves lights a little, and those lights re-bake. No rounding makes a rewrite stable near its boundaries, and snapping can bury a light against a wall. The Build Summary's cost lines name the re-baked lights, so the author sees why.
 - **Non-goal: approximate or preview SH, and any PVS or tighter id 46.** Exactness and the no-PVS rule already decide it. Named because both are the obvious shortcuts.
 
 ## Acceptance
@@ -106,10 +106,10 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Ra
 
 **Locality.**
 - [ ] After a local brush edit that renumbers faces and moves other charts in the atlas, a light whose reach excludes the edit hits every lightmap entry it had.
-- [ ] A renumbering-only edit, with no geometry near any light, hits every per-light lightmap, SH delta and mover entry.
+- [ ] A renumbering-only edit that moves no BSP split, with no geometry near any light, hits every per-light lightmap, SH delta and mover entry.
+- [ ] An edit that moves an upper BSP split re-traces only texels and rays on re-cut faces plus the crossing set, equals cold, and its Build Summary names the re-partition and the re-cut face count.
+- [ ] After a brush edit inside a light's reach, that light's SH patch-direct layer re-traces only patches on changed geometry and samples whose segment meets the changed triangles; a light whose reach excludes the edit hits its layer.
 - [ ] A tint or intensity change with no presence change re-traces no lightmap visibility.
-- [ ] Re-saving a linked group through TrenchBroom with no authored change, in a fixture where at least one rotated instance's light origin text changes, hits every lightmap and SH entry; its light-origin rewrite stays within the quantum.
-- [ ] Two light origins that round to the same quantum point bake identical bytes; a move across the quantum re-bakes that light.
 - [ ] Re-ordering a brush face's plane points, writing a brush's sides in another order, and re-cloning a rotated linked instance with no geometric change each emit the same corners in the same order and hit every entry.
 - [ ] After a brush edit that meets only a texel's footprint clip segment or lead-in, never its light-ward segments, that texel re-traces, and the warm build equals cold.
 - [ ] An edit that grows the map's bounds moves no existing probe, and its SH re-trace is exactly the crossing set.
@@ -150,7 +150,7 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Ra
 - [ ] ETA follows the fresh rate in both the TUI and the plain reporter, and time spent paused never counts as fresh time. An all-cached stage shows no ETA (RW-8).
 
 **Presentation.**
-- [ ] The bar renders correctly in full and compact layouts at every width from 2 cells up.
+- [ ] The bar renders correctly in full and compact layouts at every width from 3 cells up, and a narrower layout omits it.
 - [ ] Under `NO_COLOR` the segments stay distinct by glyph alone.
 - [ ] The number format covers 0, 999, 1,000 → `1.00k`, 999,500 → `1.00M`, and the largest 64-bit count.
 - [ ] A stage with one fresh unit in a million still shows one fresh cell, and a stage with no fresh unit shows none.
@@ -161,11 +161,11 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Ra
 
 **Durable record.**
 - [ ] `build_pipeline.md` states the new cache contract (§Build Cache), the tracer locality rule (§Ray traversal), and the progress presentation rules with the carried TUI conventions (§Progress reporting); no `context/lib/` doc still says a geometry edit re-keys every layer.
-- [ ] `docs/level_design.md` explains the progress bar, the summary's cost lines, which edits cost the most, and the light-position quantum, naming no compiler diagnostic flag.
+- [ ] `docs/level_design.md` explains the progress bar, the summary's cost lines, and which edits cost the most, naming no compiler diagnostic flag.
 
 ### Manual
 Targets are owner targets: a miss stops the build and reports to the owner; it is not an executor tuning loop. Runs use default worker count and default `--cache-max-size`, timed as wall time from launch to exit, warm from a copy of the baseline cache.
-- [ ] On every machine measured, a one-brush, one-light or 23-instance linked-lamp edit on stress-street takes at most twice that machine's no-op.
+- [ ] On any machine but the reference container, a one-brush, one-light or 23-instance linked-lamp edit on stress-street takes at most twice that machine's no-op.
 - [ ] stress-street, dev profile, 4-core reference container: no-op ≤ 12 s, and each of those edits ≤ 45 s.
 - [ ] stress-warren-crates, same setup: the no-op, one-brush and one-light edits, each reported against its stress-street target.
 - [ ] stress-street on a Mac with the SDK's release-profile prl-build: the same runs, reported.
@@ -180,7 +180,8 @@ Targets are owner targets: a miss stops the build and reports to the owner; it i
   This falsifies the riskiest assumptions: that re-evaluation is cheap and that a re-intersected distance is bit-exact.
   - If the distance is not bit-exact, records grow to 8 B (triangle plus distance). That is an owner check on the footprint.
   - If re-evaluation is not cheap, stop and report to the owner before building the rest of the SH half.
-- **Seams:** identity and ties at `build_leaf_ordered_faces`, `primitive_sort_key`, `closest_hit`; seeds and grids at `patch_seed_id`, `probe_grid_layout_of`, the affinity grid and the chunk light-list grid; lightmap keys and payload at `LayerKeyContext`, `geometry_slice_hash`, `LayerTexel`, `IncrementalLayerAccumulator::fold_partition`, `pack_groups_into_layers`; SH at `later_bounce_sum`, `gather_patch`, `PatchGather::sample`, `DepthTileSelector`; light quantum after `translate_light`; progress at `StageProgress`, `RemainingEstimate`, `progress_bar_line`.
+  - Also measure how often an edit moves a BSP split, and how many faces it re-cuts. Splitter stability is a follow-up only if that measurement says it matters.
+- **Seams:** identity and ties at `build_leaf_ordered_faces`, `primitive_sort_key`, `closest_hit`; seeds and grids at `patch_seed_id`, `probe_grid_layout_of`, the affinity grid and the chunk light-list grid; lightmap keys and payload at `LayerKeyContext`, `geometry_slice_hash`, `LayerTexel`, `IncrementalLayerAccumulator::fold_partition`, `pack_groups_into_layers`; SH at `later_bounce_sum`, `gather_patch`, `PatchGather::sample`, `DepthTileSelector`; progress at `StageProgress`, `RemainingEstimate`, `progress_bar_line`.
 - **Precedents:** the warm-cache harness in `research.md` §Measurements; `--dump-chart-hashes` for lightmap comparisons; the mover channel's near-field domain as prior region-limited SH work.
 - **Split first:** `pipeline.rs`, `geometry.rs`, `pipeline/lightmap_stage.rs`, `lightmap_layer.rs` and `tui/tui_render.rs`, each before its change.
 - **Starting values:** bar glyphs cached `▓`, fresh `█`, pending `░`; records zstd-compressed per chunk; the ceiling priced at the SH base gate beside its working-set price; record eviction oldest first.
@@ -188,6 +189,5 @@ Targets are owner targets: a miss stops the build and reports to the owner; it i
 
 ## Open questions
 - Exact form of the content-derived identity: which brush-side and fragment fields, and how to handle collisions and duplicated geometry — **delegated**.
-- The light-position quantum value, no coarser than one map unit — **delegated**.
 - The per-map ray-record ceiling value, within the budget rule — **delegated**.
 - Whether stable identity alone keeps atlas placement steady enough, or packing also needs anchoring (for example per-cluster regions) — **delegated**, measured against the per-layer memo hit rate.

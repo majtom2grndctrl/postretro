@@ -215,3 +215,5 @@ NPC mount list on the snapshot entity record, bitcode like the record's other fi
 
 ## Open questions
 - The tick on which an equip cancels a running burst relative to the fire proposal. — **delegated**
+- NPC shot origin from the held weapon: launch NPC rifle shots from the mounted bake's muzzle (hand joint × rig bake × the bake's rigid `muzzle` socket) instead of the eye. Today enemy rifles declare no `muzzleOffset` and fire from the eye. A player's `muzzleOffset` composes on first-person placement, which an NPC lacks. This reverses `E21--character-weapon-mounts`' "gameplay never reads a mount" for host-only NPCs; settle aim drift with clip pose and the obstructed-muzzle fallback players use. — **owner, raised 2026-11-23**
+- One rifle entity for players and NPCs: NPCs wield `reference_rifle` (one weapon vocabulary, `entity_model.md` §2) and mount it through `mesh.weaponMounts` with per-rig bakes, retiring the separate `enemy_rifle*` weapons. Their slow, dodgeable 20 m/s shots, 6 damage and three-shot bursts are balance, so decide where NPC tuning lives (attack-side scaling or a variant weapon). — **owner, raised 2026-11-23**

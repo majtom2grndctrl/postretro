@@ -216,7 +216,11 @@ fn dev_descriptors_with_player_table(
         .iter_mut()
         .find(|descriptor| descriptor.canonical_name.as_deref() == Some("player"))
         .expect("the dev mod registers the player");
-    player.mesh.as_mut().expect("the dev player has a mesh").weapon_mounts = Some(table);
+    player
+        .mesh
+        .as_mut()
+        .expect("the dev player has a mesh")
+        .weapon_mounts = Some(table);
     descriptors
 }
 

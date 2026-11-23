@@ -10,24 +10,9 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use glam::Vec3;
-use postretro_model::mount::MountAxes;
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct MountCheckThresholds {
-    pub(super) min_barrel_dot: f32,
-    pub(super) max_barrel_y: f32,
-    pub(super) min_up_dot: f32,
-}
-
-impl Default for MountCheckThresholds {
-    fn default() -> Self {
-        Self {
-            min_barrel_dot: 0.999,
-            max_barrel_y: 0.02,
-            min_up_dot: 0.999,
-        }
-    }
-}
+use postretro_model::mount::{
+    MountAxes, MountThresholds, REFERENCE_MOUNT_CLIP, REFERENCE_MOUNT_TIME,
+};
 
 #[derive(Debug, PartialEq)]
 pub(super) struct SolveWeaponMountArgs {
@@ -45,7 +30,7 @@ pub(super) struct SolveWeaponMountArgs {
     pub(super) scale: Option<String>,
     pub(super) sockets: Vec<String>,
     pub(super) current_euler: Option<[f32; 3]>,
-    pub(super) thresholds: MountCheckThresholds,
+    pub(super) thresholds: MountThresholds,
 }
 
 impl SolveWeaponMountArgs {
@@ -258,8 +243,8 @@ pub(super) fn parse_solve_weapon_mount_args(
     Ok(SolveWeaponMountArgs {
         holder_path,
         mount_joint: mount_joint.unwrap_or_else(|| "hand_r".to_string()),
-        clip: clip.unwrap_or_else(|| "idle_aiming".to_string()),
-        time: time.unwrap_or(0.0),
+        clip: clip.unwrap_or_else(|| REFERENCE_MOUNT_CLIP.to_string()),
+        time: time.unwrap_or(REFERENCE_MOUNT_TIME),
         weapon_path,
         barrel,
         up,
@@ -270,10 +255,13 @@ pub(super) fn parse_solve_weapon_mount_args(
         scale,
         sockets,
         current_euler,
-        thresholds: MountCheckThresholds {
-            min_barrel_dot: min_barrel_dot.unwrap_or(0.999),
-            max_barrel_y: max_barrel_y.unwrap_or(0.02),
-            min_up_dot: min_up_dot.unwrap_or(0.999),
+        thresholds: {
+            let defaults = MountThresholds::default();
+            MountThresholds {
+                min_barrel_dot: min_barrel_dot.unwrap_or(defaults.min_barrel_dot),
+                max_barrel_y: max_barrel_y.unwrap_or(defaults.max_barrel_y),
+                min_up_dot: min_up_dot.unwrap_or(defaults.min_up_dot),
+            }
         },
     })
 }
@@ -441,7 +429,7 @@ mod tests {
             parsed.out.as_deref(),
             Some("content/dev/models/ar_4/limitator.gltf")
         );
-        assert_eq!(parsed.thresholds, MountCheckThresholds::default());
+        assert_eq!(parsed.thresholds, MountThresholds::default());
         assert_eq!(
             parsed.grip,
             Some(["0.0".into(), "-0.05".into(), "0.120".into()])
@@ -522,7 +510,7 @@ mod tests {
         assert_eq!(parsed.out, None);
         assert_eq!(
             parsed.thresholds,
-            MountCheckThresholds {
+            MountThresholds {
                 min_barrel_dot: 0.95,
                 max_barrel_y: 0.1,
                 min_up_dot: 0.9,
@@ -572,7 +560,9 @@ mod tests {
                 "--read-muzzle-offset",
                 "content/dev/models/ar_4/limitator.gltf",
             ])),
-            Ok(Some(PathBuf::from("content/dev/models/ar_4/limitator.gltf"))),
+            Ok(Some(PathBuf::from(
+                "content/dev/models/ar_4/limitator.gltf"
+            ))),
         );
         assert_eq!(
             parse_read_muzzle_offset_args(&os_args(&["holder.gltf"])),

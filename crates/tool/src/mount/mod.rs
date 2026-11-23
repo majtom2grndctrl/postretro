@@ -14,8 +14,10 @@ use std::path::Path;
 use glam::{Mat4, Vec3};
 use postretro_model::gltf_loader::{LoadedModel, load_model};
 use postretro_model::mount::{
-    MountAxes, MountConfidence, MountDetection, MountVerification, corrective_delta,
-    corrective_delta_for_axes, detect_weapon_mount, read_muzzle_offset_in_model,
+    DeclaredMountCheckError, MountAxes, MountConfidence, MountDetection, MountVerification,
+    REFERENCE_MOUNT_CLIP, REFERENCE_MOUNT_TIME, blender_to_gltf_rotation, blender_xyz_rotation,
+    check_declared_mount, corrective_delta, corrective_delta_for_axes, detect_weapon_mount,
+    failed_mount_metrics, gltf_to_blender_rotation, read_muzzle_offset_in_model,
     resolve_socket_frame_in_model, verify_mount,
 };
 
@@ -23,13 +25,9 @@ mod args;
 mod blender;
 
 use args::{
-    MountCheckThresholds, SolveWeaponMountArgs, parse_read_muzzle_offset_args,
-    parse_solve_weapon_mount_args, usage,
+    SolveWeaponMountArgs, parse_read_muzzle_offset_args, parse_solve_weapon_mount_args, usage,
 };
-use blender::{
-    blender_to_gltf_rotation, blender_xyz_euler_degrees, blender_xyz_rotation,
-    compose_declared_axes_into_baked_frame, emitted_blender_command, gltf_to_blender_rotation,
-};
+use blender::{blender_xyz_euler_degrees, emitted_blender_command};
 
 pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
     if let Some(viewmodel_path) = parse_read_muzzle_offset_args(&args)? {
@@ -160,51 +158,45 @@ fn read_muzzle_offset_command(viewmodel_path: &Path) -> Result<i32, String> {
 }
 
 /// Check a baked weapon against its holder socket without invoking Blender.
+///
+/// The declared (VERIFIED) verdict is `postretro_model::mount`'s; this prints
+/// it. Geometric detection (UNVERIFIED) is an assist and stays here.
 fn check_weapon_mount(
     args: &SolveWeaponMountArgs,
     weapon: &LoadedModel,
     socket_matrix: Mat4,
 ) -> Result<i32, String> {
     let declared_axes = args.cli_axes()?.or(weapon.mount);
-    let (verification, status) = match declared_axes {
+    let (verification, failures, status) = match declared_axes {
         Some(declared_axes) => {
             let applied_euler = applied_check_euler(weapon.mount, args.current_euler)?;
-            let baked_axes = compose_declared_axes_into_baked_frame(declared_axes, applied_euler);
-            let baked_frame = baked_axes
-                .frame()
-                .map_err(|error| format!("compose declared weapon axes: {error}"))?;
-
-            println!(
-                "Declared raw-source axes: barrel {}  up {}",
-                format_vec3(declared_axes.barrel),
-                format_vec3(declared_axes.up),
-            );
-            println!(
-                "Composed baked-frame axes: barrel {}  up {}",
-                format_vec3(baked_axes.barrel),
-                format_vec3(baked_axes.up),
-            );
-            (
-                verify_mount(socket_matrix, baked_frame)
-                    .map_err(|error| format!("verify declared weapon mount: {error}"))?,
-                "VERIFIED",
-            )
+            let check =
+                check_declared_mount(socket_matrix, declared_axes, applied_euler, args.thresholds);
+            let baked_axes = match &check {
+                Ok(check) => check.baked_axes,
+                Err(DeclaredMountCheckError::Verify { baked_axes, .. }) => *baked_axes,
+                Err(error) => return Err(error.to_string()),
+            };
+            print_declared_and_composed_axes(declared_axes, baked_axes);
+            let check = check.map_err(|error| error.to_string())?;
+            (check.verification, check.failures, "VERIFIED")
         }
         None => {
             let detection = detect_weapon_mount(weapon)
                 .map_err(|error| format!("detect weapon mount geometry: {error}"))?;
             println!("UNVERIFIED geometric assist — no declared barrel/up axes were found.");
             print_detected_baked_frame(detection);
+            let verification = verify_mount(socket_matrix, detection.frame)
+                .map_err(|error| format!("verify geometric weapon mount: {error}"))?;
             (
-                verify_mount(socket_matrix, detection.frame)
-                    .map_err(|error| format!("verify geometric weapon mount: {error}"))?,
+                verification,
+                failed_mount_metrics(verification, args.thresholds),
                 "UNVERIFIED",
             )
         }
     };
 
     print_mount_metrics(verification);
-    let failures = failed_mount_metrics(verification, args.thresholds);
     if failures.is_empty() {
         println!("{status}: mount check passed.");
         Ok(0)
@@ -212,6 +204,19 @@ fn check_weapon_mount(
         println!("{status}: mount check failed: {}", failures.join(", "));
         Ok(1)
     }
+}
+
+fn print_declared_and_composed_axes(declared_axes: MountAxes, baked_axes: MountAxes) {
+    println!(
+        "Declared raw-source axes: barrel {}  up {}",
+        format_vec3(declared_axes.barrel),
+        format_vec3(declared_axes.up),
+    );
+    println!(
+        "Composed baked-frame axes: barrel {}  up {}",
+        format_vec3(baked_axes.barrel),
+        format_vec3(baked_axes.up),
+    );
 }
 
 fn applied_check_euler(
@@ -228,27 +233,6 @@ fn current_bake_euler(
     cli_euler: Option<[f32; 3]>,
 ) -> Option<[f32; 3]> {
     cli_euler.or_else(|| persisted_mount.and_then(|mount| mount.euler))
-}
-
-fn failed_mount_metrics(
-    verification: MountVerification,
-    thresholds: MountCheckThresholds,
-) -> Vec<&'static str> {
-    let mut failures = Vec::new();
-    if !verification.barrel_dot_forward.is_finite()
-        || verification.barrel_dot_forward < thresholds.min_barrel_dot
-    {
-        failures.push("barrel·+Z");
-    }
-    if !verification.barrel_dot_up.is_finite()
-        || verification.barrel_dot_up.abs() > thresholds.max_barrel_y
-    {
-        failures.push("|barrel·+Y|");
-    }
-    if !verification.up_dot_up.is_finite() || verification.up_dot_up < thresholds.min_up_dot {
-        failures.push("up·+Y");
-    }
-    failures
 }
 
 fn print_mount_metrics(verification: MountVerification) {
@@ -291,7 +275,7 @@ fn print_non_reference_mount_pose_note(clip: &str, time: f32) {
 }
 
 fn is_reference_mount_pose(clip: &str, time: f32) -> bool {
-    clip == "idle_aiming" && time == 0.0
+    clip == REFERENCE_MOUNT_CLIP && time == REFERENCE_MOUNT_TIME
 }
 
 fn format_number(value: f32) -> String {
@@ -318,6 +302,7 @@ fn format_confidence(confidence: MountConfidence) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_model::mount::MountThresholds;
     use std::path::PathBuf;
     use std::process::Command;
 
@@ -442,40 +427,6 @@ converter.postprocess_gltf(
             applied_check_euler(None, None)
                 .expect_err("declared check needs an applied euler")
                 .contains("missing the applied euler")
-        );
-    }
-
-    #[test]
-    fn mount_check_names_each_out_of_tolerance_metric() {
-        let verification = MountVerification {
-            barrel_world: Vec3::Z,
-            up_world: Vec3::Y,
-            barrel_dot_forward: 0.998,
-            barrel_dot_up: -0.03,
-            up_dot_up: 0.998,
-        };
-
-        assert_eq!(
-            failed_mount_metrics(verification, MountCheckThresholds::default()),
-            ["barrel·+Z", "|barrel·+Y|", "up·+Y"]
-        );
-    }
-
-    #[test]
-    fn mount_check_rejects_non_finite_metrics() {
-        // Regression: NaN comparisons were all false, so invalid metrics could
-        // be reported as a passing check.
-        let verification = MountVerification {
-            barrel_world: Vec3::splat(f32::NAN),
-            up_world: Vec3::splat(f32::NAN),
-            barrel_dot_forward: f32::NAN,
-            barrel_dot_up: f32::NAN,
-            up_dot_up: f32::NAN,
-        };
-
-        assert_eq!(
-            failed_mount_metrics(verification, MountCheckThresholds::default()),
-            ["barrel·+Z", "|barrel·+Y|", "up·+Y"]
         );
     }
 
@@ -732,18 +683,16 @@ converter.postprocess_gltf(
                 .mount
                 .expect("declared axes");
             let euler = declared.euler.expect("applied euler");
-            let frame = compose_declared_axes_into_baked_frame(declared, euler)
-                .frame()
-                .expect("baked frame");
-            let verification = verify_mount(socket.matrix, frame).expect("mount verifies");
+            let check =
+                check_declared_mount(socket.matrix, declared, euler, MountThresholds::default())
+                    .expect("mount verifies");
             assert!(
-                verification.barrel_dot_forward < -0.9,
+                check.verification.barrel_dot_forward < -0.9,
                 "{weapon}: barrel·+Z on a -Z exo_red is {}",
-                verification.barrel_dot_forward
+                check.verification.barrel_dot_forward
             );
             assert!(
-                failed_mount_metrics(verification, MountCheckThresholds::default())
-                    .contains(&"barrel·+Z"),
+                check.failures.contains(&"barrel·+Z"),
                 "{weapon}: the failure names barrel·+Z"
             );
         }

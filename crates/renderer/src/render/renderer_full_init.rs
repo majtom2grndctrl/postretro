@@ -282,6 +282,7 @@ pub(crate) fn build_full_renderer(
     let glossy_overlay = glossy_overlay::GlossyOverlayPass::new(
         device,
         &uniform_bind_group_layout,
+        &texture_bind_group_layout,
         forward_static_diffuse,
     );
     let reflection_probe_sums = reflection_probe_sums::ReflectionProbeSumsPass::new(

@@ -46,9 +46,6 @@ pub(crate) fn request_renderer_device(
 ) -> Result<(wgpu::Device, wgpu::Queue)> {
     let adapter_features = adapter.features();
     let mut required_features = wgpu::Features::TEXTURE_COMPRESSION_BC;
-    // Optional: the glossy overlay's static-diffuse target takes the 4-byte
-    // HDR format where the adapter can render to it, else `Rgba16Float`.
-    required_features |= adapter_features & wgpu::Features::RG11B10UFLOAT_RENDERABLE;
     if enable_gpu_timing {
         required_features |= gpu_timing_required_features();
     } else if gpu_timing_requested && !gpu_timing_supported {

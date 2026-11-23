@@ -350,6 +350,17 @@ impl LevelResourceSet {
         self.samplers.absorb(&mut textures.samplers);
     }
 
+    /// Material bucket `bucket`'s world material bind group, or the first
+    /// material's for a bucket past the set's materials: what forward and
+    /// the glossy overlay bind per bucket.
+    pub(in crate::render) fn material_bind_group(&self, bucket: u32) -> &wgpu::BindGroup {
+        &self
+            .gpu_textures
+            .get(bucket as usize)
+            .unwrap_or(&self.gpu_textures[0])
+            .bind_group
+    }
+
     /// Whether material bucket `bucket` is glossy: its material passes the
     /// glossy opt-in over its uploaded specular slot.
     pub(in crate::render) fn bucket_is_glossy(&self, bucket: u32) -> bool {

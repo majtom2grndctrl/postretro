@@ -18,12 +18,15 @@ use postretro_render_cpu::frame_uniforms::LightTermMask;
 use super::gpu_create::GpuCreate;
 use super::renderer_init_pipelines::ForwardStaticDiffusePipelines;
 use super::{DEPTH_FORMAT, SCENE_COLOR_FORMAT};
-use crate::compute_cull::ComputeCullPipeline;
+use crate::compute_cull::{ComputeCullPipeline, SetTextureFn};
 
-/// The overlay's shader: its own bindings and entries, then the probe term
-/// it reuses from the fluid shader's modules, by name.
+/// The overlay's shader: its own bindings and entries, the tint rule
+/// forward's highlight reads, then the probe term and Fresnel it reuses from
+/// the fluid shader's modules, by name.
 pub(crate) const GLOSSY_OVERLAY_SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/glossy_overlay.wgsl"),
+    "\n",
+    include_str!("../shaders/material_shading.wgsl"),
     "\n",
     include_str!("../shaders/reflection_probe_lobes.wgsl"),
     "\n",
@@ -35,14 +38,16 @@ pub(crate) const GLOSSY_OVERLAY_SHADER_SOURCE: &str = concat!(
     "\n",
 );
 
-/// The overlay's groups: 0 the shared camera group, 1 the level's probe
-/// records, 2 the frame's inputs (forward's static diffuse and a sampler).
-/// Forward is at 16/16 sampled textures, so the overlay never binds through
-/// forward's layout.
-pub(crate) const GLOSSY_OVERLAY_PROBE_GROUP: u32 = 1;
-pub(crate) const GLOSSY_OVERLAY_INPUTS_GROUP: u32 = 2;
+/// The overlay's groups: 0 the shared camera group, 1 the face's world
+/// material (forward's group 1 layout and bind groups, so a material's live
+/// uniform reaches both), 2 the level's probe records, 3 the frame's inputs
+/// (forward's static diffuse and a sampler). Forward is at 16/16 sampled
+/// textures, so the overlay never binds through forward's whole layout.
+pub(crate) const GLOSSY_OVERLAY_MATERIAL_GROUP: u32 = 1;
+pub(crate) const GLOSSY_OVERLAY_PROBE_GROUP: u32 = 2;
+pub(crate) const GLOSSY_OVERLAY_INPUTS_GROUP: u32 = 3;
 #[cfg(test)]
-pub(crate) const GLOSSY_OVERLAY_BIND_GROUP_COUNT: usize = 3;
+pub(crate) const GLOSSY_OVERLAY_BIND_GROUP_COUNT: usize = 4;
 
 /// The world probe stream: one `u32` per world vertex, vertex slot 1.
 pub(crate) const WORLD_PROBE_STRIDE: u64 = 4;
@@ -137,6 +142,7 @@ impl GlossyOverlayPass {
     pub(crate) fn new(
         device: &wgpu::Device,
         uniform_layout: &wgpu::BindGroupLayout,
+        material_layout: &wgpu::BindGroupLayout,
         forward: ForwardStaticDiffusePipelines,
     ) -> Self {
         let probe_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -161,6 +167,7 @@ impl GlossyOverlayPass {
             label: Some("Glossy Overlay Pipeline Layout"),
             bind_group_layouts: &[
                 Some(uniform_layout),
+                Some(material_layout),
                 Some(&probe_layout),
                 Some(&inputs_layout),
             ],
@@ -202,7 +209,9 @@ impl GlossyOverlayPass {
 
     /// Record the overlay's draws over the frame's glossy camera ranges. The
     /// caller opens the pass (scene colour loaded, depth read-only) and binds
-    /// group 0; `glossy` names the glossy buckets.
+    /// group 0; `glossy` names the glossy buckets and `bind_material` binds a
+    /// bucket's world material at [`GLOSSY_OVERLAY_MATERIAL_GROUP`].
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn record<'a>(
         &'a self,
         pass: &mut wgpu::RenderPass<'a>,
@@ -211,6 +220,7 @@ impl GlossyOverlayPass {
         index_buffer: &'a wgpu::Buffer,
         cull: &'a ComputeCullPipeline,
         glossy: &dyn Fn(u32) -> bool,
+        bind_material: &SetTextureFn<'a>,
     ) {
         let (Some(probe_group), Some(inputs_group)) = (state.probe_group(), state.inputs_group())
         else {
@@ -224,7 +234,7 @@ impl GlossyOverlayPass {
         pass.set_vertex_buffer(0, vertex_buffer.slice(..));
         pass.set_vertex_buffer(1, state.world_probes().slice(..));
         pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        cull.draw_indirect_subset(pass, None, glossy);
+        cull.draw_indirect_subset(pass, Some(bind_material), glossy);
     }
 
     /// Overlay passes recorded so far.
@@ -288,7 +298,8 @@ fn overlay_pipeline(
             module: &shader,
             entry_point: Some("vs_main"),
             buffers: &[
-                // Slot 0: the world vertex buffer, position and normal only.
+                // Slot 0: the world vertex buffer: position, UV and normal,
+                // at forward's offsets and locations.
                 Some(wgpu::VertexBufferLayout {
                     array_stride: postretro_render_data::geometry::WorldVertex::STRIDE
                         as wgpu::BufferAddress,
@@ -298,6 +309,11 @@ fn overlay_pipeline(
                             offset: 0,
                             shader_location: 0,
                             format: wgpu::VertexFormat::Float32x3,
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 12,
+                            shader_location: 1,
+                            format: wgpu::VertexFormat::Float32x2,
                         },
                         wgpu::VertexAttribute {
                             offset: 20,

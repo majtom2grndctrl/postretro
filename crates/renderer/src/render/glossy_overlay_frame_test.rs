@@ -228,10 +228,12 @@ fn renderer_or_skip() -> Renderer {
     renderer().expect("a second renderer on the adapter the first found")
 }
 
-// Acceptance row 29 (partial): on the glossy faces, with no dynamic light,
-// highlight or glow in the fixture, forward's colour is its static diffuse,
-// and D_static follows a static term (the ambient floor) as the colour
-// does; off the glossy buckets D_static stays cleared.
+// Acceptance rows 29 (partial), 30: on the glossy faces, with no dynamic
+// light, highlight or glow in the fixture, forward's colour is its static
+// diffuse bit for bit — D_static is stored by the scene colour's own
+// conversion, so it never exceeds the colour (no undershoot at W = 1) — and
+// D_static follows a static term (the ambient floor) as the colour does; off
+// the glossy buckets D_static stays cleared.
 #[test]
 fn static_diffuse_carries_the_static_terms_on_glossy_buckets_only() {
     let Some(mut renderer) = renderer() else {
@@ -248,16 +250,11 @@ fn static_diffuse_carries_the_static_terms_on_glossy_buckets_only() {
         for pixel in pixels() {
             match face_at(view, pixel, MARGIN) {
                 Some(0 | 1) => {
-                    // D_static's own format rounds: Rg11b10Ufloat keeps 6
-                    // (R, G) and 5 (B) mantissa bits.
-                    let colour = frame.colour(pixel);
-                    let d_static = frame.static_diffuse(pixel);
-                    for c in 0..3 {
-                        assert!(
-                            (d_static[c] - colour[c]).abs() <= colour[c] * 2f32.powi(-5) + 1.0e-6,
-                            "D_static {d_static} against forward {colour} at {pixel}"
-                        );
-                    }
+                    assert_eq!(
+                        frame.static_diffuse(pixel),
+                        frame.colour(pixel),
+                        "D_static against forward at {pixel}"
+                    );
                     glossy += 1;
                 }
                 Some(_) => assert_eq!(frame.static_diffuse(pixel), Vec3::ZERO),

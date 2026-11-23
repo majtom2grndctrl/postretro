@@ -92,14 +92,9 @@ impl Renderer {
             );
 
             if let Some(cull) = &self.level().compute_cull {
-                let gpu_textures = &self.level().gpu_textures;
+                let level = self.level();
                 let bind_material = |pass: &mut wgpu::RenderPass<'_>, bucket: u32| {
-                    let bind_group = if (bucket as usize) < gpu_textures.len() {
-                        &gpu_textures[bucket as usize].bind_group
-                    } else {
-                        &gpu_textures[0].bind_group
-                    };
-                    pass.set_bind_group(1, bind_group, &[]);
+                    pass.set_bind_group(1, level.material_bind_group(bucket), &[]);
                 };
                 if static_diffuse.is_some() {
                     // Two sweeps, each binding its materials once per bucket

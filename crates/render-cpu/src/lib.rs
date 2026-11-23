@@ -13,6 +13,7 @@ pub mod fog_mask;
 pub mod frame_uniforms;
 pub mod ghost_instance;
 pub mod ghost_transparency;
+pub mod glossy_reflection;
 pub mod lightmap_family;
 pub mod lightmap_pool;
 pub mod loaded_texture;

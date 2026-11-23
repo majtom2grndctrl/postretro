@@ -2,7 +2,7 @@
 // skinned-mesh pass and before the Ghost Pass, and its D_static lifecycle.
 // See: context/lib/rendering_pipeline.md §7.3a (Glossy world faces)
 
-use super::glossy_overlay::glossy_overlay_draws;
+use super::glossy_overlay::{GLOSSY_OVERLAY_MATERIAL_GROUP, glossy_overlay_draws};
 use super::*;
 use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
 
@@ -78,6 +78,16 @@ impl Renderer {
             ..Default::default()
         });
         pass.set_bind_group(0, &full.uniform_bind_group, &[]);
+        // Forward's material bind group per bucket: the overlay reads the
+        // texel forward's highlight read, and a live uniform rewrite reaches
+        // both on the same frame.
+        let bind_material = |pass: &mut wgpu::RenderPass<'_>, bucket: u32| {
+            pass.set_bind_group(
+                GLOSSY_OVERLAY_MATERIAL_GROUP,
+                level.material_bind_group(bucket),
+                &[],
+            );
+        };
         full.glossy_overlay.record(
             &mut pass,
             glossy,
@@ -85,6 +95,7 @@ impl Renderer {
             &level.index_buffer,
             cull,
             &|bucket| level.bucket_is_glossy(bucket),
+            &bind_material,
         );
     }
 

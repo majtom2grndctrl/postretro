@@ -533,7 +533,7 @@ pub(crate) struct ForwardStaticDiffusePipelines {
     pub written: wgpu::RenderPipeline,
     /// `fs_main` over both targets, the second masked off.
     pub masked: wgpu::RenderPipeline,
-    /// The D_static target's format, decided by the device's features.
+    /// The D_static target's format: the scene colour's ([`static_diffuse_format`]).
     pub format: wgpu::TextureFormat,
 }
 
@@ -544,7 +544,7 @@ impl ForwardStaticDiffusePipelines {
         shader: &wgpu::ShaderModule,
         scene_colour_target: &Option<wgpu::ColorTargetState>,
     ) -> Self {
-        let format = static_diffuse_format(device.features());
+        let format = static_diffuse_format();
         let static_diffuse_target = |write_mask| {
             Some(wgpu::ColorTargetState {
                 format,
@@ -580,14 +580,16 @@ impl ForwardStaticDiffusePipelines {
     }
 }
 
-/// D_static is albedo × non-negative light (every SH read and the
-/// shadowmask subtraction clamp at 0), so an unsigned float format holds it:
-/// the 4-byte `Rg11b10Ufloat` where the device renders to it, else
-/// `Rgba16Float`.
-pub(crate) fn static_diffuse_format(features: wgpu::Features) -> wgpu::TextureFormat {
-    if features.contains(wgpu::Features::RG11B10UFLOAT_RENDERABLE) {
-        wgpu::TextureFormat::Rg11b10Ufloat
-    } else {
-        wgpu::TextureFormat::Rgba16Float
-    }
+/// D_static takes the scene colour's own format, so one rounding serves both
+/// outputs: forward's colour is D_static plus non-negative terms (highlights,
+/// dynamic light, glow), computed in f32 and stored by the same monotone
+/// conversion, so the stored D_static never exceeds the stored colour, per
+/// channel, and the overlay's forward + W·(R − D_static) at W ≤ 1, R ≥ 0
+/// never falls below 0 (brief row 30). A shorter float (`Rg11b10Ufloat`) is
+/// stored by a conversion whose rounding the backends leave to the
+/// implementation: rounded to nearest it can exceed the colour by 2⁻⁷ (R, G)
+/// or 2⁻⁶ (B) of itself and undershoot at W near 1; truncated (AMD on
+/// Metal, measured) it leaves that share of the static light unreplaced.
+pub(crate) fn static_diffuse_format() -> wgpu::TextureFormat {
+    SCENE_COLOR_FORMAT
 }

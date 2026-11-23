@@ -1,8 +1,11 @@
 // The glossy world overlay: an Equal-depth redraw of glossy buckets that adds
-// W x (R - D_static) over forward's colour, R the bound probe's reflection and
-// D_static forward's static diffuse at the same pixel. Concatenated with
-// reflection_probe_lobes.wgsl, fluid_motion.wgsl, fluid_reflection_ray.wgsl and
-// fluid_reflection.wgsl, whose probe term it reuses by name.
+// W x (R - D_static) over forward's colour, R the bound probe's reflection
+// coloured as the texel's highlight, W its Fresnel x `_s` x sharpness fade x
+// capture-shadow weight, and D_static forward's static diffuse at the same
+// pixel. Concatenated with material_shading.wgsl (the tint rule forward's
+// highlight reads), reflection_probe_lobes.wgsl, fluid_motion.wgsl,
+// fluid_reflection_ray.wgsl and fluid_reflection.wgsl, whose probe term and
+// Fresnel it reuses by name. Mirrors render-cpu `glossy_reflection`.
 // See: context/lib/rendering_pipeline.md §7.3a (Glossy world faces)
 
 // --- Group 0: the shared camera uniforms, forward's struct member for member.
@@ -25,7 +28,14 @@ struct Uniforms {
 };
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 
-// --- Group 1: the level's probe records, read only: the colour array, the
+// --- Group 1: the face's world material, forward's group 1 and bind group.
+// Only albedo, the specular slot and the sampler are read: the texel's
+// reflection weight and colour, read where forward reads its highlight's.
+@group(1) @binding(0) var base_texture: texture_2d<f32>;
+@group(1) @binding(2) var spec_texture: texture_2d<f32>;
+@group(1) @binding(5) var aniso_sampler: sampler;
+
+// --- Group 2: the level's probe records, read only: the colour array, the
 // share table, the distance array and the live-lighting sums the sums pass
 // wrote this frame. The fluid shader's structs member for member.
 struct FluidProbeLight {
@@ -53,23 +63,29 @@ struct FluidProbeTable {
 struct FluidProbeSums {
     lobes: array<vec4<f32>, 1536>,
 };
-@group(1) @binding(0) var fluid_probe_array: texture_2d_array<f32>;
-@group(1) @binding(1) var<uniform> fluid_probes: FluidProbeTable;
-@group(1) @binding(2) var fluid_probe_distance: texture_2d_array<f32>;
-@group(1) @binding(3) var<uniform> fluid_probe_sums: FluidProbeSums;
+@group(2) @binding(0) var fluid_probe_array: texture_2d_array<f32>;
+@group(2) @binding(1) var<uniform> fluid_probes: FluidProbeTable;
+@group(2) @binding(2) var fluid_probe_distance: texture_2d_array<f32>;
+@group(2) @binding(3) var<uniform> fluid_probe_sums: FluidProbeSums;
 
-// --- Group 2: the frame's inputs: forward's static diffuse, read at the
+// --- Group 3: the frame's inputs: forward's static diffuse, read at the
 // fragment's own pixel, and the linear-clamp sampler the probe reads take
 // (named as the fluid shader names the one it borrows).
-@group(2) @binding(0) var static_diffuse: texture_2d<f32>;
-@group(2) @binding(1) var sh_atlas_sampler: sampler;
+@group(3) @binding(0) var static_diffuse: texture_2d<f32>;
+@group(3) @binding(1) var sh_atlas_sampler: sampler;
 
-// Water's reflectance scale (0.02 x surfaceReflectivity): a head-on base of
-// 0.04 for an untinted texel.
-const GLOSSY_OVERLAY_REFLECTIVITY: f32 = 2.0;
+// Water's reflectance scale (0.02 x surfaceReflectivity): an untinted texel's
+// head-on base of 0.04, raised by its tint to water's mirror cap, 1.
+const GLOSSY_REFLECTIVITY_UNTINTED: f32 = 2.0;
+const GLOSSY_REFLECTIVITY_FULL_TINT: f32 = 50.0;
+// The sharpness fade: no weight at or below the floor exponent, full weight
+// at or above the full-weight exponent, linear in log2 of the exponent between.
+const GLOSSY_SHARPNESS_FLOOR_EXPONENT: f32 = 8.0;
+const GLOSSY_FULL_WEIGHT_EXPONENT: f32 = 16.0;
 
 struct GlossyVertexInput {
     @location(0) position: vec3<f32>,
+    @location(1) base_uv: vec2<f32>,
     @location(2) normal_oct: vec2<u32>,
     // The world probe stream: the face's bound probe, written once at
     // install from id 54's world bindings, or the no-probe value.
@@ -83,6 +99,7 @@ struct GlossyVertexOutput {
     @location(0) world_position: vec3<f32>,
     @location(1) @interpolate(flat) normal: vec3<f32>,
     @location(2) @interpolate(flat) probe: u32,
+    @location(3) uv: vec2<f32>,
 };
 
 // forward.wgsl's `oct_decode`, statement for statement.
@@ -125,33 +142,97 @@ fn vs_main(in: GlossyVertexInput) -> GlossyVertexOutput {
     // The provoking vertex's normal: a face's vertices share its plane's.
     out.normal = oct_decode(in.normal_oct);
     out.probe = in.probe;
+    out.uv = in.base_uv;
     return out;
 }
 
-// The probe term's weight and reflection, before the static diffuse they
-// replace. W is 0, and nothing is added, for an unbound face, a face seen
-// from behind, or a mask with an all-terms bit off (the capture bakes every
-// term together).
-struct GlossyOverlayTerm {
-    weight: f32,
-    reflection: vec3<f32>,
+// forward.wgsl's `sample_post_retro`, statement for statement: the texel
+// forward's highlight reads, read the same way.
+fn sample_post_retro(tex: texture_2d<f32>, samp: sampler, uv: vec2<f32>,
+                     ddx: vec2<f32>, ddy: vec2<f32>) -> vec4<f32> {
+    let dims = vec2<f32>(textureDimensions(tex, 0));
+    let uv_recon = post_retro_texel_uv(uv, dims, ddx, ddy);
+    return textureSampleGrad(tex, samp, uv_recon, ddx, ddy);
+}
+
+// The sharpness fade. Mirrors level-format `glossy_sharpness_fade`.
+fn glossy_sharpness_fade(exponent: f32) -> f32 {
+    let floor = log2(GLOSSY_SHARPNESS_FLOOR_EXPONENT);
+    let full = log2(GLOSSY_FULL_WEIGHT_EXPONENT);
+    return clamp((log2(exponent) - floor) / (full - floor), 0.0, 1.0);
+}
+
+// What one read of a texel's material says about its reflection: `_s` x the
+// sharpness fade, water's reflectivity raised by the tint, and the colour the
+// texel's highlight takes (the tint rule's for a tinted texel, raw albedo
+// without `_t`). A texel without smoothness shades at the minimum exponent,
+// below the floor, so it reflects nothing. Mirrors render-cpu `glossy_texel`.
+struct GlossyTexel {
+    mask: f32,
+    reflectivity: f32,
+    colour: vec3<f32>,
 };
 
+fn glossy_texel(slot: vec4<f32>, albedo: vec3<f32>) -> GlossyTexel {
+    let texel = specular_texel(slot, SPECULAR_EXPONENT_MIN);
+    return GlossyTexel(
+        texel.intensity * glossy_sharpness_fade(texel.exponent),
+        select(GLOSSY_REFLECTIVITY_UNTINTED,
+            mix(GLOSSY_REFLECTIVITY_UNTINTED, GLOSSY_REFLECTIVITY_FULL_TINT, texel.tint),
+            texel.tinted),
+        select(albedo, specular_tint(albedo, texel.tint), texel.tinted),
+    );
+}
+
+// F, the texel's unshadowed weight: water's Schlick Fresnel at the texel's
+// reflectivity, times its mask. Mirrors render-cpu `glossy_fresnel`.
+fn glossy_fresnel(texel: GlossyTexel, cos_theta: f32) -> f32 {
+    return fluid_reflection_fresnel(cos_theta, texel.reflectivity) * texel.mask;
+}
+
+// The signed addition over forward's colour: F x colour x [c x X + (1 - c) x
+// s x R] - W x D_static at W = F x [c + (1 - c) x s], capped at 1, so the
+// output is forward + W x (R - D_static), R coloured as the highlight. `screen`
+// is the floor layer's premultiplied (c x X, c); zero (the probe term alone)
+// where no screen-space layer runs. s = 0 at c = 0 adds exactly nothing: the
+// capture shadow is withheld, never filled. Mirrors render-cpu
+// `glossy_composite`. IP rule (owner review to change, rendering_pipeline.md
+// §7.3a): s scales the probe's share alone, so F x colour x c x X is the
+// same at every s.
+fn glossy_composite(static_diffuse: vec3<f32>, probe: vec3<f32>, shadow: f32,
+                    screen: vec4<f32>, fresnel: f32, colour: vec3<f32>) -> vec3<f32> {
+    let confidence = screen.a;
+    let probe_share = (1.0 - confidence) * shadow;
+    let reflected = colour * (fresnel * (screen.rgb + probe * probe_share));
+    let weight = min(fresnel * (confidence + probe_share), 1.0);
+    return reflected - static_diffuse * weight;
+}
+
+// The texel's material at this fragment, read as forward reads it: albedo and
+// the specular slot through the Post Retro reconstruction at the fragment's
+// UV. `ddx` and `ddy` come from uniform control flow.
+fn glossy_overlay_texel(uv: vec2<f32>, ddx: vec2<f32>, ddy: vec2<f32>) -> GlossyTexel {
+    let albedo = sample_post_retro(base_texture, aniso_sampler, uv, ddx, ddy).rgb;
+    let slot = sample_post_retro(spec_texture, aniso_sampler, uv, ddx, ddy);
+    return glossy_texel(slot, albedo);
+}
+
+// The probe term before the material's weight: the bound probe's live-lit
+// capture and its capture-shadow weight s. s is 0, and nothing is added, for
+// an unbound face, a face seen from behind, or a mask with an all-terms bit
+// off (the capture bakes every term together).
 // IP rule (owner review to change, rendering_pipeline.md §7.3a): the probe
 // comes from the face's binding alone, by position; the layer derives from
 // it inside `fluid_reflection_sample`, and no lookup-direction value picks a
 // probe. No history, no precomputed intersection, and no tile is written.
-fn glossy_overlay_term(in: GlossyVertexOutput) -> GlossyOverlayTerm {
-    let normal = normalize(in.normal);
-    let view = normalize(uniforms.camera_position - in.world_position);
+fn glossy_overlay_probe(in: GlossyVertexOutput, view: vec3<f32>,
+                        normal: vec3<f32>) -> FluidReflectionSample {
     if in.probe == FLUID_REFLECTION_NO_PROBE
         || !fluid_reflection_seen_from_above(normal, view)
         || !fluid_reflection_mask_on(uniforms.light_term_mask) {
-        return GlossyOverlayTerm(0.0, vec3<f32>(0.0));
+        return FluidReflectionSample(vec3<f32>(0.0), 0.0);
     }
-    let probe = fluid_reflection_sample(in.probe, in.world_position, view, normal);
-    let fresnel = fluid_reflection_fresnel(dot(view, normal), GLOSSY_OVERLAY_REFLECTIVITY);
-    return GlossyOverlayTerm(fresnel * probe.weight, probe.capture);
+    return fluid_reflection_sample(in.probe, in.world_position, view, normal);
 }
 
 // Forward's D_static at this fragment's own pixel.
@@ -159,11 +240,27 @@ fn glossy_overlay_static_diffuse(frag_xy: vec2<f32>) -> vec3<f32> {
     return textureLoad(static_diffuse, vec2<u32>(frag_xy), 0).rgb;
 }
 
+// The overlay's addition at this fragment: zero where the texel's weight is
+// (no `_s`, at or below the sharpness floor), which skips the probe search.
+fn glossy_overlay_delta(in: GlossyVertexOutput, texel: GlossyTexel) -> vec3<f32> {
+    let normal = normalize(in.normal);
+    let view = normalize(uniforms.camera_position - in.world_position);
+    let fresnel = glossy_fresnel(texel, dot(view, normal));
+    if fresnel <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    let probe = glossy_overlay_probe(in, view, normal);
+    let d_static = glossy_overlay_static_diffuse(in.clip_position.xy);
+    return glossy_composite(d_static, probe.capture, probe.weight, vec4<f32>(0.0), fresnel,
+        texel.colour);
+}
+
 // Added over forward's colour (src x 1 + dst x 1): forward + W x (R - D_static),
 // so dynamic light, highlights and emissive never dim, and W = 0 adds zero.
 @fragment
 fn fs_main(in: GlossyVertexOutput) -> @location(0) vec4<f32> {
-    let term = glossy_overlay_term(in);
-    let d_static = glossy_overlay_static_diffuse(in.clip_position.xy);
-    return vec4<f32>(term.weight * (term.reflection - d_static), 0.0);
+    let ddx = dpdx(in.uv);
+    let ddy = dpdy(in.uv);
+    let texel = glossy_overlay_texel(in.uv, ddx, ddy);
+    return vec4<f32>(glossy_overlay_delta(in, texel), 0.0);
 }

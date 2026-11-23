@@ -91,15 +91,60 @@ fn overlay_vertex_stage_repeats_forwards_invariant_clip_position() {
     }
 }
 
-// Forward's layout and budget stay untouched: the overlay binds the shared
-// camera group and two groups of its own, textures, uniforms and one sampler
-// only — no SH, lightmap, shadow, light, emissive or SDF binding, no storage
-// buffer (rendering_pipeline.md §10; brief IP fences).
+// Acceptance row 32 (source gate): forward's layout and budget stay
+// untouched, and the overlay's layout refuses every lighting binding: it
+// binds the shared camera group, forward's material group (read for albedo
+// and the specular slot only), and two groups of its own, textures, uniforms
+// and samplers only — no SH, lightmap, animated-weight, shadowmask,
+// shadow-pool, dynamic light, emissive or emissive-volume, or SDF binding, no
+// storage buffer (rendering_pipeline.md §10; brief IP fences).
 #[test]
 fn overlay_layout_binds_only_its_probe_records_and_static_diffuse() {
-    assert_eq!(GLOSSY_OVERLAY_BIND_GROUP_COUNT, 3);
+    assert_eq!(GLOSSY_OVERLAY_BIND_GROUP_COUNT, 4);
+    assert_eq!(
+        (
+            GLOSSY_OVERLAY_MATERIAL_GROUP,
+            GLOSSY_OVERLAY_PROBE_GROUP,
+            GLOSSY_OVERLAY_INPUTS_GROUP
+        ),
+        (1, 2, 3)
+    );
     let groups = squashed(OVERLAY_WGSL);
-    for group in 3..8 {
+    // The material group declares albedo, the specular slot and the sampler,
+    // forward's bindings by name: never the glow, normal map or uniform.
+    let material: Vec<_> = OVERLAY_WGSL
+        .lines()
+        .filter(|line| line.starts_with("@group(1)"))
+        .collect();
+    assert_eq!(
+        material,
+        [
+            "@group(1) @binding(0) var base_texture: texture_2d<f32>;",
+            "@group(1) @binding(2) var spec_texture: texture_2d<f32>;",
+            "@group(1) @binding(5) var aniso_sampler: sampler;",
+        ]
+    );
+    for line in &material {
+        assert!(FORWARD_WGSL.contains(line), "forward declares `{line}`");
+    }
+    let composed = squashed(GLOSSY_OVERLAY_SHADER_SOURCE);
+    for lighting in [
+        "emissive_texture",
+        "emissive_volume_table",
+        "GpuLight",
+        "light_influence",
+        "spec_lights",
+        "sh_total_atlas",
+        "lightmap_irradiance",
+        "animated_lm_atlas",
+        "shadowmask_atlas",
+        "spot_shadow_depth",
+        "point_shadow_cube",
+        "sdf_shadow_factor",
+    ] {
+        assert!(!composed.contains(lighting), "the overlay reads {lighting}");
+    }
+    for group in 4..8 {
         assert!(
             !groups.contains(&format!("@group({group})")),
             "the overlay declares group {group}"
@@ -146,9 +191,9 @@ fn overlay_layout_binds_only_its_probe_records_and_static_diffuse() {
 // the sums' blend; no stored light is evaluated per fragment.
 #[test]
 fn overlay_reads_its_probe_from_the_binding_and_lights_through_the_sums() {
-    let term = squashed(wgsl_function(OVERLAY_WGSL, "glossy_overlay_term"));
+    let term = squashed(wgsl_function(OVERLAY_WGSL, "glossy_overlay_probe"));
     assert!(
-        term.contains("letprobe=fluid_reflection_sample(in.probe,in.world_position,view,normal);")
+        term.contains("returnfluid_reflection_sample(in.probe,in.world_position,view,normal);")
     );
     assert_eq!(term.matches("fluid_reflection_sample(").count(), 1);
     assert!(squashed(wgsl_function(OVERLAY_WGSL, "vs_main")).contains("out.probe=in.probe;"));
@@ -164,33 +209,124 @@ fn overlay_reads_its_probe_from_the_binding_and_lights_through_the_sums() {
 }
 
 // The composite: forward + W·(R − D_static), D_static at the fragment's own
-// pixel, W the Schlick weight on water's reflectance scale times the
-// capture-shadow weight; additive over the scene colour.
+// pixel, W the texel's Fresnel × `_s` × sharpness fade times the
+// capture-shadow weight, R coloured as the highlight; additive over the scene
+// colour. A texel whose weight is 0 adds nothing and runs no probe search.
 #[test]
 fn overlay_adds_the_weighted_reflection_minus_static_diffuse() {
     assert_eq!(
         squashed(wgsl_function(OVERLAY_WGSL, "fs_main")),
         "fnfs_main(in:GlossyVertexOutput)->@location(0)vec4<f32>{\
-         letterm=glossy_overlay_term(in);\
-         letd_static=glossy_overlay_static_diffuse(in.clip_position.xy);\
-         returnvec4<f32>(term.weight*(term.reflection-d_static),0.0);}"
+         letddx=dpdx(in.uv);letddy=dpdy(in.uv);\
+         lettexel=glossy_overlay_texel(in.uv,ddx,ddy);\
+         returnvec4<f32>(glossy_overlay_delta(in,texel),0.0);}"
     );
-    assert!(
-        squashed(wgsl_function(OVERLAY_WGSL, "glossy_overlay_term")).contains(
-            "letfresnel=fluid_reflection_fresnel(dot(view,normal),GLOSSY_OVERLAY_REFLECTIVITY);\
-             returnGlossyOverlayTerm(fresnel*probe.weight,probe.capture);"
-        )
-    );
-    assert!(squashed(OVERLAY_WGSL).contains("constGLOSSY_OVERLAY_REFLECTIVITY:f32=2.0;"));
     assert_eq!(
-        postretro_render_cpu::fluid_surface::reflection::reflection_fresnel(1.0, 2.0),
-        0.04
+        squashed(wgsl_function(OVERLAY_WGSL, "glossy_overlay_delta")),
+        "fnglossy_overlay_delta(in:GlossyVertexOutput,texel:GlossyTexel)->vec3<f32>{\
+         letnormal=normalize(in.normal);\
+         letview=normalize(uniforms.camera_position-in.world_position);\
+         letfresnel=glossy_fresnel(texel,dot(view,normal));\
+         iffresnel<=0.0{returnvec3<f32>(0.0);}\
+         letprobe=glossy_overlay_probe(in,view,normal);\
+         letd_static=glossy_overlay_static_diffuse(in.clip_position.xy);\
+         returnglossy_composite(d_static,probe.capture,probe.weight,vec4<f32>(0.0),fresnel,\
+         texel.colour);}"
     );
     let blend = glossy_overlay_blend_state();
     assert_eq!(blend.color.src_factor, wgpu::BlendFactor::One);
     assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::One);
     assert_eq!(blend.color.operation, wgpu::BlendOperation::Add);
     assert_eq!(blend.alpha.src_factor, wgpu::BlendFactor::Zero);
+}
+
+// Acceptance rows 4, 27, 34: the shader's weight and colour mirror render-cpu
+// `glossy_reflection` statement for statement, with its constants pinned to
+// the reference's (the sharpness fade's to level-format's, the reflectivities
+// to water's Fresnel scale), and the texel is read as forward reads its
+// highlight's: the same reconstruction and the tint rule forward composes.
+#[test]
+fn overlay_weight_and_colour_mirror_the_cpu_reference() {
+    use postretro_render_cpu::fluid_surface::reflection::{
+        FLUID_REFLECTION_BASE_F0, FLUID_REFLECTIVITY_MAX,
+    };
+    use postretro_render_cpu::glossy_reflection::*;
+    let source = squashed(OVERLAY_WGSL);
+    for (name, value) in [
+        ("GLOSSY_REFLECTIVITY_UNTINTED", GLOSSY_REFLECTIVITY_UNTINTED),
+        (
+            "GLOSSY_REFLECTIVITY_FULL_TINT",
+            GLOSSY_REFLECTIVITY_FULL_TINT,
+        ),
+        (
+            "GLOSSY_SHARPNESS_FLOOR_EXPONENT",
+            GLOSSY_SHARPNESS_FLOOR_EXPONENT,
+        ),
+        ("GLOSSY_FULL_WEIGHT_EXPONENT", GLOSSY_FULL_WEIGHT_EXPONENT),
+    ] {
+        assert!(
+            source.contains(&format!("const{name}:f32={value:?};")),
+            "{name} = {value:?}"
+        );
+    }
+    assert_eq!(GLOSSY_REFLECTIVITY_FULL_TINT, FLUID_REFLECTIVITY_MAX);
+    assert_eq!(
+        FLUID_REFLECTION_BASE_F0 * GLOSSY_REFLECTIVITY_UNTINTED,
+        0.04
+    );
+    assert_eq!(
+        squashed(wgsl_function(OVERLAY_WGSL, "glossy_sharpness_fade")),
+        "fnglossy_sharpness_fade(exponent:f32)->f32{\
+         letfloor=log2(GLOSSY_SHARPNESS_FLOOR_EXPONENT);\
+         letfull=log2(GLOSSY_FULL_WEIGHT_EXPONENT);\
+         returnclamp((log2(exponent)-floor)/(full-floor),0.0,1.0);}"
+    );
+    assert_eq!(
+        squashed(wgsl_function(OVERLAY_WGSL, "glossy_texel")),
+        "fnglossy_texel(slot:vec4<f32>,albedo:vec3<f32>)->GlossyTexel{\
+         lettexel=specular_texel(slot,SPECULAR_EXPONENT_MIN);\
+         returnGlossyTexel(\
+         texel.intensity*glossy_sharpness_fade(texel.exponent),\
+         select(GLOSSY_REFLECTIVITY_UNTINTED,\
+         mix(GLOSSY_REFLECTIVITY_UNTINTED,GLOSSY_REFLECTIVITY_FULL_TINT,texel.tint),\
+         texel.tinted),\
+         select(albedo,specular_tint(albedo,texel.tint),texel.tinted),);}"
+    );
+    assert_eq!(
+        squashed(wgsl_function(OVERLAY_WGSL, "glossy_fresnel")),
+        "fnglossy_fresnel(texel:GlossyTexel,cos_theta:f32)->f32{\
+         returnfluid_reflection_fresnel(cos_theta,texel.reflectivity)*texel.mask;}"
+    );
+    assert_eq!(
+        squashed(wgsl_function(OVERLAY_WGSL, "glossy_composite")),
+        "fnglossy_composite(static_diffuse:vec3<f32>,probe:vec3<f32>,shadow:f32,\
+         screen:vec4<f32>,fresnel:f32,colour:vec3<f32>)->vec3<f32>{\
+         letconfidence=screen.a;\
+         letprobe_share=(1.0-confidence)*shadow;\
+         letreflected=colour*(fresnel*(screen.rgb+probe*probe_share));\
+         letweight=min(fresnel*(confidence+probe_share),1.0);\
+         returnreflected-static_diffuse*weight;}"
+    );
+    // The texel forward's highlight reads: forward's reconstruction, and the
+    // tint rule composed from the one module both read.
+    assert_eq!(
+        squashed(wgsl_function(OVERLAY_WGSL, "sample_post_retro")),
+        squashed(wgsl_function(FORWARD_WGSL, "sample_post_retro"))
+    );
+    assert!(
+        GLOSSY_OVERLAY_SHADER_SOURCE.contains(include_str!("../shaders/material_shading.wgsl"))
+    );
+    assert!(
+        squashed(wgsl_function(FORWARD_WGSL, "forward_shade"))
+            .contains("letspec_texel=specular_texel(sample_color(spec_texture,shade_uv,ddx,ddy),")
+    );
+    assert_eq!(
+        squashed(wgsl_function(OVERLAY_WGSL, "glossy_overlay_texel")),
+        "fnglossy_overlay_texel(uv:vec2<f32>,ddx:vec2<f32>,ddy:vec2<f32>)->GlossyTexel{\
+         letalbedo=sample_post_retro(base_texture,aniso_sampler,uv,ddx,ddy).rgb;\
+         letslot=sample_post_retro(spec_texture,aniso_sampler,uv,ddx,ddy);\
+         returnglossy_texel(slot,albedo);}"
+    );
 }
 
 // Forward's always-run entry shades exactly as the shared shading does and
@@ -225,17 +361,14 @@ fn forward_entries_share_shading_and_only_the_static_diffuse_entry_writes_it() {
     );
 }
 
+// Acceptance row 30: D_static is stored by the scene colour's own
+// conversion, so it never exceeds forward's stored colour and the composite
+// cannot undershoot (`static_diffuse_format`).
 #[test]
-fn static_diffuse_takes_the_four_byte_format_where_it_renders() {
+fn static_diffuse_takes_the_scene_colours_format() {
     use crate::render::renderer_init_pipelines::static_diffuse_format;
-    assert_eq!(
-        static_diffuse_format(wgpu::Features::RG11B10UFLOAT_RENDERABLE),
-        wgpu::TextureFormat::Rg11b10Ufloat
-    );
-    assert_eq!(
-        static_diffuse_format(wgpu::Features::empty()),
-        wgpu::TextureFormat::Rgba16Float
-    );
+    assert_eq!(static_diffuse_format(), SCENE_COLOR_FORMAT);
+    assert_eq!(static_diffuse_format(), wgpu::TextureFormat::Rgba16Float);
     assert_eq!(
         postretro_level_loader::NO_WORLD_PROBE,
         postretro_render_cpu::fluid_surface::reflection::FLUID_REFLECTION_NO_PROBE
@@ -281,4 +414,27 @@ fn overlay_records_after_the_skinned_mesh_pass_and_before_the_ghost_pass() {
     ];
     assert!(order.is_sorted(), "{order:?}");
     assert_eq!(frame.matches("self.record_glossy_overlay_pass(").count(), 1);
+}
+
+// Acceptance row 30: a character's promoted-light shadow is forward's
+// shadowmask union subtraction from the static direct light, taken before
+// D_static, so it is part of what the overlay replaces and fades by (1 − W)
+// with the rest of the static diffuse.
+#[test]
+fn the_entity_shadow_subtraction_lands_in_static_diffuse() {
+    let shade = squashed(wgsl_function(FORWARD_WGSL, "forward_shade"));
+    let subtraction = shade
+        .find("static_direct=max(static_direct-shadowmask_union,vec3<f32>(0.0));")
+        .expect("the entity shadow subtracts from the static direct light");
+    let total = shade
+        .find("vartotal_light=select(vec3<f32>(0.0),vec3<f32>(uniforms.ambient_floor),use_ambient_floor)+indirect+static_direct;")
+        .expect("static light");
+    let static_diffuse = shade
+        .find("letstatic_diffuse=base_color.rgb*total_light;")
+        .expect("D_static");
+    assert!(subtraction < total && total < static_diffuse);
+    assert!(
+        shade.rfind("static_direct=").expect("assigned") < total,
+        "nothing changes the static direct light after the static light sums it"
+    );
 }

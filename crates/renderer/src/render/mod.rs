@@ -161,6 +161,8 @@ mod ghost_depth_frame_test;
 mod glossy_overlay_frame_test;
 #[cfg(test)]
 mod glossy_overlay_frame_test_fixtures;
+#[cfg(test)]
+mod glossy_overlay_weights_frame_test;
 mod level_build;
 mod level_resource_set;
 #[cfg(test)]

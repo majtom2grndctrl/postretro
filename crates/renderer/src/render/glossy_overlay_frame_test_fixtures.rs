@@ -1,8 +1,8 @@
 //! Fixtures for the glossy overlay's GPU gates: a world-less-of-fluid level of
 //! three floor faces (a bound glossy face, an unbound glossy face, a
 //! non-glossy face), one probe of uniform colour bound by id 54's world list,
-//! test-only overlay variants, and the frame's HDR scene colour and D_static
-//! read back.
+//! the glossy faces' one-texel material, test-only overlay variants, and the
+//! frame's HDR scene colour and D_static read back.
 //! See: context/lib/rendering_pipeline.md §7.3a (Glossy world faces)
 
 use glam::{UVec2, Vec3};
@@ -58,7 +58,12 @@ pub(super) fn renderer() -> Option<Renderer> {
 /// distances (box projection, no capture shadow), no stored light; bound to
 /// face 0 when `bind_world` holds, else to nothing.
 pub(super) fn floor_probe(bind_world: bool) -> ReflectionProbesSection {
-    let texel: Vec<u8> = PROBE_COLOUR
+    floor_probe_of(bind_world, PROBE_COLOUR)
+}
+
+/// [`floor_probe`] capturing a uniform `colour` (exact in f16).
+pub(super) fn floor_probe_of(bind_world: bool, colour: Vec3) -> ReflectionProbesSection {
+    let texel: Vec<u8> = colour
         .to_array()
         .map(f32_to_f16_bits)
         .into_iter()
@@ -90,9 +95,34 @@ pub(super) fn floor_probe(bind_world: bool) -> ReflectionProbesSection {
     }
 }
 
+/// The glossy faces' material: one texel each of sRGB albedo, specular slot
+/// (R `_s`, B smoothness, A tint; A = 255 is no `_t`) and, with a strength,
+/// sRGB glow.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct FloorMaterial {
+    pub albedo: [u8; 4],
+    pub slot: [u8; 4],
+    pub glow: Option<([u8; 4], f32)>,
+}
+
+impl FloorMaterial {
+    /// White, full `_s`, smoothness at the cap, tint 0: the reflection is
+    /// uncoloured and weighs water's Fresnel at reflectivity 2 alone.
+    pub const WHITE_SHARP: Self = Self {
+        albedo: [255; 4],
+        slot: [255, 0, 255, 0],
+        glow: None,
+    };
+
+    /// The slot sample the shader reads, as unorm.
+    pub fn slot_sample(self) -> glam::Vec4 {
+        glam::Vec4::from(self.slot.map(|byte| f32::from(byte) / 255.0))
+    }
+}
+
 /// Install the floor level on the main thread with `probes` as its id 54,
-/// then its probes (no fluid volume), and mark bucket 0 glossy as a
-/// material whose specular slot passes the opt-in would be.
+/// then its probes (no fluid volume), with [`FloorMaterial::WHITE_SHARP`] as
+/// the glossy faces' material.
 pub(super) fn install_floor(renderer: &mut Renderer, probes: &ReflectionProbesSection) {
     with_floor(Some(probes), |geometry| {
         renderer
@@ -100,9 +130,64 @@ pub(super) fn install_floor(renderer: &mut Renderer, probes: &ReflectionProbesSe
             .expect("level resources install");
     });
     renderer.install_fluid_surfaces(&[], Some(probes));
+    assert_eq!(
+        renderer.level().loaded_textures.len(),
+        1,
+        "one placeholder material"
+    );
+    set_floor_material(renderer, FloorMaterial::WHITE_SHARP);
+}
+
+/// Replace bucket 0's material with `material`'s one-texel textures, marked
+/// glossy as a material whose specular slot passes the opt-in would be.
+pub(super) fn set_floor_material(renderer: &mut Renderer, material: FloorMaterial) {
+    use super::loaded_texture::{placeholder_loaded_texture, upload_texture_data};
+    let device = renderer.device.clone();
+    let queue = renderer.queue.raw().clone();
+    let one = |format, texel: [u8; 4], label| {
+        upload_texture_data(&device, &queue, format, &[(1, 1, &texel[..])], label)
+    };
+    let mut texture = placeholder_loaded_texture(&device, &queue);
+    (texture.diffuse_texture, texture.diffuse_view) = one(
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+        material.albedo,
+        "glossy floor albedo",
+    );
+    (texture.specular_texture, texture.specular_view) = one(
+        wgpu::TextureFormat::Rgba8Unorm,
+        material.slot,
+        "glossy floor slot",
+    );
+    let mut texture_material = postretro_render_data::material::TextureMaterial::DEFAULT;
+    if let Some((glow, strength)) = material.glow {
+        (texture.emissive_texture, texture.emissive_view) = one(
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            glow,
+            "glossy floor glow",
+        );
+        texture_material.emissive_strength = strength;
+    }
+    texture.reflects = true;
+    let surface_depth_quality = renderer.surface_depth_quality;
+    let full = renderer.full();
+    let sampler = full
+        .samplers
+        .aniso
+        .get(&1)
+        .expect("the one-mip sampler is seeded")
+        .clone();
+    let binding = super::material_plan::build_material_bind_group(
+        &device,
+        &full.texture_bind_group_layout,
+        &texture,
+        &sampler,
+        texture_material,
+        surface_depth_quality,
+        "Glossy Floor Material",
+    );
     let level = renderer.level_mut();
-    assert_eq!(level.loaded_textures.len(), 1, "one placeholder material");
-    level.loaded_textures[0].reflects = true;
+    level.loaded_textures[0] = texture;
+    level.gpu_textures[0] = binding.into();
 }
 
 /// The floor level, lent to `use_geometry`.
@@ -276,48 +361,20 @@ pub(super) fn read_static_diffuse(renderer: &Renderer) -> Option<Vec<Vec3>> {
         .as_ref()?
         .static_diffuse_texture()?
         .clone();
-    Some(match texture.format() {
-        wgpu::TextureFormat::Rg11b10Ufloat => {
-            read_back(renderer, &texture, 4, wgpu::TextureAspect::All)
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|bytes| rg11b10_to_vec3(u32::from_le_bytes(*bytes)))
-                .collect()
-        }
-        wgpu::TextureFormat::Rgba16Float => {
-            read_back(renderer, &texture, 8, wgpu::TextureAspect::All)
-                .as_chunks::<8>()
-                .0
-                .iter()
-                .map(|texel| {
-                    Vec3::from([0, 1, 2].map(|c| {
+    assert_eq!(texture.format(), wgpu::TextureFormat::Rgba16Float);
+    Some(
+        read_back(renderer, &texture, 8, wgpu::TextureAspect::All)
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|texel| {
+                Vec3::from(
+                    [0, 1, 2].map(|c| {
                         f16_bits_to_f32(u16::from_le_bytes([texel[2 * c], texel[2 * c + 1]]))
-                    }))
-                })
-                .collect()
-        }
-        format => panic!("unexpected D_static format {format:?}"),
-    })
-}
-
-/// One packed `Rg11b10Ufloat` texel: R and G 6-bit mantissas, B 5-bit, each
-/// with a 5-bit exponent of bias 15.
-fn rg11b10_to_vec3(packed: u32) -> Vec3 {
-    fn small_float(bits: u32, mantissa_bits: u32) -> f32 {
-        let mantissa = bits & ((1 << mantissa_bits) - 1);
-        let exponent = bits >> mantissa_bits;
-        let scale = (1u32 << mantissa_bits) as f32;
-        match exponent {
-            0 => mantissa as f32 / scale * 2f32.powi(-14),
-            31 => f32::INFINITY,
-            e => (1.0 + mantissa as f32 / scale) * 2f32.powi(e as i32 - 15),
-        }
-    }
-    Vec3::new(
-        small_float(packed & 0x7FF, 6),
-        small_float((packed >> 11) & 0x7FF, 6),
-        small_float(packed >> 22, 5),
+                    }),
+                )
+            })
+            .collect(),
     )
 }
 
@@ -342,22 +399,34 @@ fn fs_test_constant(in: GlossyVertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(0.125, 0.125, 0.125, 0.0);
 }
 
+// The production delta with the coloured reflection and the subtracted static
+// diffuse given: forward's own D_static read back this frame, `scale` x it
+// subtracted.
+fn test_delta_with(in: GlossyVertexOutput, reflection_is_static: bool, scale: f32) -> vec3<f32> {
+    let texel = glossy_overlay_texel(in.uv, dpdx(in.uv), dpdy(in.uv));
+    let normal = normalize(in.normal);
+    let view = normalize(uniforms.camera_position - in.world_position);
+    let fresnel = glossy_fresnel(texel, dot(view, normal));
+    let probe = glossy_overlay_probe(in, view, normal);
+    let d_static = glossy_overlay_static_diffuse(in.clip_position.xy);
+    if reflection_is_static {
+        return glossy_composite(d_static * scale, d_static, probe.weight, vec4<f32>(0.0),
+            fresnel, vec3<f32>(1.0));
+    }
+    return glossy_composite(d_static, probe.capture, probe.weight, vec4<f32>(0.0), fresnel,
+        texel.colour);
+}
+
 // R forced to forward's own static diffuse read back this frame.
 @fragment
 fn fs_test_reflection_is_static_diffuse(in: GlossyVertexOutput) -> @location(0) vec4<f32> {
-    let term = glossy_overlay_term(in);
-    let d_static = glossy_overlay_static_diffuse(in.clip_position.xy);
-    let reflection = glossy_overlay_static_diffuse(in.clip_position.xy);
-    return vec4<f32>(term.weight * (reflection - d_static), 0.0);
+    return vec4<f32>(test_delta_with(in, true, 1.0), 0.0);
 }
 
 // As above, with the subtracted static diffuse deliberately perturbed.
 @fragment
 fn fs_test_perturbed_static_diffuse(in: GlossyVertexOutput) -> @location(0) vec4<f32> {
-    let term = glossy_overlay_term(in);
-    let d_static = glossy_overlay_static_diffuse(in.clip_position.xy) * 0.5;
-    let reflection = glossy_overlay_static_diffuse(in.clip_position.xy);
-    return vec4<f32>(term.weight * (reflection - d_static), 0.0);
+    return vec4<f32>(test_delta_with(in, true, 0.5), 0.0);
 }
 "#;
 

@@ -1,7 +1,7 @@
 # glossy-world-reflections — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: 8dda8a34a
 
 Source unchanged since the brief's `a7bf2a19`; every cited symbol re-read at `8dda8a34a` (compiler, runtime, shaders).
@@ -30,7 +30,7 @@ Source unchanged since the brief's `a7bf2a19`; every cited symbol re-read at `8d
 - **Floor-blur tolerance (row 36).** The floor layer's spread, as reflected-angle half-width at half maximum, is within ±30% of the probe term's for the same exponent at the reference hit distance. Reason: the scene chain's levels are powers of two under trilinear filtering.
 
 ## Owner checkpoints
-1. **This stop:** plan, task order, delegated answers, and the two fixture asks in the report.
+1. **Plan stop:** approved 2026-11-22. Fixtures (owner): the census covers `content/dev` water and glossy maps plus every map of the owner's adjacent private game project (sibling checkout; its name stays out of this repo), which is closer to production detail than the dev fixtures. Its committed PRLs and baked material root are read directly, no rebake. M8's stress fixture is that project's largest map by source size, compiled cold.
 2. **After Task 5:** overlay cost on the glossy fixture (1440p, 4K, Auto) and the proposed ceiling.
 3. **After Task 2, only if the mover screen crosses the cliff:** options for the mover's highlight separation.
 4. **After Task 11:** floor-layer per-tier values and ceiling.

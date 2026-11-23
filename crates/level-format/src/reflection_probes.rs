@@ -1,13 +1,17 @@
 // ReflectionProbes PRL section (ID 54): compile-time box-projected probes,
-// their per-light shares, the fluid faces they bind, and their capture and
-// distance tiles.
+// their per-light shares, the fluid and world faces they bind, and their
+// colour and distance tiles.
 // See: context/lib/resource_management.md §5 · build_pipeline.md §PRL section IDs
 
-use crate::FormatError;
+mod error;
+mod wire;
+
+pub use error::{BindingList, ReflectionProbesError};
+
 use crate::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
 use crate::prm::PORTABLE_MAX_TEXTURE_ARRAY_LAYERS;
 
-pub const REFLECTION_PROBES_VERSION: u16 = 2;
+pub const REFLECTION_PROBES_VERSION: u16 = 3;
 
 /// Engine capture tile edge in texels, border included. Carried in the header,
 /// so a later authored size is additive.
@@ -18,8 +22,9 @@ pub const REFLECTION_PROBE_TILE_BORDER: u32 = 1;
 /// Animated lights stored per probe (K). The fluid shader's share table is
 /// sized by it, so a section with another K is refused.
 pub const REFLECTION_PROBE_LIGHTS_PER_PROBE: usize = 4;
-/// Directional lobes per share entry: up, then +X, −X, +Z, −Z.
-pub const REFLECTION_PROBE_LOBE_COUNT: usize = 5;
+/// Directional lobes per share entry: +Y, +X, −X, +Z, −Z, −Y. −Y is last, so
+/// the five a water surface reads keep the indices they had before it.
+pub const REFLECTION_PROBE_LOBE_COUNT: usize = 6;
 /// Probes per level: one array layer each, within the portable layer ceiling.
 pub const MAX_REFLECTION_PROBES: usize = PORTABLE_MAX_TEXTURE_ARRAY_LAYERS as usize;
 /// Share entry roster index marking an unused entry; it names no light.
@@ -29,83 +34,79 @@ pub const REFLECTION_PROBE_NO_LIGHT: u32 = u32::MAX;
 /// ray hit nothing. Inverse L1 reconstructs planes exactly under bilinear
 /// filtering within an octant, and 0 is the natural "no surface" sentinel.
 pub const REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1: u32 = 0;
+/// Smallest colour mip edge: one BC6H block.
+pub const REFLECTION_PROBE_MIN_MIP_DIMENSION: u32 = 4;
 
-/// Blend weights of the five share lobes for a lookup `direction`, in lobe
-/// order: up (+Y), +X, −X, +Z, −Z. The compiler weights each captured texel's
-/// light into the lobes by this, and the fluid shader and render-cpu blend
-/// the stored shares by the same function, so the two agree exactly.
+/// Blend weights of the six share lobes for a lookup `direction`, in lobe
+/// order: +Y, +X, −X, +Z, −Z, −Y. The compiler weights each captured texel's
+/// light into the lobes by this, and the shaders and render-cpu blend the
+/// stored shares by the same function, so they agree exactly.
 ///
-/// Each lobe is its clamped cosine squared, `max(d · axis, 0)²`, and the
-/// downward part `max(−y, 0)²` is split evenly over the four horizontal lobes.
-/// For a unit `d` the six clamped squares are `x² + y² + z² = 1`, so the
-/// weights sum to 1 by construction; the final divide only removes rounding
-/// and a non-unit input's length. Exponent 2 is the trig-free choice: each
-/// term is C¹ across its axis plane, so the blended ratio has no crease at a
-/// lobe edge, and a lobe still holds half its weight 45° off its axis.
-/// Straight down gives each horizontal lobe ¼, the limit of every nearby
-/// direction. A zero or non-finite direction falls back to the up lobe, so
-/// the result is never NaN.
+/// Each lobe is its clamped cosine squared, `max(d · axis, 0)²`. For a unit
+/// `d` the six clamped squares are `x² + y² + z² = 1`, so the weights sum to
+/// 1 by construction; the final divide only removes rounding and a non-unit
+/// input's length. Exponent 2 is the trig-free choice: each term is C¹
+/// across its axis plane, so the blended ratio has no crease at a lobe edge,
+/// and a lobe still holds half its weight 45° off its axis. For `y ≥ 0` the
+/// −Y weight is exactly 0 and the first five are bit-identical to the
+/// five-lobe form water was compiled against. A zero or non-finite direction
+/// falls back to the +Y lobe, so the result is never NaN.
 pub fn reflection_probe_lobe_weights(direction: [f32; 3]) -> [f32; REFLECTION_PROBE_LOBE_COUNT] {
     let [x, y, z] = direction;
     let pos = |v: f32| {
         let c = v.max(0.0);
         c * c
     };
-    let down = pos(-y) * 0.25;
-    let weights = [
-        pos(y),
-        pos(x) + down,
-        pos(-x) + down,
-        pos(z) + down,
-        pos(-z) + down,
-    ];
+    let weights = [pos(y), pos(x), pos(-x), pos(z), pos(-z), pos(-y)];
     let sum: f32 = weights.iter().sum();
     if !(sum.is_finite() && sum > 0.0) {
-        return [1.0, 0.0, 0.0, 0.0, 0.0];
+        return [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
     }
     weights.map(|w| w / sum)
 }
 
-/// Largest tile edge a decoder accepts; past it a corrupt header would ask
-/// for an absurd texture before the payload length check could catch it.
-const MAX_TILE_DIMENSION: u32 = 1024;
-
-const HEADER_SIZE: usize = 2 + 4 * 8;
-const SHARE_ENTRY_SIZE: usize = 4 + 12 + REFLECTION_PROBE_LOBE_COUNT * 12;
-const PROBE_SIZE: usize = 4 + 12 * 3 + 4 + REFLECTION_PROBE_LIGHTS_PER_PROBE * SHARE_ENTRY_SIZE;
-const BINDING_SIZE: usize = 12;
-
-/// Present only when some up-facing fluid face kept a probe; absent means no
-/// probes.
+/// Present only when some probe survived; absent means no probes.
 ///
 /// On-disk layout (little-endian):
-///   u16  version (2)
+///   u16  version (3)
 ///   u32  tile dimension, u32 tile border, u32 atlas format tag (id 22's tags),
+///   u32  colour mip count (≥ 1),
 ///   u32  distance format tag (`REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1`)
-///   u32  lights per probe K, u32 lobe count, u32 probe count, u32 binding count
+///   u32  lights per probe K, u32 lobe count, u32 probe count,
+///   u32  fluid binding count, u32 world binding count
 ///   probe × count: u32 source entity, f32×3 box min, f32×3 box max,
 ///     f32×3 capture point, u32 layer, then K share entries:
 ///     u32 roster index, f32×3 RGB reference, f32×3 share × lobe count
-///   binding × count: u32 volume, u32 face, u32 probe
-///   tiles, layer-major, each in the atlas format
-///   distance tiles, layer-major, one per probe at the tile dimension and
-///     border, little-endian f16
+///   fluid binding × count: u32 volume, u32 face, u32 probe
+///   world binding × count: u32 face, u32 probe
+///   colour tiles, layer-major: per probe, mips 0..count in sequence, mip m
+///     at tile dimension >> m with its own 1-texel border, each in the atlas
+///     format
+///   distance tiles, layer-major, one level per probe at the tile dimension
+///     and border, little-endian f16
 ///
-/// Bindings ascend strictly by (volume, face), so a face binds at most once
-/// and the order is canonical. Cross-section references (volume and face
-/// against EnvironmentVolumes, roster index against the animated-light
-/// roster) are checked by the loader, which holds every section.
+/// Each binding list ascends strictly (fluid by (volume, face), world by
+/// face), so a face binds at most once and the order is canonical.
+/// Cross-section references (fluid volume and face against
+/// EnvironmentVolumes, world face against Geometry, roster index against the
+/// animated-light roster) are checked by the loader, which holds every
+/// section.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReflectionProbesSection {
     pub tile_dimension: u32,
     pub tile_border: u32,
     /// `lightmap::IRRADIANCE_FORMAT_BC6H` or `IRRADIANCE_FORMAT_RGBA16F`.
     pub atlas_format: u32,
+    /// Colour mips per probe, at least 1; every mip whole 4×4 blocks.
+    pub colour_mip_count: u32,
     /// Authored probes in map entity order, then derived probes in fluid
     /// entity order.
     pub probes: Vec<ReflectionProbeRecord>,
-    pub bindings: Vec<ReflectionProbeBinding>,
-    /// One tile per probe, layer-major.
+    /// Fluid faces in EnvironmentVolumes (id 52) numbering.
+    pub fluid_bindings: Vec<ReflectionProbeFluidBinding>,
+    /// Static world faces in Geometry (id 17) numbering.
+    pub world_bindings: Vec<ReflectionProbeWorldBinding>,
+    /// Per probe in layer order, its colour mip chain.
     pub tiles: Vec<u8>,
     /// `REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1`.
     pub distance_format: u32,
@@ -160,8 +161,16 @@ impl ReflectionProbeLightShare {
 /// An up-facing fluid face, addressed in EnvironmentVolumes (id 52) numbering,
 /// and the probe it reflects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ReflectionProbeBinding {
+pub struct ReflectionProbeFluidBinding {
     pub volume: u32,
+    pub face: u32,
+    pub probe: u32,
+}
+
+/// A static world face, addressed in Geometry (id 17) numbering, and the
+/// probe it reflects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ReflectionProbeWorldBinding {
     pub face: u32,
     pub probe: u32,
 }
@@ -175,6 +184,48 @@ pub fn reflection_probe_tile_bytes(format: u32, dimension: u32) -> Option<usize>
         IRRADIANCE_FORMAT_RGBA16F => Some(dimension * dimension * 8),
         _ => None,
     }
+}
+
+/// Whether a `tile_dimension` tile carries `mip_count` colour mips: at least
+/// one, each halving exactly, the last at least one 4×4 block and every one
+/// whole blocks.
+pub fn reflection_probe_colour_mips_valid(tile_dimension: u32, mip_count: u32) -> bool {
+    let Some(last) = mip_count.checked_sub(1) else {
+        return false;
+    };
+    let Some(block_span) = REFLECTION_PROBE_MIN_MIP_DIMENSION.checked_shl(last) else {
+        return false;
+    };
+    // `checked_shl` only refuses a shift past the width; a span that wrapped
+    // to a smaller value would pass the divide below.
+    block_span >> last == REFLECTION_PROBE_MIN_MIP_DIMENSION
+        && tile_dimension >= block_span
+        && tile_dimension.is_multiple_of(block_span)
+}
+
+/// Edge of colour mip `mip` of a `tile_dimension` tile, border included.
+pub fn reflection_probe_colour_mip_dimension(tile_dimension: u32, mip: u32) -> u32 {
+    tile_dimension >> mip
+}
+
+/// Bytes of one probe's colour chain, `mip_count` mips of a `dimension` tile
+/// in `format`, or `None` for an unknown format or an invalid chain.
+pub fn reflection_probe_colour_chain_bytes(
+    format: u32,
+    dimension: u32,
+    mip_count: u32,
+) -> Option<usize> {
+    if !reflection_probe_colour_mips_valid(dimension, mip_count) {
+        return None;
+    }
+    (0..mip_count)
+        .map(|mip| {
+            reflection_probe_tile_bytes(
+                format,
+                reflection_probe_colour_mip_dimension(dimension, mip),
+            )
+        })
+        .sum()
 }
 
 /// Bytes of one distance tile of `dimension` texels square in `format`, or
@@ -197,211 +248,32 @@ pub fn reflection_probe_zero_distances(probe_count: usize, dimension: u32) -> Ve
 }
 
 impl ReflectionProbesSection {
-    pub fn byte_len(&self) -> usize {
-        HEADER_SIZE
-            + self.probes.len() * PROBE_SIZE
-            + self.bindings.len() * BINDING_SIZE
-            + self.tiles.len()
-            + self.distances.len()
+    /// Bytes of one probe's colour chain.
+    fn colour_chain_bytes(&self) -> usize {
+        reflection_probe_colour_chain_bytes(
+            self.atlas_format,
+            self.tile_dimension,
+            self.colour_mip_count,
+        )
+        .expect("a decoded or compiled section has a known atlas format and a valid mip chain")
     }
 
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.byte_len());
-        out.extend_from_slice(&REFLECTION_PROBES_VERSION.to_le_bytes());
-        u32_out(&mut out, self.tile_dimension);
-        u32_out(&mut out, self.tile_border);
-        u32_out(&mut out, self.atlas_format);
-        u32_out(&mut out, self.distance_format);
-        count(&mut out, REFLECTION_PROBE_LIGHTS_PER_PROBE);
-        count(&mut out, REFLECTION_PROBE_LOBE_COUNT);
-        count(&mut out, self.probes.len());
-        count(&mut out, self.bindings.len());
-        for probe in &self.probes {
-            u32_out(&mut out, probe.source_entity);
-            vec3(&mut out, probe.box_min);
-            vec3(&mut out, probe.box_max);
-            vec3(&mut out, probe.capture_point);
-            u32_out(&mut out, probe.layer);
-            for light in &probe.lights {
-                u32_out(&mut out, light.roster_index);
-                vec3(&mut out, light.reference);
-                for lobe in light.shares {
-                    vec3(&mut out, lobe);
-                }
-            }
-        }
-        for binding in &self.bindings {
-            u32_out(&mut out, binding.volume);
-            u32_out(&mut out, binding.face);
-            u32_out(&mut out, binding.probe);
-        }
-        out.extend_from_slice(&self.tiles);
-        out.extend_from_slice(&self.distances);
-        out
-    }
-
-    /// Decode untrusted section bytes. Refused, each with a message prefixed
-    /// `reflection probes:`:
-    /// - another version;
-    /// - a header off the engine's contract: a tile dimension that is not a
-    ///   multiple of 4 in 4..=`MAX_TILE_DIMENSION`, a border other than 1, an
-    ///   unknown atlas or distance format, or another K or lobe count;
-    /// - a probe count of 0, or over the layer cap;
-    /// - a probe whose layer is past the probe count or reused, whose box min
-    ///   exceeds its max, or whose capture point lies outside its box;
-    /// - a non-finite box, capture point, reference or share, a negative
-    ///   reference, or a share outside 0..=1;
-    /// - an unused share entry carrying values, or two used entries in one
-    ///   probe naming the same roster index (the light's change would count
-    ///   twice in the ratio);
-    /// - a binding past the probe count, out of (volume, face) order, or
-    ///   binding a face twice;
-    /// - a tile or distance payload of the wrong length, or trailing bytes;
-    /// - a negative or non-finite distance texel. −0.0 is refused too, by
-    ///   choice: the compiler never writes it, and refusing it keeps one bit
-    ///   pattern for "no surface".
-    ///
-    /// Every count is bounded by the bytes left before anything is allocated.
-    pub fn from_bytes(data: &[u8]) -> crate::Result<Self> {
-        let mut r = Reader { data, offset: 0 };
-        let version = r.u16("version")?;
-        if version != REFLECTION_PROBES_VERSION {
-            return invalid(format!(
-                "unsupported version {version}; this engine reads version {REFLECTION_PROBES_VERSION}"
-            ));
-        }
-        let tile_dimension = r.u32("tile dimension")?;
-        let tile_border = r.u32("tile border")?;
-        let atlas_format = r.u32("atlas format")?;
-        let distance_format = r.u32("distance format")?;
-        let lights_per_probe = r.u32("lights per probe")? as usize;
-        let lobe_count = r.u32("lobe count")? as usize;
-        if tile_dimension < 4
-            || !tile_dimension.is_multiple_of(4)
-            || tile_dimension > MAX_TILE_DIMENSION
-        {
-            return invalid(format!(
-                "tile dimension {tile_dimension} must be a multiple of 4 in 4..={MAX_TILE_DIMENSION}"
-            ));
-        }
-        if tile_border != REFLECTION_PROBE_TILE_BORDER {
-            return invalid(format!(
-                "tile border {tile_border}; the octahedral convention is {REFLECTION_PROBE_TILE_BORDER}"
-            ));
-        }
-        let Some(tile_bytes) = reflection_probe_tile_bytes(atlas_format, tile_dimension) else {
-            return invalid(format!("unknown atlas format {atlas_format}"));
+    /// Colour mip `mip` of the probe on array layer `layer`.
+    pub fn colour_tile(&self, layer: usize, mip: u32) -> &[u8] {
+        assert!(
+            mip < self.colour_mip_count,
+            "mip {mip} is past the {} colour mips",
+            self.colour_mip_count
+        );
+        let tile = |m: u32| {
+            reflection_probe_tile_bytes(
+                self.atlas_format,
+                reflection_probe_colour_mip_dimension(self.tile_dimension, m),
+            )
+            .expect("a decoded or compiled section has a known atlas format")
         };
-        let Some(distance_tile_bytes) =
-            reflection_probe_distance_tile_bytes(distance_format, tile_dimension)
-        else {
-            return invalid(format!("unknown distance format {distance_format}"));
-        };
-        if lights_per_probe != REFLECTION_PROBE_LIGHTS_PER_PROBE
-            || lobe_count != REFLECTION_PROBE_LOBE_COUNT
-        {
-            return invalid(format!(
-                "{lights_per_probe} lights × {lobe_count} lobes per probe; this engine reads \
-                 {REFLECTION_PROBE_LIGHTS_PER_PROBE} × {REFLECTION_PROBE_LOBE_COUNT}"
-            ));
-        }
-
-        let probe_count = r.bounded_count("probe count", PROBE_SIZE)?;
-        let binding_count = r.u32("binding count")? as usize;
-        if probe_count == 0 {
-            return invalid("no probes; a level without probes omits the section".into());
-        }
-        if probe_count > MAX_REFLECTION_PROBES {
-            return invalid(format!(
-                "{probe_count} probes exceed the {MAX_REFLECTION_PROBES}-layer cap"
-            ));
-        }
-        let mut probes = Vec::with_capacity(probe_count);
-        let mut layer_taken = vec![false; probe_count];
-        for p in 0..probe_count {
-            let probe = read_probe(&mut r, p)?;
-            let layer = probe.layer as usize;
-            if layer >= probe_count {
-                return invalid(format!(
-                    "probe {p} layer {layer} is past the {probe_count} layers"
-                ));
-            }
-            if std::mem::replace(&mut layer_taken[layer], true) {
-                return invalid(format!("probe {p} reuses layer {layer}"));
-            }
-            probes.push(probe);
-        }
-
-        let remaining = data.len() - r.offset;
-        if binding_count > remaining / BINDING_SIZE {
-            return invalid(format!(
-                "binding count {binding_count} exceeds what the remaining {remaining} bytes can hold"
-            ));
-        }
-        let mut bindings: Vec<ReflectionProbeBinding> = Vec::with_capacity(binding_count);
-        for b in 0..binding_count {
-            let binding = ReflectionProbeBinding {
-                volume: r.u32(&format!("binding {b} volume"))?,
-                face: r.u32(&format!("binding {b} face"))?,
-                probe: r.u32(&format!("binding {b} probe"))?,
-            };
-            if binding.probe as usize >= probe_count {
-                return invalid(format!(
-                    "binding {b} names probe {}, past the {probe_count} probes",
-                    binding.probe
-                ));
-            }
-            if let Some(previous) = bindings.last()
-                && (binding.volume, binding.face) <= (previous.volume, previous.face)
-            {
-                let (volume, face) = (binding.volume, binding.face);
-                return invalid(if (volume, face) == (previous.volume, previous.face) {
-                    format!("volume {volume} face {face} is bound twice")
-                } else {
-                    format!("binding {b} (volume {volume}, face {face}) is out of order")
-                });
-            }
-            bindings.push(binding);
-        }
-
-        let tiles_len = probe_count * tile_bytes;
-        let tiles = r.take(tiles_len, "tile payload")?.to_vec();
-        let distances = r
-            .take(probe_count * distance_tile_bytes, "distance payload")?
-            .to_vec();
-        let (texels, _) = distances.as_chunks::<2>();
-        if let Some(texel) = texels
-            .iter()
-            .position(|bits| !f16_bits_are_finite_non_negative(u16::from_le_bytes(*bits)))
-        {
-            return invalid(format!(
-                "distance payload holds a negative or non-finite value at texel {texel}"
-            ));
-        }
-        if r.offset != data.len() {
-            return invalid(format!(
-                "trailing bytes: expected {}, got {}",
-                r.offset,
-                data.len()
-            ));
-        }
-        Ok(Self {
-            tile_dimension,
-            tile_border,
-            atlas_format,
-            probes,
-            bindings,
-            tiles,
-            distance_format,
-            distances,
-        })
-    }
-
-    /// One probe's tile bytes.
-    pub fn tile(&self, layer: usize) -> &[u8] {
-        let bytes = reflection_probe_tile_bytes(self.atlas_format, self.tile_dimension)
-            .expect("a decoded or compiled section has a known atlas format");
-        &self.tiles[layer * bytes..(layer + 1) * bytes]
+        let start = layer * self.colour_chain_bytes() + (0..mip).map(tile).sum::<usize>();
+        &self.tiles[start..start + tile(mip)]
     }
 
     /// One probe's distance tile bytes (little-endian f16).
@@ -410,150 +282,23 @@ impl ReflectionProbesSection {
             .expect("a decoded or compiled section has a known distance format");
         &self.distances[layer * bytes..(layer + 1) * bytes]
     }
-}
 
-/// Sign bit clear and exponent not all ones: a finite f16 at or above zero.
-fn f16_bits_are_finite_non_negative(bits: u16) -> bool {
-    bits & 0x8000 == 0 && bits & 0x7C00 != 0x7C00
-}
-
-fn read_probe(r: &mut Reader<'_>, p: usize) -> crate::Result<ReflectionProbeRecord> {
-    let what = format!("probe {p}");
-    let source_entity = r.u32(&format!("{what} source entity"))?;
-    let box_min = r.finite_vec3(&format!("{what} box min"))?;
-    let box_max = r.finite_vec3(&format!("{what} box max"))?;
-    let capture_point = r.finite_vec3(&format!("{what} capture point"))?;
-    let layer = r.u32(&format!("{what} layer"))?;
-    if (0..3).any(|axis| box_min[axis] > box_max[axis]) {
-        return invalid(format!("{what} box min exceeds max"));
-    }
-    if (0..3).any(|axis| !(box_min[axis]..=box_max[axis]).contains(&capture_point[axis])) {
-        return invalid(format!("{what} capture point lies outside its box"));
-    }
-    let mut lights = [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE];
-    for (k, light) in lights.iter_mut().enumerate() {
-        let what = format!("{what} light {k}");
-        light.roster_index = r.u32(&format!("{what} roster index"))?;
-        light.reference = r.finite_vec3(&format!("{what} reference"))?;
-        if light.reference.iter().any(|channel| *channel < 0.0) {
-            return invalid(format!("{what} reference is negative"));
-        }
-        for (l, lobe) in light.shares.iter_mut().enumerate() {
-            *lobe = r.finite_vec3(&format!("{what} lobe {l} share"))?;
-            if lobe.iter().any(|share| !(0.0..=1.0).contains(share)) {
-                return invalid(format!("{what} lobe {l} share lies outside 0..=1"));
-            }
-        }
-        if !light.is_used() && *light != ReflectionProbeLightShare::UNUSED {
-            return invalid(format!("{what} is unused but carries values"));
-        }
-    }
-    for (k, light) in lights
-        .iter()
-        .enumerate()
-        .filter(|(_, light)| light.is_used())
-    {
-        if let Some(first) = lights[..k]
+    /// The loader's check of the world bindings against Geometry (id 17):
+    /// every bound face exists. The lists' own order is the decoder's.
+    pub fn check_world_faces(&self, face_count: usize) -> Result<(), ReflectionProbesError> {
+        match self
+            .world_bindings
             .iter()
-            .position(|earlier| earlier.roster_index == light.roster_index)
+            .enumerate()
+            .find(|(_, binding)| binding.face as usize >= face_count)
         {
-            return invalid(format!(
-                "{what} lights {first} and {k} both name animated light {}",
-                light.roster_index
-            ));
+            Some((index, binding)) => Err(ReflectionProbesError::WorldFacePastGeometry {
+                index,
+                face: binding.face,
+                face_count,
+            }),
+            None => Ok(()),
         }
-    }
-    Ok(ReflectionProbeRecord {
-        source_entity,
-        box_min,
-        box_max,
-        capture_point,
-        layer,
-        lights,
-    })
-}
-
-fn invalid<T>(message: String) -> crate::Result<T> {
-    Err(FormatError::Io(std::io::Error::new(
-        std::io::ErrorKind::InvalidData,
-        format!("reflection probes: {message}"),
-    )))
-}
-
-fn count(out: &mut Vec<u8>, n: usize) {
-    let n = u32::try_from(n).expect("reflection probe counts fit the PRL u32 field");
-    u32_out(out, n);
-}
-
-fn u32_out(out: &mut Vec<u8>, value: u32) {
-    out.extend_from_slice(&value.to_le_bytes());
-}
-
-fn vec3(out: &mut Vec<u8>, value: [f32; 3]) {
-    for v in value {
-        out.extend_from_slice(&v.to_le_bytes());
-    }
-}
-
-struct Reader<'a> {
-    data: &'a [u8],
-    offset: usize,
-}
-
-impl<'a> Reader<'a> {
-    fn take(&mut self, n: usize, what: &str) -> crate::Result<&'a [u8]> {
-        let end = self
-            .offset
-            .checked_add(n)
-            .filter(|end| *end <= self.data.len())
-            .ok_or_else(|| {
-                FormatError::Io(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    format!("reflection probes: truncated {what}"),
-                ))
-            })?;
-        let slice = &self.data[self.offset..end];
-        self.offset = end;
-        Ok(slice)
-    }
-
-    fn u16(&mut self, what: &str) -> crate::Result<u16> {
-        let b = self.take(2, what)?;
-        Ok(u16::from_le_bytes([b[0], b[1]]))
-    }
-
-    fn u32(&mut self, what: &str) -> crate::Result<u32> {
-        let b = self.take(4, what)?;
-        Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-    }
-
-    fn finite_f32(&mut self, what: &str) -> crate::Result<f32> {
-        let value = f32::from_bits(self.u32(what)?);
-        if !value.is_finite() {
-            return invalid(format!("{what} is not finite"));
-        }
-        Ok(value)
-    }
-
-    fn finite_vec3(&mut self, what: &str) -> crate::Result<[f32; 3]> {
-        Ok([
-            self.finite_f32(what)?,
-            self.finite_f32(what)?,
-            self.finite_f32(what)?,
-        ])
-    }
-
-    /// A count whose elements each need at least `min_element_size` bytes,
-    /// rejected before allocation when the remaining bytes cannot hold it.
-    fn bounded_count(&mut self, what: &str, min_element_size: usize) -> crate::Result<usize> {
-        let n = self.u32(what)? as usize;
-        let remaining = self.data.len() - self.offset;
-        if n > remaining / min_element_size {
-            return invalid(format!(
-                "{what} {n} exceeds what the remaining {remaining} bytes can hold"
-            ));
-        }
-        Ok(n)
     }
 }
 

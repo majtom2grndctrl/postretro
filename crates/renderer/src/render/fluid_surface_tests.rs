@@ -1801,7 +1801,7 @@ fn the_install_filter_and_the_bound_face_predicate_agree() {
     use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
     use postretro_level_format::reflection_probes::{
         REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1, REFLECTION_PROBE_LIGHTS_PER_PROBE,
-        ReflectionProbeBinding, ReflectionProbeLightShare, ReflectionProbeRecord,
+        ReflectionProbeFluidBinding, ReflectionProbeLightShare, ReflectionProbeRecord,
         reflection_probe_zero_distances,
     };
     use postretro_render_cpu::fluid_surface::reflection::volume_has_bound_face;
@@ -1809,6 +1809,8 @@ fn the_install_filter_and_the_bound_face_predicate_agree() {
         tile_dimension: dimension,
         tile_border: 1,
         atlas_format,
+        colour_mip_count: 1,
+        world_bindings: Vec::new(),
         probes: vec![ReflectionProbeRecord {
             source_entity: 0,
             box_min: [-1.0; 3],
@@ -1817,7 +1819,7 @@ fn the_install_filter_and_the_bound_face_predicate_agree() {
             layer: 0,
             lights: [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE],
         }],
-        bindings: vec![ReflectionProbeBinding {
+        fluid_bindings: vec![ReflectionProbeFluidBinding {
             volume: 0,
             face: 0,
             probe: 0,
@@ -1835,7 +1837,24 @@ fn the_install_filter_and_the_bound_face_predicate_agree() {
     };
     let mut layer_past = bc6h.clone();
     layer_past.probes[0].layer = 1;
+    // A colour chain of two mips, 8² then 4², carries both in sequence.
+    let two_mips = |tile_bytes: usize| ReflectionProbesSection {
+        colour_mip_count: 2,
+        tiles: vec![0; tile_bytes],
+        ..bc6h.clone()
+    };
+    let no_mips = ReflectionProbesSection {
+        colour_mip_count: 0,
+        ..bc6h.clone()
+    };
     let cases = [
+        ("BC6H two-mip chain", two_mips(4 * 16 + 16), true),
+        (
+            "two-mip chain missing its last mip",
+            two_mips(4 * 16),
+            false,
+        ),
+        ("colour mip count 0", no_mips, false),
         ("BC6H", bc6h, true),
         (
             "RGBA16F",
@@ -1965,9 +1984,25 @@ fn fluid_reflection_shader_constants_match_the_cpu_reference() {
             shader_u32("FLUID_REFLECTION_LIGHTS_PER_PROBE") as usize,
             REFLECTION_PROBE_LIGHTS_PER_PROBE
         );
-        // The lobe blend's `array<f32, 5>` and the entry's two `vec4<u32>` of
-        // shares are the format's lobe count.
-        assert_eq!(REFLECTION_PROBE_LOBE_COUNT, 5);
+        // The lobe count, the lobe blend's `array<f32, N>` and the entry's
+        // `vec4<u32>` of shares are the format's lobe count.
+        assert_eq!(
+            shader_u32("FLUID_REFLECTION_LOBES") as usize,
+            REFLECTION_PROBE_LOBE_COUNT
+        );
+        assert!(
+            code_only(FLUID_WGSL).contains(&format!(
+                "fnfluid_reflection_lobe_weights(direction:vec3<f32>)\
+                 ->array<f32,{REFLECTION_PROBE_LOBE_COUNT}>{{"
+            )),
+            "the lobe blend returns one weight per lobe"
+        );
+        assert!(code_only(FLUID_WGSL).contains(&format!(
+            "shares:array<vec4<u32>,{}>",
+            r::FLUID_PROBE_SHARE_WORDS / 4
+        )));
+        // Six lobes pad to the eight share words five did, so the entry's
+        // stride and the table's size hold.
         assert_eq!(r::FLUID_PROBE_SHARE_WORDS, 8);
     }
 }
@@ -2599,25 +2634,24 @@ fn fluid_reflection_live_lighting_wgsl_bodies_match_the_cpu_reference() {
     let pinned: [(&str, &str, &str, &str, &str); 7] = [
         (
             "fluid_reflection_lobe_weights",
-            "fnfluid_reflection_lobe_weights(direction:vec3<f32>)->array<f32,5>{\
+            "fnfluid_reflection_lobe_weights(direction:vec3<f32>)->array<f32,6>{\
              letpositive=max(direction,vec3<f32>(0.0));\
              letnegative=max(-direction,vec3<f32>(0.0));\
-             letdown=negative.y*negative.y*0.25;\
-             letweights=array<f32,5>(positive.y*positive.y,positive.x*positive.x+down,\
-             negative.x*negative.x+down,positive.z*positive.z+down,\
-             negative.z*negative.z+down,);\
-             letsum=weights[0]+weights[1]+weights[2]+weights[3]+weights[4];\
-             if!(sum>0.0){returnarray<f32,5>(1.0,0.0,0.0,0.0,0.0);}\
-             returnarray<f32,5>(weights[0]/sum,weights[1]/sum,weights[2]/sum,weights[3]/sum,\
-             weights[4]/sum);}",
+             letweights=array<f32,6>(positive.y*positive.y,positive.x*positive.x,\
+             negative.x*negative.x,positive.z*positive.z,negative.z*negative.z,\
+             negative.y*negative.y,);\
+             letsum=weights[0]+weights[1]+weights[2]+weights[3]+weights[4]+weights[5];\
+             if!(sum>0.0){returnarray<f32,6>(1.0,0.0,0.0,0.0,0.0,0.0);}\
+             returnarray<f32,6>(weights[0]/sum,weights[1]/sum,weights[2]/sum,weights[3]/sum,\
+             weights[4]/sum,weights[5]/sum);}",
             format,
             "reflection_probe_lobe_weights",
             "fnreflection_probe_lobe_weights(direction:[f32;3])->[f32;\
              REFLECTION_PROBE_LOBE_COUNT]{let[x,y,z]=direction;\
-             letpos=|v:f32|{letc=v.max(0.0);c*c};letdown=pos(-y)*0.25;\
-             letweights=[pos(y),pos(x)+down,pos(-x)+down,pos(z)+down,pos(-z)+down,];\
+             letpos=|v:f32|{letc=v.max(0.0);c*c};\
+             letweights=[pos(y),pos(x),pos(-x),pos(z),pos(-z),pos(-y)];\
              letsum:f32=weights.iter().sum();\
-             if!(sum.is_finite()&&sum>0.0){return[1.0,0.0,0.0,0.0,0.0];}\
+             if!(sum.is_finite()&&sum>0.0){return[1.0,0.0,0.0,0.0,0.0,0.0];}\
              weights.map(|w|w/sum)}",
         ),
         (
@@ -2666,13 +2700,14 @@ fn fluid_reflection_live_lighting_wgsl_bodies_match_the_cpu_reference() {
         ),
         (
             "fluid_reflection_light_share",
-            "fnfluid_reflection_light_share(shares:array<vec4<u32>,2>,lobes:array<f32,5>)\
+            "fnfluid_reflection_light_share(shares:array<vec4<u32>,2>,lobes:array<f32,6>)\
              ->vec3<f32>{\
              returnfluid_reflection_unpack_unorm10x3(shares[0].x)*lobes[0]\
              +fluid_reflection_unpack_unorm10x3(shares[0].y)*lobes[1]\
              +fluid_reflection_unpack_unorm10x3(shares[0].z)*lobes[2]\
              +fluid_reflection_unpack_unorm10x3(shares[0].w)*lobes[3]\
-             +fluid_reflection_unpack_unorm10x3(shares[1].x)*lobes[4];}",
+             +fluid_reflection_unpack_unorm10x3(shares[1].x)*lobes[4]\
+             +fluid_reflection_unpack_unorm10x3(shares[1].y)*lobes[5];}",
             cpu,
             "reflection_light_share",
             "fnreflection_light_share(shares:&[u32;FLUID_PROBE_SHARE_WORDS],\
@@ -4057,7 +4092,10 @@ fn fluid_probe_layer_derives_from_the_face_binding_alone() {
         blend.contains("letbase=probe*FLUID_REFLECTION_LOBES;"),
         "{blend}"
     );
-    assert_eq!(blend.matches("fluid_probe_sums.lobes[base").count(), 5);
+    assert_eq!(
+        blend.matches("fluid_probe_sums.lobes[base").count(),
+        postretro_level_format::reflection_probes::REFLECTION_PROBE_LOBE_COUNT
+    );
 }
 
 // P3 and P4: the fluid grid takes the lattice the SH sampler reads. A
@@ -5872,8 +5910,8 @@ fn the_sums_pass_and_blend_wgsl_match_the_cpu_references() {
         (
             SUMS_WGSL,
             "fluid_reflection_probe_sums",
-            "fnfluid_reflection_probe_sums(probe:u32)->array<vec3<f32>,5>{\
-             varsums=array<vec3<f32>,5>();\
+            "fnfluid_reflection_probe_sums(probe:u32)->array<vec3<f32>,6>{\
+             varsums=array<vec3<f32>,6>();\
              for(vari:u32=0u;i<FLUID_REFLECTION_LIGHTS_PER_PROBE;i=i+1u){\
              letlight=fluid_probes.probes[probe].lights[i];\
              if!fluid_reflection_light_present(light.roster_index){continue;}\
@@ -5884,7 +5922,8 @@ fn the_sums_pass_and_blend_wgsl_match_the_cpu_references() {
              sums[1]=sums[1]+fluid_reflection_unpack_unorm10x3(light.shares[0].y)*change;\
              sums[2]=sums[2]+fluid_reflection_unpack_unorm10x3(light.shares[0].z)*change;\
              sums[3]=sums[3]+fluid_reflection_unpack_unorm10x3(light.shares[0].w)*change;\
-             sums[4]=sums[4]+fluid_reflection_unpack_unorm10x3(light.shares[1].x)*change;}\
+             sums[4]=sums[4]+fluid_reflection_unpack_unorm10x3(light.shares[1].x)*change;\
+             sums[5]=sums[5]+fluid_reflection_unpack_unorm10x3(light.shares[1].y)*change;}\
              returnsums;}",
             "reflection_probe_sums",
             "fnreflection_probe_sums(probe_lights:&[FluidProbeLightGpu;\
@@ -5911,6 +5950,7 @@ fn the_sums_pass_and_blend_wgsl_match_the_cpu_references() {
              ratio=ratio+fluid_probe_sums.lobes[base+2u].xyz*lobes[2];\
              ratio=ratio+fluid_probe_sums.lobes[base+3u].xyz*lobes[3];\
              ratio=ratio+fluid_probe_sums.lobes[base+4u].xyz*lobes[4];\
+             ratio=ratio+fluid_probe_sums.lobes[base+5u].xyz*lobes[5];\
              returnmax(ratio,vec3<f32>(0.0));}",
             "reflection_ratio_from_sums",
             "fnreflection_ratio_from_sums(sums:&[Vec3;REFLECTION_PROBE_LOBE_COUNT],\

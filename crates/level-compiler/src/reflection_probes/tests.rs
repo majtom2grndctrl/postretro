@@ -23,7 +23,7 @@ use postretro_level_format::prm::{
 };
 use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
 use postretro_level_format::reflection_probes::{
-    REFLECTION_PROBE_TILE_BORDER, REFLECTION_PROBE_TILE_DIMENSION, ReflectionProbeBinding,
+    REFLECTION_PROBE_TILE_BORDER, REFLECTION_PROBE_TILE_DIMENSION, ReflectionProbeFluidBinding,
     ReflectionProbeLightShare, ReflectionProbesSection,
 };
 use postretro_level_format::sh_reconstruct::Level;
@@ -99,7 +99,8 @@ pub(super) fn uniform_block(width: u16, height: u16, irradiance: f32) -> Lightma
 /// The decoded tile texel a direction lands on.
 pub(super) fn tile_texel(section: &ReflectionProbesSection, layer: usize, direction: Vec3) -> Vec3 {
     let dimension = section.tile_dimension;
-    let decoded = decode_bc6h_rgb_to_f32_rgba(section.tile(layer), dimension, dimension).unwrap();
+    let decoded =
+        decode_bc6h_rgb_to_f32_rgba(section.colour_tile(layer, 0), dimension, dimension).unwrap();
     let [x, y] = irradiance_tile_texel_coord(
         direction.normalize().to_array(),
         REFLECTION_PROBE_TILE_DIMENSION,
@@ -444,8 +445,8 @@ fn probe_over_a_pool_with_a_red_floor_reads_red_straight_down() {
     assert_eq!(probe.lights, [ReflectionProbeLightShare::UNUSED; 4]);
     assert!((probe.capture_point[1] - 0.502).abs() < 1e-5, "{probe:?}");
     assert_eq!(
-        section.bindings,
-        vec![ReflectionProbeBinding {
+        section.fluid_bindings,
+        vec![ReflectionProbeFluidBinding {
             volume: 0,
             face: 0,
             probe: 0

@@ -94,6 +94,7 @@ fn fluid_reflection_ratio_from_sums(probe: u32, direction: vec3<f32>) -> vec3<f3
     ratio = ratio + fluid_probe_sums.lobes[base + 2u].xyz * lobes[2];
     ratio = ratio + fluid_probe_sums.lobes[base + 3u].xyz * lobes[3];
     ratio = ratio + fluid_probe_sums.lobes[base + 4u].xyz * lobes[4];
+    ratio = ratio + fluid_probe_sums.lobes[base + 5u].xyz * lobes[5];
     return max(ratio, vec3<f32>(0.0));
 }
 

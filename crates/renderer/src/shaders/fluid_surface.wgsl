@@ -169,7 +169,7 @@ struct FluidProbeTable {
 // probe-bound faces of geometry with fixed position and orientation read the
 // sums; a probe bound to a moving surface keeps the per-fragment ratio.
 struct FluidProbeSums {
-    lobes: array<vec4<f32>, 1280>,
+    lobes: array<vec4<f32>, 1536>,
 };
 @group(4) @binding(4) var<uniform> fluid_probe_sums: FluidProbeSums;
 

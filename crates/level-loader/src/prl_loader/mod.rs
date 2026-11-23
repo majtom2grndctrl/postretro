@@ -162,6 +162,7 @@ pub(crate) fn load_prl_from_container(
         &container,
         &lighting.lights,
         portal_data.as_ref().map(Vec::len),
+        geometry.face_meta.len(),
     )?;
     let mover_probe_channel = mover_probe_channel::read_mover_probe_channel(
         &container,

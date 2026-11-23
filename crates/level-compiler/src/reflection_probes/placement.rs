@@ -3,7 +3,7 @@
 
 use glam::{DVec2, DVec3, Vec3};
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
-use postretro_level_format::reflection_probes::ReflectionProbeBinding;
+use postretro_level_format::reflection_probes::ReflectionProbeFluidBinding;
 
 use crate::governor::Governor;
 use crate::map_data::MapReflectionVolume;
@@ -247,15 +247,15 @@ fn apply_probe_cap(probes: Vec<PlacedProbe>, limit: usize, cap: usize) -> Vec<Pl
 }
 
 /// Every kept probe's faces as bindings, ascending by `(volume, face)`.
-pub(crate) fn bindings(probes: &[PlacedProbe]) -> Vec<ReflectionProbeBinding> {
-    let mut out: Vec<ReflectionProbeBinding> = probes
+pub(crate) fn fluid_bindings(probes: &[PlacedProbe]) -> Vec<ReflectionProbeFluidBinding> {
+    let mut out: Vec<ReflectionProbeFluidBinding> = probes
         .iter()
         .enumerate()
         .flat_map(|(probe, placed)| {
             placed
                 .faces
                 .iter()
-                .map(move |&(volume, face)| ReflectionProbeBinding {
+                .map(move |&(volume, face)| ReflectionProbeFluidBinding {
                     volume,
                     face,
                     probe: probe as u32,

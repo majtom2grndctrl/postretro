@@ -106,7 +106,7 @@ use emissive_factor::{AreaGlowFaces, EmissiveFaceFactors};
 use exclusion::{ExclusionConstants, ExclusionScene, classify_probes_within_boxes};
 pub(crate) use hit::SceneTracer;
 use lightmap_sample::LightmapSampler;
-use placement::{PlacedProbe, PlacementScene, bindings, place_probes, up_facing_faces};
+use placement::{PlacedProbe, PlacementScene, fluid_bindings, place_probes, up_facing_faces};
 use roster::{check_roster, references};
 use sdf_lights::SdfLights;
 use sh_sample::{PRODUCTION_PROBE_OCCLUSION, ShVolumeSampler};
@@ -145,7 +145,9 @@ const STAGE_ID: &str = "reflection_probes";
 /// with an `_e` map), not the texture-name prefix, times a member face's
 /// emissive volume `max × colour`; the key gains each volume's factor and
 /// faces.
-const STAGE_VERSION: u32 = 15;
+/// 16: id 54 version 3: six lobes (−Y appended, zero for water), a colour
+/// mip count (1), and a world binding list (empty).
+const STAGE_VERSION: u32 = 16;
 
 /// What the stage reads. Everything here enters its cache key.
 pub(crate) struct ReflectionProbeInputs<'a> {
@@ -214,7 +216,7 @@ pub(crate) fn placed_bindings(
     environment: &EnvironmentVolumesSection,
     authored: &[MapReflectionVolume],
     world: &crate::fixture_pipeline::FixturePipeline,
-) -> Vec<postretro_level_format::reflection_probes::ReflectionProbeBinding> {
+) -> Vec<postretro_level_format::reflection_probes::ReflectionProbeFluidBinding> {
     let bounds =
         WorldBounds::from_positions(world.geometry.geometry.vertices.iter().map(|v| &v.position))
             .expect("the level has static world");
@@ -234,7 +236,7 @@ pub(crate) fn placed_bindings(
         MAX_REFLECTION_PROBES,
     )
     .expect("placement keeps within the cap");
-    bindings(&probes)
+    fluid_bindings(&probes)
 }
 
 /// Id 54 for the level, from the cache when its key hits; `None` when no
@@ -565,6 +567,8 @@ fn capture_probes(
         tile_dimension: REFLECTION_PROBE_TILE_DIMENSION,
         tile_border: REFLECTION_PROBE_TILE_BORDER,
         atlas_format: IRRADIANCE_FORMAT_BC6H,
+        // Mip 0 alone until the prefilter writes the chain.
+        colour_mip_count: 1,
         probes: probes
             .iter()
             .zip(&shares)
@@ -578,7 +582,9 @@ fn capture_probes(
                 lights: share.entries,
             })
             .collect(),
-        bindings: bindings(probes),
+        fluid_bindings: fluid_bindings(probes),
+        // No world face binds until glossy placement lands.
+        world_bindings: Vec::new(),
         tiles: tiles.concat(),
         distance_format: REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
         distances,
@@ -589,9 +595,11 @@ fn capture_probes(
 fn log_probes(section: &ReflectionProbesSection, reports: &[ShareReport]) {
     for (index, (probe, report)) in section.probes.iter().zip(reports).enumerate() {
         let faces = section
-            .bindings
+            .fluid_bindings
             .iter()
-            .filter(|b| b.probe as usize == index)
+            .map(|b| b.probe)
+            .chain(section.world_bindings.iter().map(|b| b.probe))
+            .filter(|probe| *probe as usize == index)
             .count();
         log::info!(
             "[ReflectionProbes] probe {index}: entity {}, box {:?}..{:?}, capture point {:?}, \
@@ -640,7 +648,7 @@ fn log_probes(section: &ReflectionProbesSection, reports: &[ShareReport]) {
     log::info!(
         "[ReflectionProbes] {} probe(s), {} binding(s), {} tile byte(s)",
         section.probes.len(),
-        section.bindings.len(),
+        section.fluid_bindings.len() + section.world_bindings.len(),
         section.tiles.len()
     );
 }

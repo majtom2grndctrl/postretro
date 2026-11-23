@@ -1505,7 +1505,8 @@ mod tests {
     use postretro_level_format::portals::{PortalRecord, PortalsSection};
     use postretro_level_format::reflection_probes::{
         REFLECTION_PROBE_LIGHTS_PER_PROBE, REFLECTION_PROBE_LOBE_COUNT, REFLECTION_PROBE_NO_LIGHT,
-        ReflectionProbeBinding, ReflectionProbeLightShare, ReflectionProbeRecord,
+        ReflectionProbeFluidBinding, ReflectionProbeLightShare, ReflectionProbeRecord,
+        ReflectionProbeWorldBinding,
     };
     use postretro_render_data::geometry::BvhLeaf;
     use postretro_test_log_capture::LogCapture;
@@ -3085,7 +3086,7 @@ mod tests {
     }
 
     fn reflection_probes_section(
-        binding: ReflectionProbeBinding,
+        binding: ReflectionProbeFluidBinding,
         roster_index: u32,
     ) -> ReflectionProbesSection {
         let mut lights = [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE];
@@ -3100,6 +3101,7 @@ mod tests {
             tile_dimension: 4,
             tile_border: 1,
             atlas_format: postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H,
+            colour_mip_count: 1,
             probes: vec![ReflectionProbeRecord {
                 source_entity: 1,
                 box_min: [0.0; 3],
@@ -3108,7 +3110,8 @@ mod tests {
                 layer: 0,
                 lights,
             }],
-            bindings: vec![binding],
+            fluid_bindings: vec![binding],
+            world_bindings: Vec::new(),
             tiles: vec![0; 16],
             distance_format:
                 postretro_level_format::reflection_probes::REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
@@ -3140,7 +3143,7 @@ mod tests {
         world
     }
 
-    const FIRST_FACE: ReflectionProbeBinding = ReflectionProbeBinding {
+    const FIRST_FACE: ReflectionProbeFluidBinding = ReflectionProbeFluidBinding {
         volume: 0,
         face: 0,
         probe: 0,
@@ -3177,7 +3180,7 @@ mod tests {
     #[test]
     fn load_prl_refuses_a_reflection_probe_binding_past_the_volumes_or_faces() {
         let volume = reflection_probes_section(
-            ReflectionProbeBinding {
+            ReflectionProbeFluidBinding {
                 volume: 3,
                 ..FIRST_FACE
             },
@@ -3190,7 +3193,7 @@ mod tests {
         );
 
         let face = reflection_probes_section(
-            ReflectionProbeBinding {
+            ReflectionProbeFluidBinding {
                 face: 1,
                 ..FIRST_FACE
             },
@@ -3199,6 +3202,33 @@ mod tests {
         let message = reflection_probe_refusal(&face, "postretro_test_probe_face_past.prl");
         assert!(
             message.contains("volume 0 face 1, past its 1 surface faces"),
+            "{message}"
+        );
+    }
+
+    // Row 61: world bindings index Geometry (id 17), whose fixture holds two
+    // faces; face 1 loads, face 2 refuses the level by name.
+    #[test]
+    fn load_prl_refuses_a_world_binding_past_the_geometry_faces() {
+        let mut inside = reflection_probes_section(FIRST_FACE, REFLECTION_PROBE_NO_LIGHT);
+        inside.world_bindings = vec![
+            ReflectionProbeWorldBinding { face: 0, probe: 0 },
+            ReflectionProbeWorldBinding { face: 1, probe: 0 },
+        ];
+        let world =
+            load_with_reflection_probes(Some(&inside), "postretro_test_probe_world_faces.prl")
+                .expect("world bindings inside id 17 load");
+        assert_eq!(world.reflection_probes, Some(inside.clone()));
+
+        let mut past = inside;
+        past.world_bindings
+            .push(ReflectionProbeWorldBinding { face: 2, probe: 0 });
+        let message = reflection_probe_refusal(&past, "postretro_test_probe_world_face_past.prl");
+        assert!(
+            message.starts_with(
+                "ReflectionProbesWorldFacePastGeometry: world binding 2 names face 2, past \
+                 Geometry (id 17)'s 2 faces"
+            ),
             "{message}"
         );
     }
@@ -3213,10 +3243,12 @@ mod tests {
         );
     }
 
+    // Row 61: a version-2 section, built before six lobes, colour mips and
+    // world bindings, is refused by the named version error.
     #[test]
-    fn load_prl_refuses_a_reflection_probe_section_of_a_later_version() {
+    fn load_prl_refuses_a_version_two_reflection_probe_section() {
         let mut bytes = reflection_probes_section(FIRST_FACE, REFLECTION_PROBE_NO_LIGHT).to_bytes();
-        bytes[0..2].copy_from_slice(&3u16.to_le_bytes());
+        bytes[0..2].copy_from_slice(&2u16.to_le_bytes());
         let mut sections = vec![
             geometry_blob(sample_geometry()),
             bvh_blob(sample_bvh_section()),
@@ -3229,13 +3261,16 @@ mod tests {
             version: 1,
             data: bytes,
         });
-        let tmp = write_prl_fixture(sections, "postretro_test_probe_later_version.prl");
+        let tmp = write_prl_fixture(sections, "postretro_test_probe_version_two.prl");
         let result = load_prl(tmp.to_str().unwrap());
         let _ = std::fs::remove_file(&tmp);
         match result {
             Err(PrlLoadError::SectionValidation { section, message }) => {
                 assert_eq!(section, "ReflectionProbes");
-                assert!(message.contains("unsupported version 3"), "{message}");
+                assert!(
+                    message.starts_with("ReflectionProbesVersionMismatch: version 2, expected 3"),
+                    "{message}"
+                );
             }
             other => panic!("expected a ReflectionProbes refusal, got {other:?}"),
         }
@@ -3415,24 +3450,49 @@ mod tests {
         }
     }
 
-    // Row 2, through the loader: the format's own refusals (a binding past
-    // the probe count, a face bound twice) fail the load naming the section.
+    // Rows 2 and 61, through the loader: the format's own refusals (a
+    // binding past the probe count, a face bound twice, a list out of order,
+    // in either list) fail the load naming the section and the refusal.
     #[test]
     fn load_prl_refuses_a_probe_past_its_count_or_a_face_bound_twice_naming_the_section() {
         let past = reflection_probes_section(
-            ReflectionProbeBinding {
+            ReflectionProbeFluidBinding {
                 probe: 1,
                 ..FIRST_FACE
             },
             REFLECTION_PROBE_NO_LIGHT,
         );
         let twice = ReflectionProbesSection {
-            bindings: vec![FIRST_FACE, FIRST_FACE],
+            fluid_bindings: vec![FIRST_FACE, FIRST_FACE],
             ..reflection_probes_section(FIRST_FACE, REFLECTION_PROBE_NO_LIGHT)
         };
-        for (section, name) in [
-            (past, "postretro_test_probe_index_past.prl"),
-            (twice, "postretro_test_probe_face_twice.prl"),
+        let world = |faces: [u32; 2]| ReflectionProbesSection {
+            world_bindings: faces
+                .map(|face| ReflectionProbeWorldBinding { face, probe: 0 })
+                .to_vec(),
+            ..reflection_probes_section(FIRST_FACE, REFLECTION_PROBE_NO_LIGHT)
+        };
+        for (section, name, refusal) in [
+            (
+                past,
+                "postretro_test_probe_index_past.prl",
+                "ReflectionProbesBindingProbePastCount",
+            ),
+            (
+                twice,
+                "postretro_test_probe_face_twice.prl",
+                "ReflectionProbesFluidFaceBoundTwice",
+            ),
+            (
+                world([1, 1]),
+                "postretro_test_probe_world_face_twice.prl",
+                "ReflectionProbesWorldFaceBoundTwice",
+            ),
+            (
+                world([1, 0]),
+                "postretro_test_probe_world_order.prl",
+                "ReflectionProbesWorldBindingOrder",
+            ),
         ] {
             let mut sections = vec![
                 geometry_blob(sample_geometry()),
@@ -3453,6 +3513,7 @@ mod tests {
             match result {
                 Err(PrlLoadError::SectionValidation { section, message }) => {
                     assert_eq!(section, "ReflectionProbes", "{name}: {message}");
+                    assert!(message.starts_with(refusal), "{name}: {message}");
                 }
                 other => panic!("{name}: expected a ReflectionProbes refusal, got {other:?}"),
             }

@@ -11,7 +11,7 @@ use postretro_level_format::environment_volumes::EnvironmentVolumeRecord;
 use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_RGBA16F, f32_to_f16_bits};
 use postretro_level_format::reflection_probes::{
     REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1, REFLECTION_PROBE_LIGHTS_PER_PROBE,
-    REFLECTION_PROBE_LOBE_COUNT, ReflectionProbeBinding, ReflectionProbeLightShare,
+    REFLECTION_PROBE_LOBE_COUNT, ReflectionProbeFluidBinding, ReflectionProbeLightShare,
     ReflectionProbeRecord, ReflectionProbesSection, reflection_probe_zero_distances,
 };
 use postretro_level_format::sh_volume::{AnimationDescriptor, OctahedralShVolumeSection};
@@ -139,11 +139,13 @@ pub(super) fn probe_section(
         tile_dimension: PROBE_TILE,
         tile_border: 1,
         atlas_format: IRRADIANCE_FORMAT_RGBA16F,
+        colour_mip_count: 1,
+        world_bindings: Vec::new(),
         distances: reflection_probe_zero_distances(probes.len(), PROBE_TILE),
         probes,
-        bindings: bindings
+        fluid_bindings: bindings
             .iter()
-            .map(|&(volume, face, probe)| ReflectionProbeBinding {
+            .map(|&(volume, face, probe)| ReflectionProbeFluidBinding {
                 volume,
                 face,
                 probe,

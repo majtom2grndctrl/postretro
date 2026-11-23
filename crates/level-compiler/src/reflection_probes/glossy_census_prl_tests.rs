@@ -60,9 +60,7 @@ fn read_level(path: &Path) -> Result<CompiledLevel, String> {
         .map_err(|e| format!("Bvh: {e}"))?;
     let water_probes = match section(SectionId::ReflectionProbes)? {
         None => Ok(0),
-        Some(bytes) => ReflectionProbesSection::from_bytes(&bytes)
-            .map(|section| section.probes.len())
-            .map_err(|e| format!("id 54 unreadable: {e}")),
+        Some(bytes) => id54_probe_count(&bytes),
     };
     if keys.keys.len() != names.names.len() {
         return Err(format!(
@@ -82,6 +80,29 @@ fn read_level(path: &Path) -> Result<CompiledLevel, String> {
         texture_keys,
         water_probes,
     })
+}
+
+/// Id 54's probe count from any version this census meets. The census reads
+/// past compiles, whose id 54 predates version 3, and needs only the count:
+/// version 2's header holds it at a fixed offset, so it is peeked there
+/// rather than decoded; the current version decodes in full.
+fn id54_probe_count(bytes: &[u8]) -> Result<usize, String> {
+    /// Version 2: u16 version, then tile dimension, border, atlas format,
+    /// distance format, K and lobe count as u32, then the probe count.
+    const V2_PROBE_COUNT_OFFSET: usize = 2 + 4 * 6;
+    let version = bytes
+        .get(..2)
+        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+        .ok_or("id 54 unreadable: no version")?;
+    if version == 2 {
+        return bytes
+            .get(V2_PROBE_COUNT_OFFSET..V2_PROBE_COUNT_OFFSET + 4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize)
+            .ok_or_else(|| "id 54 version 2 unreadable: truncated header".to_string());
+    }
+    ReflectionProbesSection::from_bytes(bytes)
+        .map(|section| section.probes.len())
+        .map_err(|e| format!("id 54 unreadable: {e}"))
 }
 
 /// Id 17 keeps no face ranges; the compiler emits each face's indices as one
@@ -245,4 +266,51 @@ fn glossy_probe_census_of_compiled_levels_reports_estimates_against_the_cap() {
         "census incomplete:\n{}",
         failures.join("\n")
     );
+}
+
+// The census reads past compiles: a version-2 id 54 still reports its probe
+// count by its header, and the current version decodes.
+#[test]
+fn the_census_reads_the_probe_count_of_a_version_two_or_current_id_54() {
+    use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
+    use postretro_level_format::reflection_probes::{
+        REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1, ReflectionProbeLightShare, ReflectionProbeRecord,
+        reflection_probe_zero_distances,
+    };
+    let probe = |layer: u32| ReflectionProbeRecord {
+        source_entity: 0,
+        box_min: [0.0; 3],
+        box_max: [1.0; 3],
+        capture_point: [0.5; 3],
+        layer,
+        lights: [ReflectionProbeLightShare::UNUSED; 4],
+    };
+    let current = ReflectionProbesSection {
+        tile_dimension: 4,
+        tile_border: 1,
+        atlas_format: IRRADIANCE_FORMAT_RGBA16F,
+        colour_mip_count: 1,
+        probes: vec![probe(0), probe(1), probe(2)],
+        fluid_bindings: Vec::new(),
+        world_bindings: Vec::new(),
+        tiles: vec![0; 3 * 4 * 4 * 8],
+        distance_format: REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
+        distances: reflection_probe_zero_distances(3, 4),
+    };
+    assert_eq!(id54_probe_count(&current.to_bytes()), Ok(3));
+
+    // Version 2's header: version, six u32 fields, then the probe count.
+    let mut version_two = 2u16.to_le_bytes().to_vec();
+    version_two.extend(
+        [128u32, 1, 0, 0, 4, 5, 37, 0]
+            .iter()
+            .flat_map(|v| v.to_le_bytes()),
+    );
+    assert_eq!(id54_probe_count(&version_two), Ok(37));
+    assert!(id54_probe_count(&version_two[..20]).is_err());
+
+    let mut version_four = current.to_bytes();
+    version_four[0..2].copy_from_slice(&4u16.to_le_bytes());
+    let error = id54_probe_count(&version_four).expect_err("an unknown version is unreadable");
+    assert!(error.contains("ReflectionProbesVersionMismatch"), "{error}");
 }

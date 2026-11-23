@@ -611,7 +611,8 @@ fn readback_lights(
             } else {
                 ((p + 3 * k) % 8) as u32
             };
-            let mut shares = [[0.0; 3]; 5];
+            let mut shares =
+                [[0.0; 3]; postretro_level_format::reflection_probes::REFLECTION_PROBE_LOBE_COUNT];
             for (lobe, share) in shares.iter_mut().enumerate() {
                 let base = ((p * 7 + lobe * 3 + k * 5) % 11) as f32 / 10.0;
                 *share = [base, (base * 0.7 + 0.1).min(1.0), (1.0 - base) * 0.8];

@@ -16,8 +16,9 @@ type LobeSums = [[f64; 3]; LOBES];
 /// samples in the upper hemisphere: the captured total, and each animated
 /// light's part of it at its reference value. Every runtime lookup is clamped
 /// to the horizon, so light only the lower hemisphere holds (a pool floor
-/// below the capture point) never reaches the water and takes no share; the
-/// tile itself still holds the full sphere. Rows sum independently and merge
+/// below the capture point) never reaches the water and takes no share, and
+/// the −Y lobe stays empty, so water's −Y share is 0; the tile itself still
+/// holds the full sphere. Rows sum independently and merge
 /// in row order, so the result never depends on the worker count; no
 /// per-texel per-light value is ever held.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -366,8 +367,10 @@ mod tests {
             .map(|e| e.roster_index)
             .collect();
         assert_eq!(stored, [1]);
-        // Light 1 is all the +X lobe captured above the horizon.
+        // Light 1 is all the +X lobe captured above the horizon; −Y, the
+        // last lobe, captured nothing.
         assert_eq!(shares.entries[0].shares[1], [1.0; 3]);
+        assert_eq!(shares.entries[0].shares[LOBES - 1], [0.0; 3]);
         assert_eq!(shares.report.animated_lights, 1);
         assert_eq!(shares.report.covered, 1.0);
     }

@@ -13,7 +13,7 @@ use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
 use postretro_level_format::octahedral::irradiance_tile_texel_coord;
 use postretro_level_format::reflection_probes::{
     REFLECTION_PROBE_NO_LIGHT, REFLECTION_PROBE_TILE_BORDER, REFLECTION_PROBE_TILE_DIMENSION,
-    ReflectionProbeBinding,
+    ReflectionProbeFluidBinding,
 };
 
 const TILE: [u32; 2] = [
@@ -86,13 +86,14 @@ fn fluid(faces: Vec<EnvironmentSurfaceFace>) -> EnvironmentVolumeRecord {
 
 fn section(
     probes: Vec<ReflectionProbeRecord>,
-    bindings: Vec<ReflectionProbeBinding>,
+    bindings: Vec<ReflectionProbeFluidBinding>,
 ) -> ReflectionProbesSection {
     let tile = (REFLECTION_PROBE_TILE_DIMENSION as usize / 4).pow(2) * 16;
     ReflectionProbesSection {
         tile_dimension: REFLECTION_PROBE_TILE_DIMENSION,
         tile_border: REFLECTION_PROBE_TILE_BORDER,
         atlas_format: IRRADIANCE_FORMAT_BC6H,
+        colour_mip_count: 1,
         tiles: vec![0; tile * probes.len()],
         distance_format:
             postretro_level_format::reflection_probes::REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
@@ -101,12 +102,13 @@ fn section(
             REFLECTION_PROBE_TILE_DIMENSION,
         ),
         probes,
-        bindings,
+        fluid_bindings: bindings,
+        world_bindings: Vec::new(),
     }
 }
 
-fn binding(volume: u32, face: u32, probe: u32) -> ReflectionProbeBinding {
-    ReflectionProbeBinding {
+fn binding(volume: u32, face: u32, probe: u32) -> ReflectionProbeFluidBinding {
+    ReflectionProbeFluidBinding {
         volume,
         face,
         probe,
@@ -148,7 +150,14 @@ fn probe_table_packs_every_probe_at_its_stride_and_zeros_the_rest() {
     lit.lights[0] = ReflectionProbeLightShare {
         roster_index: 3,
         reference: [0.5, 1.0, 2.0],
-        shares: [[1.0, 0.0, 0.5], [0.0; 3], [0.25; 3], [0.0; 3], [1.0; 3]],
+        shares: [
+            [1.0, 0.0, 0.5],
+            [0.0; 3],
+            [0.25; 3],
+            [0.0; 3],
+            [1.0; 3],
+            [0.0, 1.0, 0.0],
+        ],
     };
     let probes = vec![room_probe([0.0, 0.002, 0.0], 0), lit];
     let bytes = pack_probe_table(Some(&section(probes.clone(), Vec::new())));
@@ -176,7 +185,10 @@ fn probe_table_packs_every_probe_at_its_stride_and_zeros_the_rest() {
     assert_eq!(entry.shares[0], 1023 | (512 << 20));
     assert_eq!(entry.shares[2], 256 | (256 << 10) | (256 << 20));
     assert_eq!(entry.shares[4], 1023 | (1023 << 10) | (1023 << 20));
-    assert_eq!(&entry.shares[REFLECTION_PROBE_LOBE_COUNT..], &[0; 3]);
+    // −Y, the sixth lobe, fits the second `vec4<u32>` beside −Z: six lobes
+    // pad to the same eight words five did, so the stride holds.
+    assert_eq!(entry.shares[5], 1023 << 10);
+    assert_eq!(&entry.shares[REFLECTION_PROBE_LOBE_COUNT..], &[0; 2]);
     for unused in &probe(0).lights {
         assert_eq!(unused.roster_index, REFLECTION_PROBE_NO_LIGHT);
         assert_eq!(unused.reference, [0.0; 3]);
@@ -1327,6 +1339,7 @@ fn ratio_is_one_with_no_lights_or_every_light_at_its_reference() {
         [0.0; 3],
         [0.25; 3],
         [0.5, 0.0, 0.2],
+        [0.0, 0.4, 0.7],
     ];
     let descriptors: Vec<_> = references.iter().map(|&r| flat_light(r, true)).collect();
     let flat = lights(&descriptors, 3.25);
@@ -1411,13 +1424,15 @@ const P7_RATIO_STEP_EPSILON: f32 = 2.0e-3;
 // while the ratio itself spans the lobes' different shares.
 #[test]
 fn ratio_is_continuous_across_every_lobe_edge() {
-    // Per channel, adjacent lobes hold different shares: up, +X, −X, +Z, −Z.
+    // Per channel, adjacent lobes hold different shares: +Y, +X, −X, +Z, −Z,
+    // −Y.
     let shares = [
         [0.5, 0.0, 1.0],
         [1.0, 1.0, 0.0],
         [1.0, 1.0, 0.25],
         [0.0, 1.0, 0.75],
         [0.0, 1.0, 0.5],
+        [0.75, 0.0, 0.0],
     ];
     let mut stored = unused_entries();
     stored[0] = entry(0, [1.0, 2.0, 0.5], shares);
@@ -1554,6 +1569,7 @@ const LOBED_SHARES: [[f32; 3]; REFLECTION_PROBE_LOBE_COUNT] = [
     [0.9, 0.0, 0.5],
     [0.3, 0.7, 0.2],
     [0.0, 0.4, 0.8],
+    [0.5, 0.9, 0.1],
 ];
 
 // Two fragments of one probe whose reflected rays leave the box at the same
@@ -1815,7 +1831,9 @@ fn ratio_blended_from_probe_sums_matches_the_per_fragment_ratio() {
                     8 => REFLECTION_PROBE_NO_LIGHT,
                     index => index.min(5),
                 };
-                let mut reference = cases.rgb(4.0);
+                // Floored so no change reaches the ceiling, which only the
+                // overflow case below engages; a zero channel is still drawn.
+                let mut reference = cases.rgb(4.0).map(|channel| channel.max(0.01));
                 if cases.below(5) == 0 {
                     reference[cases.below(3) as usize] = 0.0;
                 }
@@ -1883,8 +1901,8 @@ fn ratio_blended_from_probe_sums_matches_the_per_fragment_ratio() {
 // change at the ceiling, so they and the blended ratio stay finite and the
 // light blows out the directions it reaches instead of blanking the whole
 // probe. Every channel the per-fragment ratio keeps finite still matches.
-// The random cases above stay below the ceiling (their largest change is
-// about 3.4e4 at that seed), so it never engages there.
+// The random cases above floor their references at 0.01, which keeps every
+// change below the ceiling, so it never engages there.
 #[test]
 fn a_live_value_overflowing_its_reference_caps_the_sums_and_blanks_nothing() {
     // Red is shared on every lobe, so the per-fragment red is +Inf toward
@@ -1896,6 +1914,7 @@ fn a_live_value_overflowing_its_reference_caps_the_sums_and_blanks_nothing() {
         [0.9, 0.0, 0.5],
         [0.3, 0.7, 0.2],
         [0.5, 0.4, 0.8],
+        [0.2, 0.0, 0.6],
     ];
     let overflow_reference = [0.5, 1.0, 1.0];
     let descriptors = [
@@ -1966,5 +1985,8 @@ fn the_sums_pass_dispatches_whole_workgroups_over_every_installed_probe() {
         reflection_probe_sums_workgroups(MAX_REFLECTION_PROBES as u32) * width,
         MAX_REFLECTION_PROBES as u32
     );
-    assert_eq!(FLUID_PROBE_SUMS_BYTES, 20_480);
+    assert_eq!(
+        FLUID_PROBE_SUMS_BYTES,
+        MAX_REFLECTION_PROBES * REFLECTION_PROBE_LOBE_COUNT * FLUID_PROBE_SUM_STRIDE
+    );
 }

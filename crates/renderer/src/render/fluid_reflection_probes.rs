@@ -185,6 +185,7 @@ impl FluidProbeResources {
                         "Fluid Reflection Probe Array",
                         format,
                         section.tile_dimension,
+                        section.colour_mip_count,
                         section.probes.len() as u32,
                     ),
                     wgpu::util::TextureDataOrder::LayerMajor,
@@ -192,13 +193,15 @@ impl FluidProbeResources {
                 );
                 log::info!(
                     "[Renderer] Fluid reflection probes installed: {} probes, {} {}² tiles \
-                     ({} B), R16Float distance tiles ({} B), {} bound faces, share table {} B",
+                     × {} mip(s) ({} B), R16Float distance tiles ({} B), {} bound faces, share \
+                     table {} B",
                     section.probes.len(),
                     format_label(format),
                     section.tile_dimension,
+                    section.colour_mip_count,
                     section.tiles.len(),
                     section.distances.len(),
-                    section.bindings.len(),
+                    section.fluid_bindings.len(),
                     FLUID_PROBE_TABLE_BYTES,
                 );
                 array
@@ -208,6 +211,7 @@ impl FluidProbeResources {
                 &array_descriptor(
                     "Fluid Reflection Probe Array Dummy",
                     wgpu::TextureFormat::Rgba16Float,
+                    1,
                     1,
                     1,
                 ),
@@ -234,6 +238,7 @@ impl FluidProbeResources {
                     "Fluid Reflection Probe Distance Array",
                     wgpu::TextureFormat::R16Float,
                     section.tile_dimension,
+                    1,
                     section.probes.len() as u32,
                 ),
                 wgpu::util::TextureDataOrder::LayerMajor,
@@ -244,6 +249,7 @@ impl FluidProbeResources {
                 &array_descriptor(
                     "Fluid Reflection Probe Distance Array Dummy",
                     wgpu::TextureFormat::R16Float,
+                    1,
                     1,
                     1,
                 ),
@@ -346,10 +352,13 @@ impl FluidProbeResources {
     }
 }
 
+/// `mip_levels` is the colour chain's count (id 54 stores each probe's mips
+/// in sequence, which is `LayerMajor` order), 1 for the distance tiles.
 fn array_descriptor(
     label: &'static str,
     format: wgpu::TextureFormat,
     dimension: u32,
+    mip_levels: u32,
     layers: u32,
 ) -> wgpu::TextureDescriptor<'static> {
     wgpu::TextureDescriptor {
@@ -359,7 +368,7 @@ fn array_descriptor(
             height: dimension,
             depth_or_array_layers: layers,
         },
-        mip_level_count: 1,
+        mip_level_count: mip_levels,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format,

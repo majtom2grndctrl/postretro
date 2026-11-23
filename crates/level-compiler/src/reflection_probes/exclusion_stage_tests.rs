@@ -143,7 +143,7 @@ fn placed_probes_are_identical_with_the_filter_on_and_off() {
                 )
             })
             .collect();
-        (probes, section.bindings.clone())
+        (probes, section.fluid_bindings.clone())
     };
     assert_eq!(placement(&filtered), placement(&unfiltered));
     let record = &filtered.probes[0];

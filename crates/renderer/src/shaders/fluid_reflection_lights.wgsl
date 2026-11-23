@@ -10,8 +10,8 @@ const FLUID_REFLECTION_REFERENCE_FLOOR: f32 = 1.0e-30;
 const FLUID_REFLECTION_UNORM10_MAX: u32 = 1023u;
 const FLUID_REFLECTION_NO_LIGHT: u32 = 0xFFFFFFFFu;
 const FLUID_REFLECTION_LIGHTS_PER_PROBE: u32 = 4u;
-// Share lobes per probe: up, +X, -X, +Z, -Z.
-const FLUID_REFLECTION_LOBES: u32 = 5u;
+// Share lobes per probe: +Y, +X, -X, +Z, -Z, -Y.
+const FLUID_REFLECTION_LOBES: u32 = 6u;
 
 // Live lighting by light share. The capture holds every animated light at its
 // reference; each stored light scales it by its share toward the lookup
@@ -19,26 +19,26 @@ const FLUID_REFLECTION_LOBES: u32 = 5u;
 // promotion weight, so a switch reaches every reflection, at any distance, on
 // the frame it lands, and promotion never moves it.
 
-// The share lobes' blend weights for a lookup direction: up, +X, -X, +Z, -Z.
-// Mirrors level-format `reflection_probe_lobe_weights`, which the compiler
-// split the capture's light by.
-fn fluid_reflection_lobe_weights(direction: vec3<f32>) -> array<f32, 5> {
+// The share lobes' blend weights for a lookup direction: +Y, +X, -X, +Z, -Z,
+// -Y. Mirrors level-format `reflection_probe_lobe_weights`, which the
+// compiler split the capture's light by.
+fn fluid_reflection_lobe_weights(direction: vec3<f32>) -> array<f32, 6> {
     let positive = max(direction, vec3<f32>(0.0));
     let negative = max(-direction, vec3<f32>(0.0));
-    let down = negative.y * negative.y * 0.25;
-    let weights = array<f32, 5>(
+    let weights = array<f32, 6>(
         positive.y * positive.y,
-        positive.x * positive.x + down,
-        negative.x * negative.x + down,
-        positive.z * positive.z + down,
-        negative.z * negative.z + down,
+        positive.x * positive.x,
+        negative.x * negative.x,
+        positive.z * positive.z,
+        negative.z * negative.z,
+        negative.y * negative.y,
     );
-    let sum = weights[0] + weights[1] + weights[2] + weights[3] + weights[4];
+    let sum = weights[0] + weights[1] + weights[2] + weights[3] + weights[4] + weights[5];
     if !(sum > 0.0) {
-        return array<f32, 5>(1.0, 0.0, 0.0, 0.0, 0.0);
+        return array<f32, 6>(1.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     }
-    return array<f32, 5>(weights[0] / sum, weights[1] / sum, weights[2] / sum, weights[3] / sum,
-        weights[4] / sum);
+    return array<f32, 6>(weights[0] / sum, weights[1] / sum, weights[2] / sum, weights[3] / sum,
+        weights[4] / sum, weights[5] / sum);
 }
 
 // The reserved roster value, and any index past the descriptors, indexes
@@ -80,12 +80,13 @@ fn fluid_reflection_unpack_unorm10x3(word: u32) -> vec3<f32> {
 }
 
 // A stored light's RGB share toward the lookup: its lobe shares, blended.
-fn fluid_reflection_light_share(shares: array<vec4<u32>, 2>, lobes: array<f32, 5>) -> vec3<f32> {
+fn fluid_reflection_light_share(shares: array<vec4<u32>, 2>, lobes: array<f32, 6>) -> vec3<f32> {
     return fluid_reflection_unpack_unorm10x3(shares[0].x) * lobes[0]
         + fluid_reflection_unpack_unorm10x3(shares[0].y) * lobes[1]
         + fluid_reflection_unpack_unorm10x3(shares[0].z) * lobes[2]
         + fluid_reflection_unpack_unorm10x3(shares[0].w) * lobes[3]
-        + fluid_reflection_unpack_unorm10x3(shares[1].x) * lobes[4];
+        + fluid_reflection_unpack_unorm10x3(shares[1].x) * lobes[4]
+        + fluid_reflection_unpack_unorm10x3(shares[1].y) * lobes[5];
 }
 
 // current / reference - 1 per channel; a channel the reference holds no light

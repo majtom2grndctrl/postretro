@@ -65,7 +65,7 @@ struct FluidProbeTable {
     probes: array<FluidProbe, 256>,
 };
 struct FluidProbeSums {
-    lobes: array<vec4<f32>, 1280>,
+    lobes: array<vec4<f32>, 1536>,
 };
 // The one writable binding: this pass writes the sums and nothing else.
 @group(2) @binding(0) var<storage, read_write> fluid_probe_sums: FluidProbeSums;
@@ -80,8 +80,8 @@ const FLUID_REFLECTION_CHANGE_CEILING: f32 = 65504.0;
 
 // A probe's per-lobe sums over its stored lights, each light's change capped
 // at the ceiling. Mirrors render-cpu `reflection_probe_sums`.
-fn fluid_reflection_probe_sums(probe: u32) -> array<vec3<f32>, 5> {
-    var sums = array<vec3<f32>, 5>();
+fn fluid_reflection_probe_sums(probe: u32) -> array<vec3<f32>, 6> {
+    var sums = array<vec3<f32>, 6>();
     for (var i: u32 = 0u; i < FLUID_REFLECTION_LIGHTS_PER_PROBE; i = i + 1u) {
         let light = fluid_probes.probes[probe].lights[i];
         if !fluid_reflection_light_present(light.roster_index) {
@@ -96,6 +96,7 @@ fn fluid_reflection_probe_sums(probe: u32) -> array<vec3<f32>, 5> {
         sums[2] = sums[2] + fluid_reflection_unpack_unorm10x3(light.shares[0].z) * change;
         sums[3] = sums[3] + fluid_reflection_unpack_unorm10x3(light.shares[0].w) * change;
         sums[4] = sums[4] + fluid_reflection_unpack_unorm10x3(light.shares[1].x) * change;
+        sums[5] = sums[5] + fluid_reflection_unpack_unorm10x3(light.shares[1].y) * change;
     }
     return sums;
 }
@@ -115,4 +116,5 @@ fn fluid_reflection_sums_main(@builtin(global_invocation_id) id: vec3<u32>) {
     fluid_probe_sums.lobes[base + 2u] = vec4<f32>(sums[2], 0.0);
     fluid_probe_sums.lobes[base + 3u] = vec4<f32>(sums[3], 0.0);
     fluid_probe_sums.lobes[base + 4u] = vec4<f32>(sums[4], 0.0);
+    fluid_probe_sums.lobes[base + 5u] = vec4<f32>(sums[5], 0.0);
 }

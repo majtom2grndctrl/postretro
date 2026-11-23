@@ -289,7 +289,7 @@ fn a_capture_point_that_sees_under_half_its_water_warns() {
         capture_point: record.capture_point,
         bound_area: 0.0,
         faces: section
-            .bindings
+            .fluid_bindings
             .iter()
             .map(|b| (b.volume, b.face))
             .collect(),

@@ -9,7 +9,7 @@ use postretro_level_format::environment_volumes::{
 use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
 use postretro_level_format::reflection_probes::{
     REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1, REFLECTION_PROBE_LIGHTS_PER_PROBE,
-    ReflectionProbeBinding, ReflectionProbeLightShare, ReflectionProbeRecord,
+    ReflectionProbeFluidBinding, ReflectionProbeLightShare, ReflectionProbeRecord,
     ReflectionProbesSection, reflection_probe_zero_distances,
 };
 use postretro_level_loader::{CellData, CellLocatorChild, LevelWorld};
@@ -76,7 +76,7 @@ fn bind_every_face(volumes: &[EnvironmentVolumeRecord]) -> ReflectionProbesSecti
     let mut section = probe_section();
     for (volume, record) in volumes.iter().enumerate() {
         for face in 0..record.surface_faces.len() {
-            section.bindings.push(ReflectionProbeBinding {
+            section.fluid_bindings.push(ReflectionProbeFluidBinding {
                 volume: volume as u32,
                 face: face as u32,
                 probe: 0,
@@ -92,6 +92,7 @@ fn probe_section() -> ReflectionProbesSection {
         tile_dimension: 4,
         tile_border: 1,
         atlas_format: IRRADIANCE_FORMAT_BC6H,
+        colour_mip_count: 1,
         probes: vec![ReflectionProbeRecord {
             source_entity: 0,
             box_min: [-100.0; 3],
@@ -100,7 +101,8 @@ fn probe_section() -> ReflectionProbesSection {
             layer: 0,
             lights: [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE],
         }],
-        bindings: Vec::new(),
+        fluid_bindings: Vec::new(),
+        world_bindings: Vec::new(),
         tiles: vec![0; 16],
         distance_format: REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
         distances: reflection_probe_zero_distances(1, 4),
@@ -270,19 +272,19 @@ fn planar_candidates_count_only_probe_bound_reflecting_faces() {
     ));
     let volumes = [two_faced, lake(3.0), lake(-3.0)];
     let mut section = probe_section();
-    section.bindings = vec![
-        ReflectionProbeBinding {
+    section.fluid_bindings = vec![
+        ReflectionProbeFluidBinding {
             volume: 0,
             face: 1,
             probe: 0,
         },
         // A binding naming a probe the section lacks binds nothing.
-        ReflectionProbeBinding {
+        ReflectionProbeFluidBinding {
             volume: 1,
             face: 0,
             probe: 7,
         },
-        ReflectionProbeBinding {
+        ReflectionProbeFluidBinding {
             volume: 2,
             face: 0,
             probe: 0,

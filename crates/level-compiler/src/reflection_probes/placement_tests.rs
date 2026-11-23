@@ -21,7 +21,7 @@ use super::capture_point::{
 use super::derived::FIT_MATCH_TOLERANCE_M;
 use super::hit::SceneTracer;
 use super::placement::{
-    CAPTURE_LIFT_M, PlacedProbe, PlacementScene, UpFacingFace, bindings, place_probes,
+    CAPTURE_LIFT_M, PlacedProbe, PlacementScene, UpFacingFace, fluid_bindings, place_probes,
 };
 use super::placement_test_fixtures::{
     PlacementFixture, UNIT, box_brush, engine, engine_box, fluid, reflection_volume, sealed_room,
@@ -331,7 +331,7 @@ fn derived_probe_with_an_invalid_capture_point_drops_naming_its_fluid_entity() {
     capture.assert_logged_once(Level::Warn, "derived probe of fluid entity 1");
     capture.assert_logged_once(Level::Warn, "is in solid; dropped");
     capture.assert_not_logged(Level::Warn, "past the 1-probe cap");
-    let bound = bindings(&probes);
+    let bound = fluid_bindings(&probes);
     assert!(bound.iter().all(|b| b.volume == 1), "{bound:?}");
 
     capture.clear();
@@ -1093,7 +1093,7 @@ fn cap_overflow_drops_the_smallest_derived_and_refuses_authored_past_it() {
         Level::Warn,
         "2 derived probe(s) past the 3-probe cap dropped",
     );
-    let bound: Vec<u32> = bindings(&probes).iter().map(|b| b.volume).collect();
+    let bound: Vec<u32> = fluid_bindings(&probes).iter().map(|b| b.volume).collect();
     assert_eq!(bound, vec![1, 3, 4], "dropped probes' faces bind nothing");
 
     let authored: Vec<MapReflectionVolume> = (0..4)

@@ -168,3 +168,26 @@ Engineering research on 2026-11-23; not legal advice.
   - Gains: direct light stays a pure memo, a revert hits for free, and no reach geometry is stored per light.
   - Costs: a whole chart re-traces where per-sample grain re-traces single texels, and the cache runs two models.
   - Not chosen. SH needs the diff model regardless, because its rays are unbounded. Writing every patched entry under its full content key restores free reverts and shared-cache safety inside one model.
+
+## Pin table
+
+Orderings the Acceptance rows cite.
+
+| id | scenario | ordering | expected outcome |
+|---|---|---|---|
+| RW-1 | Chained warm edits | cold A → warm e1 → warm e2 (no cold between) | The e2 build re-traces only e2's samples and crossing rays; no chunk e1 left unchanged misses; equals cold of A+e1+e2 |
+| RW-2 | Tracer or stage version bump | build → bump `TRACER_EPOCH` or a stage version → build, records present, no geometry edit | No pre-bump entry or record serves as a baseline; every sample and ray re-traces; equals cold |
+| RW-3 | Record eviction by sweep | build → next build's sweep evicts all or some ray-record chunks → build → build | All evicted: one full SH trace, then local again. Some evicted: at most those chunks' rays re-trace. Equals cold throughout |
+| RW-4 | Revert | A → B (success) → A | No eviction between: every entry A hit before hits, nothing re-traced. Sweep evicts A-only entries between: those re-bake, equals cold |
+| RW-5 | Coincident faces | two coincident faces, different textures → edit elsewhere that renumbers | Closest-hit winner equal warm and cold, before and after; equals cold |
+| RW-6 | Sampling-frame edit | `_lightmap_scale` changed on one brush, no geometry moved | The brush's charts re-trace; other charts hit; equals cold |
+| RW-7 | Atlas layer size change | edit elsewhere doubles layer size; one layer's placements unchanged | That layer's encode memo misses; equals cold |
+| RW-8 | Pause mid-stage | fresh units → pause N s → resume | ETA after resume equals ETA before pause, in TUI and plain reporter; no ETA countdown while paused |
+| RW-9 | Total raised or late; filler units | total published late, or re-published larger mid-stage; units completed without work at stage end | ETA stays defined from fresh rate; filler counts cached; cached + fresh = last total at stage end |
+| RW-10 | Telemetry counts | stage begin → finish/skip | Finish/skip events carry final cached/fresh/total; begin and no-total stages carry null, never zero |
+| RW-11 | Ceiling crossing | renumbering edit takes map past ceiling → edit back under → local edit | Past: SH whole, no records written, warns by name, direct local. Back: SH whole, records written, no warning. Next: local. Equals cold each time |
+| RW-12 | Zero bounce source | every static light dimmed to zero → brush edit → one light restored | No later-bounce records exist after the zero build; the restore build traces the rays it needs; no absent record reads as a miss; equals cold |
+| RW-13 | Chunk gone mid-bake | this build looks up baseline → another build's sweep removes a chunk → this build reads it | That chunk's rays re-trace; equals cold |
+| RW-14 | Two edits, one build | e1 and e2 in different places → one warm build | Re-trace = union of both crossing sets; equals cold |
+| RW-15 | Kill mid-record write | build killed after some record chunks, before SH entry → rebuild | Equals cold; re-trace ≤ crossing set + rays of chunks failing digest |
+| RW-16 | Two worktrees, one map | W1 edits e1, W2 edits e2, built alternately on one cache | Each equals its cold build; each re-traces at most the union of e1's and e2's crossing sets |

@@ -87,7 +87,7 @@ The material enum and prefix derivation are implemented. Behavior hooks are plan
 | **Bullet impact particles** | Planned. |
 | **Ricochet behavior** | Planned. |
 | **Decal selection** | Planned. |
-| **Environment-mapped reflections** | Fluid surfaces only (§5). No material reads probes: the forward pass has no free sampled-texture binding. |
+| **Environment-mapped reflections** | Fluid surfaces only (§5). The forward pass has no free sampled-texture binding for probes. Decided, not yet built: glossy static world faces read them through their own overlay pass (§5.4). |
 
 Each behavior is a property of the material enum variant. Which prefixes carry which flags is a content concern — the engine provides the mechanism.
 
@@ -103,7 +103,7 @@ Optional sibling textures provide per-texel surface properties. Suffixes are app
 
 ### 4.1 Specular Maps (Epic 5)
 
-Per-texel specular intensity modulates the direct lighting highlight.
+Per-texel specular intensity modulates the direct lighting highlight. Decided, not yet built: it also masks and scales glossy reflection, so a material without `_s` never reflects (§5.4).
 
 - **Naming:** `{name}_s.png` suffix.
 - **Format:** R8Unorm (sampled as `.r` in shader). The slot widens to two-channel `Rg8Unorm` when a `{name}_h.png` height sibling is present (§4.6), and to four-channel `Rgba8Unorm` when a `{name}_p.png` smoothness or `{name}_t.png` tint sibling is present (§4.7). Specular is `.r` in every form.
@@ -322,7 +322,9 @@ slot rather than slots of their own.
   epsilon sits below sRGB byte 1's linear value, so of 8-bit albedos only black
   takes the white fallback. Without `_t`, specular multiplies raw albedo.
   Diffuse never changes: tint is a metallic map's specular half, without its
-  diffuse suppression (`rendering_pipeline.md` §13).
+  diffuse suppression (`rendering_pipeline.md` §13). Decided, not yet built:
+  on a glossy face the reflection weight, which tint raises, fades static
+  diffuse (§5.4).
 - **Color space and dimensions:** as for `_h` (§4.6): an `sRGB` or `iCCP`
   chunk, or a non-unit `gAMA`, fails the build. `_p` must match the diffuse,
   `_s` and `_h`; `_t` must match those and `_p`. Each mismatch is a hard bail
@@ -387,7 +389,7 @@ slot rather than slots of their own.
 
 ## 5. Reflection Probes
 
-A reflection probe is a compile-time capture of the static world, stored for distance-corrected, box-projected lookup. The record is reflector-agnostic: a capture point, a world-space projection box, a full-sphere octahedral colour tile and a distance tile beside it. Both tiles share a fixed engine tile size (128, carried in the section header, so a later authored size is additive) and the SH atlas's direction mapping and border convention (`rendering_pipeline.md` §4, Indirect). Water is its only reader (`rendering_pipeline.md` §7.3a); a later glass or polished-stone reader takes its base reflectance from its material.
+A reflection probe is a compile-time capture of the static world, stored for distance-corrected, box-projected lookup. The record is reflector-agnostic: a capture point, a world-space projection box, a full-sphere octahedral colour tile and a distance tile beside it. Both tiles share a fixed engine tile size (128, carried in the section header, so a later authored size is additive) and the SH atlas's direction mapping and border convention (`rendering_pipeline.md` §4, Indirect). Water is its only reader today (`rendering_pipeline.md` §7.3a). Decided, not yet built: glossy static world faces read it too, at an engine-owned base reflectance until a `materials.toml` override exists (§5.4).
 
 ### 5.1 Placement
 
@@ -434,6 +436,17 @@ PRL id 54 carries probes, tiles and face bindings (`build_pipeline.md` §PRL sec
 | Live-lighting sums | One RGB sum per lobe per probe at the cap, 20 480 B, one buffer with storage and uniform usage. A compute pass rewrites every installed probe's sums each frame with a reflecting draw; the fluid fragment reads them as a uniform. Never written into the share table or tiles (`rendering_pipeline.md` §7.3a Live lighting) |
 
 At the cap the arrays cost 12 MiB (colour 4 194 304 B BC6H, distance 8 388 608 B), the table 61 456 B and the sums 20 480 B; the probe-index buffer costs 4 B per fluid vertex. A level with fluid surfaces and no usable id 54 binds a 1×1 one-layer dummy for each array, a zeroed table and zeroed sums, and no face samples them; the sums pass never dispatches over it.
+
+
+### 5.4 Glossy World Faces (decided, not yet built)
+
+Probes bind static world faces whose material passes the opt-in: `_p` above an engine-owned sharpness floor and `_s` non-zero on some texel. Runtime: `rendering_pipeline.md` §7.3a Glossy world faces.
+
+- **Placement.** One probe per coplanar glossy face group, its capture point lifted along the face normal. Bound reflector faces are transparent to their own probe's primary rays, as water is absent from captures. A `reflection_volume` may claim glossy faces; a box whose faces face several ways makes one probe per facing. Probe boundaries go behind occluders, an authoring rule: probes never blend.
+- **Exclusion.** Up-facing probes, water's and glossy floors', keep §5.2's exclusion, since a screen-space layer draws what it drops. A glossy-floor probe's thin rule keys to the floor layer's coarsest stride; a probe binding water and a glossy floor, to the coarser of the two. A probe binding walls, ceilings or slopes captures every static brush.
+- **Cap.** Past 256, probes binding only world faces drop first, authored or derived, smallest bound area first, and the warning names their faces; water keeps every probe it has. Authored probes refuse the build only when those binding water pass the cap alone.
+- **Format.** Id 54 version 3: six lobes (−Y appended after water's five), a prefiltered colour mip chain per tile down to 4², and a world-face binding list in id-17 numbering beside the fluid list.
+- **Residency.** Probe records, tiles and the live-lighting sums leave the fluid surfaces' ownership and gain a memory-ledger row.
 
 ---
 

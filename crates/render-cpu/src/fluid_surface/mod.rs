@@ -19,6 +19,7 @@ pub mod grid;
 pub mod motion;
 pub mod prepared;
 pub mod reflection;
+pub mod reflection_hemisphere;
 pub mod reflection_quality;
 pub mod reflection_search;
 pub mod reflection_style;

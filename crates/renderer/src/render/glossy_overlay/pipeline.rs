@@ -14,6 +14,9 @@ use crate::render::{DEPTH_FORMAT, SCENE_COLOR_FORMAT};
 /// The world probe stream: one `u32` per world vertex, vertex slot 1.
 const WORLD_PROBE_STRIDE: u64 = 4;
 const WORLD_PROBE_SHADER_LOCATION: u32 = 3;
+/// The world vertex's packed tangent, at forward's offset, after the probe
+/// stream's location.
+const TANGENT_SHADER_LOCATION: u32 = 4;
 
 /// The level probe group's entries: the colour array, share table, distance
 /// array and sums, each read by the fragment stage alone.
@@ -103,8 +106,9 @@ pub(super) fn overlay_pipeline(
             module: &shader,
             entry_point: Some("vs_main"),
             buffers: &[
-                // Slot 0: the world vertex buffer: position, UV and normal,
-                // at forward's offsets and locations.
+                // Slot 0: the world vertex buffer: position, UV and normal
+                // at forward's offsets and locations, and the tangent at
+                // forward's offset.
                 Some(wgpu::VertexBufferLayout {
                     array_stride: postretro_render_data::geometry::WorldVertex::STRIDE
                         as wgpu::BufferAddress,
@@ -123,6 +127,11 @@ pub(super) fn overlay_pipeline(
                         wgpu::VertexAttribute {
                             offset: 20,
                             shader_location: 2,
+                            format: wgpu::VertexFormat::Uint16x2,
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 24,
+                            shader_location: TANGENT_SHADER_LOCATION,
                             format: wgpu::VertexFormat::Uint16x2,
                         },
                     ],

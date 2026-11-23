@@ -18,6 +18,7 @@ use postretro_level_format::reflection_probes::{
 
 use super::FluidFaceDriftMap;
 use super::fog::fog_proximity;
+use super::reflection_hemisphere::{FLUID_REFLECTION_UP, reflection_lookup_about};
 use super::reflection_search::reflection_search;
 use super::reflection_style::{FluidTexelAxes, reflection_point};
 use crate::frame_uniforms::LightTermMask;
@@ -386,18 +387,13 @@ pub fn reflection_box_hit(origin: Vec3, ray: Vec3, box_min: Vec3, box_max: Vec3)
     origin + ray * t
 }
 
-/// The tile lookup direction: from the capture point to the reflected
-/// point (the distance search's hit, or the box hit), clamped to the horizon
-/// when it lies below the capture point. A point on the capture point itself
-/// has no direction and takes the reflected ray's.
+/// The tile lookup direction of an up-facing probe: from the capture point
+/// to the reflected point (the distance search's hit, or the box hit),
+/// clamped to the horizon when it lies below the capture point
+/// ([`reflection_lookup_about`] about [`FLUID_REFLECTION_UP`]). A point on
+/// the capture point itself has no direction and takes the reflected ray's.
 pub fn reflection_lookup(hit: Vec3, capture_point: Vec3, ray: Vec3) -> Vec3 {
-    let toward = hit - capture_point;
-    let level = Vec3::new(toward.x, toward.y.max(0.0), toward.z);
-    if level.dot(level) < FLUID_REFLECTION_DIRECTION_EPSILON {
-        Vec3::new(ray.x, ray.y.max(0.0), ray.z)
-    } else {
-        level
-    }
+    reflection_lookup_about(hit, capture_point, ray, FLUID_REFLECTION_UP)
 }
 
 /// Normalized tile UV for `direction`: the octahedral texel coordinate

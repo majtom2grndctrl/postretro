@@ -1,13 +1,20 @@
 // Glossy world faces' reflection weight and colour, and the overlay's composite: the GPU-free reference for `glossy_overlay.wgsl`.
 // See: context/lib/rendering_pipeline.md §7.3a (Glossy world faces) · context/lib/resource_management.md §4.7
 
-use glam::{Vec3, Vec4};
+use glam::{Vec2, Vec3, Vec4};
+use postretro_level_format::reflection_probes::{
+    REFLECTION_PROBE_LOBE_COUNT, ReflectionProbeRecord,
+};
 
 pub use postretro_level_format::glossy_opt_in::{
     GLOSSY_FULL_WEIGHT_EXPONENT, GLOSSY_SHARPNESS_FLOOR_EXPONENT, glossy_sharpness_fade,
 };
 
-use crate::fluid_surface::reflection::{FLUID_REFLECTIVITY_MAX, reflection_fresnel};
+use crate::fluid_surface::reflection::{
+    FLUID_REFLECTIVITY_MAX, reflection_fresnel, reflection_mirror, reflection_ratio_from_sums,
+};
+use crate::fluid_surface::reflection_hemisphere::reflection_above_hemisphere;
+use crate::fluid_surface::reflection_search::reflection_search_about;
 use crate::specular_texel::{SPECULAR_EXPONENT_MIN, texel_exponent, tint_amount, tint_color};
 
 // `glossy_overlay.wgsl` mirrors each function and constant below statement for
@@ -98,6 +105,44 @@ pub fn glossy_composite(
     let reflected = colour * (fresnel * (screen.truncate() + probe * probe_share));
     let weight = (fresnel * (confidence + probe_share)).min(1.0);
     reflected - static_diffuse * weight
+}
+
+/// The probe term before the material's weight at one glossy fragment (or
+/// pixel-style texel point): the bound probe's live-lit capture and its
+/// capture-shadow weight s. Mirrors `glossy_overlay_sample`: the view
+/// mirrored about the shading `normal` and kept in the face's hemisphere
+/// about `axis` (`reflection_hemisphere_axis` of the face's normal), the
+/// search from `origin`, then `colour` toward the lookup (the colour mips the
+/// texel's exponent picks, `reflection_probe_mip_colour`), scaled by the
+/// probe's sums blended toward that lookup. `distance`
+/// reads the probe's distance tile at level 0.
+#[allow(clippy::too_many_arguments)]
+pub fn glossy_probe_term(
+    probe: &ReflectionProbeRecord,
+    sums: &[Vec3; REFLECTION_PROBE_LOBE_COUNT],
+    origin: Vec3,
+    view: Vec3,
+    normal: Vec3,
+    axis: Vec3,
+    tile: [u32; 2],
+    colour: impl Fn(Vec3) -> Vec3,
+    distance: impl Fn(Vec2) -> f32,
+) -> (Vec3, f32) {
+    let ray = reflection_above_hemisphere(reflection_mirror(view, normal), axis);
+    let search = reflection_search_about(
+        origin,
+        ray,
+        Vec3::from(probe.box_min),
+        Vec3::from(probe.box_max),
+        Vec3::from(probe.capture_point),
+        axis,
+        tile,
+        distance,
+    );
+    (
+        colour(search.lookup) * reflection_ratio_from_sums(sums, search.lookup),
+        search.weight,
+    )
 }
 
 #[cfg(test)]

@@ -7,6 +7,7 @@ use crate::render::SCENE_COLOR_FORMAT;
 use crate::render::gpu_test_harness::wgsl_function;
 
 const OVERLAY_WGSL: &str = include_str!("../shaders/glossy_overlay.wgsl");
+const SHADING_WGSL: &str = include_str!("../shaders/glossy_overlay_shading.wgsl");
 const FORWARD_WGSL: &str = include_str!("../shaders/forward.wgsl");
 
 /// `src` with every `//` comment removed, then every whitespace character.
@@ -43,7 +44,7 @@ fn glossy_overlay_shader_validates_with_its_composed_modules() {
         .iter()
         .map(|entry| entry.name.as_str())
         .collect();
-    assert_eq!(entries, ["vs_main", "fs_main"]);
+    assert_eq!(entries, ["vs_main", "fs_pixel", "fs_smooth"]);
 }
 
 // The overlay lands on exactly the pixels forward shaded only while both
@@ -111,8 +112,9 @@ fn overlay_layout_binds_only_its_probe_records_and_static_diffuse() {
         (1, 2, 3)
     );
     let groups = squashed(OVERLAY_WGSL);
-    // The material group declares albedo, the specular slot and the sampler,
-    // forward's bindings by name: never the glow, normal map or uniform.
+    // The material group declares albedo, the specular slot, the material
+    // uniform (Surface Depth's march words), the normal map and the sampler,
+    // forward's bindings by name: never the glow.
     let material: Vec<_> = OVERLAY_WGSL
         .lines()
         .filter(|line| line.starts_with("@group(1)"))
@@ -122,12 +124,23 @@ fn overlay_layout_binds_only_its_probe_records_and_static_diffuse() {
         [
             "@group(1) @binding(0) var base_texture: texture_2d<f32>;",
             "@group(1) @binding(2) var spec_texture: texture_2d<f32>;",
+            "@group(1) @binding(3) var<uniform> material: MaterialUniform;",
+            "@group(1) @binding(4) var t_normal: texture_2d<f32>;",
             "@group(1) @binding(5) var aniso_sampler: sampler;",
         ]
     );
     for line in &material {
         assert!(FORWARD_WGSL.contains(line), "forward declares `{line}`");
     }
+    assert_eq!(
+        wgsl_struct(OVERLAY_WGSL, "MaterialUniform"),
+        wgsl_struct(FORWARD_WGSL, "MaterialUniform"),
+        "the material uniform is forward's, member for member"
+    );
+    assert!(
+        !SHADING_WGSL.contains("@group("),
+        "the shading inputs bind nothing"
+    );
     let composed = squashed(GLOSSY_OVERLAY_SHADER_SOURCE);
     for lighting in [
         "emissive_texture",
@@ -188,17 +201,17 @@ fn overlay_layout_binds_only_its_probe_records_and_static_diffuse() {
 }
 
 // IP fences: the probe comes from the face's binding by position, the layer
-// from the probe alone (inside the overlay's sample, water's with the colour
-// tap blurred), and the live lighting is the sums' blend; no stored light is
-// evaluated per fragment.
+// from the probe alone (inside the overlay's sample, water's with the ray
+// kept in the face's hemisphere and the colour tap blurred), the hemisphere
+// from the face's flat normal (never a lookup direction), and the live
+// lighting is the sums' blend; no stored light is evaluated per fragment.
 #[test]
 fn overlay_reads_its_probe_from_the_binding_and_lights_through_the_sums() {
     let term = squashed(wgsl_function(OVERLAY_WGSL, "glossy_overlay_probe"));
-    assert!(
-        term.contains(
-            "returnglossy_overlay_sample(in.probe,in.world_position,view,normal,exponent);"
-        )
-    );
+    assert!(term.contains(
+        "returnglossy_overlay_sample(in.probe,surface.origin,surface.view,surface.normal,\
+         fluid_reflection_hemisphere_axis(surface.outward),exponent);"
+    ));
     assert_eq!(term.matches("glossy_overlay_sample(").count(), 1);
     assert!(!squashed(OVERLAY_WGSL).contains("fluid_reflection_sample("));
     assert!(squashed(wgsl_function(OVERLAY_WGSL, "vs_main")).contains("out.probe=in.probe;"));
@@ -210,7 +223,9 @@ fn overlay_reads_its_probe_from_the_binding_and_lights_through_the_sums() {
     assert!(sample.contains("letlayer=fluid_probes.probes[probe].layer;"));
     assert!(sample.contains("fluid_reflection_ratio_from_sums(probe,search.lookup)"));
     // Water's sample up to its colour tap: the same ray, layer and search,
-    // statement for statement, so the binding and search fences carry over.
+    // statement for statement, with the ray kept in the face's hemisphere
+    // where water floors it above the horizon (`FLUID_REFLECTION_UP`), so the
+    // binding and search fences carry over.
     let prefix = |body: &str| {
         body[body.find('{').expect("body") + 1..]
             .split("letuv=")
@@ -221,7 +236,21 @@ fn overlay_reads_its_probe_from_the_binding_and_lights_through_the_sums() {
             .expect("prefix")
             .to_string()
     };
-    assert_eq!(prefix(&sample), prefix(&water));
+    let water_about_axis = prefix(&water)
+        .replace(
+            "fluid_reflection_above_horizon(fluid_reflection_mirror(view,outward))",
+            "fluid_reflection_above_hemisphere(fluid_reflection_mirror(view,normal),axis)",
+        )
+        .replace("search(world_position,", "search(origin,")
+        .replace("FLUID_REFLECTION_UP", "axis");
+    assert_eq!(prefix(&sample), water_about_axis);
+    assert!(
+        squashed(wgsl_function(
+            include_str!("../shaders/fluid_reflection_ray.wgsl"),
+            "fluid_reflection_hemisphere_axis"
+        ))
+        .contains("select(normal,FLUID_REFLECTION_UP,normal.y>=REFLECTION_UP_FACING_MIN_COS)")
+    );
     assert!(
         sample.contains("letcapture=glossy_overlay_probe_colour(search.lookup,layer,exponent);")
     );
@@ -233,24 +262,35 @@ fn overlay_reads_its_probe_from_the_binding_and_lights_through_the_sums() {
 // The composite: forward + W·(R − D_static), D_static at the fragment's own
 // pixel, W the texel's Fresnel × `_s` × sharpness fade times the
 // capture-shadow weight, R coloured as the highlight; additive over the scene
-// colour. A texel whose weight is 0 adds nothing and runs no probe search.
+// colour. A texel whose weight is 0 adds nothing and reads no normal map and
+// runs no probe search. One entry per reflection style over one shading.
 #[test]
 fn overlay_adds_the_weighted_reflection_minus_static_diffuse() {
+    for (entry, pixel) in [("fs_pixel", "true"), ("fs_smooth", "false")] {
+        assert_eq!(
+            squashed(wgsl_function(OVERLAY_WGSL, entry)),
+            format!(
+                "fn{entry}(in:GlossyVertexOutput)->@location(0)vec4<f32>{{\
+                 returnvec4<f32>(glossy_overlay_shade(in,{pixel}),0.0);}}"
+            )
+        );
+    }
     assert_eq!(
-        squashed(wgsl_function(OVERLAY_WGSL, "fs_main")),
-        "fnfs_main(in:GlossyVertexOutput)->@location(0)vec4<f32>{\
-         letddx=dpdx(in.uv);letddy=dpdy(in.uv);\
-         lettexel=glossy_overlay_texel(in.uv,ddx,ddy);\
-         returnvec4<f32>(glossy_overlay_delta(in,texel),0.0);}"
+        squashed(wgsl_function(OVERLAY_WGSL, "glossy_overlay_shade")),
+        "fnglossy_overlay_shade(in:GlossyVertexOutput,pixel:bool)->vec3<f32>{\
+         letderivatives=glossy_overlay_derivatives(in);\
+         letdepth=glossy_overlay_march(in,derivatives);\
+         lettexel=glossy_overlay_texel(depth.uv,derivatives.ddx,derivatives.ddy);\
+         iftexel.mask<=0.0{returnvec3<f32>(0.0);}\
+         letsurface=glossy_overlay_surface(in,derivatives,depth,pixel);\
+         returnglossy_overlay_delta(in,texel,surface);}"
     );
     assert_eq!(
         squashed(wgsl_function(OVERLAY_WGSL, "glossy_overlay_delta")),
-        "fnglossy_overlay_delta(in:GlossyVertexOutput,texel:GlossyTexel)->vec3<f32>{\
-         letnormal=normalize(in.normal);\
-         letview=normalize(uniforms.camera_position-in.world_position);\
-         letfresnel=glossy_fresnel(texel,dot(view,normal));\
-         iffresnel<=0.0{returnvec3<f32>(0.0);}\
-         letprobe=glossy_overlay_probe(in,view,normal,texel.exponent);\
+        "fnglossy_overlay_delta(in:GlossyVertexOutput,texel:GlossyTexel,\
+         surface:GlossySurface)->vec3<f32>{\
+         letfresnel=glossy_fresnel(texel,dot(surface.view,surface.outward));\
+         letprobe=glossy_overlay_probe(in,surface,texel.exponent);\
          letd_static=glossy_overlay_static_diffuse(in.clip_position.xy);\
          returnglossy_composite(d_static,probe.capture,probe.weight,vec4<f32>(0.0),fresnel,\
          texel.colour);}"
@@ -459,5 +499,139 @@ fn the_entity_shadow_subtraction_lands_in_static_diffuse() {
     assert!(
         shade.rfind("static_direct=").expect("assigned") < total,
         "nothing changes the static direct light after the static light sums it"
+    );
+}
+
+// Acceptance rows 35, 67: the overlay shades from forward's own inputs. Its
+// vertex stage decodes the tangent as forward does and interpolates position,
+// UV, normal and tangent as forward's do; its march is forward's Surface Depth
+// snippet over forward's arguments (the eye vector, its length, the
+// derivatives), so it reads the texel forward shaded, and a live switch
+// reaches both through the one material uniform; the normal it mirrors about
+// is forward's shading normal (the march's face normal on a side hit, the
+// normal map's on a top); and pixel style takes the texel-centre point
+// forward's highlight takes, smooth the fragment (rendering_pipeline.md §4,
+// Texel-centre highlight; §7.3, Surface Depth).
+#[test]
+fn overlay_shades_from_forwards_march_normal_and_texel_point() {
+    let vertex = squashed(wgsl_function(OVERLAY_WGSL, "vs_main"));
+    let forward_vertex = squashed(wgsl_function(FORWARD_WGSL, "vs_main"));
+    for statement in [
+        "letsign_bit=in.tangent_packed.y&0x8000u;",
+        "letv_15bit=in.tangent_packed.y&0x7FFFu;",
+        "letv_16bit=v_15bit*65535u/32767u;",
+        "out.world_tangent=oct_decode(vec2<u32>(in.tangent_packed.x,v_16bit));",
+        "out.bitangent_sign=select(-1.0,1.0,sign_bit!=0u);",
+        "out.world_normal=oct_decode(in.normal_oct);",
+        "out.uv=in.base_uv;",
+        "out.world_position=in.position;",
+    ] {
+        assert!(forward_vertex.contains(statement), "forward: {statement}");
+        assert!(vertex.contains(statement), "overlay: {statement}");
+    }
+    let output = wgsl_struct(OVERLAY_WGSL, "GlossyVertexOutput");
+    for interpolated in [
+        "@location(0)world_position:vec3<f32>",
+        "@location(1)world_normal:vec3<f32>",
+        "@location(3)uv:vec2<f32>",
+        "@location(4)world_tangent:vec3<f32>",
+        "@location(5)bitangent_sign:f32",
+    ] {
+        assert!(output.contains(interpolated), "{interpolated}: {output}");
+    }
+
+    let shade = squashed(wgsl_function(FORWARD_WGSL, "forward_shade"));
+    for statement in [
+        "letddx=dpdx(in.uv);",
+        "letddy=dpdy(in.uv);",
+        "letddx_world=dpdx(in.world_position);",
+        "letddy_world=dpdy(in.world_position);",
+        "letmesh_n=normalize(in.world_normal);",
+        "letview_vector=uniforms.camera_position-in.world_position;",
+        "letview_distance=length(view_vector);",
+        "letV=normalize(view_vector);",
+        "letdepth=surface_depth_resolve(in.uv,in.world_position,mesh_n,V,view_distance,ddx,\
+         ddy,ddx_world,ddy_world,);",
+        "letshade_uv=depth.uv;",
+        "letn_ts=sample_normal(t_normal,shade_uv,ddx,ddy);",
+        "letN_bump=reconstruct_tbn_normal(mesh_n,in.world_tangent,in.bitangent_sign,n_ts);",
+        "letN_shade=select(depth.normal,N_bump,depth.hit_top);",
+        "letspec_point=specular_texel_point(specular_style_smooth(),\
+         SpecularPoint(in.world_position,V),in.uv,shade_uv,in.world_position,\
+         uniforms.camera_position,vec2<f32>(textureDimensions(base_texture,0)),ddx,ddy,\
+         ddx_world,ddy_world,);",
+    ] {
+        assert!(shade.contains(statement), "forward: {statement}");
+    }
+    assert_eq!(
+        squashed(wgsl_function(SHADING_WGSL, "glossy_overlay_derivatives")),
+        "fnglossy_overlay_derivatives(in:GlossyVertexOutput)->GlossyDerivatives{\
+         returnGlossyDerivatives(dpdx(in.uv),dpdy(in.uv),dpdx(in.world_position),\
+         dpdy(in.world_position));}"
+    );
+    assert_eq!(
+        squashed(wgsl_function(SHADING_WGSL, "glossy_overlay_march")),
+        "fnglossy_overlay_march(in:GlossyVertexOutput,d:GlossyDerivatives)->SurfaceDepthResult{\
+         letmesh_n=normalize(in.world_normal);\
+         letview_vector=uniforms.camera_position-in.world_position;\
+         returnsurface_depth_resolve(in.uv,in.world_position,mesh_n,normalize(view_vector),\
+         length(view_vector),d.ddx,d.ddy,d.ddx_world,d.ddy_world);}"
+    );
+    assert_eq!(
+        squashed(wgsl_function(SHADING_WGSL, "glossy_overlay_surface")),
+        "fnglossy_overlay_surface(in:GlossyVertexOutput,d:GlossyDerivatives,\
+         depth:SurfaceDepthResult,pixel:bool)->GlossySurface{\
+         letmesh_n=normalize(in.world_normal);\
+         letn_ts=sample_normal(t_normal,depth.uv,d.ddx,d.ddy);\
+         letn_bump=reconstruct_tbn_normal(mesh_n,in.world_tangent,in.bitangent_sign,n_ts);\
+         letnormal=select(depth.normal,n_bump,depth.hit_top);\
+         letview=normalize(uniforms.camera_position-in.world_position);\
+         letpoint=specular_texel_point(!pixel,SpecularPoint(in.world_position,view),in.uv,\
+         depth.uv,in.world_position,uniforms.camera_position,\
+         vec2<f32>(textureDimensions(base_texture,0)),d.ddx,d.ddy,d.ddx_world,d.ddy_world);\
+         returnGlossySurface(point.position,point.view,normal,mesh_n);}"
+    );
+    // The march is forward's one snippet, composed whole, never a copy.
+    assert!(GLOSSY_OVERLAY_SHADER_SOURCE.contains(include_str!("../shaders/surface_depth.wgsl")));
+    assert!(!SHADING_WGSL.contains("fn surface_depth_"));
+    assert!(!OVERLAY_WGSL.contains("fn surface_depth_"));
+}
+
+// The overlay's probe term is render-cpu `glossy_probe_term` statement for
+// statement: the view mirrored about the shading normal, kept in the face's
+// hemisphere about its axis, searched with that axis, then the exponent's
+// colour mips toward the lookup times the sums' ratio toward it. The room
+// gates compare the GPU against this reference per pixel.
+#[test]
+fn overlay_probe_term_mirrors_the_cpu_reference() {
+    let cpu = include_str!("../../../render-cpu/src/glossy_reflection.rs");
+    assert_eq!(
+        squashed(wgsl_function(OVERLAY_WGSL, "glossy_overlay_sample")),
+        "fnglossy_overlay_sample(probe:u32,origin:vec3<f32>,view:vec3<f32>,normal:vec3<f32>,\
+         axis:vec3<f32>,exponent:f32)->FluidReflectionSample{\
+         letray=fluid_reflection_above_hemisphere(fluid_reflection_mirror(view,normal),axis);\
+         letlayer=fluid_probes.probes[probe].layer;\
+         letsearch=fluid_reflection_search(origin,ray,fluid_probes.probes[probe].box_min,\
+         fluid_probes.probes[probe].box_max,fluid_probes.probes[probe].capture_point,axis,\
+         fluid_probes.tile.xy,layer);\
+         letcapture=glossy_overlay_probe_colour(search.lookup,layer,exponent);\
+         returnFluidReflectionSample(\
+         capture*fluid_reflection_ratio_from_sums(probe,search.lookup),search.weight);}"
+    );
+    assert_eq!(
+        squashed(wgsl_function(cpu, "glossy_probe_term")),
+        "fnglossy_probe_term(probe:&ReflectionProbeRecord,\
+         sums:&[Vec3;REFLECTION_PROBE_LOBE_COUNT],origin:Vec3,view:Vec3,normal:Vec3,axis:Vec3,\
+         tile:[u32;2],colour:implFn(Vec3)->Vec3,distance:implFn(Vec2)->f32,)->(Vec3,f32){\
+         letray=reflection_above_hemisphere(reflection_mirror(view,normal),axis);\
+         letsearch=reflection_search_about(origin,ray,Vec3::from(probe.box_min),\
+         Vec3::from(probe.box_max),Vec3::from(probe.capture_point),axis,tile,distance,);\
+         (colour(search.lookup)*reflection_ratio_from_sums(sums,search.lookup),\
+         search.weight,)}"
+    );
+    // The axis is the face's, from its flat normal, never the lookup's.
+    assert!(
+        squashed(wgsl_function(OVERLAY_WGSL, "glossy_overlay_probe"))
+            .contains("fluid_reflection_hemisphere_axis(surface.outward)")
     );
 }

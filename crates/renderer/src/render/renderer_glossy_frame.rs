@@ -88,8 +88,11 @@ impl Renderer {
                 &[],
             );
         };
+        // The committed reflection style, read each frame, so the first
+        // frame after a style commit draws in the new style (pin P9).
         full.glossy_overlay.record(
             &mut pass,
+            self.fluid_reflection_style,
             glossy,
             &level.vertex_buffer,
             &level.index_buffer,

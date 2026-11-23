@@ -46,6 +46,37 @@ fn fluid_reflection_above_horizon(ray: vec3<f32>) -> vec3<f32> {
     return normalize(vec3<f32>(ray.x, FLUID_REFLECTION_RAY_MIN_Y, ray.z));
 }
 
+// The probe lookup's hemisphere. Mirrors
+// `postretro_render_cpu::fluid_surface::reflection_hemisphere`: up-facing
+// probes, water's and glossy floors', read above the horizon; a wall's,
+// ceiling's or slope's probe reads about its face normal. The axis is the
+// bound face's, never a lookup direction's.
+const FLUID_REFLECTION_UP: vec3<f32> = vec3<f32>(0.0, 1.0, 0.0);
+const REFLECTION_UP_FACING_MIN_COS: f32 = 0.9998477;
+
+// The hemisphere axis a bound face's lookups read: +Y within water's 1°
+// up-facing test, else the face's own unit normal.
+fn fluid_reflection_hemisphere_axis(normal: vec3<f32>) -> vec3<f32> {
+    return select(normal, FLUID_REFLECTION_UP, normal.y >= REFLECTION_UP_FACING_MIN_COS);
+}
+
+// `v` with its part below the hemisphere's horizon removed. About +Y this is
+// exactly `(x, max(y, 0), z)`.
+fn fluid_reflection_level(v: vec3<f32>, axis: vec3<f32>) -> vec3<f32> {
+    return v - axis * min(dot(v, axis), 0.0);
+}
+
+// The reflected ray kept in the hemisphere about `axis`: unchanged at or
+// above the floor over its horizon, else lifted to it and renormalized, its
+// bearing kept. About +Y this is exactly `fluid_reflection_above_horizon`.
+fn fluid_reflection_above_hemisphere(ray: vec3<f32>, axis: vec3<f32>) -> vec3<f32> {
+    let height = dot(ray, axis);
+    if height >= FLUID_REFLECTION_RAY_MIN_Y {
+        return ray;
+    }
+    return normalize(ray - axis * height + axis * FLUID_REFLECTION_RAY_MIN_Y);
+}
+
 // Reflection style. Mirrors `postretro_render_cpu::fluid_surface::reflection_style`:
 // smooth reflects the flat face per fragment; pixel reflects once per water
 // texel cell, from the cell's world-space centre (held to the probe's box at

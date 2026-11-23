@@ -1,5 +1,5 @@
-// The glossy world overlay pass: its pipeline over its own layout, forward's
-// static-diffuse forms, and the frame's draw gate.
+// The glossy world overlay pass: its pipelines (one per reflection style) over
+// its own layout, forward's static-diffuse forms, and the frame's draw gate.
 // See: context/lib/rendering_pipeline.md §7.3a (Glossy world faces), §10
 
 mod level;
@@ -15,19 +15,26 @@ pub(crate) use pipeline::{
 
 use postretro_render_cpu::fluid_surface::reflection::reflection_mask_on;
 use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
+use postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle;
 use postretro_render_cpu::frame_uniforms::LightTermMask;
 
 use super::renderer_init_pipelines::ForwardStaticDiffusePipelines;
 use crate::compute_cull::{ComputeCullPipeline, SetTextureFn};
 use pipeline::overlay_pipeline;
 
-/// The overlay's shader: its own bindings and entries, the tint rule
-/// forward's highlight reads, the exponent → mip function, then the probe
-/// term and Fresnel it reuses from the fluid shader's modules, by name.
+/// The overlay's shader: its own bindings and entries, its shading inputs
+/// (the style's point, forward's march and normal map), the tint rule
+/// forward's highlight reads, forward's Surface Depth march, the exponent →
+/// mip function, then the probe term, hemisphere and Fresnel it reuses from
+/// the fluid shader's modules, by name.
 pub(crate) const GLOSSY_OVERLAY_SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/glossy_overlay.wgsl"),
     "\n",
+    include_str!("../shaders/glossy_overlay_shading.wgsl"),
+    "\n",
     include_str!("../shaders/material_shading.wgsl"),
+    "\n",
+    include_str!("../shaders/surface_depth.wgsl"),
     "\n",
     include_str!("../shaders/reflection_probe_blur.wgsl"),
     "\n",
@@ -68,12 +75,37 @@ pub(crate) fn glossy_overlay_draws(
         && glossy_range_drawn
 }
 
-/// The overlay pass, built at full init: its pipeline, its two own layouts,
+/// The overlay's pipelines, one per `render.reflections.style`, both built at
+/// full init so a style change compiles nothing.
+pub(crate) struct GlossyOverlayPipelines {
+    pixel: wgpu::RenderPipeline,
+    smooth: wgpu::RenderPipeline,
+}
+
+impl GlossyOverlayPipelines {
+    fn for_style(&self, style: FluidReflectionStyle) -> &wgpu::RenderPipeline {
+        match style {
+            FluidReflectionStyle::Pixel => &self.pixel,
+            FluidReflectionStyle::Smooth => &self.smooth,
+        }
+    }
+
+    /// `pipeline` in both styles' places: a test-only variant.
+    #[cfg(test)]
+    pub(crate) fn both(pipeline: wgpu::RenderPipeline) -> Self {
+        Self {
+            pixel: pipeline.clone(),
+            smooth: pipeline,
+        }
+    }
+}
+
+/// The overlay pass, built at full init: its pipelines, its two own layouts,
 /// the probe sampler, and forward's static-diffuse forms. Level state (the
 /// probe stream, the probe group and the D_static target) belongs to the
 /// level set.
 pub(crate) struct GlossyOverlayPass {
-    pipeline: wgpu::RenderPipeline,
+    pipelines: GlossyOverlayPipelines,
     #[cfg(test)]
     pipeline_layout: wgpu::PipelineLayout,
     level_layout: GlossyLevelLayout,
@@ -118,12 +150,18 @@ impl GlossyOverlayPass {
             ],
             immediate_size: 0,
         });
-        let pipeline = overlay_pipeline(
-            device,
-            &pipeline_layout,
-            GLOSSY_OVERLAY_SHADER_SOURCE,
-            "fs_main",
-        );
+        let style = |entry| {
+            overlay_pipeline(
+                device,
+                &pipeline_layout,
+                GLOSSY_OVERLAY_SHADER_SOURCE,
+                entry,
+            )
+        };
+        let pipelines = GlossyOverlayPipelines {
+            pixel: style("fs_pixel"),
+            smooth: style("fs_smooth"),
+        };
         let level_layout = GlossyLevelLayout {
             probe_layout,
             inputs_layout,
@@ -131,7 +169,7 @@ impl GlossyOverlayPass {
             static_diffuse_format: forward.format,
         };
         Self {
-            pipeline,
+            pipelines,
             #[cfg(test)]
             pipeline_layout,
             level_layout,
@@ -152,7 +190,8 @@ impl GlossyOverlayPass {
         &self.forward
     }
 
-    /// Record the overlay's draws over the frame's glossy camera ranges. The
+    /// Record the overlay's draws over the frame's glossy camera ranges in
+    /// `style`, the renderer's committed reflection style this frame. The
     /// caller opens the pass (scene colour loaded, depth read-only) and binds
     /// group 0; `glossy` names the glossy buckets and `bind_material` binds a
     /// bucket's world material at [`GLOSSY_OVERLAY_MATERIAL_GROUP`].
@@ -160,6 +199,7 @@ impl GlossyOverlayPass {
     pub(crate) fn record<'a>(
         &'a self,
         pass: &mut wgpu::RenderPass<'a>,
+        style: FluidReflectionStyle,
         state: &'a GlossyLevelState,
         vertex_buffer: &'a wgpu::Buffer,
         index_buffer: &'a wgpu::Buffer,
@@ -173,7 +213,7 @@ impl GlossyOverlayPass {
         };
         #[cfg(test)]
         self.recorded.set(self.recorded.get() + 1);
-        pass.set_pipeline(&self.pipeline);
+        pass.set_pipeline(self.pipelines.for_style(style));
         pass.set_bind_group(GLOSSY_OVERLAY_PROBE_GROUP, probe_group, &[]);
         pass.set_bind_group(GLOSSY_OVERLAY_INPUTS_GROUP, inputs_group, &[]);
         pass.set_vertex_buffer(0, vertex_buffer.slice(..));
@@ -202,10 +242,13 @@ impl GlossyOverlayPass {
         overlay_pipeline(device, &self.pipeline_layout, &source, entry)
     }
 
-    /// Put `pipeline` in the production pipeline's place, returning it.
+    /// Put `pipelines` in the production pipelines' place, returning them.
     #[cfg(test)]
-    pub(crate) fn swap_pipeline(&mut self, pipeline: wgpu::RenderPipeline) -> wgpu::RenderPipeline {
-        std::mem::replace(&mut self.pipeline, pipeline)
+    pub(crate) fn swap_pipelines(
+        &mut self,
+        pipelines: GlossyOverlayPipelines,
+    ) -> GlossyOverlayPipelines {
+        std::mem::replace(&mut self.pipelines, pipelines)
     }
 }
 

@@ -21,6 +21,7 @@ use super::fluid_reflection_frame_test_fixtures::{
     view_from,
 };
 use super::fluid_reflection_sums_frame_test_fixtures::frame_at;
+use super::glossy_overlay::GlossyOverlayPipelines;
 use super::{LevelGeometry, LevelGeometryShStorage, Renderer};
 
 /// The probe's uniform capture colour, exact in f16.
@@ -399,15 +400,16 @@ fn fs_test_constant(in: GlossyVertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(0.125, 0.125, 0.125, 0.0);
 }
 
-// The production delta with the coloured reflection and the subtracted static
-// diffuse given: forward's own D_static read back this frame, `scale` x it
-// subtracted.
+// The production delta (smooth style) with the coloured reflection and the
+// subtracted static diffuse given: forward's own D_static read back this
+// frame, `scale` x it subtracted.
 fn test_delta_with(in: GlossyVertexOutput, reflection_is_static: bool, scale: f32) -> vec3<f32> {
-    let texel = glossy_overlay_texel(in.uv, dpdx(in.uv), dpdy(in.uv));
-    let normal = normalize(in.normal);
-    let view = normalize(uniforms.camera_position - in.world_position);
-    let fresnel = glossy_fresnel(texel, dot(view, normal));
-    let probe = glossy_overlay_probe(in, view, normal, texel.exponent);
+    let derivatives = glossy_overlay_derivatives(in);
+    let depth = glossy_overlay_march(in, derivatives);
+    let texel = glossy_overlay_texel(depth.uv, derivatives.ddx, derivatives.ddy);
+    let surface = glossy_overlay_surface(in, derivatives, depth, false);
+    let fresnel = glossy_fresnel(texel, dot(surface.view, surface.outward));
+    let probe = glossy_overlay_probe(in, surface, texel.exponent);
     let d_static = glossy_overlay_static_diffuse(in.clip_position.xy);
     if reflection_is_static {
         return glossy_composite(d_static * scale, d_static, probe.weight, vec4<f32>(0.0),
@@ -442,9 +444,15 @@ pub(super) fn with_variant<R>(
             .full()
             .glossy_overlay
             .variant_pipeline(&renderer.device, VARIANTS, entry);
-    let production = renderer.full_mut().glossy_overlay.swap_pipeline(variant);
+    let production = renderer
+        .full_mut()
+        .glossy_overlay
+        .swap_pipelines(GlossyOverlayPipelines::both(variant));
     let result = frame(renderer);
-    renderer.full_mut().glossy_overlay.swap_pipeline(production);
+    renderer
+        .full_mut()
+        .glossy_overlay
+        .swap_pipelines(production);
     result
 }
 

@@ -10,7 +10,7 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Ra
 **Why it can't be seen.** Hits and fresh work share one progress counter, so the author can't see what an edit cost, and hits make the ETA wrong.
 
 **Done when:**
-- A warm build after a local edit re-computes only the samples and rays the edit can reach, and stays byte-identical to a cold build of the edited map. Chunk light lists are the one exception: after an edit that grows the map's bounds they re-run whole.
+- A warm build after a local edit re-computes only the samples and rays the edit can reach, and stays byte-identical to a cold build of the edited map. Whole-section stages that trace no per-sample work (chunk light lists, cell visibility, the SDF atlas, navmesh, the animated mover gate) are exempt: they re-run whole after an edit to the inputs they read, and the Build Summary reports their time on every warm build.
 - Every stage reports cached, fresh and total work in the TUI, the plain reporter, the Build Summary and telemetry.
 
 ## Decisions
@@ -19,15 +19,15 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Ra
   - Faces, charts, patches, triangles and probes are identified by content: the source brush side plus the fragment's world-space geometry. Traversal order never identifies them. A face re-cut because an edit moved a BSP split is a changed face: re-traced exactly, and named in the Build Summary as a re-partition.
   - Triangle corners are emitted in a canonical order, in cold and warm bakes alike. Re-saved but unchanged geometry keeps its identity, and a re-intersected distance stays bit-exact.
   - Every key, seed and tie-break that reads a global index today reads the stable identity instead: patch and chart seeds, soft-visibility seeds, and closest-hit ties.
-  - The probe and affinity grids anchor to one world-fixed lattice, snapped at the affinity grid's multiple of probe spacing, so growing the map's bounds moves no existing probe or affinity cell. The chunk light-list grid keeps its bounds anchor and deliberate half-cell pad; that stage is cheap to re-run.
+  - The probe and affinity grids anchor to one world-fixed lattice, snapped at the affinity grid's multiple of probe spacing, so growing the map's bounds moves no existing probe or affinity cell. The chunk light-list grid keeps its bounds anchor and deliberate half-cell pad.
   - Baked bytes change once. No runtime format change beyond what identity forces (pre-stable).
 - **Lightmap and shadowmask light localize per sample.**
-  - Partitions are cached per light, keyed on the light's geometric fields and the shared bake parameters. Intensity and colour enter only through record presence.
+  - Partitions are cached per light, keyed on the light's geometric fields, its reach geometry and the shared bake parameters, and found as a baseline by light identity. Intensity and colour enter only through record presence.
   - Each entry records the reach geometry it was baked against. A warm build diffs that against the current reach geometry and re-derives every texel's segments (light-ward, footprint clip and lead-in) from its chart-local seed.
   - It re-traces only texels on changed charts, texels whose segment meets a changed triangle, and texels in tiles whose exact-skip cull verdict changed while a changed triangle lies within that tile's cull query. Visibility is any-hit, so every other texel is exact as stored.
   - An embedded-emitter flag flip re-bakes that light whole.
   - Partitions store chart-relative texels, remapped through the current placement at fold.
-  - Encoded atlas layers and ShadowmaskAtlas output are memoised per atlas layer. The key covers the layer's placements, its contributing partitions, those lights' photometric fields and the encode parameters. Each memo carries its texel-step report.
+  - Encoded atlas layers and ShadowmaskAtlas output are memoised per atlas layer. The key covers the layer's placements, its contributing partitions, those lights' photometric fields and the encode parameters. The ShadowmaskAtlas key also covers, for each cut parent with a sub-face on the layer, its owner estimate and the partitions of every layer it spans, and each contributing light's spec index and id-40 membership. Each memo carries its texel-step report.
 - **SH patch-direct layers stay keyed on the whole light and localize per sample.** They store radiance, which bakes colour and intensity in: the `done/surface-radiance-cache/` IP guard (Tencent '451). A tint edit re-shades that light's patches. With the light unchanged and its reach geometry changed, the layer re-traces only patches on changed geometry and samples whose segment meets a changed triangle, by the same diff as the lightmap. Its key folds only its reach geometry, as the lightmap partition's does.
 - **SH later bounces and the gather localize through recorded ray hits.**
   - The cache keeps every later-bounce patch ray's and probe gather ray's hit as a stable triangle identity, 4 B per ray. Distance is re-intersected exactly. Records stream per chunk and are never held whole.
@@ -68,7 +68,7 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Ra
   - Ray directions stay fixed and are never chosen or weighted by a record.
   - Records carry no per-light coefficient, and the cache never reaches PRL.
 - **Progress accounting.**
-  - Each stage counts cached and fresh units. A unit is fresh if this build computed it: a unit whose work traces, if it traced; any other unit, if it ran its work rather than reading or replaying a stored result. Units served from cache, re-evaluated from records, patched without a re-trace, or proven to need no work count cached.
+  - Each stage counts cached and fresh units. A unit is fresh if this build computed it: a unit whose work traces, if it traced; any other unit, if it ran its work rather than reading or replaying a stored result. Units served from cache, re-evaluated from records, patched without a re-trace, or proven to need no work count cached. In stages that re-trace per sample or per ray, a unit is no coarser than one patch, probe or texel tile.
   - Every stage reports, whole-stage memo hits included.
   - ETA is pending units × the fresh-unit rate over unpaused fresh time. With nothing fresh yet, no ETA is shown.
 - **Progress presentation.** Rationale in `research.md` §Progress presentation.
@@ -176,7 +176,7 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Ra
 Targets are owner targets: a miss stops the build and reports to the owner; it is not an executor tuning loop. Runs use default worker count and default `--cache-max-size`, timed as wall time from launch to exit, warm from a copy of the baseline cache.
 - [ ] On any machine but the reference container, a one-brush edit in one group instance or a one-light edit on stress-street takes at most twice that machine's no-op.
 - [ ] stress-street, dev profile, 4-core reference container: no-op ≤ 12 s, and a one-brush edit in one group instance and a one-light edit each ≤ 45 s.
-- [ ] The 23-instance linked-lamp brush edit is reported beside the one-instance edit, with each stage's re-traced work, which scales with the instances touched.
+- [ ] The 23-instance linked-lamp brush edit is reported beside the one-instance edit, with each stage's re-traced work.
 - [ ] stress-warren-crates, same setup: the no-op, one-brush and one-light edits, each reported against its stress-street target.
 - [ ] stress-street on a Mac with the SDK's release-profile prl-build: the same runs, reported.
 - [ ] The owner watches a warm local-edit build in light and dark terminal themes, under `NO_COLOR`, and in the compact layout, and tunes glyphs and accents.
@@ -187,7 +187,8 @@ Targets are owner targets: a miss stops the build and reports to the owner; it i
   - re-trace count against the re-trace set, with the crossing count in `research.md` as its floor;
   - re-evaluation time;
   - record size at 4 B per ray;
-  - how many light origins a 23-instance linked-lamp re-save moves (reported).
+  - how many light origins a 23-instance linked-lamp re-save moves (reported);
+  - how many lights' reach a one-instance brush edit sits inside, and what per-light grain would have re-baked there.
   This falsifies the riskiest assumptions: that re-evaluation is cheap and that a re-intersected distance is bit-exact.
   - If the distance is not bit-exact, records grow to 8 B (triangle plus distance). That is an owner check on the footprint.
   - If re-evaluation is not cheap, stop and report to the owner before building the rest of the SH half.

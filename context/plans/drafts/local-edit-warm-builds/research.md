@@ -81,6 +81,17 @@ The rival, a cell-bounded closure, needs a "can see" relation. The only sound on
   - `cell_residency_set_cache_key` folds the whole portal, locator and cell data.
   - `mover_probe_bounce`, `mover_absent_bounces` and `sh_base_bake_time` fold id 34's `volume_key`.
   - `reflection_probes/stage_key.rs::cache_key` hashes the packed id 34 and others.
+  - `direct_cache_key` (id 35), both billboard scatter keys, `weight_map_cache_key` and the mover gate's `probe_key_prefix` fold the whole geometry; the probe-direct `MemoPrefix` folds `fold_occluding_geometry`.
+  - The ShadowmaskAtlas cut-face owner estimate is uncached and re-runs on any `shadowmask_atlas` miss. Its owner sets span a cut parent's sub-faces across layers.
+- **Exempt whole-section stages, cold timings** (dev profile, 4-core container):
+
+  | Stage | stress-street | stress-warren-crates |
+  |---|---|---|
+  | Cell visibility | 0.55 s | 0.06 s |
+  | NavMesh | 0.06 s | 1.86 s |
+  | ChunkLightList | 0.05 s | 0.20 s |
+
+  Navmesh and cell visibility grow with arena size. A genre-scale map that shows them taking a real share of a local edit's time becomes a follow-up.
 
 ## Fixed warm costs
 
@@ -140,7 +151,7 @@ The rival, a cell-bounded closure, needs a "can see" relation. The only sound on
 - **Stabilise the BSP instead of decoupling identity.** Rejected as the primary lever. It is a partition-quality trade, and identity decoupling is needed anyway for packing and seeds.
 - **8 B per ray (triangle and distance).** The owner chose 4 B (triangle, with distance re-intersected), compressed and streamed.
 - **Stable identity only, SH left as one entry.** Rejected. SH costs 68–69 s on every light or geometry edit (§Measurements), so the 45 s edit targets fail without SH locality.
-- **Per-light grain for direct layers.** Rejected. All of stress-street's static lights are the linked lamps, and a lamp edit sits inside every lamp's reach, so per-light keys still re-bake about 127 s of lightmap work for the owner's case. Per-sample grain re-derives each texel's segments from its chart-local seed and re-traces only those meeting changed triangles. It stays exact without stored hits, because direct visibility is any-hit.
+- **Per-light grain for direct layers.** Rejected. The genre's dense, neon lighting puts most brush edits inside several lights' reach, and per-light keys re-bake each of those lights whole. On stress-street a lamp edit sits inside its own lamp's reach and its neighbours'; the 23-instance edit, which touches every lamp, re-baked about 127 s of lightmap. Per-sample grain re-derives each texel's segments from its chart-local seed and re-traces only those meeting changed triangles. It stays exact without stored hits, because direct visibility is any-hit. The first slice measures how many lights a one-instance edit reaches.
 
 ## IP
 

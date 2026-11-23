@@ -613,21 +613,21 @@ unchanged. Initial participation sends the effective placement; a live per-weapo
 mod-default edit changes the payload and sends a replacement. A connected client reads
 only that host value and has no local placement fallback. The host can therefore
 reproduce the shooter's authoritative fire origin from the same placement (see below).
-Placement never reads client-local view-feel state.
+Placement is the base position and never reads client-local view-feel state;
+render-rate view-feel sway/bob is a separate overlay composed on top (owned by
+movement), excluded from authority.
 
 The third-person avatar weapon mount does not read placement. Observers see the weapon
 posed by the sockets the wielder's `mesh.weaponMounts` entry names; the FP viewmodel is
 a screen-space presentation. The two vantages legitimately diverge — the shooter's
 authored FP placement versus observers' socket pose — and the TP mount carries no
-placement offset. Art owns its fit in the rig's bake. Placement is the base position;
-render-rate view-feel sway/bob is a separate overlay composed on top (owned by
-movement), excluded from authority. Each peer resolves the third-person mount from the
-replicated active weapon and the pawn's class against its own descriptors, so no mount
-data crosses the wire; peers with differing descriptors present differently. A
+placement offset. Art owns its fit in the rig's bake. Each peer resolves the mount from
+the replicated active weapon and the pawn's class against its own descriptors, so no
+mount data crosses the wire; peers with differing descriptors present differently. A
 connected client's own body mounts the same way, never from its predicted inventory, so
-its shadow's weapon follows a switch once the host confirms it. Gameplay
-never reads a mount: fire origin and hit tests ignore it. NPC carried weapons stay
-host-only; an NPC shows its weapon through base `mesh.attachments`.
+the weapon on its shadow-only body follows a switch once the host confirms it. Gameplay
+never reads a mount: fire origin and hit tests ignore it. NPCs resolve no mount
+(`entity_model.md` §2, Weapon mounts).
 
 **Fire origin composes on placement.** When a projectile weapon supplies a
 model-local `muzzleOffset`, its authoritative origin is the weapon's muzzle

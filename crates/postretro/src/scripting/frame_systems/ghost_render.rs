@@ -24,9 +24,7 @@ use postretro_visibility::VisibleCells;
 
 use super::attachments::{self, SocketPoseResolver};
 use super::mesh_anim::MeshClipTables;
-use super::mesh_render::{
-    resolve_sample, should_resample, state_fingerprint,
-};
+use super::mesh_render::{resolve_sample, should_resample, state_fingerprint};
 use crate::ghost_links::GhostMember;
 
 /// One ghost: a member entity seen through one link. Generation-checked, so a

@@ -1315,11 +1315,9 @@ mod tests {
                 clip_index: Some(0),
             },
         );
-        let mut mesh = MeshComponent::animated(
-            "two_legs".into(),
-            MeshAnimation::new(states, "idle".into()),
-        )
-        .with_body_frame(BodyFrame::View);
+        let mut mesh =
+            MeshComponent::animated("two_legs".into(), MeshAnimation::new(states, "idle".into()))
+                .with_body_frame(BodyFrame::View);
         mesh.pose_inputs = Some(PoseInputs::default());
 
         // The capsule centre sits a sole above the model origin; the pose pass

@@ -1025,8 +1025,7 @@ pub(crate) fn damageable_volume(
         .and_then(|health| health.hitbox.as_ref());
 
     if let Some(zoned) = zone_bearing_entry(registry, store, id)
-        && let Some(model_to_world) =
-            model_matrix(transform, zoned.origin_offset, zoned.body_frame)
+        && let Some(model_to_world) = model_matrix(transform, zoned.origin_offset, zoned.body_frame)
         && let Some(bound) = transformed_zone_bound(zoned.zones, &model_to_world, transform)
     {
         return Some(bound);
@@ -1354,7 +1353,11 @@ pub fn model_matrix(
     origin_offset: Vec3,
     body_frame: BodyFrame,
 ) -> Option<Mat4> {
-    model_matrix_at(transform, body_frame.model_rotation(transform.rotation), origin_offset)
+    model_matrix_at(
+        transform,
+        body_frame.model_rotation(transform.rotation),
+        origin_offset,
+    )
 }
 
 /// [`model_matrix`] with the model→world rotation already composed: the

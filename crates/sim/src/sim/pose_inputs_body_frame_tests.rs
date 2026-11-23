@@ -8,10 +8,10 @@ use super::*;
 use std::collections::HashMap;
 
 use glam::{Mat4, Quat, Vec3};
+use postretro_entities::components::mesh::{AnimationState, BodyFrame, InterruptPolicy};
 use postretro_entities::components::mesh::{MeshAnimation, MeshComponent};
 use postretro_entities::{EntityId, EntityRegistry, PoseInputs, Transform};
 use postretro_foundation::pose::FootProbe;
-use postretro_entities::components::mesh::{AnimationState, BodyFrame, InterruptPolicy};
 use postretro_model::pose_modifier::{JointMask, LegChain, PoseModifierStack};
 use postretro_model::skeleton::{AnimationClip, Joint, RestLocal, Skeleton};
 
@@ -158,12 +158,10 @@ fn leg_body(
             clip_index: Some(0),
         },
     );
-    let mut mesh = MeshComponent::animated(
-        "two_legs".into(),
-        MeshAnimation::new(states, "idle".into()),
-    )
-    .with_origin_offset(ORIGIN_OFFSET)
-    .with_body_frame(body_frame);
+    let mut mesh =
+        MeshComponent::animated("two_legs".into(), MeshAnimation::new(states, "idle".into()))
+            .with_origin_offset(ORIGIN_OFFSET)
+            .with_body_frame(body_frame);
     mesh.pose_inputs = Some(PoseInputs {
         aim_pitch: 0.1,
         aim_yaw: aim,

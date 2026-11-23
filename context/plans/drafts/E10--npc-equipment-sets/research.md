@@ -86,10 +86,10 @@ Read at e761fb13. Read at 07c46bddd: facts E21 changed. Read at bb7323fc5: sourc
 | id | scenario | ordering | expected outcome |
 |---|---|---|---|
 | E-1 | Equip drops the weapon of the NPC's active attack activity, under a mark, a hold or a release | equip apply → next decide → arbitration | the activity reads as left on that decide, through its first enabled row, else the graph's initial activity; its turn ends; under an equip that keeps the weapon, the activity and its turn continue |
-| E-2 | Equip and a hit on one NPC, same tick | equip applies at one fixed point in the tick relative to impact settle | the hit drains the whole pre-equip stack or the whole post-equip stack, never a mix, the same under every frame split |
+| E-2 | Equip and a hit on one NPC, on the reaction's tick and on later ticks | the equip applies at the start of the next tick, before every impact phase (mover crush included); the queued host-only steps drain after that tick's projectile and remote hits, so the equip does not ride them | a hit on the reaction's tick drains the whole pre-equip stack; every hit from the next tick on drains the whole post-equip stack, never a mix, the same under every frame split |
 | E-3 | Equip whose subjects include a zero-HP NPC and a held NPC | group resolve, then per-subject apply | the zero-HP subject is skipped silently with state unchanged (status precedent: zero health accepts no new instance); the held subject is equipped like the others, and once released it fires and mounts the new set |
-| E-4 | Equip, then the next snapshot; a late join; relevance re-entry | equip apply → snapshot capture on the same tick | the snapshot stamped with the equip tick carries post-equip lists; a later materialize composes from them |
-| E-5 | Two equips on one tick, A→B→A | reaction order, sequential | the result matches two equips on separate ticks: what B dropped arrives fresh, and layers B changed arrive full |
+| E-4 | Equip, then the next snapshot; a late join; relevance re-entry | equip apply (next tick's start) → snapshot capture on that tick | the snapshot stamped with the tick the equip applies carries post-equip lists; a later materialize composes from them |
+| E-5 | Two equips on one tick, A→B→A | both apply at the next tick's start, in reaction order, sequential | the result matches two equips on separate ticks: what B dropped arrives fresh, and layers B changed arrive full |
 | E-6 | Runtime equip, then a same-map restart | restart respawns from placement or spawner | keyed or drawn set again; the equip does not survive |
 | E-7 | Equip that keeps a weapon whose burst is in flight | equip sync, then the next fire step | the kept weapon's burst fires its remaining shots; only a dropped weapon's burst cancels |
 
@@ -118,6 +118,10 @@ Owner rulings of 2026-11-23, after detail review:
 - A set listing an item twice, overriding a layer twice, or carrying an unknown key rejects load.
 - An `equipment` key on an archetype without `equipment` warns once and carries every attack weapon. A zero-HP equip subject is skipped silently; a held one is equipped (decided by the orchestrator at the owner's request, for the smoothest player and authoring experience).
 - Hitscan set weapons, in the owner's words: "I personally prefer enemies don't have hitscan weapons but some devs may want it, so it's technically valid, but I'd rather avoid it in playable test content." A set weapon AI cannot fire warns at load and its attacks stay unavailable.
+
+Owner rulings of 2026-11-23, after the second detail review:
+- An equip applies at the start of the next tick, before every impact phase, so every hit from then on drains the post-equip stack under every frame split. The queued host-only steps drain after that tick's projectile and remote hits (`crates/sim/src/sim/tick.rs`), so the equip does not ride them, and a hit on the reaction's own tick drains the pre-equip stack.
+- A reload that removes `equipment` drops the set's layer-capacity overrides: live instances return to the archetype's base capacities, values clamping to them, as if spawned without sets.
 
 ## Rivals weighed
 - Set identity as the state. Rejected: later single-weapon changes would need an authored set for every combination, and graphs would branch on set names.

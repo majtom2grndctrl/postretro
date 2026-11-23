@@ -69,9 +69,7 @@ Three options edit clips as the library is written, so a rebuild repeats them:
   last pose.
 
 All three apply to a library or to a character that keeps its own clips, never
-with `--clip-library`. When the characters on a library all need the same
-`--yaw`, build the library with it too, so root motion such as a lunge runs the
-way they face.
+with `--clip-library`.
 
 ## Bind a character
 
@@ -89,8 +87,9 @@ character's clips and records the library in the document's extras:
 { "extras": { "clipLibrary": "../clip_libraries/mixamo_rifle/library.gltf" } }
 ```
 
-If the character faces the wrong way in game, pass `--yaw 180`. AI turns a
-model's +Z toward its target.
+The converter's default output faces +Z, the front of every model in the engine:
+AI turns a model's +Z toward its target. A library's root motion follows the
+character it binds to, so the library needs no matching `--yaw`.
 
 Descriptors do not change. `clip: "run_forward"` resolves as it would for a clip
 inside the model.

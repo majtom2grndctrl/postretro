@@ -26,8 +26,10 @@ as named Actions (derived from the filename, e.g. "Idle.fbx" -> "idle").
 Actions the base file ships beyond its own rest pose (e.g. control-rig
 MCH_* driver tracks) are dropped; real animation comes from the clips.
 
-Use --yaw when a model was exported facing a non-standard direction (it
-rotates about the vertical axis on top of the standard facing flip).
+The default output faces glTF +Z, the front of every model the engine places
+(context/lib/entity_model.md section 4). Use --yaw when a model was exported
+facing a non-standard direction: it rotates about the vertical axis on top of
+the standard facing flip.
 
 --in-place pins the named clips' root (Hips) to its first key on the ground
 plane, keeping vertical motion: a lunge or leap then ends where it started.
@@ -138,11 +140,14 @@ def parse_args():
     parser.add_argument(
         "--yaw", type=float, default=0.0,
         metavar="DEGREES",
-        help="Extra rotation about the vertical axis, applied with the "
-             "standard 180-deg facing flip. Use when a model was exported "
-             "facing a different way than the engine's +Z-forward convention "
+        help="Extra rotation about the vertical axis, applied on top of the "
+             "standard facing flip. The default output now faces +Z, the "
+             "engine's model front, so a standard Mixamo export needs no "
+             "flag. Use when a model was exported facing a different way "
              "(e.g. --yaw 90 for a model turned a quarter-turn). Default 0 "
-             "(no extra rotation), correct for standard Mixamo exports."
+             "(no extra rotation). The default changed: a recipe kept "
+             "outside the repo that passed --yaw 180 to reach +Z now yields "
+             "-Z; drop the flag."
     )
     parser.add_argument(
         "--no-tag", action="store_true",
@@ -569,16 +574,15 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None, yaw=
     # --- Phase 3: Apply armature + mesh transforms ------------------------
     # The engine never reads the Armature node (only skin joints), so ALL
     # transforms must be baked into bone rest positions AND mesh vertices.
-    # A 180-deg Z flip is also needed: as imported, the character faces the
-    # wrong way for the engine's +Z-forward convention (pose_modifier.rs,
-    # mesh_pass.rs). Confirmed empirically: without this flip the whole model
-    # (body and feet) renders facing away from its movement direction.
+    # A standard Mixamo export faces Blender -Y, which exports as glTF +Z: the
+    # front of every model the engine places, player bodies included
+    # (context/lib/entity_model.md section 4). So the default applies no turn.
     #
-    # `--yaw` adds a further rotation about the same vertical (Z) axis for
-    # models exported facing a non-standard direction; it folds into flip_z so
-    # every downstream use (armature bake, mesh bake, root-bone re-bake in
-    # Phase 4) stays consistent. Default yaw 0 leaves the flip unchanged.
-    flip_z = Matrix.Rotation(math.pi + math.radians(yaw), 4, 'Z')
+    # `--yaw` turns about the vertical (Blender Z) axis for models exported
+    # facing a non-standard direction; it folds into flip_z so every
+    # downstream use (armature bake, mesh bake, root-bone re-bake in Phase 4)
+    # stays consistent.
+    flip_z = Matrix.Rotation(math.radians(yaw), 4, 'Z')
     if yaw:
         print(f"  Applying extra yaw: {yaw} deg (about vertical axis)")
 
@@ -838,7 +842,7 @@ def flip_eye_geometry(inset=0.0):
     # Push the eyeballs back into their sockets. After the spin, the sphere's
     # rounded front hemisphere sits proud of the eyelids; a small backward
     # translation seats the cornea behind the lids. The head faces Blender +Y
-    # at this stage (the flip_z bake maps the face to glTF -Z / engine +Z), so
+    # at this stage (the flip_z bake maps the face to glTF +Z, the model front), so
     # "into the skull" is -Y. Translation does not affect normals.
     if inset:
         for i in eye_vert_idx:

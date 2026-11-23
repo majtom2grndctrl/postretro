@@ -623,7 +623,9 @@ placement offset. Art owns its fit in the rig's bake. Placement is the base posi
 render-rate view-feel sway/bob is a separate overlay composed on top (owned by
 movement), excluded from authority. Each peer resolves the third-person mount from the
 replicated active weapon and the pawn's class against its own descriptors, so no mount
-data crosses the wire; peers with differing descriptors present differently. Gameplay
+data crosses the wire; peers with differing descriptors present differently. A
+connected client's own body mounts the same way, never from its predicted inventory, so
+its shadow's weapon follows a switch once the host confirms it. Gameplay
 never reads a mount: fire origin and hit tests ignore it. NPC carried weapons stay
 host-only; an NPC shows its weapon through base `mesh.attachments`.
 

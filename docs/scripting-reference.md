@@ -458,7 +458,8 @@ like any other `mesh` edit. A local player's `shadowOnly` covers its mounts too,
 so you see the weapon in your body's shadow. Mounts are presentation only: shots
 still start from the first-person placement and `muzzleOffset`, and hit tests
 ignore them. In co-op each machine resolves the mount from the replicated active
-weapon and its own copy of the descriptors.
+weapon and its own copy of the descriptors. A connected player's own body does
+too, so its shadow shows a new weapon once the host confirms the switch.
 
 Weapons NPCs carry still mount through `mesh.attachments`.
 

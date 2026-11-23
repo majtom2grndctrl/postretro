@@ -205,8 +205,8 @@ pub fn synchronize_weapon_owner_attachments(
 /// Synchronize one authoritative pawn's third-person attachments from its active
 /// inventory weapon. Single player has no dirty attachment queue, and the listen
 /// host installs its own pawn before the regular pre-snapshot synchronization can
-/// run. A connected client's own pawn carries no descriptor provenance, so it
-/// takes [`synchronize_client_weapon_attachment_for_pawn`] instead.
+/// run. A connected client's own pawn never takes this path: its mount follows the
+/// replicated active weapon through [`apply_local_weapon_attachments`].
 pub fn synchronize_weapon_attachment_for_pawn(
     registry: &mut EntityRegistry,
     pawn: EntityId,
@@ -214,37 +214,12 @@ pub fn synchronize_weapon_attachment_for_pawn(
     hit_zone_store: &HitZoneStore,
 ) -> bool {
     let wielder_class = pawn_wielder_class(registry, pawn);
-    synchronize_pawn_as(registry, pawn, &wielder_class, descriptors, hit_zone_store)
-}
-
-/// Synchronize the connected client's own pawn from its local inventory after a
-/// predicted repoint or a refused switch's rollback. Its class is the arming
-/// snapshot's, as for the snapshot-delivered updates that
-/// [`apply_local_weapon_attachments`] applies.
-pub fn synchronize_client_weapon_attachment_for_pawn(
-    registry: &mut EntityRegistry,
-    pawn: EntityId,
-    replication: &ClientReplication,
-    descriptors: &[EntityTypeDescriptor],
-    hit_zone_store: &HitZoneStore,
-) -> bool {
-    let wielder_class = client_pawn_wielder_class(replication, pawn);
-    synchronize_pawn_as(registry, pawn, &wielder_class, descriptors, hit_zone_store)
-}
-
-fn synchronize_pawn_as(
-    registry: &mut EntityRegistry,
-    pawn: EntityId,
-    wielder_class: &str,
-    descriptors: &[EntityTypeDescriptor],
-    hit_zone_store: &HitZoneStore,
-) -> bool {
     let active_weapon_archetype =
         weapon_archetype(registry, active_wieldable_for_pawn(registry, pawn));
     update_weapon_mount_attachments(
         registry,
         pawn,
-        wielder_class,
+        &wielder_class,
         descriptors,
         active_weapon_archetype.as_deref(),
         hit_zone_store,
@@ -267,9 +242,10 @@ fn client_pawn_wielder_class(replication: &ClientReplication, pawn: EntityId) ->
         .to_string()
 }
 
-/// Apply a snapshot's active-weapon updates to the connected client's own pawn.
-/// These run after the snapshot armed the pawn, so the armed class is the
-/// arming snapshot's `pawn:` class.
+/// Apply a snapshot's active-weapon updates to the connected client's own pawn,
+/// its only mount writer: like every peer, it mounts the host-confirmed weapon,
+/// never its predicted local inventory. These run after the snapshot armed the
+/// pawn, so the armed class is the arming snapshot's `pawn:` class.
 pub(crate) fn apply_local_weapon_attachments(
     updates: &[crate::client::LocalWeaponAttachmentUpdate],
     replication: &ClientReplication,

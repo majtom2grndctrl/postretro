@@ -152,18 +152,6 @@ impl Session {
             .expect("the client mapped the pawn")
     }
 
-    /// The client's repoint pass for its own pawn `copy`, as the frame runs it
-    /// after a predicted switch and after a refused switch's rollback.
-    fn client_repoint(&mut self, copy: EntityId) -> bool {
-        synchronize_client_weapon_attachment_for_pawn(
-            &mut self.client,
-            copy,
-            &self.replication,
-            &self.descriptors,
-            &self.client_store,
-        )
-    }
-
     /// Host and client mounts for `pawn`, after one step.
     fn mounts(&mut self, pawn: EntityId) -> (Mounts, Mounts) {
         let copy = self.client_copy(pawn);
@@ -278,21 +266,15 @@ fn a_client_own_pawn_of_a_non_default_class_mounts_its_class_entry_on_the_arming
     );
 }
 
-// The client's own pawn carries no descriptor provenance, so a predicted
-// repoint resolves its class from the arming snapshot, not the default.
+// The client's own pawn mounts only from the replicated active weapon, as
+// every peer does: its predicted inventory and a refusal's rollback leave the
+// mount alone, and the host-confirmed weapon mounts the pawn's class entry.
 #[test]
-fn a_client_own_pawn_keeps_its_class_entry_through_a_predicted_switch_and_its_refusal() {
+fn a_client_own_pawn_mounts_the_host_confirmed_weapon_through_a_predicted_switch_and_refusal() {
     let mut session = Session::new();
     let own = session.spawn("trooper", true, &["rifle", "carbine"]);
     session.step();
     let copy = session.client_copy(own);
-    assert!(
-        session
-            .client
-            .get_component::<DescriptorProvenance>(copy)
-            .is_err(),
-        "fixture: the armed client pawn has no provenance"
-    );
     // Production composes the client inventory from host tuning, which this
     // harness does not send.
     equip(&mut session.client, copy, &["rifle", "carbine"], Some(0));
@@ -302,27 +284,36 @@ fn a_client_own_pawn_keeps_its_class_entry_through_a_predicted_switch_and_its_re
     let carbine = pairs(&[("hand_r", RIFLE_TROOPER)]);
     assert_eq!(mounted(&session.client, copy), rifle);
 
-    // The predicted lower repoints the local inventory to the carbine.
+    // The predicted lower repoints the local inventory to the carbine; the
+    // mount keeps the host-confirmed rifle, before and after a snapshot.
     select(&mut session.client, copy, Some(1));
-    assert!(session.client_repoint(copy));
-    assert_eq!(mounted(&session.client, copy), carbine, "predicted switch");
+    assert_eq!(mounted(&session.client, copy), rifle, "predicted switch");
+    session.step();
+    assert_eq!(
+        mounted(&session.client, copy),
+        rifle,
+        "snapshot before the host switch"
+    );
 
-    // The host refuses; the rollback restores the rifle and its mount, and the
-    // next snapshot leaves both.
+    // The host refuses; the rollback restores the local rifle and the mount
+    // never moved.
     assert!(crate::sim::refuse_local_wieldable_switch(
         &mut session.client,
         copy,
         1,
         0
     ));
-    assert!(session.client_repoint(copy));
-    assert_eq!(mounted(&session.client, copy), rifle, "refused switch");
     session.step();
-    assert_eq!(mounted(&session.client, copy), rifle, "after the refusal");
+    assert_eq!(mounted(&session.client, copy), rifle, "refused switch");
 
-    // A predicted switch the host accepts converges on the same entry.
+    // A predicted switch the host accepts mounts the trooper's carbine entry
+    // once the snapshot carries the host's changed active weapon.
     select(&mut session.client, copy, Some(1));
-    assert!(session.client_repoint(copy));
+    assert_eq!(
+        mounted(&session.client, copy),
+        rifle,
+        "before the host confirms"
+    );
     session.switch(own, Some(1));
     session.step();
     assert_eq!(session.mounts(own), (carbine.clone(), carbine));

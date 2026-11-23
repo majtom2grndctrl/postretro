@@ -97,11 +97,10 @@ pub use splash_march::{MarchRelease, host_step_splash_marches};
 mod teleport_tests;
 pub mod weapon_cues;
 // Third-person weapon mounts: the one writer, its host and single-player
-// synchronizers, and the connected client's own-pawn apply and sync.
+// synchronizers, and the connected client's own-pawn apply.
 mod weapon_mounts;
 pub use weapon_mounts::{
-    synchronize_client_weapon_attachment_for_pawn, synchronize_weapon_attachment_for_pawn,
-    synchronize_weapon_owner_attachments,
+    synchronize_weapon_attachment_for_pawn, synchronize_weapon_owner_attachments,
 };
 // M15 Phase 3.5: the replicated-slot schema/fingerprint/lowering, the engine
 // production (`HostStateReplication`) and client apply (`ClientStateApply`) glue. The

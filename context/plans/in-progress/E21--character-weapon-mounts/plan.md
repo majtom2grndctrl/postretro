@@ -13,6 +13,9 @@ read at: 6fcfc4b18
 - `models/ar_4/model.gltf` (the limitator fit) carries no `extras.mount`; only the moved trooper and warrior bakes do. AC 21's VERIFIED check applies to the moved bakes, as written.
 - "No code, test or doc names `models/ar_4/model.gltf`" → applied to code, tests, `docs/` and `context/lib/`; `context/plans/done/` stays historical.
 
+## Owner rulings
+- 2026-11-23: a connected client's own pawn mounts only from the replicated `active_weapon_archetype`, like every peer (R9 as written). Predicted switches and refusals do not re-mount it; its shadow's weapon trails a switch by about one round trip. Raised by review round 2: local-inventory and snapshot writers could disagree, and a refused resync could leave the client's shadow showing a different weapon than peers see.
+
 ## Delegated answers
 - Grip point and scale per bake — taken from the 2026-11-22 bakes (scale 0.62, per-weapon grips in `research.md` §exo_red bakes); scale and grip stay manual proof.
 

@@ -6123,8 +6123,10 @@ impl App {
     }
 
     /// Route committed inventory repoints to third-person presentation. Hosts queue
-    /// the change for their pre-snapshot attachment pass; single-player and a future
-    /// client-local inventory update their local pawn immediately.
+    /// the change for their pre-snapshot attachment pass; single player updates its
+    /// pawn immediately. A connected client leaves its own pawn's mount alone: it
+    /// follows the replicated active weapon, as every peer's does, so a predicted
+    /// switch or a refusal never re-mounts it.
     fn update_repointed_weapon_attachments(
         &mut self,
         script_ctx: &postretro_entities::ScriptCtx,
@@ -6136,19 +6138,21 @@ impl App {
         let Some(session) = self.session.as_mut() else {
             return;
         };
-        if let Some(netcode::NetEndpoint::Host { weapon_owners, .. }) =
-            session.net_endpoint.as_mut()
-        {
-            for &pawn in repointed_pawns {
-                weapon_owners.mark_attachment_dirty(pawn);
+        match session.net_endpoint.as_mut() {
+            Some(netcode::NetEndpoint::Host { weapon_owners, .. }) => {
+                for &pawn in repointed_pawns {
+                    weapon_owners.mark_attachment_dirty(pawn);
+                }
+                return;
             }
-            return;
+            Some(netcode::NetEndpoint::Client { .. }) => return,
+            None => {}
         }
 
         let descriptors = script_ctx.data_registry.borrow().entities.clone();
         let mut registry = script_ctx.registry.borrow_mut();
         for &pawn in repointed_pawns {
-            if crate::netcode::synchronize_weapon_attachment_for_pawn(
+            if netcode::synchronize_weapon_attachment_for_pawn(
                 &mut registry,
                 pawn,
                 &descriptors,
@@ -7786,7 +7790,6 @@ mod tests {
                 projectile: None,
                 splash: None,
                 credit_source: None,
-                third_person_model: None,
                 viewmodel: viewmodel.map(str::to_owned),
                 placement,
                 muzzle_offset: None,
@@ -12623,6 +12626,7 @@ mod tests {
                 animations: states,
                 default_state: Some("idle".to_string()),
                 locomotion: None,
+                weapon_mounts: None,
             }),
             health: None,
             behavior: None,

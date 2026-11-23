@@ -546,7 +546,6 @@ pub(crate) mod tests {
             projectile: None,
             splash: None,
             credit_source: None,
-            third_person_model: None,
             viewmodel: None,
             placement: None,
             muzzle_offset: None,
@@ -585,6 +584,7 @@ pub(crate) mod tests {
             animations: HashMap::new(),
             default_state: None,
             locomotion: None,
+            weapon_mounts: None,
         });
 
         vec![

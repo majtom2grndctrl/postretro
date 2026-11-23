@@ -1646,6 +1646,88 @@ mod impact_burst {
     }
 }
 
+// --- Third-person weapon mount routing ---------------------------------------
+
+// A connected client's own pawn mounts only from the replicated active weapon,
+// so a committed repoint re-mounts single player's pawn but leaves the client's
+// mount for the snapshot apply. See: context/lib/networking.md §Weapon placement
+// is content
+#[test]
+fn a_repoint_remounts_a_single_player_pawn_and_leaves_a_client_own_pawn_mount_alone() {
+    use postretro_entities::EntityTypeDescriptor;
+    use postretro_entities::components::mesh::MeshComponent;
+    use postretro_entities::data_descriptors::MeshDescriptor;
+
+    const GRIP: &str = "models/grip_tape.gltf";
+    let player = EntityTypeDescriptor {
+        life_states: None,
+        ghost: false,
+        faction: None,
+        tolerance: None,
+        canonical_name: Some("player".to_string()),
+        inventory: None,
+        light: None,
+        emitter: None,
+        movement: None,
+        weapon: None,
+        touchable: None,
+        mesh: Some(MeshDescriptor {
+            model: "models/rig.gltf".to_string(),
+            shadow_only: false,
+            attachments: [("hand_r".to_string(), GRIP.to_string())]
+                .into_iter()
+                .collect(),
+            shadow_bias_scale: 1.0,
+            animations: Default::default(),
+            default_state: None,
+            locomotion: None,
+            weapon_mounts: None,
+        }),
+        health: None,
+        behavior: None,
+    };
+    for client in [false, true] {
+        let (mut registry, pawn, _) = fixture(single_shot(), false);
+        registry
+            .set_component(
+                pawn,
+                MeshComponent::stateless("models/rig.gltf".to_string()),
+            )
+            .unwrap();
+        let mut app = crate::startup::lifecycle::tests::test_app();
+        let session = app.session.as_mut().unwrap();
+        let ctx = session.scripting.script_ctx.clone();
+        *ctx.registry.borrow_mut() = registry;
+        ctx.data_registry.borrow_mut().entities = vec![player.clone()];
+        if client {
+            session.net_endpoint = crate::netcode::NetEndpoint::from_role(
+                &crate::netcode::NetRole::Connect {
+                    addr: std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 1)),
+                },
+                None,
+            )
+            .unwrap();
+        }
+
+        app.update_repointed_weapon_attachments(&ctx, &[pawn]);
+
+        let registry = ctx.registry.borrow();
+        let mounted: Vec<(&str, &str)> = registry
+            .get_component::<MeshComponent>(pawn)
+            .unwrap()
+            .attachments
+            .iter()
+            .map(|attachment| (attachment.socket.as_str(), attachment.model.as_str()))
+            .collect();
+        let expected = if client {
+            vec![]
+        } else {
+            vec![("hand_r", GRIP)]
+        };
+        assert_eq!(mounted, expected, "client endpoint: {client}");
+    }
+}
+
 // --- Vault fire gate ---------------------------------------------------------
 
 /// Put the fixture pawn mid-vault (`elapsed_ms` into a 320 ms vault) with fire

@@ -40,5 +40,6 @@ mod sounds;
 mod stance_handles;
 mod ui_bridge;
 mod ui_bridge_drains;
+mod weapon_mounts;
 
 mod activation;

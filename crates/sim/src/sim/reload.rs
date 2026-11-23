@@ -230,7 +230,6 @@ mod tests {
                 projectile: None,
                 splash: None,
                 credit_source: None,
-                third_person_model: None,
                 viewmodel: None,
                 placement: None,
                 muzzle_offset: None,

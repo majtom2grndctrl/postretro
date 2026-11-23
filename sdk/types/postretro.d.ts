@@ -54,12 +54,14 @@ declare module "postretro" {
     playbackRate?: number;
   };
 
-  /** Authored mesh component preset attached to `EntityTypeDescriptor.components.mesh`. A descriptor carrying `components.mesh` is directly map-placeable via `canonicalName`. `model` is the model handle; `animations` declares the per-entity logical animation-state map (state name → clip + loop + crossfade + interrupt). When `animations` is present it must be non-empty and `defaultState` must name a declared state; omit both for a stateless mesh. */
+  /** Authored mesh component preset attached to `EntityTypeDescriptor.components.mesh`. A descriptor carrying `components.mesh` is directly map-placeable via `canonicalName`. `model` is the model handle; `animations` declares the per-entity logical animation-state map (state name → clip + loop + crossfade + interrupt). When `animations` is present it must be non-empty and `defaultState` must name a declared state; omit both for a stateless mesh. Unknown keys are rejected. */
   export type MeshDescriptor = {
     /** Model handle this entity renders. Must be non-empty. */
     model: string;
     /** Optional socket-name → content-relative prop-model map. Both socket names and model paths must be non-empty. Attachments are presentation-only and follow their holder's authored socket. */
     attachments?: { readonly [socket: string]: string };
+    /** Optional per-weapon mounts fitted to this model's rig: for each weapon the character may wield, the props it holds while that weapon is active. While a weapon is active its entry's sockets replace `attachments` on the same sockets; when the weapon leaves, those sockets return to `attachments`. A weapon with no entry mounts nothing. Omit the table for a character whose weapon is part of its model: it mounts no weapon and logs nothing. Declaring it, even empty, warns about each wielded weapon it lacks. Each weapon appears at most once. Presentation only: fire origin and hit tests ignore it. A hot-reload edit applies at the next level load. */
+    weaponMounts?: ReadonlyArray<WeaponMountDescriptor>;
     /** Per-model skinned pool-shadow receiver-bias multiplier. Defaults to 1.0; must be finite and in 0.0..=4.0. Set 0.0 to disable the receiver offset for this model. */
     shadowBiasScale?: number;
     /** When true, hides this mesh from the main view: it renders only into shadow-depth passes and, at Reflection quality very high and ultra, the water mirror. Optional; defaults to false. For player descriptors this applies only to the owning local view; peer viewers render the avatar forward. */
@@ -70,6 +72,14 @@ declare module "postretro" {
     defaultState?: string;
     /** Optional locomotion calibration block. Carries the `speedScale` rate-scaling toggle; omit for the default (rate-scaled) behavior. */
     locomotion?: LocomotionDescriptor;
+  };
+
+  /** One entry of `MeshDescriptor.weaponMounts`: the props a character mounts while it wields one weapon, each baked for this character's rig (`postretro-tool solve-weapon-mount`). Unknown keys are rejected. */
+  export type WeaponMountDescriptor = {
+    /** The weapon this entry mounts for: the value `defineEntity` returned for a descriptor declaring a weapon block, as in `components.inventory.loadout`. The SDK lowers it to the weapon's canonical name. */
+    weapon: WeaponEntityDescriptor;
+    /** Socket-name → content-relative prop-model map, mounted while this weapon is active. Must be non-empty; each model path uses forward slashes and stays inside the content root. */
+    attachments: { readonly [socket: string]: string };
   };
 
   /** Authored per-archetype locomotion calibration attached to `MeshDescriptor.locomotion`. Sibling to the per-state `travelSpeed` override. */
@@ -717,13 +727,11 @@ declare module "postretro" {
     splash?: SplashDescriptor;
     /** Optional combat attribution source id for this weapon. Must be non-empty ASCII, at most 64 bytes, and use only [A-Za-z0-9_.:-]. Omit to use the resolved canonical weapon name at spawn. */
     creditSource?: string;
-    /** Optional content-relative rigid prop model mounted in a remote or local player's third-person hand socket. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal. */
-    thirdPersonModel?: string;
     /** Optional content-relative model rendered as this weapon's first-person viewmodel. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal. */
     viewmodel?: string;
     /** Optional sound keys for this weapon's events, played whoever wields it. Each key names a sound under the mod's `sounds/` directory without its extension (`sfx/pistol_fire`). Presentation only; resolved fire/impact keys accompany observer cues, while weapon tuning excludes sound keys. */
     sounds?: WeaponSounds;
-    /** Optional per-weapon first-person placement. Position uses metres from screen center (right/up/forward map to +X/+Y/-Z) and rotation uses degrees. Whole-value resolution is per-instance (future) > this field > character (future) > mod `defaultWeaponPlacement` > legacy BASE_OFFSET with zero rotation. v1 supplies no character or per-instance placement. It never changes the third-person hand socket. */
+    /** Optional per-weapon first-person placement. Position uses metres from screen center (right/up/forward map to +X/+Y/-Z) and rotation uses degrees. Whole-value resolution is per-instance (future) > this field > character (future) > mod `defaultWeaponPlacement` > legacy BASE_OFFSET with zero rotation. v1 supplies no character or per-instance placement. It never changes a third-person weapon mount (`mesh.weaponMounts`). */
     placement?: WeaponPlacementDescriptor;
     /** Optional model-local [x, y, z] offset in metres in the viewmodel's own frame. Omit it to spawn projectiles at the camera eye; when set, it moves the projectile spawn to the barrel while still converging on the crosshair. Author values come from the viewmodel rigid `muzzle` socket read. */
     muzzleOffset?: readonly [number, number, number];
@@ -1748,7 +1756,7 @@ declare module "postretro" {
     input?: ModInput;
     /** Mod-global switching policy. Optional; omission preserves immediate direct selection, zero cycle dwell, and reload interruption. */
     switching?: SwitchingDescriptor;
-    /** Optional mod-global first-person weapon placement. It is the lowest authored tier in whole-value resolution: per-instance (future) > per-weapon > character (future) > this default > legacy BASE_OFFSET with zero rotation. v1 supplies no character or per-instance placement. It never changes the third-person hand socket. */
+    /** Optional mod-global first-person weapon placement. It is the lowest authored tier in whole-value resolution: per-instance (future) > per-weapon > character (future) > this default > legacy BASE_OFFSET with zero rotation. v1 supplies no character or per-instance placement. It never changes a third-person weapon mount (`mesh.weaponMounts`). */
     defaultWeaponPlacement?: WeaponPlacementDescriptor;
     /** Engine-global entity-type registrations. Optional; survive level unload and are committed only after manifest validation and required durable-identity validation succeed. */
     entities?: ReadonlyArray<EntityTypeDescriptor>;
@@ -3191,9 +3199,9 @@ declare module "postretro" {
   };
   /** `ModManifest.presentationOverlays`: one overlay, or an array with at most one per source kind. */
   export type PresentationOverlays = PresentationOverlay | readonly PresentationOverlay[];
-  /** An entity descriptor returned by `defineEntity` that declares a weapon block and can be referenced from an inventory loadout. */
+  /** An entity descriptor returned by `defineEntity` that declares a weapon block and can be referenced from an inventory loadout or from `mesh.weaponMounts[].weapon`. */
   export type WeaponEntityDescriptor = EntityTypeDescriptor & { components: EntityTypeComponents & { weapon: WeaponDescriptor } };
-  /** Lowers `components.inventory.loadout` weapon descriptor references to their canonical names after validating each reference by value. */
+  /** Lowers `components.inventory.loadout` and `components.mesh.weaponMounts[].weapon` weapon descriptor references to their canonical names after validating each reference by value. */
   export function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T;
   /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`; `:` is not allowed, and the id may not consist entirely of dots. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `fluids`, `ghostStyles`, `maps`, `uiTrees`, `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor or an array of them, at most one per source kind. `factionSentimentDecay` is an optional non-negative return-to-baseline rate and defaults to zero (hold). */
   export function defineMod(config: ModManifestInput): ModManifest;

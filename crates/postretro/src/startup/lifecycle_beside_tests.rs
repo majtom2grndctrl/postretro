@@ -19,7 +19,7 @@ use crate::startup::lifecycle::lifecycle_beside::BesideLoadStep;
 /// A small skinned model with hit zones, all buffers in `data:` URIs.
 const ZONES: &str = super::super::lifecycle_commit_tests::MODEL;
 /// A textured rifle: an external buffer and base-color PNGs.
-const RIFLE: &str = "models/ar_4/model.gltf";
+const RIFLE: &str = "models/ar_4/limitator.gltf";
 /// The classname a hot reload re-points at another model.
 const RELOADED: &str = "beside_reload_crate";
 
@@ -875,6 +875,7 @@ fn hot_reload_beside_load_installs_reloaded_models() {
         animations: Default::default(),
         default_state: None,
         locomotion: None,
+        weapon_mounts: None,
     });
     // The mod's descriptors before the reload.
     script_ctx(&app)
@@ -968,7 +969,7 @@ fn hot_reload_beside_load_installs_reloaded_models() {
     assert!(report.model_miss_created.total() > 0, "{report:?}");
     capture.assert_logged_once(
         log::Level::Warn,
-        "model prediction missed 'models/ar_4/model.gltf'",
+        "model prediction missed 'models/ar_4/limitator.gltf'",
     );
     // (c): ZONES' entry is freed by the commit's one cache sweep, after the
     // model install, the released running level and the released
@@ -1066,6 +1067,7 @@ fn commit_miss_reuses_released_level_model() {
         animations: Default::default(),
         default_state: None,
         locomotion: None,
+        weapon_mounts: None,
     });
     // The mod's descriptors before the reload.
     script_ctx(&app)
@@ -1105,7 +1107,7 @@ fn commit_miss_reuses_released_level_model() {
     assert_eq!(report.model_misses, 1, "{report:?}");
     capture.assert_logged_once(
         log::Level::Warn,
-        "model prediction missed 'models/ar_4/model.gltf'",
+        "model prediction missed 'models/ar_4/limitator.gltf'",
     );
     assert_eq!(
         report.model_miss_created.total(),

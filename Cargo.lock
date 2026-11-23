@@ -4878,6 +4878,7 @@ dependencies = [
  "postretro-level-loader",
  "postretro-model",
  "serde",
+ "serde_json",
  "tempfile",
  "toml",
 ]

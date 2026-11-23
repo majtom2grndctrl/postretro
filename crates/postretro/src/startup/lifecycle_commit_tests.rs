@@ -34,7 +34,7 @@ use crate::startup::render_profile::{
 /// A small skinned model with hit zones, all buffers in `data:` URIs.
 pub(super) const MODEL: &str = "models/pose-modifier-fixture/joint_zones.gltf";
 /// A textured rifle no fixture predicts.
-const RIFLE: &str = "models/ar_4/model.gltf";
+const RIFLE: &str = "models/ar_4/limitator.gltf";
 /// A fog pixel scale other than the renderer's default of 4.
 const FOG_SCALE: u32 = 6;
 
@@ -1141,7 +1141,7 @@ fn forced_model_miss_loads_and_logs_once() {
     assert_eq!(report.uncounted_creations().total(), 0, "{report:?}");
     capture.assert_logged_once(
         log::Level::Warn,
-        "model prediction missed 'models/ar_4/model.gltf'",
+        "model prediction missed 'models/ar_4/limitator.gltf'",
     );
     let summary = app
         .renderer

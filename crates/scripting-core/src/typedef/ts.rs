@@ -286,7 +286,7 @@ pub fn ts_public_root_sdk_lib_block() -> String {
     replace_range(
         &mut block,
         "  // -------------------------------------------------------------------------\n  // UI theme helpers.",
-        "  /** An entity descriptor returned by `defineEntity` that declares a weapon block and can be referenced from an inventory loadout. */",
+        "  /** An entity descriptor returned by `defineEntity` that declares a weapon block",
         TS_ROOT_UI_MANIFEST_TYPES,
     );
     block

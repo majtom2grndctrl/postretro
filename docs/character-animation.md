@@ -171,13 +171,15 @@ Weapon mounts are solved against a pose. If you change a clip a mount depends on
 
 ```bash
 bin/postretro-tool solve-weapon-mount content/mymod/models/trooper/model.gltf \
-  --weapon content/mymod/models/rifle/model.gltf \
+  --weapon content/mymod/models/rifle/trooper.gltf \
   --mount-joint hand_r \
   --check
 ```
 
-A rigid mount is solved against one character's hand. Characters whose hands
-differ need their own bake of the weapon. See `docs/weapon-mounts.md`.
+A rigid mount is solved against one character's hand, so each rig has its own
+bake of each weapon, named for the rig: `rifle/trooper.gltf` above fits the
+`trooper` model. A character lists its bakes in `mesh.weaponMounts`. Check every
+bake a changed clip affects. See `docs/weapon-mounts.md`.
 
 ## Licence
 

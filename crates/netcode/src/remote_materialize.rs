@@ -1,19 +1,15 @@
-// Shared descriptor-presentation materialization and runtime attachment updates
-// for local and remote player entities.
+// Shared descriptor-presentation materialization for local and remote player
+// entities.
 // See: context/lib/networking.md
 
 use postretro_combat_model::TuningPayload;
-use postretro_entities::components::mesh::{BodyFrame, MeshAttachment, MeshComponent};
+use postretro_entities::components::mesh::{BodyFrame, MeshComponent};
 use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
 use postretro_entities::{EntityId, EntityRegistry, EntityTypeDescriptor};
 use postretro_foundation::NavAgentParams;
 
 use super::client::{ArmedLocalPawn, RemoteEntityMaterialize};
 use super::descriptor_class::decode_replicated_descriptor_class;
-
-/// Reserved socket for the dynamic third-person active-weapon prop. Descriptor
-/// attachments on other sockets remain untouched when an active weapon changes.
-pub(super) const ACTIVE_WEAPON_SOCKET: &str = "hand_r";
 
 /// Whether a descriptor-backed player body is being presented to its owning
 /// viewer or to another client. `shadowOnly` is authored for the first-person
@@ -89,63 +85,6 @@ pub(super) fn apply_remote_player_viewer_role(
         PlayerViewerRole::Remote,
         None,
     );
-}
-
-/// Replace the dynamic active-weapon attachment on a player mesh. The descriptor
-/// lookup deliberately resolves only the shared-visible canonical archetype; no
-/// owner-private weapon component state crosses this presentation seam.
-///
-/// A model missing from the level's preloaded CPU model set clears the socket instead
-/// of leaving a stale attachment behind. The caller runs the existing binding resolver
-/// after a `true` return, which fills the transient [`AttachmentBinding::Skinned`]
-/// cache from the holder's authored `hand_r` socket.
-pub(super) fn update_active_weapon_attachment(
-    registry: &mut EntityRegistry,
-    pawn: EntityId,
-    descriptors: &[EntityTypeDescriptor],
-    active_weapon_archetype: Option<&str>,
-    hit_zone_store: &crate::scripting_systems::hit_zones::HitZoneStore,
-) -> bool {
-    let Ok(mut mesh) = registry.get_component::<MeshComponent>(pawn).cloned() else {
-        return false;
-    };
-
-    let desired_model = active_weapon_archetype
-        .and_then(|archetype| {
-            descriptors
-                .iter()
-                .find(|descriptor| descriptor.canonical_name.as_deref() == Some(archetype))
-        })
-        .and_then(|descriptor| descriptor.weapon.as_ref())
-        .and_then(|weapon| weapon.third_person_model.as_deref())
-        .filter(|model| !model.is_empty())
-        .filter(|model| hit_zone_store.get_by_name(model).is_some());
-
-    let socket_attachments: Vec<_> = mesh
-        .attachments
-        .iter()
-        .filter(|attachment| attachment.socket == ACTIVE_WEAPON_SOCKET)
-        .collect();
-    let already_matches = match desired_model {
-        Some(model) => {
-            socket_attachments.len() == 1 && socket_attachments[0].model.as_str() == model
-        }
-        None => socket_attachments.is_empty(),
-    };
-    if already_matches {
-        return false;
-    }
-
-    mesh.attachments
-        .retain(|attachment| attachment.socket != ACTIVE_WEAPON_SOCKET);
-    if let Some(model) = desired_model {
-        mesh.attachments.push(MeshAttachment::unresolved(
-            ACTIVE_WEAPON_SOCKET.to_string(),
-            model.to_string(),
-        ));
-    }
-    let _ = registry.set_component(pawn, mesh);
-    true
 }
 
 /// Materialize the descriptor-backed presentation for a `local_player` baseline this
@@ -370,9 +309,7 @@ mod tests {
     use super::*;
     use crate::sprite_collection::derive_collection_id;
     use glam::{Quat, Vec3};
-    use postretro_entities::components::mesh::{
-        AnimationState, AttachmentBinding, InterruptPolicy, MeshComponent,
-    };
+    use postretro_entities::components::mesh::{AnimationState, InterruptPolicy, MeshComponent};
     use postretro_entities::{ComponentKind, EntityId, MeshDescriptor, Transform};
     use postretro_foundation::{
         AirParams, CapsuleParams, FallParams, GroundParams, NavAgentParams,
@@ -381,7 +318,6 @@ mod tests {
         SpeedParams, WeaponDescriptor,
     };
     use std::collections::HashMap;
-    use std::sync::Arc;
 
     /// A minimal descriptor carrying only a two-state animated mesh, mirroring the
     /// validated descriptor shape a remote enemy materializes from.
@@ -421,6 +357,7 @@ mod tests {
                 animations: states,
                 default_state: Some("idle".to_string()),
                 locomotion: None,
+                weapon_mounts: None,
             }),
             health: None,
             behavior: None,
@@ -471,44 +408,6 @@ mod tests {
             swim: None,
             vault: None,
             view_feel: None,
-        });
-        descriptor
-    }
-
-    fn third_person_weapon_descriptor(classname: &str, model: &str) -> EntityTypeDescriptor {
-        let mut descriptor = enemy_mesh_descriptor(classname);
-        descriptor.mesh = None;
-        descriptor.weapon = Some(WeaponDescriptor {
-            sounds: None,
-            knockback: None,
-            damage: 1.0,
-            pellet_count: 1,
-            spread_degrees: 0.0,
-            bloom_per_shot_degrees: 0.0,
-            bloom_max_degrees: 0.0,
-            bloom_decay_degrees_per_second: 0.0,
-            bloom_decay_delay_ms: 0.0,
-            movement_spread_degrees: 0.0,
-            spread_vertical_bias: 0.0,
-            range: 1.0,
-            primary: postretro_foundation::WeaponActivationDescriptor::single(
-                postretro_foundation::ActivationTrigger::Press,
-                1.0,
-            ),
-            secondary: None,
-            resolution: ResolutionMode::Hitscan,
-            projectile: None,
-            splash: None,
-            credit_source: None,
-            third_person_model: Some(model.to_string()),
-            viewmodel: None,
-            placement: None,
-            muzzle_offset: None,
-            resource: None,
-            lower_ms: 0,
-            raise_ms: 0,
-            block_during_reload: None,
-            damage_type: None,
         });
         descriptor
     }
@@ -574,7 +473,6 @@ mod tests {
             }),
             splash: None,
             credit_source: None,
-            third_person_model: None,
             viewmodel: None,
             placement: None,
             muzzle_offset: None,
@@ -585,69 +483,6 @@ mod tests {
             damage_type: None,
         });
         descriptor
-    }
-
-    fn test_hit_zones(
-        sockets: HashMap<String, postretro_model::gltf_loader::SocketBinding>,
-    ) -> crate::scripting_systems::hit_zones::ModelHitZones {
-        crate::scripting_systems::hit_zones::ModelHitZones::for_test(
-            Arc::new(postretro_model::skeleton::Skeleton::default()),
-            Arc::new(Vec::new()),
-            Vec::new(),
-            sockets,
-            None,
-            Vec::new(),
-            Arc::new(postretro_model::pose_modifier::PoseModifierStack::default()),
-        )
-    }
-
-    fn attachment_store() -> crate::scripting_systems::hit_zones::HitZoneStore {
-        use postretro_model::skeleton::{Joint, RestLocal, Skeleton};
-
-        let mut store = crate::scripting_systems::hit_zones::HitZoneStore::new();
-        let mut holder = test_hit_zones(HashMap::from([(
-            ACTIVE_WEAPON_SOCKET.to_string(),
-            postretro_model::gltf_loader::SocketBinding::SkinnedJoint(3),
-        )]));
-        holder.skeleton = Arc::new(Skeleton {
-            joints: vec![
-                Joint {
-                    parent: None,
-                    inverse_bind: glam::Mat4::IDENTITY.to_cols_array_2d(),
-                    rest_local: RestLocal::default(),
-                },
-                Joint {
-                    parent: Some(0),
-                    inverse_bind: glam::Mat4::IDENTITY.to_cols_array_2d(),
-                    rest_local: RestLocal {
-                        translation: Vec3::new(0.25, 0.0, 0.0),
-                        ..RestLocal::default()
-                    },
-                },
-                Joint {
-                    parent: Some(1),
-                    inverse_bind: glam::Mat4::IDENTITY.to_cols_array_2d(),
-                    rest_local: RestLocal {
-                        translation: Vec3::new(0.0, 0.5, 0.0),
-                        ..RestLocal::default()
-                    },
-                },
-                Joint {
-                    parent: Some(2),
-                    inverse_bind: glam::Mat4::IDENTITY.to_cols_array_2d(),
-                    rest_local: RestLocal {
-                        translation: Vec3::new(0.0, 0.0, 0.75),
-                        ..RestLocal::default()
-                    },
-                },
-            ],
-        });
-        store.insert_for_test(postretro_model::ModelHandle::from("decraniated"), holder);
-        store.insert_for_test(
-            postretro_model::ModelHandle::from("models/pistol/model.gltf"),
-            test_hit_zones(HashMap::new()),
-        );
-        store
     }
 
     fn spawn_transform_only(reg: &mut EntityRegistry) -> EntityId {
@@ -974,65 +809,6 @@ mod tests {
         assert_eq!(
             reg.has_component_kind(unknown_id, ComponentKind::Mesh),
             Ok(false)
-        );
-    }
-
-    #[test]
-    fn active_weapon_attachment_resolves_the_descriptor_hand_socket() {
-        let descriptors = vec![
-            player_mesh_descriptor("co_op_avatar"),
-            third_person_weapon_descriptor("reference_pistol", "models/pistol/model.gltf"),
-            third_person_weapon_descriptor("missing_pistol", "models/missing/model.gltf"),
-        ];
-        let store = attachment_store();
-        let mut registry = EntityRegistry::new();
-        let pawn = spawn_transform_only(&mut registry);
-        let request = RemoteEntityMaterialize {
-            network_id: postretro_net::wire::NetworkId(9),
-            entity_id: pawn,
-            entity_class: "co_op_avatar".to_string(),
-            initial_animation_state: None,
-            active_weapon_archetype: None,
-            weapon_attachment_changed: false,
-        };
-        assert!(materialize_armed_remote_player(
-            &request,
-            &descriptors,
-            &mut registry,
-            None,
-        ));
-        assert!(update_active_weapon_attachment(
-            &mut registry,
-            pawn,
-            &descriptors,
-            Some("reference_pistol"),
-            &store,
-        ));
-        crate::sim::resolve_mesh_entity_bindings_for_entities(
-            &mut registry,
-            &crate::scripting_systems::mesh_anim::MeshClipTables::default(),
-            &store,
-            [pawn],
-        );
-        let mesh = registry.get_component::<MeshComponent>(pawn).unwrap();
-        assert_eq!(mesh.attachments.len(), 1);
-        assert_eq!(mesh.attachments[0].socket, ACTIVE_WEAPON_SOCKET);
-        assert_eq!(mesh.attachments[0].model, "models/pistol/model.gltf");
-        assert_eq!(mesh.attachments[0].binding, AttachmentBinding::Skinned(3));
-        assert!(update_active_weapon_attachment(
-            &mut registry,
-            pawn,
-            &descriptors,
-            Some("missing_pistol"),
-            &store,
-        ));
-        assert!(
-            registry
-                .get_component::<MeshComponent>(pawn)
-                .unwrap()
-                .attachments
-                .is_empty(),
-            "a descriptor model absent from the preloaded CPU store clears the old prop"
         );
     }
 

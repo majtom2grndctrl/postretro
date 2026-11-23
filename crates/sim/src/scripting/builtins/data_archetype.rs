@@ -304,25 +304,31 @@ pub(crate) fn distinct_descriptor_mesh_models<'a>(
     ordered
 }
 
-/// Collect third- and first-person models declared by weapon descriptors.
-/// Wieldable instances intentionally have no `MeshComponent`, so a registry-driven
-/// sweep cannot discover either presentation asset. Every role may present an
-/// active weapon, therefore this list is always unioned into the level-load model
-/// sweep rather than being client-only.
+/// Collect first-person viewmodels declared by weapon descriptors, and every
+/// prop a character's `mesh.weaponMounts` table lists. Wieldable instances
+/// intentionally have no `MeshComponent`, and a mount joins its holder only on a
+/// switch, so a registry-driven sweep cannot discover these presentation assets.
+/// Every role may present an active weapon, therefore this list is always
+/// unioned into the level-load model sweep rather than being client-only.
 pub fn weapon_presentation_models(descriptors: &[EntityTypeDescriptor]) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut ordered = Vec::new();
     for descriptor in descriptors {
-        let Some(weapon) = descriptor.weapon.as_ref() else {
-            continue;
-        };
-        for model in [
-            weapon.third_person_model.as_deref(),
-            weapon.viewmodel.as_deref(),
-        ]
-        .into_iter()
-        .flatten()
-        .filter(|model| !model.is_empty())
+        let viewmodel = descriptor
+            .weapon
+            .as_ref()
+            .and_then(|weapon| weapon.viewmodel.as_deref());
+        // Entry sockets are unordered maps; sort so the sweep order is stable.
+        let mut mount_models: Vec<&str> = descriptor
+            .mesh
+            .iter()
+            .flat_map(|mesh| mesh.weapon_mount_models())
+            .collect();
+        mount_models.sort_unstable();
+        for model in viewmodel
+            .into_iter()
+            .chain(mount_models)
+            .filter(|model| !model.is_empty())
         {
             if seen.insert(model.to_string()) {
                 ordered.push(model.to_string());
@@ -2328,7 +2334,6 @@ mod tests {
                 projectile: None,
                 splash: None,
                 credit_source: None,
-                third_person_model: None,
                 viewmodel: None,
                 placement: None,
                 muzzle_offset: None,
@@ -3090,20 +3095,15 @@ mod tests {
     }
 
     #[test]
-    fn weapon_presentation_models_collects_nonempty_third_and_first_person_paths_once() {
+    fn weapon_presentation_models_collects_nonempty_viewmodel_paths_once() {
         let mut pistol = weapon_descriptor("pistol");
-        pistol.weapon.as_mut().unwrap().third_person_model =
-            Some("models/pistol/model.gltf".to_string());
         pistol.weapon.as_mut().unwrap().viewmodel = Some("models/pistol/view.gltf".to_string());
         let mut duplicate = weapon_descriptor("pistol_variant");
-        duplicate.weapon.as_mut().unwrap().third_person_model =
-            Some("models/pistol/model.gltf".to_string());
         duplicate.weapon.as_mut().unwrap().viewmodel = Some("models/pistol/view.gltf".to_string());
         let mut rifle = weapon_descriptor("rifle");
-        rifle.weapon.as_mut().unwrap().third_person_model =
-            Some("models/rifle/model.gltf".to_string());
+        rifle.weapon.as_mut().unwrap().viewmodel = Some("models/rifle/view.gltf".to_string());
         let mut empty = weapon_descriptor("empty");
-        empty.weapon.as_mut().unwrap().third_person_model = Some(String::new());
+        empty.weapon.as_mut().unwrap().viewmodel = Some(String::new());
 
         assert_eq!(
             weapon_presentation_models(&[
@@ -3114,11 +3114,51 @@ mod tests {
                 rifle,
             ]),
             vec![
-                "models/pistol/model.gltf".to_string(),
                 "models/pistol/view.gltf".to_string(),
-                "models/rifle/model.gltf".to_string(),
+                "models/rifle/view.gltf".to_string(),
             ],
-            "declared weapon presentation models preserve descriptor order and dedupe paths"
+            "declared weapon viewmodels preserve descriptor order and dedupe paths"
+        );
+    }
+
+    #[test]
+    fn weapon_presentation_models_collects_every_weapon_mount_table_model_once() {
+        use postretro_entities::data_descriptors::WeaponMountDescriptor;
+
+        let mount = |weapon: &str, attachments: &[(&str, &str)]| WeaponMountDescriptor {
+            weapon: weapon.to_string(),
+            attachments: attachments
+                .iter()
+                .map(|(socket, model)| (socket.to_string(), model.to_string()))
+                .collect(),
+        };
+        let mut player = mesh_descriptor("player", false);
+        player.mesh.as_mut().unwrap().weapon_mounts = Some(vec![
+            mount(
+                "rifle",
+                &[
+                    ("hand_r", "models/rifle/exo_red.gltf"),
+                    ("back", "models/rifle/sling.gltf"),
+                ],
+            ),
+            mount("pistol", &[("hand_r", "models/pistol/exo_red.gltf")]),
+        ]);
+        // An NPC is a character too; a table on any descriptor joins the sweep.
+        let mut trooper = mesh_descriptor("trooper", false);
+        trooper.mesh.as_mut().unwrap().weapon_mounts = Some(vec![
+            mount("rifle", &[("hand_r", "models/rifle/trooper.gltf")]),
+            mount("pistol", &[("hand_r", "models/pistol/exo_red.gltf")]),
+        ]);
+
+        assert_eq!(
+            weapon_presentation_models(&[player, trooper]),
+            vec![
+                "models/pistol/exo_red.gltf".to_string(),
+                "models/rifle/exo_red.gltf".to_string(),
+                "models/rifle/sling.gltf".to_string(),
+                "models/rifle/trooper.gltf".to_string(),
+            ],
+            "every table model, from every entry and socket, once and in a stable order"
         );
     }
 

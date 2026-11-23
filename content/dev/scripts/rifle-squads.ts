@@ -66,7 +66,7 @@ export const rifleTrooperEntity = rifleEnemy(
   "rifle_trooper",
   RIFLE_TROOPERS_FACTION,
   "models/rodin_sci-fi_trooper_m/model.gltf",
-  "models/ar_4_trooper/model.gltf",
+  "models/ar_4/rodin_sci-fi_trooper_m.gltf",
   2.0,
 );
 
@@ -74,6 +74,6 @@ export const rifleWarriorEntity = rifleEnemy(
   "rifle_warrior",
   RIFLE_WARRIORS_FACTION,
   "models/cyberpunk_warrior_f/model.gltf",
-  "models/ar_4_warrior/model.gltf",
+  "models/ar_4/cyberpunk_warrior_f.gltf",
   1.9,
 );

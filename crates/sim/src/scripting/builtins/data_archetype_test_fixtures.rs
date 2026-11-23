@@ -95,6 +95,7 @@ pub fn mesh_descriptor(classname: &str, animated: bool) -> EntityTypeDescriptor 
             animations,
             default_state,
             locomotion: None,
+            weapon_mounts: None,
         }),
         health: None,
         behavior: None,

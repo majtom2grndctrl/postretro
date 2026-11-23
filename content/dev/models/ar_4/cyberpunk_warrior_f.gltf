@@ -1,6 +1,6 @@
 {
   "asset": {
-    "generator": "Khronos glTF Blender I/O v5.2.39",
+    "generator": "Khronos glTF Blender I/O v5.2.41",
     "version": "2.0"
   },
   "scene": 0,
@@ -15,7 +15,26 @@
   "nodes": [
     {
       "mesh": 0,
-      "name": "AR_4"
+      "name": "AR_4",
+      "extras": {
+        "mount": {
+          "barrel": [
+            1.0,
+            0.0,
+            0.0
+          ],
+          "up": [
+            0.0,
+            1.0,
+            0.0
+          ],
+          "euler": [
+            24.637445,
+            -61.25742,
+            163.871979
+          ]
+        }
+      }
     }
   ],
   "materials": [
@@ -131,23 +150,23 @@
     {
       "bufferView": 0,
       "componentType": 5126,
-      "count": 5467,
+      "count": 5506,
       "max": [
-        0.2932250201702118,
-        0.25418034195899963,
-        0.07333828508853912
+        0.20656447112560272,
+        0.43329212069511414,
+        0.019312134012579918
       ],
       "min": [
-        -0.09929856657981873,
-        -0.31354114413261414,
-        0.00932970829308033
+        -0.1586999148130417,
+        -0.14409379661083221,
+        -0.11449172347784042
       ],
       "type": "VEC3"
     },
     {
       "bufferView": 1,
       "componentType": 5126,
-      "count": 5467,
+      "count": 5506,
       "type": "VEC3"
     },
     {
@@ -159,23 +178,23 @@
     {
       "bufferView": 3,
       "componentType": 5126,
-      "count": 581,
+      "count": 592,
       "max": [
-        0.3076639771461487,
-        0.24502773582935333,
-        0.06861672550439835
+        0.21919123828411102,
+        0.42380794882774353,
+        0.025177089497447014
       ],
       "min": [
-        -0.04001101851463318,
-        -0.32443252205848694,
-        0.00677868677303195
+        -0.08376366645097733,
+        -0.15510053932666779,
+        -0.11119087040424347
       ],
       "type": "VEC3"
     },
     {
       "bufferView": 4,
       "componentType": 5126,
-      "count": 581,
+      "count": 592,
       "type": "VEC3"
     },
     {
@@ -187,23 +206,23 @@
     {
       "bufferView": 6,
       "componentType": 5126,
-      "count": 658,
+      "count": 683,
       "max": [
-        0.252894788980484,
-        0.22758150100708008,
-        0.07574235647916794
+        0.17065469920635223,
+        0.4050855040550232,
+        -0.0018431044882163405
       ],
       "min": [
-        -0.07804343104362488,
-        -0.22738401591777802,
-        0.01498599536716938
+        -0.12395542860031128,
+        -0.05645522475242615,
+        -0.1168581023812294
       ],
       "type": "VEC3"
     },
     {
       "bufferView": 7,
       "componentType": 5126,
-      "count": 658,
+      "count": 683,
       "type": "VEC3"
     },
     {
@@ -217,14 +236,14 @@
       "componentType": 5126,
       "count": 152,
       "max": [
-        0.1499839574098587,
-        0.2139885574579239,
-        0.07405515015125275
+        0.08801170438528061,
+        0.40325215458869934,
+        -0.03224955126643181
       ],
       "min": [
-        -0.08531103283166885,
-        -0.04277455806732178,
-        0.021366115659475327
+        -0.12856769561767578,
+        0.12311485409736633,
+        -0.10977402329444885
       ],
       "type": "VEC3"
     },
@@ -244,81 +263,81 @@
   "bufferViews": [
     {
       "buffer": 0,
-      "byteLength": 65604,
+      "byteLength": 66072,
       "byteOffset": 0,
       "target": 34962
     },
     {
       "buffer": 0,
-      "byteLength": 65604,
-      "byteOffset": 65604,
+      "byteLength": 66072,
+      "byteOffset": 66072,
       "target": 34962
     },
     {
       "buffer": 0,
       "byteLength": 20760,
-      "byteOffset": 131208,
+      "byteOffset": 132144,
       "target": 34963
     },
     {
       "buffer": 0,
-      "byteLength": 6972,
-      "byteOffset": 151968,
+      "byteLength": 7104,
+      "byteOffset": 152904,
       "target": 34962
     },
     {
       "buffer": 0,
-      "byteLength": 6972,
-      "byteOffset": 158940,
+      "byteLength": 7104,
+      "byteOffset": 160008,
       "target": 34962
     },
     {
       "buffer": 0,
       "byteLength": 4224,
-      "byteOffset": 165912,
+      "byteOffset": 167112,
       "target": 34963
     },
     {
       "buffer": 0,
-      "byteLength": 7896,
-      "byteOffset": 170136,
+      "byteLength": 8196,
+      "byteOffset": 171336,
       "target": 34962
     },
     {
       "buffer": 0,
-      "byteLength": 7896,
-      "byteOffset": 178032,
+      "byteLength": 8196,
+      "byteOffset": 179532,
       "target": 34962
     },
     {
       "buffer": 0,
       "byteLength": 3948,
-      "byteOffset": 185928,
+      "byteOffset": 187728,
       "target": 34963
     },
     {
       "buffer": 0,
       "byteLength": 1824,
-      "byteOffset": 189876,
+      "byteOffset": 191676,
       "target": 34962
     },
     {
       "buffer": 0,
       "byteLength": 1824,
-      "byteOffset": 191700,
+      "byteOffset": 193500,
       "target": 34962
     },
     {
       "buffer": 0,
       "byteLength": 456,
-      "byteOffset": 193524,
+      "byteOffset": 195324,
       "target": 34963
     }
   ],
   "buffers": [
     {
-      "byteLength": 193980,
-      "uri": "model.bin"
+      "byteLength": 195780,
+      "uri": "cyberpunk_warrior_f.bin"
     }
   ],
   "images": [
@@ -333,6 +352,14 @@
     },
     {
       "uri": "Main.png"
+    }
+  ],
+  "samplers": [
+    {
+      "magFilter": 9728,
+      "minFilter": 9728,
+      "wrapS": 33071,
+      "wrapT": 33071
     }
   ],
   "textures": [
@@ -351,14 +378,6 @@
     {
       "sampler": 0,
       "source": 3
-    }
-  ],
-  "samplers": [
-    {
-      "magFilter": 9728,
-      "wrapS": 33071,
-      "minFilter": 9728,
-      "wrapT": 33071
     }
   ]
 }

@@ -25,6 +25,7 @@ const LOAD_STAGE_MODULES: &[&str] = &[
     "level_load/test_support.rs",
     "level_load/tests.rs",
     "level_load/upload.rs",
+    "level_load/weapon_mount_content_tests.rs",
     "session/level_streaming/hooks.rs",
     "session/level_streaming/level_data.rs",
     "startup/level_loads.rs",

@@ -4,6 +4,10 @@
 use std::collections::HashSet;
 
 use super::super::*;
+use super::mesh_weapon_mounts::{
+    reject_unknown_mesh_keys, string_map_from_lua, weapon_mounts_from_lua,
+};
+use postretro_entities::data_descriptors::mesh_owner_label;
 
 /// Mirror of [`entity_descriptor_from_js`] for Luau tables. Shape:
 /// `{ canonicalName?: string, ghost?: boolean, components?: { inventory?: { loadout?: string[] }, mesh?: MeshDescriptor, movement?: PlayerMovementDescriptor, lifeStates?: LifeStatesDescriptor, weapon?: WeaponDescriptor, touchable?: TouchableDescriptor, health?: HealthDescriptor, faction?: string, tolerance?: number, behavior?: BehaviorGraphDescriptor, light?: LightDescriptor, emitter?: BillboardEmitterComponent } }`.
@@ -93,7 +97,10 @@ pub fn entity_descriptor_from_lua(
                             });
                         }
                     };
-                    mesh = Some(mesh_descriptor_from_lua(&mesh_table)?);
+                    mesh = Some(mesh_descriptor_from_lua(
+                        &mesh_table,
+                        &mesh_owner_label(canonical_name.as_deref()),
+                    )?);
                 }
             }
             if components_table.contains_key("movement").map_err(lua_err)? {
@@ -475,53 +482,33 @@ fn lua_key_to_string(key: &LuaValue) -> String {
     }
 }
 
-/// Mirror of [`mesh_descriptor_from_js`] for Luau tables. Gathers raw fields
-/// and delegates validation to [`MeshDescriptor::build`].
-pub fn mesh_descriptor_from_lua(table: &Table) -> Result<MeshDescriptor, DescriptorError> {
+/// Mirror of [`mesh_descriptor_from_js`] for Luau tables: any other key
+/// rejects load, naming it and `owner`. Gathers raw fields and delegates
+/// validation to [`MeshDescriptor::build`].
+pub fn mesh_descriptor_from_lua(
+    table: &Table,
+    owner: &str,
+) -> Result<MeshDescriptor, DescriptorError> {
+    reject_unknown_mesh_keys(owner, table)?;
     let model = get_required_string_lua(table, "model")?;
 
     let mut attachments = HashMap::new();
     if table.contains_key("attachments").map_err(lua_err)? {
         let raw: LuaValue = table.get("attachments").map_err(lua_err)?;
-        match raw {
-            LuaValue::Table(attachment_table) => {
-                for pair in attachment_table.pairs::<LuaValue, LuaValue>() {
-                    let (key, value) = pair.map_err(lua_err)?;
-                    let socket = match key {
-                        LuaValue::String(value) => value.to_str().map_err(lua_err)?.to_string(),
-                        other => {
-                            return Err(DescriptorError::InvalidShape {
-                                reason: format!(
-                                    "`components.mesh.attachments` must be a socket-name map, got {} key",
-                                    other.type_name()
-                                ),
-                            });
-                        }
-                    };
-                    let attachment_model = match value {
-                        LuaValue::String(value) => value.to_str().map_err(lua_err)?.to_string(),
-                        other => {
-                            return Err(DescriptorError::InvalidShape {
-                                reason: format!(
-                                    "`components.mesh.attachments.{socket}` must be a string, got {}",
-                                    other.type_name()
-                                ),
-                            });
-                        }
-                    };
-                    attachments.insert(socket, attachment_model);
-                }
-            }
-            other => {
-                return Err(DescriptorError::InvalidShape {
-                    reason: format!(
-                        "`components.mesh.attachments` must be a table, got {}",
-                        other.type_name()
-                    ),
-                });
-            }
-        }
+        attachments = string_map_from_lua(raw, "components.mesh.attachments")
+            .map_err(|reason| DescriptorError::InvalidShape { reason })?;
     }
+
+    let weapon_mounts = if table.contains_key("weaponMounts").map_err(lua_err)? {
+        let raw: LuaValue = table.get("weaponMounts").map_err(lua_err)?;
+        if matches!(raw, LuaValue::Nil) {
+            None
+        } else {
+            Some(weapon_mounts_from_lua(owner, raw)?)
+        }
+    } else {
+        None
+    };
 
     let mut animations_present = false;
     let mut states = Vec::new();
@@ -600,16 +587,20 @@ pub fn mesh_descriptor_from_lua(table: &Table) -> Result<MeshDescriptor, Descrip
         None
     };
 
-    MeshDescriptor::build(RawMeshDescriptor {
-        model,
-        attachments,
-        states,
-        default_state,
-        animations_present,
-        locomotion,
-        shadow_bias_scale,
-        shadow_only,
-    })
+    MeshDescriptor::build(
+        RawMeshDescriptor {
+            model,
+            attachments,
+            states,
+            default_state,
+            animations_present,
+            locomotion,
+            shadow_bias_scale,
+            shadow_only,
+            weapon_mounts,
+        },
+        owner,
+    )
 }
 
 /// Gather one animation-state entry from a Luau table. Mirrors

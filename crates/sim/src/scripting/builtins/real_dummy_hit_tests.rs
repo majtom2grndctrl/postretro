@@ -193,7 +193,6 @@ fn pistol() -> (WeaponComponent, WeaponPlacementDescriptor) {
         projectile: None,
         splash: None,
         credit_source: None,
-        third_person_model: None,
         viewmodel: None,
         placement: Some(placement.clone()),
         muzzle_offset: Some([0.0, 0.225, -0.574]),

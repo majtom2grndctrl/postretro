@@ -87,6 +87,12 @@ pub struct ModelHitZones {
 }
 
 impl ModelHitZones {
+    /// Whether the model authors a socket named `socket`. The weapon-mount
+    /// writer checks the holder's rig before it mounts a prop there.
+    pub fn has_socket(&self, socket: &str) -> bool {
+        self.sockets.contains_key(socket)
+    }
+
     /// Build retained CPU pose data for cross-crate harnesses. Production
     /// instances originate from the glTF loader.
     #[cfg(any(test, feature = "test-support"))]

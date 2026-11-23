@@ -201,7 +201,13 @@ mod tests {
             }
         }
 
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        // Resolved at run time, like the other tool tests: a shippable binary
+        // never bakes the build machine's path (`main.rs` source scan).
+        let root = PathBuf::from(
+            std::env::var("CARGO_MANIFEST_DIR")
+                .expect("cargo sets CARGO_MANIFEST_DIR for its own test runs"),
+        )
+        .join("../..");
         let mut hits = Vec::new();
         scan(&root.join("docs"), &|_| true, &mut hits);
         scan(

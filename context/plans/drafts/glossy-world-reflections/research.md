@@ -183,6 +183,7 @@ Orderings the Acceptance rows cite.
 | P21 | Glossy floor at medium: a character moves on frame N; also the first frame after install, after a resize, after a level set built at another extent publishes, and after a live low → medium switch | forward, movers, skinned meshes, then the scene-colour copy and its mips, then the floor march, then the overlay, then the Ghost Pass | The chain holds frame N's movers and characters and no ghost, fluid, billboard, fog or overlay output; on each boundary frame the chain and target match the current extent and no bind group references a superseded one |
 | P22 | Glossy level at very high with a selected plane; reflection quality off → low → off live; a resize | main forward writes D_static, the overlay reads it, the Ghost Pass, then the mirror's world forward with main pipelines | The mirror's pipelines match its attachments and it writes nothing into the main D_static; the first low frame's glossy pixels meet the composite; at off, forward's pass has one attachment |
 | P23 | A mover coplanar with a glossy floor on frame N; on N+1 it moves off, or the mover pass records nothing | the guard clears every frame before the mover pass, the mover pass writes it, the overlay tests it | On N, no term lands on the mover's pixels; on N+1 those floor pixels take the term |
+| P25 | A water-only map whose derived probes pass the cap | authored, derived, then the cap | Kept and dropped water probes match the build before; the warning names each dropped probe's faces |
 
 
 

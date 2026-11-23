@@ -22,7 +22,8 @@ use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
 use super::ReflectionProbeInputs;
 use super::animated_direct::AnimatedDirectSampler;
-use super::capture_exclusion::{BrushFaces, CaptureBrushes, ProbeExclusion};
+use super::capture_brushes::{BrushFaces, CaptureBrushes};
+use super::capture_exclusion::ProbeExclusion;
 use super::emissive_factor::EmissiveFaceFactors;
 use super::hit::SceneTracer;
 use super::lightmap_sample::LightmapSampler;

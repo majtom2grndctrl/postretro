@@ -10,7 +10,8 @@ use log::Level;
 use postretro_level_format::reflection_probes::ReflectionProbesSection;
 use postretro_test_log_capture::LogCapture;
 
-use super::capture_exclusion::{BrushFaces, ProbeExclusion};
+use super::capture_brushes::BrushFaces;
+use super::capture_exclusion::ProbeExclusion;
 use super::capture_exclusion_test_fixtures::{
     CEILING_DEPTH, CaptureFixture, PILLAR_TEXTURE, ROOM_MAX, pillar, pool_entity, textured_room,
 };

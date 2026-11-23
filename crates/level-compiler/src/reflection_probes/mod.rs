@@ -8,6 +8,7 @@ mod authored;
 mod box_fit;
 mod capture;
 mod capture_bounds;
+mod capture_brushes;
 mod capture_exclusion;
 mod capture_fill;
 mod capture_point;
@@ -23,6 +24,8 @@ mod hit;
 mod lightmap_sample;
 pub(crate) mod placement;
 mod plane_basis;
+mod probe_capture;
+mod probe_log;
 mod reference;
 mod roster;
 mod sdf_lights;
@@ -77,15 +80,10 @@ use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
 use postretro_level_format::emissive::{EmissiveTexture, EmissiveVolumeRecord};
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
-use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, LightmapSection};
+use postretro_level_format::lightmap::LightmapSection;
 use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
-use postretro_level_format::reflection_probes::{
-    MAX_REFLECTION_PROBES, REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
-    REFLECTION_PROBE_LIGHTS_PER_PROBE, REFLECTION_PROBE_TILE_BORDER,
-    REFLECTION_PROBE_TILE_DIMENSION, ReflectionProbeRecord, ReflectionProbesSection,
-};
+use postretro_level_format::reflection_probes::{MAX_REFLECTION_PROBES, ReflectionProbesSection};
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
-use rayon::prelude::*;
 
 use crate::bake_control::BakeControl;
 use crate::bvh_build::BvhPrimitive;
@@ -97,8 +95,8 @@ use crate::partition::BspTree;
 use crate::surface_materials::SurfaceMaterials;
 use animated_direct::AnimatedDirectSampler;
 use box_fit::WorldBounds;
-use capture::{RowCapture, TILE_INTERIOR, capture_row, encode_distance_tile, encode_tile};
-use capture_exclusion::{BrushFaces, CaptureBrushes, ProbeExclusion};
+use capture_brushes::{BrushFaces, CaptureBrushes};
+use capture_exclusion::ProbeExclusion;
 use capture_point::PointClassifier;
 use capture_visibility::warn_hidden_water;
 use delta_sample::DeltaShSampler;
@@ -106,12 +104,18 @@ use emissive_factor::{AreaGlowFaces, EmissiveFaceFactors};
 use exclusion::{ExclusionConstants, ExclusionScene, classify_probes_within_boxes};
 pub(crate) use hit::SceneTracer;
 use lightmap_sample::LightmapSampler;
-use placement::{PlacedProbe, PlacementScene, fluid_bindings, place_probes, up_facing_faces};
+#[cfg(test)]
+use placement::fluid_bindings;
+use placement::{PlacedProbe, PlacementScene, place_probes, up_facing_faces};
+use probe_capture::capture_probes;
+#[cfg(test)]
+use probe_capture::capture_section;
+use probe_log::log_probes;
 use roster::{check_roster, references};
 use sdf_lights::SdfLights;
 use sh_sample::{PRODUCTION_PROBE_OCCLUSION, ShVolumeSampler};
 use shading::CaptureScene;
-use share::{ShareReport, ShareSums, log_negative_references};
+use share::log_negative_references;
 use stage_key::{cache_key, cache_payload, parse_cache_payload};
 
 /// Cache stage identity for the whole id-54 section.
@@ -473,182 +477,4 @@ fn bake_or_load_with(
     log_probes(&section, &reports);
     warn_hidden_water(&section, &probes, inputs.environment_volumes);
     Ok(Some(section))
-}
-
-/// [`capture_probes`] with each probe's primary rays skipping its
-/// `excluded` brushes (sorted brush indices, one set per probe).
-#[cfg(test)]
-fn capture_section(
-    scene: &CaptureScene<'_>,
-    probes: &[PlacedProbe],
-    excluded: &[Vec<u32>],
-    references: &[[f32; 3]],
-    control: &BakeControl,
-) -> anyhow::Result<(ReflectionProbesSection, Vec<ShareReport>)> {
-    anyhow::ensure!(
-        excluded.len() == probes.len(),
-        "{} excluded set(s) for {} probe(s)",
-        excluded.len(),
-        probes.len()
-    );
-    let exclusions: Vec<ProbeExclusion<'_>> = probes
-        .iter()
-        .zip(excluded)
-        .map(|(probe, excluded)| ProbeExclusion::new(&scene.tracer, scene.brushes, excluded, probe))
-        .collect();
-    capture_probes(scene, probes, &exclusions, references, control)
-}
-
-/// Capture every probe's colour and distance tiles and light share, each
-/// probe's primary rays under its exclusion (one per probe). Work items are
-/// tile rows, so one probe spreads across workers; rows land in item order
-/// and each probe's share sums merge in row order, so the bytes never depend
-/// on the worker count.
-fn capture_probes(
-    scene: &CaptureScene<'_>,
-    probes: &[PlacedProbe],
-    exclusions: &[ProbeExclusion<'_>],
-    references: &[[f32; 3]],
-    control: &BakeControl,
-) -> anyhow::Result<(ReflectionProbesSection, Vec<ShareReport>)> {
-    anyhow::ensure!(
-        exclusions.len() == probes.len(),
-        "{} exclusion(s) for {} probe(s)",
-        exclusions.len(),
-        probes.len()
-    );
-    let rows_per_tile = TILE_INTERIOR as usize;
-    let items: Vec<(usize, u32)> = (0..probes.len())
-        .flat_map(|probe| (0..TILE_INTERIOR).map(move |row| (probe, row)))
-        .collect();
-    control.publish_total(items.len());
-    let rows = items
-        .par_iter()
-        .map(|&(probe, row)| {
-            let _permit = control.governor().enter();
-            let captured = capture_row(
-                scene,
-                probes[probe].capture_point_vec3(),
-                &exclusions[probe],
-                row,
-                references,
-            );
-            control.advance(1);
-            captured
-        })
-        .collect::<anyhow::Result<Vec<RowCapture>>>()?;
-    let tiles: Vec<Vec<u8>> = rows
-        .par_chunks(rows_per_tile)
-        .map(|rows| {
-            let _permit = control.governor().enter();
-            let texels: Vec<&[glam::Vec3]> = rows.iter().map(|r| r.texels.as_slice()).collect();
-            encode_tile(&texels)
-        })
-        .collect();
-    let distances: Vec<u8> = rows
-        .chunks(rows_per_tile)
-        .flat_map(|rows| {
-            let texels: Vec<&[f32]> = rows.iter().map(|r| r.distances.as_slice()).collect();
-            encode_distance_tile(&texels)
-        })
-        .collect();
-    let shares: Vec<_> = rows
-        .chunks(rows_per_tile)
-        .map(|rows| {
-            let mut sums = ShareSums::default();
-            for row in rows {
-                sums.merge(&row.shares);
-            }
-            sums.finish(references)
-        })
-        .collect();
-
-    let section = ReflectionProbesSection {
-        tile_dimension: REFLECTION_PROBE_TILE_DIMENSION,
-        tile_border: REFLECTION_PROBE_TILE_BORDER,
-        atlas_format: IRRADIANCE_FORMAT_BC6H,
-        // Mip 0 alone until the prefilter writes the chain.
-        colour_mip_count: 1,
-        probes: probes
-            .iter()
-            .zip(&shares)
-            .enumerate()
-            .map(|(layer, (probe, share))| ReflectionProbeRecord {
-                source_entity: probe.source_entity,
-                box_min: probe.box_min,
-                box_max: probe.box_max,
-                capture_point: probe.capture_point,
-                layer: layer as u32,
-                lights: share.entries,
-            })
-            .collect(),
-        fluid_bindings: fluid_bindings(probes),
-        // No world face binds until glossy placement lands.
-        world_bindings: Vec::new(),
-        tiles: tiles.concat(),
-        distance_format: REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
-        distances,
-    };
-    Ok((section, shares.iter().map(|share| share.report).collect()))
-}
-
-fn log_probes(section: &ReflectionProbesSection, reports: &[ShareReport]) {
-    for (index, (probe, report)) in section.probes.iter().zip(reports).enumerate() {
-        let faces = section
-            .fluid_bindings
-            .iter()
-            .map(|b| b.probe)
-            .chain(section.world_bindings.iter().map(|b| b.probe))
-            .filter(|probe| *probe as usize == index)
-            .count();
-        log::info!(
-            "[ReflectionProbes] probe {index}: entity {}, box {:?}..{:?}, capture point {:?}, \
-             {faces} face(s)",
-            probe.source_entity,
-            probe.box_min,
-            probe.box_max,
-            probe.capture_point,
-        );
-        if report.animated_lights == 0 {
-            log::info!("[ReflectionProbes] probe {index}: no animated light reaches its capture");
-            continue;
-        }
-        let stored: Vec<String> = probe
-            .lights
-            .iter()
-            .zip(report.totals)
-            .filter(|(light, _)| light.is_used())
-            .map(|(light, total)| {
-                format!(
-                    "light {} (reference [{:.3}, {:.3}, {:.3}], {:.3} of the capture)",
-                    light.roster_index,
-                    light.reference[0],
-                    light.reference[1],
-                    light.reference[2],
-                    total
-                )
-            })
-            .collect();
-        log::info!(
-            "[ReflectionProbes] probe {index}: covered share {:.3} of {} animated light(s); \
-             stored {}",
-            report.covered,
-            report.animated_lights,
-            stored.join(", "),
-        );
-        let held = report.animated_lights as usize - stored.len();
-        if held > 0 {
-            log::info!(
-                "[ReflectionProbes] probe {index}: {held} animated light(s) past the \
-                 {REFLECTION_PROBE_LIGHTS_PER_PROBE} stored stay at reference; covered share {:.3}",
-                report.covered,
-            );
-        }
-    }
-    log::info!(
-        "[ReflectionProbes] {} probe(s), {} binding(s), {} tile byte(s)",
-        section.probes.len(),
-        section.fluid_bindings.len() + section.world_bindings.len(),
-        section.tiles.len()
-    );
 }

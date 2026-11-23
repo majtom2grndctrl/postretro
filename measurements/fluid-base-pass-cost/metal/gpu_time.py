@@ -62,8 +62,13 @@ COMPLETE_REQUIRED = ("Depth Pre-Pass", "Textured Pass", "Fluid Surface Pass")
 # A complete-frame figure needs at least this many complete steady frames.
 MIN_COMPLETE_FRAMES = 30
 FORWARD_LABEL = "Textured Pass"
+# glossy-world-reflections: the glossy overlay render pass and the probe sums
+# compute pass under its post-Task-4 name (main's "Fluid Reflection Sums Pass"
+# before). A driver may narrow COMPLETE_REQUIRED for a map without fluid.
+GLOSSY_LABEL = "Glossy Overlay Pass"
+PROBE_SUMS_LABEL = "Reflection Probe Sums Pass"
 # Passes reported beside the fluid pass.
-REPORTED = (FLUID_LABEL, CELL_LABEL, SUMS_LABEL, SSR_LABEL, FORWARD_LABEL, "Depth Pre-Pass", "Streamed SH Compose",
+REPORTED = (FLUID_LABEL, CELL_LABEL, SUMS_LABEL, PROBE_SUMS_LABEL, GLOSSY_LABEL, SSR_LABEL, FORWARD_LABEL, "Depth Pre-Pass", "Streamed SH Compose",
             "Fog Raymarch Pass", "Fog Composite Pass", "Skinned Mesh Pass",
             "Kinematic Brush Pass", "Screen Effects Capture Tonemap Pass")
 

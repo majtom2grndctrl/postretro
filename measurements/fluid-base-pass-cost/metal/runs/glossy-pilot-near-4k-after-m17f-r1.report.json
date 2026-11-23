@@ -1,0 +1,1004 @@
+{
+  "schema": "postretro.capture.measurement.v3",
+  "revision": "7ea466c0f30651436bbdbcf126dc599cd5923eb8",
+  "map": {
+    "path": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/7dacbf8e-a146-48c6-bc94-d7f57e2739b7/scratchpad/ma/content/dev/maps/e24-environment-test.prl",
+    "bytes": 15429372
+  },
+  "capture": {
+    "output": "/Users/dhiester/Projects/Personal/postretro/measurements/fluid-base-pass-cost/metal/runs/near-4k-after-m17f.png",
+    "resolution": [
+      3840,
+      2160
+    ],
+    "camera": {
+      "position": [
+        -4.8768,
+        1.6,
+        -44.2976
+      ],
+      "yaw_deg": 0.0,
+      "pitch_deg": -89.0,
+      "fov_deg": 100.0
+    },
+    "force_full_resident_sh_compose": false,
+    "animation_time_seconds": 10.0
+  },
+  "workload": {
+    "warmup_frames": 300,
+    "sample_frames": 300
+  },
+  "adapter": {
+    "name": "AMD Radeon Pro 5300M",
+    "backend": "Metal",
+    "device_type": "DiscreteGpu"
+  },
+  "renderer_accounted_sh": {
+    "rows": [
+      {
+        "name": "mover_channel_table",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 44,
+        "state": "dummy",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 44
+        }
+      },
+      {
+        "name": "mover_bounce_table",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 36,
+        "state": "dummy",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 36
+        }
+      },
+      {
+        "name": "depth_tiles",
+        "sources": [
+          {
+            "kind": "section",
+            "id": 59
+          }
+        ],
+        "bytes": 896000,
+        "state": "data",
+        "shape": {
+          "kind": "texture",
+          "format": "Rg16Float",
+          "dimension": "D2",
+          "extent": [
+            640,
+            350,
+            1
+          ]
+        }
+      },
+      {
+        "name": "indirect_base_atlas",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 8,
+        "state": "dummy",
+        "shape": {
+          "kind": "texture",
+          "format": "Rgba16Float",
+          "dimension": "D2",
+          "extent": [
+            1,
+            1,
+            1
+          ]
+        }
+      },
+      {
+        "name": "indirect_total_atlas",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 8,
+        "state": "dummy",
+        "shape": {
+          "kind": "texture",
+          "format": "Rgba16Float",
+          "dimension": "D2",
+          "extent": [
+            1,
+            1,
+            1
+          ]
+        }
+      },
+      {
+        "name": "depth_moments",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 8,
+        "state": "dummy",
+        "shape": {
+          "kind": "texture",
+          "format": "Rgba16Uint",
+          "dimension": "D3",
+          "extent": [
+            1,
+            1,
+            1
+          ]
+        }
+      },
+      {
+        "name": "animated_light_descriptors",
+        "sources": [
+          {
+            "kind": "section",
+            "id": 34
+          },
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 48,
+        "state": "data",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 48
+        }
+      },
+      {
+        "name": "animated_light_samples",
+        "sources": [
+          {
+            "kind": "section",
+            "id": 34
+          },
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 273456,
+        "state": "data",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 273456
+        }
+      },
+      {
+        "name": "scripted_light_descriptors",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 12816,
+        "state": "data",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 12816
+        }
+      },
+      {
+        "name": "grid_info",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 96,
+        "state": "dummy",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 96
+        }
+      },
+      {
+        "name": "direct_base_atlas",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 16,
+        "state": "dummy",
+        "shape": {
+          "kind": "texture",
+          "format": "Bc6hRgbUfloat",
+          "dimension": "D2",
+          "extent": [
+            4,
+            4,
+            1
+          ]
+        }
+      },
+      {
+        "name": "direct_dynamic_params",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 16,
+        "state": "data",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 16
+        }
+      },
+      {
+        "name": "billboard_direct_scatter_base_volume",
+        "sources": [
+          {
+            "kind": "section",
+            "id": 47
+          }
+        ],
+        "bytes": 255136,
+        "state": "data",
+        "shape": {
+          "kind": "texture",
+          "format": "Rgba16Float",
+          "dimension": "D3",
+          "extent": [
+            28,
+            17,
+            67
+          ]
+        }
+      },
+      {
+        "name": "indirect_compose_delta_subblocks",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 4,
+        "state": "dummy",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 4
+        }
+      },
+      {
+        "name": "indirect_compose_compaction_metadata",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 12,
+        "state": "dummy",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 12
+        }
+      },
+      {
+        "name": "indirect_compose_affinity_offsets",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 8,
+        "state": "dummy",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 8
+        }
+      },
+      {
+        "name": "indirect_compose_affinity_lights",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 4,
+        "state": "dummy",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 4
+        }
+      },
+      {
+        "name": "indirect_compose_probe_indirection",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 4,
+        "state": "dummy",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 4
+        }
+      },
+      {
+        "name": "indirect_compose_grid",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 65536,
+        "state": "dummy",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 65536
+        }
+      },
+      {
+        "name": "indirect_compose_origin",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 32,
+        "state": "dummy",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 32
+        }
+      }
+    ],
+    "total_bytes": 37506632,
+    "streaming": {
+      "fixed_metadata_bytes": 665332,
+      "whole_resident_scatter_bytes": 255136,
+      "active_capacity_bytes": 35338012,
+      "logical_occupancy_bytes": 9903480,
+      "retiring_capacity_bytes": 0,
+      "replacement_peak_bytes": 35338012
+    },
+    "streaming_lifecycle": {
+      "encoded_current_bytes": 0,
+      "encoded_high_water_upper_bound_bytes": 1166811,
+      "decoding_current_bytes": 0,
+      "decoding_high_water_upper_bound_bytes": 4403732,
+      "ready_current_bytes": 0,
+      "ready_high_water_upper_bound_bytes": 14820528,
+      "permits_in_use": 0,
+      "target_clusters": 11,
+      "absent_clusters": 201,
+      "queued_clusters": 0,
+      "ready_clusters": 0,
+      "installed_uncomposed_clusters": 0,
+      "sampleable_clusters": 11,
+      "failed_clusters": 0,
+      "misses": 0,
+      "miss_unit": "episodes",
+      "miss_outside_reach": 0,
+      "miss_trimmed_by_pressure": 0,
+      "miss_read_in_flight": 0,
+      "miss_held_by_drain_budget": 0,
+      "miss_awaiting_compose": 0,
+      "miss_device_limited": 0,
+      "miss_at_whole_map_cap": 0,
+      "miss_failed": 0,
+      "rereads": 0,
+      "installs": 11,
+      "evictions": 0,
+      "retries": 0,
+      "lead_clusters": 11,
+      "cancelled_requests": 0,
+      "discarded_reads": 0,
+      "discarded_read_bytes": 0,
+      "decoded_bytes_installed": 17396728,
+      "last_drain_decoded_bytes": 1364856,
+      "max_drain_decoded_bytes": 8373556,
+      "budget_limited_drains": 2,
+      "reads_issued": 11,
+      "coalesced_reads": 0,
+      "read_bytes": 4829358,
+      "gap_bytes": 0,
+      "read_latency_p50_ms": 2.0,
+      "read_latency_p95_ms": 6.627,
+      "read_latency_max_ms": 6.627,
+      "decode_latency_max_ms": 0.0,
+      "install_cpu_total_micros": 43162,
+      "install_cpu_max_drain_micros": 33657,
+      "install_cpu_last_drain_micros": 2171,
+      "install_cpu_max_steady_drain_micros": 33657,
+      "pool_growth_events": 0,
+      "pool_growth_bytes": 0,
+      "pool_growth_cpu_micros": 0,
+      "indirect_compose": {
+        "rows_composed": 0,
+        "entry_rows_composed": 0,
+        "dispatches": 0,
+        "lagged_rows_composed": 0,
+        "resident_rows_still_lagging": 0
+      },
+      "static_direct_compose": {
+        "rows_composed": 0,
+        "entry_rows_composed": 0,
+        "dispatches": 0,
+        "lagged_rows_composed": 0,
+        "resident_rows_still_lagging": 0
+      },
+      "animated_direct_compose": {
+        "rows_composed": 0,
+        "entry_rows_composed": 0,
+        "dispatches": 0,
+        "lagged_rows_composed": 0,
+        "resident_rows_still_lagging": 0
+      },
+      "compose_planning_cpu_micros": 9
+    }
+  },
+  "renderer_accounted_lightmap": {
+    "rows": [
+      {
+        "name": "static_irradiance",
+        "sources": [
+          {
+            "kind": "section",
+            "id": 22
+          }
+        ],
+        "bytes": 37748736,
+        "state": "data",
+        "shape": {
+          "kind": "texture",
+          "format": "Bc6hRgbUfloat",
+          "dimension": "D2",
+          "extent": [
+            2048,
+            2048,
+            9
+          ]
+        }
+      },
+      {
+        "name": "static_direction",
+        "sources": [
+          {
+            "kind": "section",
+            "id": 22
+          }
+        ],
+        "bytes": 18874368,
+        "state": "data",
+        "shape": {
+          "kind": "texture",
+          "format": "Rg8Unorm",
+          "dimension": "D2",
+          "extent": [
+            1024,
+            1024,
+            9
+          ]
+        }
+      },
+      {
+        "name": "shadowmask",
+        "sources": [
+          {
+            "kind": "section",
+            "id": 42
+          }
+        ],
+        "bytes": 46137344,
+        "state": "data",
+        "shape": {
+          "kind": "texture",
+          "format": "Bc5RgUnorm",
+          "dimension": "D2",
+          "extent": [
+            2048,
+            2048,
+            11
+          ]
+        }
+      },
+      {
+        "name": "animated_irradiance",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 8,
+        "state": "dummy",
+        "shape": {
+          "kind": "texture",
+          "format": "Rgba16Float",
+          "dimension": "D2",
+          "extent": [
+            1,
+            1,
+            1
+          ]
+        }
+      },
+      {
+        "name": "animated_direction",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 4,
+        "state": "dummy",
+        "shape": {
+          "kind": "texture",
+          "format": "Rgba8Unorm",
+          "dimension": "D2",
+          "extent": [
+            1,
+            1,
+            1
+          ]
+        }
+      }
+    ],
+    "total_bytes": 102760460
+  },
+  "renderer_accounted_reflection_probes": {
+    "rows": [
+      {
+        "name": "probe_colour",
+        "sources": [
+          {
+            "kind": "section",
+            "id": 54
+          }
+        ],
+        "bytes": 212992,
+        "state": "data",
+        "shape": {
+          "kind": "texture",
+          "format": "Bc6hRgbUfloat",
+          "dimension": "D2",
+          "extent": [
+            128,
+            128,
+            13
+          ]
+        }
+      },
+      {
+        "name": "probe_distance",
+        "sources": [
+          {
+            "kind": "section",
+            "id": 54
+          }
+        ],
+        "bytes": 425984,
+        "state": "data",
+        "shape": {
+          "kind": "texture",
+          "format": "R16Float",
+          "dimension": "D2",
+          "extent": [
+            128,
+            128,
+            13
+          ]
+        }
+      },
+      {
+        "name": "probe_share_table",
+        "sources": [
+          {
+            "kind": "section",
+            "id": 54
+          }
+        ],
+        "bytes": 61456,
+        "state": "data",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 61456
+        }
+      },
+      {
+        "name": "probe_sums",
+        "sources": [
+          {
+            "kind": "section",
+            "id": 54
+          },
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 24576,
+        "state": "data",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 24576
+        }
+      }
+    ],
+    "total_bytes": 725008
+  },
+  "lightmap_streaming": {
+    "mode": "stream",
+    "block_count": 63,
+    "resident_blocks": 63,
+    "forced_missing_blocks": 0,
+    "pool_layers": 8,
+    "mask_pool_layers": 10,
+    "counters": {
+      "lead_metres": 16.0,
+      "resident_lightmap_bytes": 26002920,
+      "resident_shadowmask_bytes": 25556240,
+      "mandatory_blocks": 63,
+      "mandatory_lightmap_bytes": 26002920,
+      "mandatory_shadowmask_bytes": 25556240,
+      "pool_bytes": 56623104,
+      "mask_pool_bytes": 46137344,
+      "peak_pool_layers": 8,
+      "mask_peak_pool_layers": 10,
+      "repacks": 0,
+      "mask_repacks": 0,
+      "compactions": 0,
+      "mask_compactions": 0,
+      "compaction_rollbacks": 0,
+      "mask_compaction_rollbacks": 0,
+      "growths": 0,
+      "mask_growths": 0,
+      "growth_transient_peak_bytes": 0,
+      "last_drain_install_micros": 124452,
+      "max_drain_install_micros": 124452,
+      "lightmap_bytes_read": 7566633,
+      "shadowmask_bytes_read": 376985,
+      "visible_misses_outside_baked_set": 0,
+      "visible_misses_not_resident": 0,
+      "miss_unit": "block-frames",
+      "miss_outside_reach": 0,
+      "miss_read_in_flight": 0,
+      "miss_waiting_on_permit": 0,
+      "miss_waiting_on_in_hand_cap": 0,
+      "miss_held_by_drain_budget": 0,
+      "miss_awaiting_renderer_drain": 0,
+      "miss_deferred_by_pool": 0,
+      "miss_refused": 0,
+      "miss_failed": 0,
+      "failed_installs": 0,
+      "failed_reads": 0,
+      "refusals": 0,
+      "deferrals": 0
+    }
+  },
+  "cpu_completion": {
+    "unit": "milliseconds",
+    "strategy": "device-poll-wait-after-submit",
+    "cadence": "once-per-sample-frame",
+    "samples_ms": [
+      65.891531,
+      64.85473499999999,
+      63.896348,
+      64.215172,
+      64.195666,
+      64.558104,
+      64.736616,
+      66.308671,
+      64.745052,
+      64.95327900000001,
+      64.901719,
+      65.408807,
+      64.625723,
+      64.70554200000001,
+      64.032082,
+      65.229081,
+      65.59598899999999,
+      65.14159699999999,
+      65.52865700000001,
+      65.30375099999999,
+      64.640151,
+      65.284227,
+      64.660539,
+      63.916364,
+      69.115125,
+      65.06613999999999,
+      64.644748,
+      64.795433,
+      64.50711000000001,
+      64.221159,
+      64.349034,
+      64.63031099999999,
+      65.412594,
+      64.584693,
+      64.531179,
+      65.95831000000001,
+      64.78578399999999,
+      64.125745,
+      64.932766,
+      64.745828,
+      63.62575400000001,
+      64.01964000000001,
+      63.474675,
+      63.837619,
+      65.741675,
+      64.98064600000001,
+      64.830575,
+      65.15741299999999,
+      65.075442,
+      65.785046,
+      65.154588,
+      65.4665,
+      63.946349,
+      66.294753,
+      65.37778599999999,
+      64.726624,
+      67.051039,
+      64.289472,
+      65.342508,
+      65.61151699999999,
+      63.881435,
+      65.161387,
+      65.761027,
+      64.70393200000001,
+      65.06873,
+      65.02999399999999,
+      63.64282,
+      64.773614,
+      64.395512,
+      63.782214,
+      63.659248000000005,
+      63.36401599999999,
+      65.416976,
+      63.67933300000001,
+      63.612970000000004,
+      63.663198,
+      63.74676,
+      64.557805,
+      62.988733,
+      63.867511,
+      63.251188,
+      65.12567299999999,
+      63.222294999999995,
+      64.377032,
+      64.92210299999999,
+      63.855844,
+      64.370495,
+      64.326527,
+      64.509246,
+      63.664649000000004,
+      64.675322,
+      64.311275,
+      64.75344399999999,
+      65.53080299999999,
+      64.685515,
+      64.026603,
+      64.380801,
+      65.006107,
+      64.032853,
+      64.108395,
+      65.859774,
+      65.33937200000001,
+      65.846283,
+      65.35160499999999,
+      65.577396,
+      70.983837,
+      64.06998899999999,
+      65.426693,
+      65.37951699999999,
+      67.282216,
+      65.371525,
+      66.090838,
+      65.64782600000001,
+      64.810912,
+      65.267771,
+      64.181541,
+      64.028853,
+      63.736324999999994,
+      65.57651,
+      64.428291,
+      64.827117,
+      64.29631099999999,
+      65.08430399999999,
+      64.620261,
+      64.563553,
+      65.17014999999999,
+      64.93507799999999,
+      65.457206,
+      64.6499,
+      65.09012799999999,
+      64.743258,
+      64.80031799999999,
+      65.182818,
+      64.508037,
+      63.607227,
+      63.149283,
+      65.42592499999999,
+      64.836823,
+      63.938298,
+      64.24163800000001,
+      64.974857,
+      64.462887,
+      64.58732,
+      64.793762,
+      65.132002,
+      65.47894699999999,
+      66.583883,
+      64.852442,
+      65.396919,
+      65.827057,
+      65.03294299999999,
+      64.81559100000001,
+      63.977030000000006,
+      64.407783,
+      64.25627,
+      64.610485,
+      64.393793,
+      64.532275,
+      64.641367,
+      65.80890000000001,
+      64.84860300000001,
+      64.757707,
+      65.22521400000001,
+      65.159105,
+      63.884391,
+      65.371983,
+      64.285602,
+      65.04974800000001,
+      64.743287,
+      64.74817800000001,
+      64.42445400000001,
+      64.957255,
+      63.591728,
+      64.302463,
+      67.12891499999999,
+      65.237188,
+      64.497289,
+      64.588021,
+      64.39075199999999,
+      64.789181,
+      64.68929499999999,
+      63.525658,
+      64.538191,
+      65.829448,
+      64.649479,
+      68.944903,
+      64.060509,
+      64.42721,
+      64.52147099999999,
+      63.90722,
+      63.687914,
+      63.97496799999999,
+      65.009136,
+      64.01313,
+      65.01178200000001,
+      64.887071,
+      64.78502499999999,
+      65.83582,
+      65.810144,
+      65.35038,
+      64.93540300000001,
+      65.965758,
+      65.030045,
+      64.587598,
+      65.282314,
+      65.77175,
+      65.25004600000001,
+      64.388885,
+      65.057626,
+      64.41328,
+      63.705591000000005,
+      65.12093800000001,
+      64.02582699999999,
+      65.532303,
+      65.19815,
+      65.15223,
+      64.58933999999999,
+      64.36884099999999,
+      63.91104,
+      65.223862,
+      65.97468300000001,
+      64.687486,
+      65.57972600000001,
+      65.337045,
+      63.26040199999999,
+      64.163378,
+      64.741114,
+      63.29671200000001,
+      63.872442,
+      64.877159,
+      63.44536300000001,
+      64.647176,
+      64.509837,
+      64.49875300000001,
+      64.244872,
+      64.020207,
+      63.798434,
+      63.876039,
+      63.957353999999995,
+      64.962204,
+      64.809244,
+      65.714094,
+      65.010491,
+      64.09583400000001,
+      65.423004,
+      65.36974,
+      65.64819800000001,
+      63.664105,
+      66.188347,
+      64.588988,
+      64.258756,
+      65.64912000000001,
+      64.770331,
+      64.43280999999999,
+      64.653029,
+      64.883943,
+      65.30981700000001,
+      66.439333,
+      64.822477,
+      63.932736000000006,
+      64.774694,
+      65.798705,
+      65.00663499999999,
+      65.295099,
+      64.046193,
+      63.85595500000001,
+      68.26099500000001,
+      65.301088,
+      64.943976,
+      64.52630099999999,
+      64.80161299999999,
+      64.880004,
+      64.881862,
+      64.80146400000001,
+      64.754305,
+      63.14502399999999,
+      64.554151,
+      63.84188,
+      64.981264,
+      64.702996,
+      64.791943,
+      65.069385,
+      67.586573,
+      64.103101,
+      64.09687,
+      65.913025,
+      64.809859,
+      65.106579,
+      64.774992,
+      64.989012,
+      64.30530800000001,
+      64.100958,
+      64.686449,
+      63.936502000000004,
+      65.528144,
+      64.940615,
+      65.114049,
+      64.93997,
+      65.432613,
+      65.11275499999999
+    ],
+    "median_ms": 64.774154,
+    "p95_ms": 65.96620424999999
+  },
+  "gpu_timing": {
+    "availability": "not-requested",
+    "reason": "env-disabled"
+  },
+  "cpu_stages": {
+    "availability": "not-requested",
+    "reason": "env-disabled"
+  }
+}

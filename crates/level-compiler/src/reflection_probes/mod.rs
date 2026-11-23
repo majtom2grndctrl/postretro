@@ -41,6 +41,8 @@ mod world_reflectors;
 #[cfg(test)]
 mod area_glow_capture_tests;
 #[cfg(test)]
+mod box_fit_tests;
+#[cfg(test)]
 mod capture_exclusion_held_tests;
 #[cfg(test)]
 mod capture_exclusion_oracle_tests;

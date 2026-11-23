@@ -45,10 +45,14 @@
 // axis swap, no mirror, no scale. Winding matches too: glTF front faces are CCW
 // and the engine forward pipeline is `front_face: Ccw` + `cull_mode: Back`, so
 // we keep that here and front faces render. The per-instance model matrix is
-// therefore the entity transform applied directly. (Models are authored facing
-// `+Z`; the half turn that points that front along a map arrow is gameplay-facing,
-// not a basis bug, and is applied once at spawn by
-// `MapEntity::model_rotation_quat()` in `postretro-sim`.)
+// therefore the collector's model->world matrix applied directly. (Every model
+// placed in the world is authored facing `+Z`. The half turn that points that
+// front along the entity's forward is gameplay-facing, not a basis bug, and is
+// composed at exactly one of two seams before the matrix reaches this pass: the
+// placement seam at spawn, `MapEntity::model_rotation_quat()` in `postretro-sim`,
+// or the body seam for a player pawn whose transform stays in the view frame,
+// `MeshComponent::presentation_rotation` with `BodyFrame::View`. See
+// context/lib/entity_model.md §4.)
 
 mod frame_upload;
 mod lighting;

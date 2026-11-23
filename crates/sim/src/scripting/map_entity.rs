@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 
 use glam::{EulerRot, Quat, Vec3};
+use postretro_entities::components::mesh::MODEL_FRONT_TO_VIEW_FORWARD;
 use postretro_level_format::map_entity::MapEntityRecord;
 
 /// One map entity as presented to classname handlers and the data-archetype
@@ -67,17 +68,16 @@ impl MapEntity {
     /// arrow, the same direction a player spawned there looks; pitch tilts that
     /// front nose-up as it does a camera.
     ///
-    /// This is the one place map yaw becomes a `+Z`-front orientation; spawn
-    /// consumers choose between it and [`Self::rotation_quat`] by the axis
-    /// their entity treats as forward.
+    /// This is the placement seam, where map yaw becomes a `+Z`-front
+    /// orientation; spawn consumers choose between it and
+    /// [`Self::rotation_quat`] by the axis their entity treats as forward. An
+    /// entity that stays in the view frame and draws a model (a player pawn)
+    /// takes the same half turn at the body seam instead
+    /// (`postretro_entities::components::mesh::BodyFrame::View`).
     pub fn model_rotation_quat(&self) -> Quat {
         self.rotation_quat() * MODEL_FRONT_TO_VIEW_FORWARD
     }
 }
-
-/// A half turn about `+Y`: carries a model's authored front (`+Z`) onto the
-/// view forward (`-Z`) that map angles orient.
-const MODEL_FRONT_TO_VIEW_FORWARD: Quat = Quat::from_xyzw(0.0, 1.0, 0.0, 0.0);
 
 /// Adapter from the format-crate wire record to the scripting-facing
 /// `MapEntity`. Lives in the scripting tree so the loader does not depend on

@@ -7,12 +7,12 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Quat, Vec3};
 
 use postretro_entities::DeferredEffectComponent;
 use postretro_entities::components::health::{HealthComponent, Hitbox};
 use postretro_entities::components::hit_volume::HitVolumeComponent;
-use postretro_entities::components::mesh::{MeshAnimation, MeshComponent};
+use postretro_entities::components::mesh::{BodyFrame, MeshAnimation, MeshComponent};
 use postretro_entities::registry::{ComponentKind, EntityId, EntityRegistry, Transform};
 use postretro_model::ModelHandle;
 use postretro_model::anim::{
@@ -370,7 +370,7 @@ impl HitZoneStore {
                         .map(|_| SocketBinding::SkinnedJoint(index))
                 })
         })?;
-        let model_to_world = model_matrix(transform, mesh.origin_offset)?;
+        let model_to_world = model_matrix(transform, mesh.origin_offset, mesh.body_frame)?;
         match binding {
             SocketBinding::SkinnedJoint(index) => {
                 let pose = sample_world_pose_for_probe(
@@ -896,6 +896,7 @@ pub(crate) fn nearest_entity_hit_ignoring(
                     zoned.zones,
                     transform,
                     zoned.origin_offset,
+                    zoned.body_frame,
                     || {
                         registry
                             .get_component::<MeshComponent>(id)
@@ -927,6 +928,7 @@ pub(crate) fn nearest_entity_hit_ignoring(
                         direction,
                         transform,
                         zoned.origin_offset,
+                        zoned.body_frame,
                         hitbox,
                         zoned.zones,
                         range,
@@ -1023,7 +1025,7 @@ pub(crate) fn damageable_volume(
         .and_then(|health| health.hitbox.as_ref());
 
     if let Some(zoned) = zone_bearing_entry(registry, store, id)
-        && let Some(model_to_world) = model_matrix(transform, zoned.origin_offset)
+        && let Some(model_to_world) = model_matrix(transform, zoned.origin_offset, zoned.body_frame)
         && let Some(bound) = transformed_zone_bound(zoned.zones, &model_to_world, transform)
     {
         return Some(bound);
@@ -1041,6 +1043,7 @@ pub(crate) fn damageable_volume(
 struct ZoneBearingEntry<'a> {
     zones: &'a ModelHitZones,
     origin_offset: Vec3,
+    body_frame: BodyFrame,
 }
 
 /// The model hit-zone entry for an entity IF its mesh model has a trustworthy
@@ -1058,6 +1061,7 @@ fn zone_bearing_entry<'a>(
     entry.derived_bound.as_ref().map(|_| ZoneBearingEntry {
         zones: entry,
         origin_offset: mesh.origin_offset,
+        body_frame: mesh.body_frame,
     })
 }
 
@@ -1107,6 +1111,7 @@ fn coarse_fallback_hit(
     direction: Vec3,
     transform: &Transform,
     origin_offset: Vec3,
+    body_frame: BodyFrame,
     hitbox: Option<&Hitbox>,
     zones: &ModelHitZones,
     range: f32,
@@ -1126,7 +1131,7 @@ fn coarse_fallback_hit(
     }
     // No authored AABB (a valid zone-only enemy): fall back to the derived reach
     // bound, placed model→world exactly as the capsule broad phase places it.
-    let model_to_world = model_matrix(transform, origin_offset)?;
+    let model_to_world = model_matrix(transform, origin_offset, body_frame)?;
     let bound = transformed_zone_bound(zones, &model_to_world, transform)?;
     let expansion = Vec3::splat(projectile_radius);
     ray_aabb_slab(
@@ -1175,6 +1180,7 @@ fn nearest_zone_hit(
     zones: &ModelHitZones,
     transform: &Transform,
     origin_offset: Vec3,
+    body_frame: BodyFrame,
     resolve_animation: impl FnOnce() -> Option<MeshAnimation>,
     anim_time: f64,
     id: EntityId,
@@ -1183,12 +1189,12 @@ fn nearest_zone_hit(
     range: f32,
     projectile_radius: f32,
 ) -> ZoneResolve {
-    // Model→world uses the same full transform layout the renderer packs for the
-    // instance buffer: scale, rotation, and translation with the mesh origin
-    // offset folded into translation. The query reads the entity's current
-    // registry Transform; on connected clients this may already be the sampled
-    // presentation pose written before render.
-    let Some(model_to_world) = model_matrix(transform, origin_offset) else {
+    // Model→world is the authoritative transform plus the body-frame turn
+    // (`model_matrix`): scale, rotation, and translation with the mesh origin
+    // offset folded into translation, never the presentation heading. The query
+    // reads the entity's current registry Transform; on connected clients this
+    // may already be the sampled presentation pose written before render.
+    let Some(model_to_world) = model_matrix(transform, origin_offset, body_frame) else {
         return ZoneResolve::Unavailable;
     };
     let radius_scale = radius_scale(transform);
@@ -1330,15 +1336,40 @@ fn first_child_index(skeleton: &Skeleton, joint_index: usize) -> Option<usize> {
         .map(|(child_index, _)| child_index)
 }
 
-/// Compose the entity's model→world matrix exactly like the render collector's
-/// instance transform: full scale + rotation, translated to `position +
-/// origin_offset`. Non-finite transforms are not authoritative for precise
-/// capsules, so callers degrade to a coarse fallback. Shared with [`crate::sim`]'s
-/// foot ground-probe step so probes place the model exactly as capsules and the
-/// renderer do.
-pub fn model_matrix(transform: &Transform, origin_offset: Vec3) -> Option<Mat4> {
+/// Compose the entity's gameplay model→world matrix from its AUTHORITATIVE
+/// transform: full scale, the transform rotation plus the body-frame turn
+/// (`body_frame.model_rotation`, a half turn for a view-frame player body,
+/// nothing for a model-frame entity), translated to `position + origin_offset`.
+/// Hit zones, socket anchors and overlay anchors place the model here, so a
+/// player's zones and anchors sit on its aim yaw plus the turn; gameplay never
+/// reads the presentation heading. The draw differs only for an animated body:
+/// it turns by the lower-body heading instead of the transform rotation
+/// (`MeshComponent::presentation_rotation`), and foot ground probes follow the
+/// draw. Non-finite transforms are not authoritative for precise capsules, so
+/// callers degrade to a coarse fallback.
+/// See: context/lib/entity_model.md §4 (Facing convention)
+pub fn model_matrix(
+    transform: &Transform,
+    origin_offset: Vec3,
+    body_frame: BodyFrame,
+) -> Option<Mat4> {
+    model_matrix_at(
+        transform,
+        body_frame.model_rotation(transform.rotation),
+        origin_offset,
+    )
+}
+
+/// [`model_matrix`] with the model→world rotation already composed: the
+/// transform's scale and `position + origin_offset` around `model_rotation`.
+/// The foot ground probes pass the drawn body rotation here.
+pub fn model_matrix_at(
+    transform: &Transform,
+    model_rotation: Quat,
+    origin_offset: Vec3,
+) -> Option<Mat4> {
     if !transform.position.is_finite()
-        || !transform.rotation.is_finite()
+        || !model_rotation.is_finite()
         || !transform.scale.is_finite()
         || !origin_offset.is_finite()
     {
@@ -1346,7 +1377,7 @@ pub fn model_matrix(transform: &Transform, origin_offset: Vec3) -> Option<Mat4> 
     }
     Some(Mat4::from_scale_rotation_translation(
         transform.scale,
-        transform.rotation,
+        model_rotation,
         transform.position + origin_offset,
     ))
 }
@@ -1717,6 +1748,10 @@ pub(crate) fn ray_aabb_slab(
 #[cfg(test)]
 #[path = "hit_zones_load_equivalence_tests.rs"]
 mod load_equivalence_tests;
+
+#[cfg(test)]
+#[path = "hit_zones_body_frame_tests.rs"]
+mod body_frame_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2757,6 +2792,7 @@ mod tests {
                 shadow_only: false,
                 attachments: Vec::new(),
                 pose_inputs: None,
+                body_frame: Default::default(),
             },
         )
         .unwrap();
@@ -2927,6 +2963,7 @@ mod tests {
                 shadow_only: false,
                 attachments: Vec::new(),
                 pose_inputs: None,
+                body_frame: Default::default(),
             },
         )
         .unwrap();
@@ -3018,6 +3055,7 @@ mod tests {
                 shadow_only: false,
                 attachments: Vec::new(),
                 pose_inputs: None,
+                body_frame: Default::default(),
             },
         )
         .unwrap();
@@ -3104,6 +3142,7 @@ mod tests {
                 shadow_only: false,
                 attachments: Vec::new(),
                 pose_inputs: None,
+                body_frame: Default::default(),
             },
         )
         .unwrap();
@@ -3215,6 +3254,7 @@ mod tests {
                 shadow_only: false,
                 attachments: Vec::new(),
                 pose_inputs: None,
+                body_frame: Default::default(),
             },
         )
         .unwrap();
@@ -3339,6 +3379,7 @@ mod tests {
                 shadow_only: false,
                 attachments: Vec::new(),
                 pose_inputs: None,
+                body_frame: Default::default(),
             },
         )
         .unwrap();
@@ -3625,6 +3666,7 @@ mod tests {
                 shadow_only: false,
                 attachments: Vec::new(),
                 pose_inputs: None,
+                body_frame: Default::default(),
             },
         )
         .unwrap();

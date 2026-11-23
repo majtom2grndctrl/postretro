@@ -2458,6 +2458,7 @@ mod tests {
             shadow_only: false,
             attachments: Vec::new(),
             pose_inputs: None,
+            body_frame: Default::default(),
         };
         registry.set_component(id, live).unwrap();
         registry

@@ -30,7 +30,7 @@ use postretro_entities::components::immersion::ImmersionComponent;
 use postretro_entities::components::inventory::{Inventory, WIELDABLE_SLOT_CAPACITY};
 use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
 use postretro_entities::components::mesh::{
-    MeshAnimation, MeshComponent, ZeroPhaseStates, capsule_center_to_feet_origin_offset,
+    BodyFrame, MeshAnimation, MeshComponent, ZeroPhaseStates, capsule_center_to_feet_origin_offset,
 };
 use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::components::touchable::TouchableComponent;
@@ -518,6 +518,7 @@ pub(crate) fn attach_descriptor_components(
     }
 
     if let Some(component) = descriptor_mesh_component(descriptor, agent_params) {
+        let component = component.with_body_frame(descriptor_body_frame(descriptor, spawn_path));
         let _ = registry.set_component(id, component);
         owned_components.insert(DescriptorComponentKind::Mesh);
     }
@@ -660,7 +661,10 @@ fn placement_draw_salt(id: EntityId, entity: &MapEntity) -> BehaviorDrawSalt {
 /// and connected-client remote enemies. Descriptor state maps already carry
 /// validated `travelSpeed` overrides; this seam also applies the shared
 /// absent-`speedScale` default and capsule-center-to-feet render-origin offset
-/// for AI and movement pawns.
+/// for AI and movement pawns. It leaves the body frame at `Model`: a movement
+/// descriptor alone cannot tell a pawn from a world copy, so the step that
+/// knows the body is a pawn sets the frame ([`descriptor_body_frame`] on the
+/// host, the viewer-role step on a client).
 pub(crate) fn descriptor_mesh_component(
     descriptor: &EntityTypeDescriptor,
     agent_params: Option<NavAgentParams>,
@@ -761,13 +765,21 @@ fn ai_aggro_armed_on_spawn(entity: &MapEntity) -> bool {
     }
 }
 
-/// Which way a descriptor instance faces at spawn. A placed enemy, prop or
-/// pickup faces with its model's `+Z` front; a player pawn's transform carries
-/// its camera yaw, which looks along `-Z`. Both read the authored arrow; only
-/// the local front axis differs. A loadout weapon is a model too: it keeps this
-/// rotation while carried and drops with it, so it must face like a pickup
-/// placed at its pawn's start.
+/// Which way a descriptor instance faces at spawn. Both frames read the
+/// authored arrow. A placed enemy, prop or pickup spawns in the model frame:
+/// its rotation turns the model's `+Z` front along the arrow (placement seam).
+/// A player pawn spawns in the view frame: its transform carries its camera
+/// yaw, looking along `-Z`, and its body still fronts model `+Z` by taking the
+/// half turn at the body seam ([`descriptor_body_frame`]). Only a player pawn
+/// ([`descriptor_is_player_pawn`]) takes the view frame: a `player_spawn` or
+/// network slot whose `entity_class` names a descriptor without player movement
+/// spawns in the model frame like a placement, because nothing turns it by the
+/// view and AI facing writes model-frame rotations. A loadout weapon is a model
+/// too: it keeps this rotation while carried and drops with it, so it must face
+/// like a pickup placed at its pawn's start.
+/// See: context/lib/entity_model.md §4 (Facing convention)
 pub(super) fn descriptor_spawn_rotation(
+    descriptor: &EntityTypeDescriptor,
     entity: &MapEntity,
     spawn_path: DescriptorSpawnPath,
 ) -> Quat {
@@ -776,7 +788,11 @@ pub(super) fn descriptor_spawn_rotation(
             entity.model_rotation_quat()
         }
         DescriptorSpawnPath::PlayerSpawn | DescriptorSpawnPath::NetworkSlot => {
-            entity.rotation_quat()
+            if descriptor_is_player_pawn(descriptor, spawn_path) {
+                entity.rotation_quat()
+            } else {
+                entity.model_rotation_quat()
+            }
         }
         // No caller today: an `entity_spawner` copy takes the spawner's own
         // Transform, and a projectile flight entity spawns through netcode's
@@ -787,6 +803,44 @@ pub(super) fn descriptor_spawn_rotation(
             entity.model_rotation_quat()
         }
     }
+}
+
+/// The body frame of a descriptor instance's mesh: the frame
+/// [`descriptor_spawn_rotation`] spawned its transform in. Only a player pawn
+/// ([`descriptor_is_player_pawn`]) takes [`BodyFrame::View`]; neither the spawn
+/// path nor the descriptor decides alone. A map-placed copy of a player
+/// descriptor is a placement and draws unturned while a pawn of the same class
+/// takes the turn, and a `player_spawn` naming a descriptor without player
+/// movement stays [`BodyFrame::Model`], so AI facing's model-frame rotations
+/// draw it forward. Each peer derives the frame here or at its viewer-role
+/// step; it never replicates.
+pub(super) fn descriptor_body_frame(
+    descriptor: &EntityTypeDescriptor,
+    spawn_path: DescriptorSpawnPath,
+) -> BodyFrame {
+    if descriptor_is_player_pawn(descriptor, spawn_path) {
+        BodyFrame::View
+    } else {
+        BodyFrame::Model
+    }
+}
+
+/// Whether a descriptor instance is a player pawn: spawned on a player path (a
+/// `player_spawn` or a network slot) from a descriptor that carries player
+/// movement. This is the wire's `pawn:` test (netcode's `descriptor_entity_class`
+/// needs a movement record on one of the same two paths), so the host's body
+/// frame agrees with what a client materializes. A player path alone is not a
+/// pawn: `entity_class` may name any descriptor, and one without movement (an
+/// AI behaviour, a prop) has no camera and fronts its model `+Z`.
+fn descriptor_is_player_pawn(
+    descriptor: &EntityTypeDescriptor,
+    spawn_path: DescriptorSpawnPath,
+) -> bool {
+    descriptor.movement.is_some()
+        && matches!(
+            spawn_path,
+            DescriptorSpawnPath::PlayerSpawn | DescriptorSpawnPath::NetworkSlot
+        )
 }
 
 /// Offset from a placement's canonical origin to the spawned entity's
@@ -815,7 +869,7 @@ pub(super) fn spawn_descriptor_instance(
     let origin_shift = spawn_origin_shift(descriptor, agent_params);
     let transform = Transform {
         position: entity.origin + origin_shift,
-        rotation: descriptor_spawn_rotation(entity, spawn_path),
+        rotation: descriptor_spawn_rotation(descriptor, entity, spawn_path),
         scale: Vec3::ONE,
     };
 
@@ -2530,7 +2584,9 @@ mod tests {
         use postretro_scripting_core::conv::EulerDegrees;
 
         let mut reg = EntityRegistry::new();
-        let descriptors = vec![stub_descriptor("player")];
+        // A player pawn: only a movement descriptor spawns in the view frame at
+        // a player start (`descriptor_is_player_pawn`).
+        let descriptors = vec![player_with_movement("player")];
         let origin = Vec3::new(4.0, 5.0, 6.0);
         // pitch=10°, yaw=-30°, roll=0° — exercises two axes without hitting
         // 90° boundaries where YXZ vs other orderings collapse.
@@ -2552,7 +2608,11 @@ mod tests {
             .next()
             .unwrap();
         let t = reg.get_component::<Transform>(id).unwrap();
-        assert_eq!(t.position, origin);
+        assert_eq!(
+            t.position,
+            origin + spawn_origin_shift(&descriptors[0], None),
+            "the capsule centre sits above the start's feet"
+        );
         // Assert rotation against a known degree input via EulerDegrees::to_quat,
         // not against rotation_quat() itself (which would be a tautology).
         let expected = EulerDegrees {
@@ -3538,6 +3598,156 @@ mod tests {
             "player spawn keeps the view frame"
         );
         assert!((rotation * Vec3::NEG_Z).abs_diff_eq(Vec3::NEG_X, 1e-6));
+    }
+
+    // Pin R3 and the body seam on both host spawn paths. One install places a
+    // copy of the player descriptor as a map entity and spawns pawns of the same
+    // class: the first player (single player, listen-host local) and a network
+    // slot (host-side remote). The pawns keep their view-frame transform and
+    // record the body frame, so their model +Z draws along the view forward;
+    // the placed copy draws as placed, its model front along its arrow. A
+    // `player_spawn` whose `entity_class` names a descriptor without player
+    // movement is no pawn on either path: an AI body gets its brain there and
+    // AI facing writes model-frame rotations, so it spawns and draws like a
+    // placement. Level seams, relevels and rejoins re-run these same spawns in
+    // a fresh install.
+    #[test]
+    fn player_pawns_take_the_body_frame_and_a_placed_copy_of_their_descriptor_stays_model() {
+        use super::super::net_descriptor::spawn_net_slot_pawn_with_carried_loadout;
+
+        let angles = Vec3::new(0.0, 0.8, 0.0);
+        let mut player = player_with_movement("player");
+        player.mesh = mesh_descriptor("player", true).mesh;
+        let descriptors = vec![player, behavior_enemy_descriptor("grunt")];
+        let mut reg = EntityRegistry::new();
+
+        let mut copy = placement("player", &[]);
+        copy.angles = angles;
+        apply_data_archetype_dispatch(
+            std::slice::from_ref(&copy),
+            &descriptors,
+            &HashSet::new(),
+            &mut reg,
+            None,
+        );
+        let placed = reg
+            .iter_with_kind(ComponentKind::Mesh)
+            .map(|(id, _)| id)
+            .next()
+            .expect("the placed copy materializes its mesh");
+
+        let start = spawn_point_at(Vec3::new(6.0, 0.0, 0.0), angles, &[]);
+        let first =
+            spawn_from_player_starts(std::slice::from_ref(&start), &descriptors, &mut reg, None)
+                .expect("the first player spawns");
+        let slot =
+            spawn_net_slot_pawn_with_carried_loadout(&start, &descriptors, &mut reg, None, None)
+                .expect("a network slot pawn spawns");
+
+        for (pawn, role) in [(first.pawn, "first player"), (slot, "network slot pawn")] {
+            let rotation = reg.get_component::<Transform>(pawn).unwrap().rotation;
+            assert_eq!(
+                rotation,
+                start.rotation_quat(),
+                "{role}: the transform stays in the view frame"
+            );
+            let mesh = reg.get_component::<MeshComponent>(pawn).unwrap();
+            assert_eq!(mesh.body_frame, BodyFrame::View, "{role}");
+            assert!(
+                (mesh.presentation_rotation(rotation) * Vec3::Z)
+                    .abs_diff_eq(rotation * Vec3::NEG_Z, 1e-6),
+                "{role}: model +Z draws along the view forward"
+            );
+        }
+
+        let copy_rotation = reg.get_component::<Transform>(placed).unwrap().rotation;
+        let copy_mesh = reg.get_component::<MeshComponent>(placed).unwrap();
+        assert_eq!(copy_mesh.body_frame, BodyFrame::Model);
+        assert_eq!(
+            copy_mesh.presentation_rotation(copy_rotation),
+            copy_rotation,
+            "a placed copy of a player descriptor draws as placed, unturned"
+        );
+        assert!(
+            (copy_rotation * Vec3::Z).abs_diff_eq(start.rotation_quat() * Vec3::NEG_Z, 1e-6),
+            "its model front points along its arrow"
+        );
+
+        let ai_start = spawn_point_at(
+            Vec3::new(-6.0, 0.0, 0.0),
+            angles,
+            &[("entity_class", "grunt")],
+        );
+        let ai_first = spawn_from_player_starts(
+            std::slice::from_ref(&ai_start),
+            &descriptors,
+            &mut reg,
+            None,
+        )
+        .expect("a player_spawn naming the AI descriptor spawns it")
+        .pawn;
+        let ai_slot =
+            spawn_net_slot_pawn_with_carried_loadout(&ai_start, &descriptors, &mut reg, None, None)
+                .expect("a network slot naming the AI descriptor spawns it");
+        for (body, role) in [
+            (ai_first, "AI body at a player_spawn"),
+            (ai_slot, "AI body in a network slot"),
+        ] {
+            let rotation = reg.get_component::<Transform>(body).unwrap().rotation;
+            assert_eq!(
+                rotation,
+                ai_start.model_rotation_quat(),
+                "{role}: spawns in the model frame"
+            );
+            let mesh = reg.get_component::<MeshComponent>(body).unwrap();
+            assert_eq!(mesh.body_frame, BodyFrame::Model, "{role}");
+            assert!(
+                (mesh.presentation_rotation(rotation) * Vec3::Z)
+                    .abs_diff_eq(ai_start.rotation_quat() * Vec3::NEG_Z, 1e-6),
+                "{role}: model +Z draws along the arrow"
+            );
+        }
+    }
+
+    #[test]
+    fn descriptor_body_frame_follows_the_spawn_rotation_frame() {
+        // The body frame must name the frame `descriptor_spawn_rotation` used,
+        // or a pawn draws backward or a placement turns twice. Only a movement
+        // descriptor on a player path is a pawn and takes the view frame; a
+        // descriptor without movement on that path (an AI body) spawns and
+        // draws in the model frame like a placement.
+        let entity = spawn_point_at(Vec3::ZERO, Vec3::new(0.0, 0.5, 0.0), &[]);
+        let pawn = player_with_movement("player");
+        let ai_body = behavior_enemy_descriptor("grunt");
+        for (descriptor, carries_movement) in [(&pawn, true), (&ai_body, false)] {
+            for spawn_path in [
+                DescriptorSpawnPath::MapPlacement,
+                DescriptorSpawnPath::DefaultWeapon,
+                DescriptorSpawnPath::PlayerSpawn,
+                DescriptorSpawnPath::NetworkSlot,
+            ] {
+                let player_path = matches!(
+                    spawn_path,
+                    DescriptorSpawnPath::PlayerSpawn | DescriptorSpawnPath::NetworkSlot
+                );
+                let frame = descriptor_body_frame(descriptor, spawn_path);
+                let expected = if carries_movement && player_path {
+                    BodyFrame::View
+                } else {
+                    BodyFrame::Model
+                };
+                assert_eq!(
+                    frame, expected,
+                    "{spawn_path:?}, movement {carries_movement}"
+                );
+                let rotation = descriptor_spawn_rotation(descriptor, &entity, spawn_path);
+                let drawn = frame.model_rotation(rotation);
+                assert!(
+                    (drawn * Vec3::Z).abs_diff_eq(entity.rotation_quat() * Vec3::NEG_Z, 1e-6),
+                    "{spawn_path:?}, movement {carries_movement}: model +Z draws along the arrow"
+                );
+            }
+        }
     }
 
     #[test]

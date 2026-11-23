@@ -77,12 +77,18 @@ def character(directory, library_ref):
     return path
 
 
-def library(directory):
+def axis_angle(axis, degrees):
+    half = math.radians(degrees) / 2
+    return [*(math.sin(half) * np.array(axis, dtype=float)), math.cos(half)]
+
+
+def library(directory, hips_rotation=STRAIGHT):
     lib = {
         "asset": {"version": "2.0"},
         "nodes": [
             {"name": "Armature", "children": [1]},
-            {"name": "mixamorig:Hips", "translation": [0.0, 0.9, 0.0], "children": [2]},
+            {"name": "mixamorig:Hips", "translation": [0.0, 0.9, 0.0], "rotation": hips_rotation,
+             "children": [2]},
             {"name": "mixamorig:LeftArm", "translation": [0.0, 0.3, 0.0], "rotation": STRAIGHT},
         ],
     }
@@ -93,10 +99,10 @@ def library(directory):
 
 
 class RestToLibraryTests(unittest.TestCase):
-    def run_tool(self):
+    def run_tool(self, hips_rotation=STRAIGHT):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        path = character(directory.name, library(directory.name))
+        path = character(directory.name, library(directory.name, hips_rotation))
         matched, total, _ = TOOL.rest_to_library(path)
         gltf = json.loads(path.read_text(encoding="utf-8"))
         acc = TOOL.Accessors(gltf, bytearray(path.with_suffix(".bin").read_bytes()))
@@ -130,6 +136,33 @@ class RestToLibraryTests(unittest.TestCase):
         binds = acc.read(4).reshape(-1, 4, 4).transpose(0, 2, 1)
         for bind, joint_world in zip(binds, world(STRAIGHT)):
             np.testing.assert_allclose(bind @ joint_world, np.eye(4), atol=1e-6)
+
+    def assert_same_rotation(self, actual, expected):
+        np.testing.assert_allclose(TOOL.quat_to_matrix(actual), TOOL.quat_to_matrix(expected), atol=1e-6)
+
+    def test_the_root_keeps_its_facing_on_a_library_turned_about_up(self):
+        # mixamo_rifle's Hips rest is Ry(180): it faces -Z. A +Z character keeps +Z.
+        _, _, gltf, acc = self.run_tool(axis_angle([0, 1, 0], 180))
+
+        self.assert_same_rotation(gltf["nodes"][1]["rotation"], STRAIGHT)
+        self.assertEqual(gltf["nodes"][2]["rotation"], STRAIGHT, "non-root joints still copy")
+        _, arm_w = world(STRAIGHT)
+        np.testing.assert_allclose(acc.read(0)[0], (arm_w @ np.append(VERTEX_IN_ARM, 1.0))[:3], atol=1e-6)
+
+    def test_the_root_takes_the_library_tilt_without_its_yaw(self):
+        tilt = axis_angle([1, 0, 0], 10)
+        library_hips = TOOL.quat_mul(axis_angle([0, 1, 0], 180), tilt)
+        _, _, gltf, acc = self.run_tool(list(library_hips))
+
+        hips = gltf["nodes"][1]["rotation"]
+        self.assert_same_rotation(hips, tilt)
+        forward = TOOL.quat_to_matrix(hips) @ [0.0, 0.0, 1.0]
+        self.assertGreater(forward[2], 0.9, "the root still faces +Z")
+        binds = acc.read(4).reshape(-1, 4, 4).transpose(0, 2, 1)
+        hips_w = np.eye(4)
+        hips_w[:3, :3] = TOOL.quat_to_matrix(tilt)
+        hips_w[:3, 3] = HIPS_T
+        np.testing.assert_allclose(binds[0] @ hips_w, np.eye(4), atol=1e-6)
 
     def test_a_model_without_a_library_is_refused(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -3435,6 +3435,7 @@ fn leg_probe_fixture(position: Vec3, yaw: f32) -> (EntityRegistry, EntityId, Hit
                 shadow_only: false,
                 attachments: Vec::new(),
                 pose_inputs: None,
+                body_frame: Default::default(),
             },
         )
         .expect("leg entity mesh should attach");
@@ -3700,9 +3701,9 @@ fn foot_probe_transform_accepts_small_positive_uniform_and_nonuniform_scales() {
             rotation: glam::Quat::IDENTITY,
             scale,
         };
-        let model_to_world = model_matrix(&transform, Vec3::ZERO).unwrap();
+        let model_to_world = model_matrix(&transform, Vec3::ZERO, Default::default()).unwrap();
         assert!(
-            super::foot_probe_inverse(&transform, &model_to_world).is_some(),
+            super::foot_probe_inverse(&transform, transform.rotation, &model_to_world).is_some(),
             "positive finite scale {scale:?} has a finite inverse"
         );
     }

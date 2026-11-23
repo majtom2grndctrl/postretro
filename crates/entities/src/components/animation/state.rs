@@ -250,6 +250,7 @@ mod tests {
                 heading_yaw: 0.75,
                 ..Default::default()
             }),
+            body_frame: Default::default(),
         };
         let json = serde_json::to_value(&value).unwrap();
         // Serde renames: `loop`, `crossfadeMs`, `defaultState`.
@@ -312,6 +313,7 @@ mod tests {
             shadow_only: false,
             attachments: Vec::new(),
             pose_inputs: None,
+            body_frame: Default::default(),
         };
         let json = serde_json::to_value(&value).unwrap();
         let states = &json["animation"]["states"];

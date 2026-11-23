@@ -348,10 +348,7 @@ impl MeshRenderCollector {
             let forward_visible = portal_visible && !mesh.shadow_only;
             let dynamic_shadow_visible = portal_visible || mesh.shadow_only;
             let handle = ModelHandle::from(mesh.model.clone());
-            let current_presentation_rotation = presentation_body_rotation(
-                current.rotation,
-                mesh.pose_inputs.map(|inputs| inputs.heading_yaw),
-            );
+            let current_presentation_rotation = mesh.presentation_rotation(current.rotation);
             let current_model_transform = glam::Mat4::from_scale_rotation_translation(
                 current.scale,
                 current_presentation_rotation,
@@ -398,10 +395,7 @@ impl MeshRenderCollector {
             };
             let holder_transform = glam::Mat4::from_scale_rotation_translation(
                 transform.scale,
-                presentation_body_rotation(
-                    transform.rotation,
-                    mesh.pose_inputs.map(|inputs| inputs.heading_yaw),
-                ),
+                mesh.presentation_rotation(transform.rotation),
                 transform.position + mesh.origin_offset,
             );
             let holder_index = self.instances.len();
@@ -521,20 +515,6 @@ impl MeshRenderCollector {
     pub(crate) fn resample_count(&self) -> u32 {
         self.resample_count
     }
-}
-
-/// Pose split inputs are world-space: render the model root at lower-body heading,
-/// then let the modifier rotate the upper body by `aim_yaw - heading_yaw`. Gameplay
-/// and replicated transforms retain aim yaw; only mesh presentation receives this
-/// lower-body root override (travel, folded toward aim while backpedaling).
-pub(super) fn presentation_body_rotation(
-    transform_rotation: glam::Quat,
-    heading_yaw: Option<f32>,
-) -> glam::Quat {
-    heading_yaw
-        .filter(|yaw| yaw.is_finite())
-        .map(glam::Quat::from_rotation_y)
-        .unwrap_or(transform_rotation)
 }
 
 fn selected_static_shadow_light_reaches_bounds(world: &LevelWorld, bounds: &Aabb) -> bool {
@@ -1264,7 +1244,8 @@ mod tests {
     // --- Animated-state sample-param resolution through `collect` ---------------
 
     use postretro_entities::components::mesh::{
-        AnimationState, AttachmentBinding, InterruptPolicy, MeshAnimation, MeshAttachment,
+        AnimationState, AttachmentBinding, BodyFrame, InterruptPolicy, MODEL_FRONT_TO_VIEW_FORWARD,
+        MeshAnimation, MeshAttachment,
     };
     use postretro_entities::components::mesh::{
         resolve_pending_animation_stamps, switch_animation_state,
@@ -1336,6 +1317,7 @@ mod tests {
                 shadow_only: false,
                 attachments: Vec::new(),
                 pose_inputs: None,
+                body_frame: Default::default(),
             },
         )
         .unwrap();
@@ -1443,14 +1425,287 @@ mod tests {
         );
 
         assert_eq!(collector.instances()[0].pose_inputs, Some(expected));
-        let rendered_forward = collector.instances()[0]
-            .transform
-            .transform_vector3(-Vec3::Z)
-            .normalize();
-        let expected_forward = glam::Quat::from_rotation_y(expected.heading_yaw) * -Vec3::Z;
+        // An animated enemy is a placed model: its heading is its transform yaw,
+        // half turn included, so its root draws at exactly that heading. Only a
+        // player body adds the body-seam turn.
+        assert_rotation_approx(
+            collector.instances()[0].transform,
+            glam::Quat::from_rotation_y(expected.heading_yaw),
+            "the mesh root follows lower-body travel heading, unturned",
+        );
+    }
+
+    /// The rotation part of an emitted model matrix matches `expected` (as a
+    /// rotation, either quaternion sign).
+    fn assert_rotation_approx(transform: glam::Mat4, expected: glam::Quat, context: &str) {
+        let (_, rotation, _) = transform.to_scale_rotation_translation();
         assert!(
-            rendered_forward.distance(expected_forward) <= 1.0e-5,
-            "the mesh root follows lower-body travel heading while aim yaw remains in pose inputs"
+            rotation.dot(expected).abs() >= 1.0 - 1.0e-5,
+            "{context}: drew at {rotation:?}, expected {expected:?}"
+        );
+    }
+
+    /// Where an emitted instance points its model's `+Z` front.
+    fn drawn_model_front(transform: glam::Mat4) -> Vec3 {
+        transform.transform_vector3(Vec3::Z).normalize()
+    }
+
+    /// The view forward (`-Z`) turned to `yaw`.
+    fn view_forward(yaw: f32) -> Vec3 {
+        glam::Quat::from_rotation_y(yaw) * Vec3::NEG_Z
+    }
+
+    /// A player body: its transform is the view frame (forward `-Z`) at
+    /// `aim_yaw`, and its mesh is marked as every player materialization marks
+    /// it.
+    fn spawn_player_body(
+        reg: &mut EntityRegistry,
+        model: &str,
+        position: Vec3,
+        aim_yaw: f32,
+        animated: bool,
+    ) -> postretro_entities::registry::EntityId {
+        let id = reg.spawn(Transform {
+            position,
+            rotation: glam::Quat::from_rotation_y(aim_yaw),
+            ..Transform::default()
+        });
+        let mesh = if animated {
+            let mut states = HashMap::new();
+            states.insert("idle".into(), state("idle", true, 100.0, Some(0)));
+            MeshComponent::animated(model.into(), MeshAnimation::new(states, "idle".into()))
+        } else {
+            MeshComponent::stateless(model.into())
+        };
+        reg.set_component(id, mesh.with_body_frame(BodyFrame::View))
+            .unwrap();
+        id
+    }
+
+    // A player body fronts model +Z along its view: along the aim yaw until
+    // the pose pass writes a lower-body heading, then along that heading. The
+    // forward draw and the local shadow-only body take the same turn, once.
+    // The transform and pose-input yaws stay view-frame and reach the instance
+    // unshifted, so heading = aim leaves the upper body no twist.
+    #[test]
+    fn player_body_fronts_model_plus_z_along_aim_then_lower_body_heading() {
+        let aim = 0.9_f32;
+        let heading = -0.6_f32;
+        for shadow_only in [false, true] {
+            let mut reg = EntityRegistry::new();
+            let world = single_cell_world();
+            let mut collector = MeshRenderCollector::new();
+            let id = spawn_player_body(&mut reg, "grunt", Vec3::new(2.0, 0.0, -1.0), aim, true);
+            let mut mesh = reg.get_component::<MeshComponent>(id).unwrap().clone();
+            mesh.shadow_only = shadow_only;
+            reg.set_component(id, mesh).unwrap();
+            let collect = |collector: &mut MeshRenderCollector, reg: &EntityRegistry| {
+                collector.collect(
+                    reg,
+                    &world,
+                    &VisibleCells::DrawAll,
+                    1.0,
+                    0.0,
+                    &grunt_tables(),
+                    Vec3::ZERO,
+                );
+                let instance = &collector.instances()[0];
+                assert_eq!(instance.forward_visible, !shadow_only);
+                assert!(instance.dynamic_shadow_visible);
+                (instance.transform, instance.pose_inputs)
+            };
+
+            // First drawn frame: no pose inputs yet, so the aim yaw places it.
+            let (transform, _) = collect(&mut collector, &reg);
+            assert!(
+                drawn_model_front(transform).abs_diff_eq(view_forward(aim), 1.0e-5),
+                "shadow_only {shadow_only}: model +Z along Ry(aim)*(-Z)"
+            );
+            assert_rotation_approx(
+                transform,
+                glam::Quat::from_rotation_y(aim) * MODEL_FRONT_TO_VIEW_FORWARD,
+                "the turn applies exactly once",
+            );
+
+            for (lower_body, label) in [(aim, "heading = aim"), (heading, "heading != aim")] {
+                let inputs = postretro_entities::PoseInputs {
+                    aim_yaw: aim,
+                    heading_yaw: lower_body,
+                    ..Default::default()
+                };
+                let mut mesh = reg.get_component::<MeshComponent>(id).unwrap().clone();
+                mesh.pose_inputs = Some(inputs);
+                reg.set_component(id, mesh).unwrap();
+
+                let (transform, carried) = collect(&mut collector, &reg);
+                assert!(
+                    drawn_model_front(transform).abs_diff_eq(view_forward(lower_body), 1.0e-5),
+                    "shadow_only {shadow_only}, {label}: model +Z along Ry(heading)*(-Z)"
+                );
+                assert_eq!(
+                    carried,
+                    Some(inputs),
+                    "{label}: aim and heading yaws reach the pose modifiers unshifted"
+                );
+                if lower_body == aim {
+                    let carried = carried.unwrap();
+                    assert_eq!(carried.aim_yaw - carried.heading_yaw, 0.0, "no twist");
+                }
+            }
+            assert_eq!(
+                reg.get_component::<Transform>(id).unwrap().rotation,
+                glam::Quat::from_rotation_y(aim),
+                "the player's transform keeps its view-frame aim yaw"
+            );
+        }
+    }
+
+    // Pin R1. A player body with no animation state on a legged model gains
+    // default pose inputs (heading 0) from the presentation pose pass's foot
+    // probes. Its draw keeps the transform's aim yaw: that default heading
+    // never replaces it, on the first frame or any later one.
+    #[test]
+    fn stateless_legged_player_body_draws_along_aim_after_the_pose_pass() {
+        use crate::collision::CollisionWorld;
+        use crate::kinematic_mover::MoverTickStateTable;
+        use crate::scripting_systems::hit_zones::ModelHitZones;
+        use postretro_model::pose_modifier::{JointMask, LegChain, PoseModifierStack};
+
+        const LEGGED: &str = "legwalker";
+        let floor = CollisionWorld::from_triangles_for_test(
+            [(-10.0, -10.0), (10.0, -10.0), (10.0, 10.0), (-10.0, 10.0)]
+                .map(|(x, z)| Vec3::new(x, 0.0, z))
+                .to_vec(),
+            vec![[0, 2, 1], [0, 3, 2]],
+        );
+        // One leg: a root with its foot joint resting 0.7 below it.
+        let joint = |parent, translation| Joint {
+            parent,
+            inverse_bind: glam::Mat4::IDENTITY.to_cols_array_2d(),
+            rest_local: RestLocal {
+                translation,
+                ..RestLocal::default()
+            },
+        };
+        let mut chain_mask = JointMask::new();
+        assert!(chain_mask.insert(0) && chain_mask.insert(1));
+        let mut store = HitZoneStore::new();
+        store.insert_for_test(
+            ModelHandle::from(LEGGED),
+            ModelHitZones::for_test(
+                Arc::new(Skeleton {
+                    joints: vec![
+                        joint(None, Vec3::ZERO),
+                        joint(Some(0), Vec3::new(0.0, -0.7, 0.0)),
+                    ],
+                }),
+                Arc::new(Vec::new()),
+                vec![None, None],
+                HashMap::new(),
+                None,
+                vec![LegChain {
+                    chain_mask,
+                    foot_joint: 1,
+                }],
+                Arc::new(PoseModifierStack::default()),
+            ),
+        );
+
+        let aim = 2.2_f32;
+        let mut reg = EntityRegistry::new();
+        let id = spawn_player_body(&mut reg, LEGGED, Vec3::new(0.0, 0.8, 0.0), aim, false);
+        let world = single_cell_world();
+        let mut collector = MeshRenderCollector::new();
+        let draw = |collector: &mut MeshRenderCollector, reg: &EntityRegistry| {
+            collector.collect_with_hit_zones(
+                reg,
+                &world,
+                &VisibleCells::DrawAll,
+                1.0,
+                0.0,
+                &MeshClipTables::new(),
+                Vec3::ZERO,
+                &store,
+            );
+            drawn_model_front(collector.instances()[0].transform)
+        };
+        assert!(
+            draw(&mut collector, &reg).abs_diff_eq(view_forward(aim), 1.0e-5),
+            "first drawn frame after spawn, before any pose pass"
+        );
+
+        crate::sim::update_presentation_pose_inputs(
+            &mut reg,
+            &floor,
+            &[],
+            &MoverTickStateTable::default(),
+            &store,
+            0.0,
+            crate::sim::PresentationPoseInputs {
+                camera_aim: (0.0, aim),
+                remote_player_aims: &HashMap::new(),
+                remote_aim_pitches: &HashMap::new(),
+                remote_heading_yaws: &HashMap::new(),
+                remote_network_ids: &HashMap::new(),
+                local_pawn_owns_direction: false,
+            },
+        );
+        let mesh = reg.get_component::<MeshComponent>(id).unwrap();
+        assert!(mesh.animation.is_none());
+        let inputs = mesh
+            .pose_inputs
+            .expect("the foot probes write pose inputs onto a legged body");
+        assert_eq!(
+            inputs.heading_yaw, 0.0,
+            "fixture: the probes leave the default heading the trap would draw at"
+        );
+
+        assert!(
+            draw(&mut collector, &reg).abs_diff_eq(view_forward(aim), 1.0e-5),
+            "after the pose pass: model +Z along Ry(aim)*(-Z), not Ry(0)*(-Z)"
+        );
+    }
+
+    // Regression guard beside the player body seam: a placed prop draws at its
+    // transform rotation exactly, the model front its placement already turned
+    // along the arrow. Only a View body takes the body-seam turn.
+    #[test]
+    fn placed_model_bodies_draw_at_their_transform_rotation_unturned() {
+        let mut reg = EntityRegistry::new();
+        let world = single_cell_world();
+        let mut collector = MeshRenderCollector::new();
+        let placed = glam::Quat::from_rotation_y(0.7) * MODEL_FRONT_TO_VIEW_FORWARD;
+        let id = reg.spawn(Transform {
+            position: Vec3::new(1.0, 0.0, 1.0),
+            rotation: placed,
+            ..Transform::default()
+        });
+        reg.set_component(id, MeshComponent::stateless("prop".into()))
+            .unwrap();
+        // Default pose inputs on a stateless mesh (a legged prop's foot probes)
+        // never move it either.
+        let mut mesh = reg.get_component::<MeshComponent>(id).unwrap().clone();
+        mesh.pose_inputs = Some(postretro_entities::PoseInputs::default());
+        reg.set_component(id, mesh).unwrap();
+
+        collector.collect(
+            &reg,
+            &world,
+            &VisibleCells::DrawAll,
+            1.0,
+            0.0,
+            &MeshClipTables::new(),
+            Vec3::ZERO,
+        );
+        assert_rotation_approx(
+            collector.instances()[0].transform,
+            placed,
+            "a placed prop draws as placed",
+        );
+        assert!(
+            drawn_model_front(collector.instances()[0].transform)
+                .abs_diff_eq(view_forward(0.7), 1.0e-5),
+            "its front points along the arrow its placement turned it to"
         );
     }
 

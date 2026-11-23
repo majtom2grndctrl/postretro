@@ -76,6 +76,10 @@ bin/postretro-tool solve-weapon-mount content/dev/models/limitator/model.gltf \
   --check
 ```
 
+The check measures the barrel against the holder model's +Z, the front every
+placed model and player body shares, so a holder that does not front +Z fails
+`barrel·+Z`.
+
 For a declared asset, the check composes `extras.mount.euler` into the
 raw-source axes to recover the baked-frame directions. That is why the Euler
 metadata is required. `--barrel`, `--up`, and `--current-euler` are only

@@ -557,6 +557,160 @@ converter.postprocess_gltf(
         assert!(error.contains("determinant must be positive"));
     }
 
+    fn content_models() -> PathBuf {
+        crate_root().join("../../content/dev/models")
+    }
+
+    /// The committed exo_red weapon bakes (E21 character weapon mounts), listed
+    /// rather than scanned so a missing bake fails instead of shrinking the set.
+    const EXO_RED_BAKE_WEAPONS: [&str; 6] =
+        ["pistol", "rifle", "shotgun", "smg", "rpg", "sci_fi_weapon"];
+
+    fn exo_red_bake(weapon: &str) -> PathBuf {
+        content_models()
+            .join("cyberpunk_weapons")
+            .join(weapon)
+            .join("exo_red.gltf")
+    }
+
+    /// `solve-weapon-mount <holder> --weapon <bake> --mount-joint hand_r --check`,
+    /// run in-process through the command's own entry point.
+    fn hand_r_mount_check(holder: &Path, weapon: &Path) -> Result<i32, String> {
+        run(vec![
+            holder.as_os_str().to_owned(),
+            OsString::from("--weapon"),
+            weapon.as_os_str().to_owned(),
+            OsString::from("--mount-joint"),
+            OsString::from("hand_r"),
+            OsString::from("--check"),
+        ])
+    }
+
+    /// exo_red's `mixamorig:Hips` rest rotation before the E21 re-face, ≈ Ry(180°),
+    /// as the text committed at 83802575a spelled it.
+    const EXO_RED_PRE_REFACE_HIPS_REST: &str =
+        "-3.8753523400579266e-15, 1, 2.6843682832122795e-08, 7.549789415861596e-08";
+
+    /// `document` with the `mixamorig:Hips` node's rotation replaced by
+    /// `rotation`. Asserts the committed rest is identity, so the patch starts
+    /// from the re-faced asset.
+    fn with_hips_rest(document: &str, rotation: &str) -> String {
+        let name = "\"mixamorig:Hips\"";
+        assert_eq!(document.matches(name).count(), 1, "one Hips node");
+        let after_name = document.find(name).expect("Hips node") + name.len();
+        let key = document[after_name..]
+            .find("\"rotation\"")
+            .expect("a rotation after the Hips name")
+            + after_name;
+        assert_eq!(
+            document[after_name..key].trim(),
+            ",",
+            "the Hips node's own rotation follows its name"
+        );
+        let open = key + document[key..].find('[').expect("rotation array") + 1;
+        let close = open + document[open..].find(']').expect("rotation array end");
+        let committed: Vec<f32> = document[open..close]
+            .split(',')
+            .map(|value| value.trim().parse().expect("numeric rotation"))
+            .collect();
+        assert_eq!(
+            committed,
+            [0.0, 0.0, 0.0, 1.0],
+            "the committed exo_red is re-faced: Hips rest identity"
+        );
+        format!("{}{rotation}{}", &document[..open], &document[close..])
+    }
+
+    /// A −Z exo_red, as it was at 83802575a: the committed model with its Hips
+    /// rest set back to Ry(180°), written under `scratch` beside copies of its
+    /// buffer and of the `mixamo_rifle` library, mirroring the content layout so
+    /// its relative `clipLibrary` reference resolves. Textures are left out; a
+    /// missing base color only blanks a material key, which the check never reads.
+    fn write_minus_z_exo_red(scratch: &Path) -> PathBuf {
+        let models = content_models();
+        let source = std::fs::read_to_string(models.join("exo_red/model.gltf"))
+            .expect("exo_red document reads");
+        let body = scratch.join("exo_red");
+        std::fs::create_dir_all(&body).expect("scratch body folder");
+        std::fs::write(
+            body.join("model.gltf"),
+            with_hips_rest(&source, EXO_RED_PRE_REFACE_HIPS_REST),
+        )
+        .expect("-Z exo_red document writes");
+        std::fs::copy(models.join("exo_red/model.bin"), body.join("model.bin"))
+            .expect("exo_red buffer copies");
+        let library = scratch.join("clip_libraries/mixamo_rifle");
+        std::fs::create_dir_all(&library).expect("scratch library folder");
+        for file in ["library.gltf", "library.bin"] {
+            std::fs::copy(
+                models.join("clip_libraries/mixamo_rifle").join(file),
+                library.join(file),
+            )
+            .unwrap_or_else(|error| panic!("mixamo_rifle {file} copies: {error}"));
+        }
+        body.join("model.gltf")
+    }
+
+    #[test]
+    fn every_committed_exo_red_bake_verifies_on_exo_red() {
+        // E21 player model front: exo_red fronts glTF +Z, the holder front the
+        // check assumes, so each bake solved for it reports VERIFIED.
+        let holder = content_models().join("exo_red/model.gltf");
+        for weapon in EXO_RED_BAKE_WEAPONS {
+            let bake = exo_red_bake(weapon);
+            let declared = load_model(&bake)
+                .unwrap_or_else(|error| panic!("{weapon} bake loads: {error}"))
+                .mount;
+            assert!(
+                declared.is_some_and(|mount| mount.euler.is_some()),
+                "{weapon}: the bake declares its axes and applied euler, so its check is VERIFIED"
+            );
+            assert_eq!(
+                hand_r_mount_check(&holder, &bake),
+                Ok(0),
+                "{weapon}: VERIFIED: mount check passed on exo_red"
+            );
+        }
+    }
+
+    #[test]
+    fn exo_red_bake_check_fails_on_a_minus_z_exo_red() {
+        // The check discriminates: on the pre-re-face exo_red (Hips rest
+        // Ry(180°), front −Z) every bake's barrel points back along −Z.
+        let scratch = tempfile::tempdir().expect("scratch dir");
+        let holder_path = write_minus_z_exo_red(scratch.path());
+        let holder = load_model(&holder_path).expect("-Z exo_red loads and binds");
+        let socket = resolve_socket_frame_in_model(&holder, "idle_aiming", "hand_r", 0.0)
+            .expect("-Z exo_red resolves hand_r");
+        for weapon in EXO_RED_BAKE_WEAPONS {
+            let bake = exo_red_bake(weapon);
+            assert_eq!(
+                hand_r_mount_check(&holder_path, &bake),
+                Ok(1),
+                "{weapon}: the check fails on a -Z exo_red"
+            );
+            let declared = load_model(&bake)
+                .unwrap_or_else(|error| panic!("{weapon} bake loads: {error}"))
+                .mount
+                .expect("declared axes");
+            let euler = declared.euler.expect("applied euler");
+            let frame = compose_declared_axes_into_baked_frame(declared, euler)
+                .frame()
+                .expect("baked frame");
+            let verification = verify_mount(socket.matrix, frame).expect("mount verifies");
+            assert!(
+                verification.barrel_dot_forward < -0.9,
+                "{weapon}: barrel·+Z on a -Z exo_red is {}",
+                verification.barrel_dot_forward
+            );
+            assert!(
+                failed_mount_metrics(verification, MountCheckThresholds::default())
+                    .contains(&"barrel·+Z"),
+                "{weapon}: the failure names barrel·+Z"
+            );
+        }
+    }
+
     #[test]
     fn reference_mount_pose_requires_idle_aiming_at_zero() {
         assert!(is_reference_mount_pose("idle_aiming", 0.0));

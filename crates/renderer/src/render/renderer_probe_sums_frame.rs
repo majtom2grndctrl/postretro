@@ -14,13 +14,6 @@ fn frame_dispatches_probe_sums(
     fluid_probe_term_draws || overlay_probe_term_draws
 }
 
-/// The glossy world overlay's probe-term draws this frame. No overlay pass
-/// exists yet; `glossy-world-reflections` Task 5 replaces this with its gate
-/// under the same mask snapshot and tier.
-fn glossy_overlay_probe_term_draws() -> bool {
-    false
-}
-
 impl Renderer {
     /// Record the sums pass over the active level's probes, once, on a frame
     /// that draws a probe term under `frame_light_term_mask` and
@@ -46,7 +39,12 @@ impl Renderer {
             frame_light_term_mask,
             frame_reflection_quality,
         );
-        if !frame_dispatches_probe_sums(fluid_probe_term_draws, glossy_overlay_probe_term_draws()) {
+        let overlay_probe_term_draws = self.glossy_overlay_probe_term_draws(
+            render_world,
+            frame_light_term_mask,
+            frame_reflection_quality,
+        );
+        if !frame_dispatches_probe_sums(fluid_probe_term_draws, overlay_probe_term_draws) {
             return;
         }
         let Some(probes) = self.reflection_probes() else {

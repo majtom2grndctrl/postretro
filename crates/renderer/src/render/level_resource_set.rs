@@ -291,6 +291,9 @@ pub(in crate::render) struct LevelResourceSet {
     /// fluid or world. Probe-term passes borrow them; they drop with the set.
     pub(in crate::render) reflection_probes:
         Option<reflection_probe_resources::ReflectionProbeResources>,
+    /// The glossy overlay's state: the world probe stream, its probe group
+    /// and the D_static target. `None` unless id 54 binds a world face.
+    pub(in crate::render) glossy: Option<glossy_overlay::GlossyLevelState>,
     /// This level's fluid surfaces; `None` until `install_fluid_surfaces`
     /// finds a drawable face.
     pub(in crate::render) fluid_surfaces: Option<fluid_surface::InstalledFluidSurfaces>,
@@ -345,6 +348,14 @@ impl LevelResourceSet {
         self.loaded_textures = textures.loaded_textures;
         self.gpu_textures = textures.gpu_textures;
         self.samplers.absorb(&mut textures.samplers);
+    }
+
+    /// Whether material bucket `bucket` is glossy: its material passes the
+    /// glossy opt-in over its uploaded specular slot.
+    pub(in crate::render) fn bucket_is_glossy(&self, bucket: u32) -> bool {
+        self.loaded_textures
+            .get(bucket as usize)
+            .is_some_and(|texture| texture.reflects)
     }
 
     /// The world materials this set holds, taken out for a geometry
@@ -426,6 +437,7 @@ impl Renderer {
             vertices: &[],
             vertex_spec_owners: &[],
             vertex_emissive_volumes: &[],
+            reflection_probes: None,
             emissive_volumes: &[],
             area_glow_lights: &[],
             indices: &[],

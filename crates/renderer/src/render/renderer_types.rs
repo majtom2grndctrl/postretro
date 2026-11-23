@@ -376,18 +376,30 @@ impl Renderer {
         )
     }
 
-    /// Resident bytes of the active level's reflection probes: its report,
-    /// or the empty report with no set active or a set without probes.
+    /// Resident bytes of the active level's reflection probes and, beside
+    /// them, the glossy overlay's static-diffuse target while it exists: its
+    /// report, or the empty report with no set active or a set with neither.
     /// `None` only before full init.
     pub fn reflection_probe_residency_report(&self) -> Option<ReflectionProbeResidencyReport> {
         let full = self.full.as_ref()?;
+        let Some(level) = full.level.as_ref() else {
+            return Some(ReflectionProbeResidencyReport::EMPTY);
+        };
+        let report = level
+            .reflection_probes
+            .as_ref()
+            .map_or(ReflectionProbeResidencyReport::EMPTY, |probes| {
+                probes.residency_report()
+            });
         Some(
-            full.level
+            match level
+                .glossy
                 .as_ref()
-                .and_then(|level| level.reflection_probes.as_ref())
-                .map_or(ReflectionProbeResidencyReport::EMPTY, |probes| {
-                    probes.residency_report()
-                }),
+                .and_then(|glossy| glossy.residency_row())
+            {
+                Some(row) => report.with_row(row),
+                None => report,
+            },
         )
     }
 

@@ -356,6 +356,14 @@ pub(in crate::render) fn build_level_set_core(
         kinematic_lights,
     );
     let extent = publish::build_level_extent_groups(device, context, &shadow, fog_pixel_scale);
+    // The glossy overlay's stream and D_static target, at the build's tier and
+    // scene extent; its probe group binds once the level's probes install.
+    let glossy = context.glossy.build(
+        device,
+        geometry,
+        context.tiers.reflection_quality,
+        context.scene.extent,
+    );
 
     let has_geometry = world.has_geometry;
     let geometry_install = install_marks.log(has_geometry);
@@ -451,6 +459,7 @@ pub(in crate::render) fn build_level_set_core(
         mesh_lights,
         kinematic,
         reflection_probes: None,
+        glossy,
         fluid_surfaces: None,
         fog: Default::default(),
         fog_cell_masks: None,

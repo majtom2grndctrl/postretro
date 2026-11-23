@@ -36,7 +36,15 @@ impl ReflectionProbeResidencyReport {
         }
     }
 
-    /// Bytes of the row named `name`, one of the `REFLECTION_PROBE_*` names.
+    /// This report with `row` appended after the probe rows, totalled.
+    pub(super) fn with_row(mut self, row: ResidencyAllocation) -> Self {
+        self.allocations.push(row);
+        self.total_bytes = allocation_total_bytes(&self.allocations);
+        self
+    }
+
+    /// Bytes of the row named `name`, one of the `REFLECTION_PROBE_*` names
+    /// or `GLOSSY_STATIC_DIFFUSE`.
     pub fn bytes(&self, name: &str) -> Option<u64> {
         self.allocations
             .iter()

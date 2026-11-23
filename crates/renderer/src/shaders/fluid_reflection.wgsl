@@ -1,7 +1,8 @@
 // Fluid surface reflection: the distance-corrected box-projected probe term
 // fs_main_reflecting composites, with the screen-space layer over it.
-// Concatenated after fluid_surface.wgsl; the gate, ray and style point live in
-// fluid_reflection_ray.wgsl.
+// Concatenated after fluid_surface.wgsl, and after glossy_overlay.wgsl, which
+// declares the same probe bindings by name; the gate, ray and style point live
+// in fluid_reflection_ray.wgsl.
 // See: context/lib/rendering_pipeline.md §7.3a
 
 // Reflection probes. Mirrors `postretro_render_cpu::fluid_surface::reflection`:
@@ -95,25 +96,6 @@ fn fluid_reflection_ratio_from_sums(probe: u32, direction: vec3<f32>) -> vec3<f3
     ratio = ratio + fluid_probe_sums.lobes[base + 3u].xyz * lobes[3];
     ratio = ratio + fluid_probe_sums.lobes[base + 4u].xyz * lobes[4];
     ratio = ratio + fluid_probe_sums.lobes[base + 5u].xyz * lobes[5];
-    return max(ratio, vec3<f32>(0.0));
-}
-
-// The per-fragment form the sums replace, kept unreachable from every entry:
-// the sums' parity oracle, and the fallback for a reflector the IP rules
-// return to per-fragment evaluation (rendering_pipeline.md §7.3a). Lights
-// past the stored K have no entry and hold their reference.
-fn fluid_reflection_ratio(probe: u32, direction: vec3<f32>) -> vec3<f32> {
-    let lobes = fluid_reflection_lobe_weights(direction);
-    var ratio = vec3<f32>(1.0);
-    for (var i: u32 = 0u; i < FLUID_REFLECTION_LIGHTS_PER_PROBE; i = i + 1u) {
-        let light = fluid_probes.probes[probe].lights[i];
-        if !fluid_reflection_light_present(light.roster_index) {
-            continue;
-        }
-        let current = fluid_reflection_light_value(light.roster_index);
-        ratio = ratio + fluid_reflection_light_share(light.shares, lobes)
-            * fluid_reflection_light_change(current, light.reference);
-    }
     return max(ratio, vec3<f32>(0.0));
 }
 

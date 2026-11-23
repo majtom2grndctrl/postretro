@@ -30,7 +30,6 @@ pub struct BvhCullDiagnostics {
     pub frontier: BvhFrontierDiagnostics,
 }
 
-
 fn build_visible_cell_bitmask(
     visible: &postretro_visibility::VisibleCells,
 ) -> [u32; VISIBLE_CELLS_WORDS] {

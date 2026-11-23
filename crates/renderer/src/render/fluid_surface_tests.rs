@@ -15,9 +15,13 @@ const FLUID_WGSL: &str = concat!(
     "\n",
     include_str!("../shaders/fluid_motion.wgsl"),
     "\n",
+    include_str!("../shaders/reflection_probe_lobes.wgsl"),
+    "\n",
     include_str!("../shaders/fluid_reflection_lights.wgsl"),
     "\n",
     include_str!("../shaders/fluid_reflection.wgsl"),
+    "\n",
+    include_str!("../shaders/fluid_reflection_oracle.wgsl"),
     "\n",
     include_str!("../shaders/fluid_reflection_ray.wgsl"),
 );
@@ -3219,7 +3223,8 @@ fn fluid_pass_picks_variants_by_the_frames_group_0_mask() {
         )
         .expect("the sums dispatch reads the frame's mask and tier");
     assert!(snapshot < sums && sums < gate);
-    assert_eq!(frame.matches("frame_reflection_quality").count(), 5);
+    // Two more: forward's static-diffuse forms and the glossy overlay.
+    assert_eq!(frame.matches("frame_reflection_quality").count(), 7);
 
     let source = include_str!("fluid_surface.rs");
     let reflection_source = include_str!("fluid_surface/reflection_pass.rs");
@@ -5381,6 +5386,8 @@ fn the_ip_rules_are_commented_beside_the_march_the_composite_and_the_probe_looku
 const SUMS_WGSL: &str = concat!(
     include_str!("../shaders/fluid_reflection_sums.wgsl"),
     "\n",
+    include_str!("../shaders/reflection_probe_lobes.wgsl"),
+    "\n",
     include_str!("../shaders/fluid_reflection_lights.wgsl"),
 );
 
@@ -5469,9 +5476,10 @@ fn uses_name(code: &str, name: &str) -> bool {
 }
 
 /// Of all production renderer code, only the fluid pass's group-4 entries
+/// and the glossy overlay's probe group (static world faces, bound by id 54)
 /// bind the level's sums into a render group, and only the fluid surface
-/// install builds that group; only the sums pass dispatches over them, from
-/// one frame site; and only the fluid pass's probe bindings name their
+/// install builds the fluid group; only the sums pass dispatches over them,
+/// from one frame site; and only the fluid pass's probe bindings name their
 /// group-4 binding. Declarations do not count as uses.
 fn assert_the_sums_are_reached_only_by_their_owners() {
     let sources = production_renderer_sources();
@@ -5482,19 +5490,25 @@ fn assert_the_sums_are_reached_only_by_their_owners() {
         "the scan reaches the renderer's sources"
     );
     for (name, owner) in [
-        ("sums_binding", "render/fluid_reflection_probes.rs"),
+        (
+            "sums_binding",
+            &[
+                "render/fluid_reflection_probes.rs",
+                "render/glossy_overlay/level.rs",
+            ][..],
+        ),
         (
             "fluid_probe_bind_group_entries",
-            "render/fluid_surface/install.rs",
+            &["render/fluid_surface/install.rs"],
         ),
-        ("sums_dispatch", "render/reflection_probe_sums.rs"),
+        ("sums_dispatch", &["render/reflection_probe_sums.rs"]),
         (
             "record_reflection_probe_sums",
-            "render/renderer_render_frame.rs",
+            &["render/renderer_render_frame.rs"],
         ),
         (
             "FLUID_PROBE_SUMS_BINDING",
-            "render/fluid_reflection_probes.rs",
+            &["render/fluid_reflection_probes.rs"],
         ),
     ] {
         let users: Vec<&str> = sources
@@ -5509,7 +5523,7 @@ fn assert_the_sums_are_reached_only_by_their_owners() {
             })
             .map(|(file, _)| file.as_str())
             .collect();
-        assert_eq!(users, [owner], "`{name}` is used only by {owner}");
+        assert_eq!(users, owner, "`{name}` is used only by {owner:?}");
     }
 }
 
@@ -5732,8 +5746,10 @@ fn the_sums_dispatch_reads_the_fluid_passs_own_reflecting_draws() {
             "if!render_world{return;}\
              letfluid_probe_term_draws=self.full().fluid_surface.has_probe_term_draws(\
              self.fluid_surfaces(),frame_light_term_mask,frame_reflection_quality,);\
+             letoverlay_probe_term_draws=self.glossy_overlay_probe_term_draws(\
+             render_world,frame_light_term_mask,frame_reflection_quality,);\
              if!frame_dispatches_probe_sums(fluid_probe_term_draws,\
-             glossy_overlay_probe_term_draws()){return;}"
+             overlay_probe_term_draws){return;}"
         ),
         "{recorder}"
     );
@@ -5748,10 +5764,14 @@ fn the_sums_dispatch_reads_the_fluid_passs_own_reflecting_draws() {
         "fnframe_dispatches_probe_sums(fluid_probe_term_draws:bool,\
          overlay_probe_term_draws:bool,)->bool{fluid_probe_term_draws||overlay_probe_term_draws}"
     );
-    // Until the overlay lands (Task 5) its input is a named constant false.
-    assert_eq!(
-        code_only(wgsl_fn(recorder_source, "glossy_overlay_probe_term_draws")),
-        "fnglossy_overlay_probe_term_draws()->bool{false}"
+    // The overlay's input is its own draw gate, the one the overlay pass
+    // records by (`overlay_gate_needs_tier_mask_ready_level_and_a_glossy_range`).
+    let overlay_source = include_str!("renderer_glossy_frame.rs");
+    assert!(
+        code_only(wgsl_fn(overlay_source, "record_glossy_overlay_pass")).contains(
+            "if!self.glossy_overlay_probe_term_draws(render_world,frame_light_term_mask,\
+             frame_reflection_quality,){return;}"
+        )
     );
     assert!(!code_only(&fluid_pass_block()).contains("probe_term_draws"));
 }
@@ -5835,8 +5855,9 @@ fn the_sums_ip_fences_hold() {
         );
     }
 
-    // Of the shaders, only the fluid surface module and the sums pass name
-    // the sums; never the SSR, planar, mover, model or world shaders.
+    // Of the shaders, only the fluid surface module, the sums pass and the
+    // glossy overlay (static world faces) name the sums; never the SSR,
+    // planar, mover, model or forward world shaders.
     let shaders = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shaders");
     let mut naming: Vec<String> = std::fs::read_dir(&shaders)
         .expect("shader directory")
@@ -5855,6 +5876,7 @@ fn the_sums_ip_fences_hold() {
             "fluid_reflection.wgsl",
             "fluid_reflection_sums.wgsl",
             "fluid_surface.wgsl",
+            "glossy_overlay.wgsl",
         ]
     );
     // Of the render layouts, only fluid group 4 holds the sums: the SSR

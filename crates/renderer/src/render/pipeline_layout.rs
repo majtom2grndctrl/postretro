@@ -197,7 +197,8 @@ pub(crate) const TIMING_PAIR_KINEMATIC_BRUSH: usize = 19;
 pub(crate) const TIMING_PAIR_SKINNED_MESH: usize = 20;
 pub(crate) const TIMING_PAIR_VIEWMODEL: usize = 21;
 pub(crate) const TIMING_PAIR_FLUID_REFLECTION_SUMS: usize = 22;
-pub(crate) const TIMING_PAIR_COUNT: usize = 23;
+pub(crate) const TIMING_PAIR_GLOSSY_OVERLAY: usize = 23;
+pub(crate) const TIMING_PAIR_COUNT: usize = 24;
 
 // Must match `Uniforms` in forward.wgsl and wireframe.wgsl (both bind the same buffer).
 // std140: vec3<f32> aligns to 16 bytes; camera_position and ambient_floor share a slot.

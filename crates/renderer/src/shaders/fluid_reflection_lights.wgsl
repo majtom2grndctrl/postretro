@@ -10,36 +10,12 @@ const FLUID_REFLECTION_REFERENCE_FLOOR: f32 = 1.0e-30;
 const FLUID_REFLECTION_UNORM10_MAX: u32 = 1023u;
 const FLUID_REFLECTION_NO_LIGHT: u32 = 0xFFFFFFFFu;
 const FLUID_REFLECTION_LIGHTS_PER_PROBE: u32 = 4u;
-// Share lobes per probe: +Y, +X, -X, +Z, -Z, -Y.
-const FLUID_REFLECTION_LOBES: u32 = 6u;
 
 // Live lighting by light share. The capture holds every animated light at its
 // reference; each stored light scales it by its share toward the lookup
 // direction times its live-over-reference change. Reads no SH and no
 // promotion weight, so a switch reaches every reflection, at any distance, on
 // the frame it lands, and promotion never moves it.
-
-// The share lobes' blend weights for a lookup direction: +Y, +X, -X, +Z, -Z,
-// -Y. Mirrors level-format `reflection_probe_lobe_weights`, which the
-// compiler split the capture's light by.
-fn fluid_reflection_lobe_weights(direction: vec3<f32>) -> array<f32, 6> {
-    let positive = max(direction, vec3<f32>(0.0));
-    let negative = max(-direction, vec3<f32>(0.0));
-    let weights = array<f32, 6>(
-        positive.y * positive.y,
-        positive.x * positive.x,
-        negative.x * negative.x,
-        positive.z * positive.z,
-        negative.z * negative.z,
-        negative.y * negative.y,
-    );
-    let sum = weights[0] + weights[1] + weights[2] + weights[3] + weights[4] + weights[5];
-    if !(sum > 0.0) {
-        return array<f32, 6>(1.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-    }
-    return array<f32, 6>(weights[0] / sum, weights[1] / sum, weights[2] / sum, weights[3] / sum,
-        weights[4] / sum, weights[5] / sum);
-}
 
 // The reserved roster value, and any index past the descriptors, indexes
 // nothing: the entry adds no term.

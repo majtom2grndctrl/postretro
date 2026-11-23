@@ -8,6 +8,7 @@ fn empty_geometry<'a>(
         vertices: &[],
         vertex_spec_owners: &[],
         vertex_emissive_volumes: &[],
+        reflection_probes: None,
         emissive_volumes: &[],
         area_glow_lights: &[],
         indices: &[],

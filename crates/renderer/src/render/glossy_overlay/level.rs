@@ -1,0 +1,241 @@
+// One level's glossy overlay state: the world probe stream, the overlay's
+// group over the level's probes, and the static-diffuse target.
+// See: context/lib/rendering_pipeline.md §7.3a (Glossy world faces) · context/lib/resource_management.md §5.4
+
+use postretro_level_format::SectionId;
+use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
+use postretro_render_cpu::render_extent::Extent;
+
+use crate::render::LevelGeometry;
+use crate::render::gpu_create::GpuCreate;
+use crate::render::reflection_probe_resources::ReflectionProbeResources;
+use crate::render::residency::{ResidencyAllocation, ResidencyAllocationState, texture_row};
+
+/// The memory ledger's row for the static-diffuse target.
+pub const GLOSSY_STATIC_DIFFUSE: &str = "glossy_static_diffuse";
+
+/// What a level's glossy state binds from the overlay pass, cloned for a
+/// level build on any thread.
+#[derive(Clone)]
+pub(crate) struct GlossyLevelLayout {
+    pub(super) probe_layout: wgpu::BindGroupLayout,
+    pub(super) inputs_layout: wgpu::BindGroupLayout,
+    pub(super) sampler: wgpu::Sampler,
+    pub(super) static_diffuse_format: wgpu::TextureFormat,
+}
+
+/// The static-diffuse target at scene extent, with the overlay's inputs
+/// group over it.
+struct StaticDiffuseTarget {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    inputs_group: wgpu::BindGroup,
+}
+
+/// One level's glossy overlay state, owned by its level set and dropped with
+/// it. Exists only for a level whose id 54 binds a world face.
+pub(crate) struct GlossyLevelState {
+    /// One probe index per world vertex, written once at install.
+    world_probes: wgpu::Buffer,
+    /// The overlay's group over the level's probe records; `None` until the
+    /// probes install, or when they do not.
+    probe_group: Option<wgpu::BindGroup>,
+    /// Forward's D_static target, at scene extent while the reflection tier
+    /// is above off; `None` at off.
+    target: Option<StaticDiffuseTarget>,
+}
+
+impl GlossyLevelLayout {
+    /// The level's glossy state, or `None` (no allocation) when its id 54
+    /// binds no world face, or the bindings cannot reach the vertices. The
+    /// target follows `quality` at `extent`.
+    pub(crate) fn build(
+        &self,
+        device: &wgpu::Device,
+        geometry: &LevelGeometry<'_>,
+        quality: FluidReflectionQuality,
+        extent: Extent,
+    ) -> Option<GlossyLevelState> {
+        let section = geometry.reflection_probes?;
+        let stream = postretro_level_loader::build_vertex_world_probes(
+            geometry.vertices.len(),
+            geometry.indices,
+            &geometry.bvh.leaves,
+            &section.world_bindings,
+            section.probes.len(),
+        )?;
+        let bytes: Vec<u8> = stream
+            .iter()
+            .flat_map(|probe| probe.to_le_bytes())
+            .collect();
+        let world_probes = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("World Probe Index Buffer"),
+            contents: &bytes,
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let mut state = GlossyLevelState {
+            world_probes,
+            probe_group: None,
+            target: None,
+        };
+        self.sync_target(device, &mut state, quality, extent);
+        Some(state)
+    }
+
+    /// Bind the overlay's probe group over the level's installed probes.
+    pub(crate) fn bind_probes(
+        &self,
+        device: &wgpu::Device,
+        state: &mut GlossyLevelState,
+        probes: Option<&ReflectionProbeResources>,
+    ) {
+        state.probe_group = probes.map(|probes| {
+            device.new_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Glossy Overlay Probe Bind Group"),
+                layout: &self.probe_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(probes.colour_view()),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: probes.table_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(probes.distance_view()),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: probes.sums_binding(),
+                    },
+                ],
+            })
+        });
+    }
+
+    /// Bring the D_static target in line with `quality` and `extent`:
+    /// allocated above off at `extent`, released at off. A target already at
+    /// `extent` builds nothing. Returns whether it created one.
+    pub(crate) fn sync_target(
+        &self,
+        device: &wgpu::Device,
+        state: &mut GlossyLevelState,
+        quality: FluidReflectionQuality,
+        extent: Extent,
+    ) -> bool {
+        if quality == FluidReflectionQuality::Off {
+            state.target = None;
+            return false;
+        }
+        let current = state.target.as_ref().map(|target| target.texture.size());
+        if current.is_some_and(|size| size.width == extent.width && size.height == extent.height) {
+            return false;
+        }
+        state.target = Some(self.target(device, extent));
+        true
+    }
+
+    /// Recreate an allocated target at `extent` (the scene targets moved);
+    /// an absent one stays absent.
+    pub(crate) fn resize_target(
+        &self,
+        device: &wgpu::Device,
+        state: &mut GlossyLevelState,
+        extent: Extent,
+    ) {
+        if state.target.is_some() {
+            state.target = Some(self.target(device, extent));
+        }
+    }
+
+    fn target(&self, device: &wgpu::Device, extent: Extent) -> StaticDiffuseTarget {
+        let texture = device.new_texture(&wgpu::TextureDescriptor {
+            label: Some("Glossy Static Diffuse"),
+            size: wgpu::Extent3d {
+                width: extent.width.max(1),
+                height: extent.height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.static_diffuse_format,
+            usage: static_diffuse_usage(),
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let inputs_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Glossy Overlay Inputs Bind Group"),
+            layout: &self.inputs_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        });
+        StaticDiffuseTarget {
+            texture,
+            view,
+            inputs_group,
+        }
+    }
+}
+
+/// Forward writes D_static as an attachment; the overlay reads it as a
+/// texture. Tests also copy it out.
+fn static_diffuse_usage() -> wgpu::TextureUsages {
+    let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+    #[cfg(test)]
+    let usage = usage | wgpu::TextureUsages::COPY_SRC;
+    usage
+}
+
+impl GlossyLevelState {
+    /// Whether forward writes D_static and the overlay can draw: the probes
+    /// are bound and the target exists.
+    pub(crate) fn ready(&self) -> bool {
+        self.probe_group.is_some() && self.target.is_some()
+    }
+
+    pub(crate) fn world_probes(&self) -> &wgpu::Buffer {
+        &self.world_probes
+    }
+
+    pub(crate) fn probe_group(&self) -> Option<&wgpu::BindGroup> {
+        self.probe_group.as_ref()
+    }
+
+    pub(crate) fn inputs_group(&self) -> Option<&wgpu::BindGroup> {
+        self.target.as_ref().map(|target| &target.inputs_group)
+    }
+
+    /// Forward's second attachment, while allocated.
+    pub(crate) fn static_diffuse_view(&self) -> Option<&wgpu::TextureView> {
+        self.target.as_ref().map(|target| &target.view)
+    }
+
+    /// The target's ledger row, while allocated.
+    pub(crate) fn residency_row(&self) -> Option<ResidencyAllocation> {
+        self.target.as_ref().map(|target| {
+            texture_row(
+                GLOSSY_STATIC_DIFFUSE,
+                &target.texture,
+                &[SectionId::ReflectionProbes as u16],
+                ResidencyAllocationState::Data,
+            )
+        })
+    }
+
+    /// The target texture, for readback (tests).
+    #[cfg(test)]
+    pub(crate) fn static_diffuse_texture(&self) -> Option<&wgpu::Texture> {
+        self.target.as_ref().map(|target| &target.texture)
+    }
+}

@@ -170,6 +170,7 @@ pub(crate) fn build_full_renderer(
 
     let RendererPipelines {
         pipeline,
+        forward_static_diffuse,
         wireframe_cull_status_layout,
         wireframe_cull_status_pipeline,
         wireframe_visible_pipeline,
@@ -278,6 +279,11 @@ pub(crate) fn build_full_renderer(
     );
     // The sums pass binds the camera and SH layouts; the sums and its group
     // over them belong to each level. See: context/lib/rendering_pipeline.md §7.3a
+    let glossy_overlay = glossy_overlay::GlossyOverlayPass::new(
+        device,
+        &uniform_bind_group_layout,
+        forward_static_diffuse,
+    );
     let reflection_probe_sums = reflection_probe_sums::ReflectionProbeSumsPass::new(
         device,
         &uniform_bind_group_layout,
@@ -379,6 +385,7 @@ pub(crate) fn build_full_renderer(
         kinematic_ghost,
         fluid_surface,
         reflection_probe_sums,
+        glossy_overlay,
         planar_reflection,
         rigid_occluder_depth,
         promoted_depth_cache,

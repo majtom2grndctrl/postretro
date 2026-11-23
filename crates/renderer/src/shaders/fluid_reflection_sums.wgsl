@@ -1,7 +1,8 @@
 // Fluid reflection live-lighting sums: once per frame with a reflecting fluid
 // draw, every installed probe's per-lobe sum of share x (current / reference
 // - 1) over its stored lights, which fs_main_reflecting blends by its lobe
-// weights. Concatenated with fluid_reflection_lights.wgsl and curve_eval.wgsl.
+// weights. Concatenated with reflection_probe_lobes.wgsl,
+// fluid_reflection_lights.wgsl and curve_eval.wgsl.
 // IP rules (owner review to change): the sums live in their own buffer and
 // never write a probe tile or the share table; every installed probe is
 // evaluated every dispatching frame; the coefficient stays current / ref - 1

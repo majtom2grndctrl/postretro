@@ -70,9 +70,13 @@ const SHADER_SOURCE: &str = concat!(
     "\n",
     include_str!("../shaders/fluid_motion.wgsl"),
     "\n",
+    include_str!("../shaders/reflection_probe_lobes.wgsl"),
+    "\n",
     include_str!("../shaders/fluid_reflection_lights.wgsl"),
     "\n",
     include_str!("../shaders/fluid_reflection.wgsl"),
+    "\n",
+    include_str!("../shaders/fluid_reflection_oracle.wgsl"),
     "\n",
     include_str!("../shaders/fluid_reflection_ray.wgsl"),
     "\n",
@@ -705,6 +709,13 @@ impl Renderer {
             full.reflection_probe_sums
                 .level_layout()
                 .build(device, queue.raw(), reflection_probes);
+        if let Some(glossy) = level.glossy.as_mut() {
+            full.glossy_overlay.level_layout().bind_probes(
+                device,
+                glossy,
+                level.reflection_probes.as_ref(),
+            );
+        }
         level.fluid_surfaces = full.fluid_surface.install(
             device,
             queue,
@@ -816,6 +827,8 @@ impl Renderer {
         // The planar layer follows the tier: allocated at very high and ultra
         // on a level with a candidate plane, released below. Compiles nothing.
         self.sync_planar_layer();
+        // D_static follows the tier: allocated above off, released at off.
+        self.sync_glossy_target();
         log::info!("[Renderer] Reflection quality: {quality:?}");
     }
 

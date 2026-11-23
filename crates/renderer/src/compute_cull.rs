@@ -8,8 +8,8 @@ use glam::Mat4;
 use postretro_render_data::cone_frustum::extract_frustum_planes_for_gpu;
 use postretro_render_data::geometry::{BVH_NODE_FLAG_LEAF, BucketRange, BvhLeaf, BvhNode, BvhTree};
 
-use crate::bvh_cull_estimate::estimate_bvh_cull_with_planes;
 pub use crate::bvh_cull_estimate::BvhCullDiagnostics;
+use crate::bvh_cull_estimate::estimate_bvh_cull_with_planes;
 use crate::indirect_draw_plan::draw_indirect_buckets;
 #[cfg(test)]
 use crate::indirect_draw_plan::{IndirectDrawCommand, IndirectDrawPlan};
@@ -431,7 +431,47 @@ impl ComputeCullPipeline {
             self.camera_ranges.ranges(),
             self.has_multi_draw_indirect,
             set_texture_fn,
+            &|_| true,
         );
+    }
+
+    /// [`Self::draw_indirect`] over the camera ranges of the buckets `keep`
+    /// admits, over the same indirect buffer: forward's two sweeps on a
+    /// glossy level and the glossy overlay.
+    pub(crate) fn draw_indirect_subset<'a>(
+        &'a self,
+        render_pass: &mut wgpu::RenderPass<'a>,
+        set_texture_fn: Option<&SetTextureFn<'a>>,
+        keep: &dyn Fn(u32) -> bool,
+    ) {
+        #[cfg(test)]
+        {
+            let mut commands = Vec::new();
+            IndirectDrawPlan::new(
+                self.camera_ranges.ranges(),
+                self.has_multi_draw_indirect,
+                set_texture_fn.is_some(),
+            )
+            .visit_buckets(keep, |command| commands.push(command));
+            self.draw_trace.borrow_mut().push(commands);
+        }
+        draw_indirect_buckets(
+            render_pass,
+            &self.indirect_buffer,
+            self.camera_ranges.ranges(),
+            self.has_multi_draw_indirect,
+            set_texture_fn,
+            keep,
+        );
+    }
+
+    /// Whether this frame's camera ranges draw any leaf of a bucket `keep`
+    /// admits. A range the GPU cull then empties still counts.
+    pub(crate) fn draws_bucket(&self, keep: impl Fn(u32) -> bool) -> bool {
+        self.camera_ranges
+            .ranges()
+            .iter()
+            .any(|range| range.leaf_count > 0 && keep(range.material_bucket_id))
     }
 
     pub fn cull_status_buffer(&self) -> &wgpu::Buffer {

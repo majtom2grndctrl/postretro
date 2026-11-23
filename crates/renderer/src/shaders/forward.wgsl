@@ -1155,8 +1155,38 @@ fn shadowmask_union_subtraction(
     return out;
 }
 
+// One forward fragment's shading: the colour fs_main writes, and its static
+// diffuse D_static (albedo x (ambient floor + SH indirect + static direct
+// after the shadowmask subtraction)), which only the glossy overlay's second
+// output reads (rendering_pipeline.md §7.3a, Glossy world faces). Both
+// entries share this, so fs_main's colour is computed exactly as before and
+// the static diffuse is dead code there.
+struct ForwardShaded {
+    colour: vec4<f32>,
+    static_diffuse: vec3<f32>,
+};
+
+// fs_main_static_diffuse's two targets: scene colour, then D_static.
+struct ForwardStaticDiffuseOutput {
+    @location(0) colour: vec4<f32>,
+    @location(1) static_diffuse: vec4<f32>,
+};
+
+// The always-run entry: one colour output, the static diffuse unwritten.
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    return forward_shade(in).colour;
+}
+
+// Glossy buckets on a level with glossy faces at a reflection tier above off:
+// the same colour, plus D_static for the overlay to subtract.
+@fragment
+fn fs_main_static_diffuse(in: VertexOutput) -> ForwardStaticDiffuseOutput {
+    let shaded = forward_shade(in);
+    return ForwardStaticDiffuseOutput(shaded.colour, vec4<f32>(shaded.static_diffuse, 0.0));
+}
+
+fn forward_shade(in: VertexOutput) -> ForwardShaded {
     // UV footprint derivatives — computed once here in uniform control flow.
     // WGSL requires dpdx/dpdy to be called from uniform control flow, so they
     // are hoisted out of the per-slot sampling helpers and handed to
@@ -1408,6 +1438,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var total_light = select(vec3<f32>(0.0), vec3<f32>(uniforms.ambient_floor), use_ambient_floor)
         + indirect
         + static_direct;
+    // The static share the glossy overlay's reflection re-shows; every term
+    // added to `total_light` below (highlights, dynamic lights) stays out.
+    let static_diffuse = base_color.rgb * total_light;
 
     var specular_sum = vec3<f32>(0.0);
     // A tinted texel's highlight, held out of the albedo multiply
@@ -1687,7 +1720,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // visualize".
     if uniforms.sdf_shadow_mode == 2u {
         let g = sdf_factor.r;
-        return vec4<f32>(g, g, g, base_color.a);
+        return ForwardShaded(vec4<f32>(g, g, g, base_color.a), static_diffuse);
     }
     // TEMP DEBUG: SDF shadow path visualization (mode 3). The half-res pass
     // encoded the slot-0 trace OUTCOME as an RGB code (see `debug_trace_outcome`
@@ -1706,7 +1739,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let half_xy = (in.clip_position.xy / depth_dims) * half_dims;
         let h = vec2<i32>(clamp(floor(half_xy), vec2<f32>(0.0), h_max));
         let code = textureLoad(sdf_shadow_factor, h, 0).rgb;
-        return vec4<f32>(code, base_color.a);
+        return ForwardShaded(vec4<f32>(code, base_color.a), static_diffuse);
     }
     // TEMP DEBUG: SDF shadow path visualization (mode 4). The half-res pass
     // encoded the reconstructed GEOMETRIC NORMAL as RGB = normal*0.5+0.5 (see
@@ -1723,14 +1756,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let half_xy = (in.clip_position.xy / depth_dims) * half_dims;
         let h = vec2<i32>(clamp(floor(half_xy), vec2<f32>(0.0), h_max));
         let n = textureLoad(sdf_shadow_factor, h, 0).rgb;
-        return vec4<f32>(n, base_color.a);
+        return ForwardShaded(vec4<f32>(n, base_color.a), static_diffuse);
     }
     if uniforms.sdf_shadow_mode == SHADOWMASK_VISUALIZE_MODE {
-        return vec4<f32>(shadowmask_union, base_color.a);
+        return ForwardShaded(vec4<f32>(shadowmask_union, base_color.a), static_diffuse);
     }
     if uniforms.sdf_shadow_mode == SHADOWMASK_RAW_POOL_VISIBILITY_MODE {
         let g = shadowmask_raw_pool_visibility;
-        return vec4<f32>(g, g, g, base_color.a);
+        return ForwardShaded(vec4<f32>(g, g, g, base_color.a), static_diffuse);
     }
-    return vec4<f32>(rgb, base_color.a);
+    return ForwardShaded(vec4<f32>(rgb, base_color.a), static_diffuse);
 }

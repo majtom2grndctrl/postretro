@@ -20,6 +20,7 @@ use postretro_render_data::material::TextureMaterial;
 
 use super::fluid_surface::FluidLevelLayout;
 use super::fog_pass::FogTargetLayout;
+use super::glossy_overlay::GlossyLevelLayout;
 use super::gpu_create::{GpuCreationCounts, gpu_creation_counts};
 use super::install_pipelines::InstallPipelinesSlot;
 use super::level_resource_set::{LevelResourceSet, LevelSetId, SamplerMaps};
@@ -99,6 +100,7 @@ pub(in crate::render) struct LevelBuildContext {
     pub(in crate::render) smoke: SmokeRegistrar,
     pub(in crate::render) fluid: FluidLevelLayout,
     pub(in crate::render) reflection_probes: ReflectionProbeLevelLayout,
+    pub(in crate::render) glossy: GlossyLevelLayout,
     pub(in crate::render) mirror: PlanarMirrorLayout,
     pub(in crate::render) scene: LevelBuildSceneTargets,
     /// The renderer's add-only sampler maps as they were: the build creates
@@ -181,6 +183,7 @@ impl Renderer {
             smoke: full.smoke_pass.registrar(),
             fluid: full.fluid_surface.level_layout(),
             reflection_probes: full.reflection_probe_sums.level_layout(),
+            glossy: full.glossy_overlay.level_layout(),
             mirror: full.planar_reflection.mirror_layout(),
             scene: LevelBuildSceneTargets {
                 extent: scene_extent,
@@ -362,6 +365,11 @@ fn build_geometry_set(
         context
             .reflection_probes
             .build(&upload.device, &upload.writes, extras.reflection_probes);
+    if let Some(glossy) = set.glossy.as_mut() {
+        context
+            .glossy
+            .bind_probes(&upload.device, glossy, set.reflection_probes.as_ref());
+    }
     set.fluid_surfaces = context.fluid.build_surfaces(
         &upload.device,
         &upload.writes,

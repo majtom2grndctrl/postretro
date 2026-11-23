@@ -317,7 +317,7 @@ fn forward_and_mover_share_the_specular_texel_functions() {
     // Each pass builds its point through the shared builder, from the
     // fragment's own UV, the marched UV, the albedo lattice and the
     // fragment's hoisted derivatives.
-    let forward_fs = squashed(include_str!("../shaders/forward.wgsl"), "fs_main");
+    let forward_fs = squashed(include_str!("../shaders/forward.wgsl"), "forward_shade");
     assert_eq!(forward_fs.matches("specular_texel_point(").count(), 1);
     let mover = include_str!("../shaders/kinematic_brush.wgsl");
     let surface = squashed(mover, "mover_surface");

@@ -17,6 +17,8 @@ use crate::render::reflection_probe_resources::{
 const SUMS_SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/fluid_reflection_sums.wgsl"),
     "\n",
+    include_str!("../shaders/reflection_probe_lobes.wgsl"),
+    "\n",
     include_str!("../shaders/fluid_reflection_lights.wgsl"),
     "\n",
     include_str!("../shaders/curve_eval.wgsl"),

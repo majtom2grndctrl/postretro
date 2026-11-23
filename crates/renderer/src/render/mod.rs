@@ -25,6 +25,7 @@ mod frame_timing;
 mod ghost_depth;
 mod ghost_order;
 mod ghost_pipeline;
+mod glossy_overlay;
 pub(crate) mod gpu_create;
 pub(crate) mod install_pipelines;
 mod install_prep;
@@ -156,6 +157,10 @@ mod geometry_ranges;
 mod geometry_ranges_gpu_test;
 #[cfg(test)]
 mod ghost_depth_frame_test;
+#[cfg(test)]
+mod glossy_overlay_frame_test;
+#[cfg(test)]
+mod glossy_overlay_frame_test_fixtures;
 mod level_build;
 mod level_resource_set;
 #[cfg(test)]
@@ -173,6 +178,7 @@ mod renderer_forward_frame;
 mod renderer_frame;
 mod renderer_full_init;
 mod renderer_geometry;
+mod renderer_glossy_frame;
 mod renderer_init;
 mod renderer_init_pipelines;
 mod renderer_init_resources;
@@ -266,6 +272,7 @@ use dynamic_depth_cache::{DynamicDepthCacheGpu, DynamicDepthCachePlan};
 use fog_pass::FogPass;
 use frame_timing::FrameTiming;
 pub use geometry_install_marks::GeometryInstallTiming;
+pub use glossy_overlay::GLOSSY_STATIC_DIFFUSE;
 pub use level_build::{
     LevelBuildError, LevelBuildEvent, LevelBuildPart, LevelBuildSnapshotInputs, LevelGeometryParts,
     LevelSetBuilder, LevelSetBuilderProbe, PendingLevelSet, SmokeCollectionRequest,

@@ -538,7 +538,13 @@ impl Renderer {
             frame_light_term_mask,
             frame_reflection_quality,
         );
-        self.record_world_forward_pass(encoder, &scene_color, clear_color, render_world);
+        self.record_world_forward_pass(
+            encoder,
+            &scene_color,
+            clear_color,
+            render_world,
+            frame_reflection_quality,
+        );
 
         // Kinematic brush movers: local-space PRL brush payloads drawn as
         // dynamic objects after opaque world geometry and before skinned meshes.
@@ -666,6 +672,17 @@ impl Renderer {
                 plan,
             );
         }
+
+        // The glossy overlay: after every opaque pass, so a mover or character
+        // over a glossy face fails its Equal test, and before the Ghost Pass
+        // and every translucent pass, which draw over its result undimmed.
+        self.record_glossy_overlay_pass(
+            encoder,
+            &scene_color,
+            render_world,
+            frame_light_term_mask,
+            frame_reflection_quality,
+        );
 
         // Ghosts: unlit, translucent, after every opaque pass so they depth-test
         // against the whole opaque scene, and before fluid so a submerged

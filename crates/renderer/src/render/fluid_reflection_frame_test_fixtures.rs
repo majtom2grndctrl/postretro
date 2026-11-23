@@ -317,6 +317,7 @@ pub(super) fn with_world_quads<R>(
         vertices: &vertices,
         vertex_spec_owners: &[],
         vertex_emissive_volumes: &[],
+        reflection_probes: None,
         emissive_volumes: &[],
         area_glow_lights: &[],
         indices: &indices,
@@ -374,7 +375,7 @@ pub(super) fn capture_checked(renderer: &mut Renderer, view: View) -> Vec<u8> {
 }
 
 /// `texture`'s level 0, `texel_bytes` a texel, read back tight.
-fn read_back(
+pub(super) fn read_back(
     renderer: &Renderer,
     texture: &wgpu::Texture,
     texel_bytes: u32,

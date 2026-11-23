@@ -62,12 +62,39 @@ fn rust_violations(sources: &[Source]) -> Vec<String> {
             {
                 false
             }
-            ("call", "draw_indirect_buckets") => is_owner(
-                site,
-                "compute_cull.rs",
-                "ComputeCullPipeline",
-                "draw_indirect",
-            ),
+            ("call", "draw_indirect_buckets") => {
+                is_owner(
+                    site,
+                    "compute_cull.rs",
+                    "ComputeCullPipeline",
+                    "draw_indirect",
+                ) || is_owner(
+                    site,
+                    "compute_cull.rs",
+                    "ComputeCullPipeline",
+                    "draw_indirect_subset",
+                )
+            }
+            // Bucket subsets over the same indirect buffer: forward's two
+            // sweeps on a glossy level, and the glossy overlay.
+            ("method", "draw_indirect_subset") => {
+                let whole = matches!(
+                    site.index_binding.as_deref(),
+                    Some("self.level().index_buffer.slice(..)" | "index_buffer.slice(..)")
+                );
+                let forward = site.path == "render/renderer_forward_frame.rs"
+                    && matches!(
+                        site.pipeline.as_deref(),
+                        Some("&forms.masked" | "&forms.written")
+                    );
+                let overlay = is_owner(
+                    site,
+                    "render/glossy_overlay.rs",
+                    "GlossyOverlayPass",
+                    "record",
+                ) && site.pipeline.as_deref() == Some("&self.pipeline");
+                whole && (forward || overlay)
+            }
             ("method", "indirect_buffer") => {
                 is_owner(
                     site,
@@ -379,6 +406,7 @@ fn indirect_contract_production_consumers_keep_guarded_ownership() {
         ("path", "INDIRECT", 1),
         ("call", "ComputeCullPipeline::new", 1),
         ("method", "draw_indirect", 2),
+        ("method", "draw_indirect_subset", 3),
         ("call", "Instance::new", 2),
         ("call", "renderer_instance_flags_from_env", 2),
         ("literal", "WGPU_VALIDATION_INDIRECT_CALL", 1),

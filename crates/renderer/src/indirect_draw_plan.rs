@@ -30,9 +30,25 @@ impl<'a> IndirectDrawPlan<'a> {
         }
     }
 
-    pub(crate) fn visit(&self, mut issue: impl FnMut(IndirectDrawCommand)) {
+    #[cfg(test)]
+    pub(crate) fn visit(&self, issue: impl FnMut(IndirectDrawCommand)) {
+        self.visit_buckets(|_| true, issue);
+    }
+
+    /// [`Self::visit`] over the ranges whose bucket `keep` admits, in the
+    /// same order and the same commands: the subset a pass draws, such as a
+    /// frame's glossy buckets.
+    pub(crate) fn visit_buckets(
+        &self,
+        keep: impl Fn(u32) -> bool,
+        mut issue: impl FnMut(IndirectDrawCommand),
+    ) {
         let mut bound_bucket = None;
-        for range in self.ranges.iter().filter(|range| range.leaf_count > 0) {
+        for range in self
+            .ranges
+            .iter()
+            .filter(|range| range.leaf_count > 0 && keep(range.material_bucket_id))
+        {
             if self.bind_material && bound_bucket != Some(range.material_bucket_id) {
                 issue(IndirectDrawCommand::BindMaterial(range.material_bucket_id));
                 bound_bucket = Some(range.material_bucket_id);
@@ -54,7 +70,8 @@ impl<'a> IndirectDrawPlan<'a> {
     }
 }
 
-/// Execute the pure plan one to one over the camera's visible runs.
+/// Execute the pure plan one to one over the camera's visible runs of the
+/// buckets `keep` admits.
 /// Depth-only pipelines have no group-1 material slot, so omit that bind.
 pub(crate) fn draw_indirect_buckets<'a>(
     render_pass: &mut wgpu::RenderPass<'a>,
@@ -62,13 +79,14 @@ pub(crate) fn draw_indirect_buckets<'a>(
     bucket_ranges: &[BucketRange],
     has_multi_draw_indirect: bool,
     set_texture_fn: Option<&SetTextureFn<'a>>,
+    keep: &dyn Fn(u32) -> bool,
 ) {
     let plan = IndirectDrawPlan::new(
         bucket_ranges,
         has_multi_draw_indirect,
         set_texture_fn.is_some(),
     );
-    plan.visit(|command| match command {
+    plan.visit_buckets(keep, |command| match command {
         IndirectDrawCommand::BindMaterial(bucket) => {
             if let Some(bind) = set_texture_fn {
                 bind(render_pass, bucket);
@@ -152,6 +170,69 @@ mod draw_plan_tests {
                 .collect();
             assert_eq!(commands(&ranges, multi, false), draws);
             assert!(commands(&[], multi, true).is_empty());
+        }
+    }
+
+    // A pass over a subset of buckets (the glossy overlay, forward's two
+    // sweeps on a glossy level) issues exactly the full plan's commands for
+    // those buckets, and the two complementary subsets together issue the
+    // full plan's draws once each.
+    #[test]
+    fn a_bucket_subset_draws_the_full_plans_commands_for_its_buckets() {
+        let ranges = [
+            BucketRange {
+                material_bucket_id: 2,
+                first_leaf: 3,
+                leaf_count: 2,
+            },
+            BucketRange {
+                material_bucket_id: 5,
+                first_leaf: 5,
+                leaf_count: 0,
+            },
+            BucketRange {
+                material_bucket_id: 7,
+                first_leaf: 8,
+                leaf_count: 2,
+            },
+            BucketRange {
+                material_bucket_id: 9,
+                first_leaf: 10,
+                leaf_count: 1,
+            },
+        ];
+        let glossy = |bucket: u32| bucket == 7;
+        for multi in [false, true] {
+            let plan = IndirectDrawPlan::new(&ranges, multi, true);
+            let mut subset = Vec::new();
+            plan.visit_buckets(glossy, |c| subset.push(c));
+            let mut rest = Vec::new();
+            plan.visit_buckets(|bucket| !glossy(bucket), |c| rest.push(c));
+            let full = commands(&ranges, multi, true);
+            let mut expected = Vec::new();
+            let mut current = None;
+            for command in &full {
+                if let IndirectDrawCommand::BindMaterial(bucket) = command {
+                    current = Some(*bucket);
+                }
+                if current == Some(7) {
+                    expected.push(*command);
+                }
+            }
+            assert_eq!(subset, expected);
+            let draws = |commands: &[IndirectDrawCommand]| -> Vec<IndirectDrawCommand> {
+                commands
+                    .iter()
+                    .copied()
+                    .filter(|c| !matches!(c, IndirectDrawCommand::BindMaterial(_)))
+                    .collect()
+            };
+            let mut together = draws(&rest);
+            together.extend(draws(&subset));
+            let mut all = draws(&full);
+            together.sort_by_key(|c| format!("{c:?}"));
+            all.sort_by_key(|c| format!("{c:?}"));
+            assert_eq!(together, all, "the two sweeps draw every slot once");
         }
     }
 }

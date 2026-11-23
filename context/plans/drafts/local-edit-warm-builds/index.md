@@ -52,7 +52,15 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Pr
 - **Cache footprint is bounded and visible.** The ray records have a per-map disk ceiling, set at build from the stress fixtures. It is sized against `--cache-max-size`'s spared-set rule (§Build Cache, Eviction), since every live map's records are spared. The Build Summary reports the footprint against it, and an overrun is a named warning. The cache stays disposable.
 - **This reverses documented choices.**
   - "A geometry edit re-keys every layer" is retired, from `build_pipeline.md` §Build Cache and from the decisions of `done/incremental-bake-per-element/` and `done/surface-radiance-cache/`. Those plans named finer geometry locality as future work; this brief is that work.
-  - `incremental-bake-per-element` also ruled out primary-ray-hit caching. The SH ray records lift that ruling, subject to the IP question below.
+  - `incremental-bake-per-element` also ruled out primary-ray-hit caching. The SH ray records lift that ruling.
+- **IP guard (owner).** The ray records follow incremental-ray-tracing art (Murakami & Hirota 1989–92, Jevans 1992). Crytek US20140327673A1 is abandoned (`ip-check.md`, `research.md` §IP). The records keep that shape:
+  - Each record is a memoised ray cast: (sample, fixed ray index, geometry epoch) → hit triangle. It never stores a patch or sample index; patches are found at evaluation from the triangle and the re-intersected point.
+  - No per-sample array of hit samples, and no per-sample light list.
+  - Invalidation is by segment against changed-geometry bounds.
+  - The existing guards hold (`done/surface-radiance-cache/`):
+    - ray directions stay fixed and are never chosen or weighted by a record;
+    - records carry no per-light coefficient;
+    - the cache never reaches PRL.
 - **Progress accounting.**
   - Each stage counts cached and fresh units separately. A unit the bake proves needs no work, such as a culled chart, counts as cached ("not computed this build").
   - Every stage reports, including whole-stage memo hits and `reflection_probes` hits.
@@ -147,7 +155,6 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Pr
 - **Measurement order.** Packing dominates the no-op; measure it before deciding memoise versus parallelise.
 
 ## Open questions
-- Whether persisted per-ray hit records stay clear of Crytek US20140327673A1 claim 1 (`ip-check.md`, "concern if granted"). Research is under way. Answer by recording an IP-guard decision, or by redesigning the record — owner — **blocks build** for the SH ray-record half only.
 - Exact form of the content-derived identity: which brush-side and fragment fields, and how to handle collisions and duplicated geometry — **delegated**.
 - The per-map ray-record ceiling value, set from stress-fixture measurement — **delegated**.
 - Whether stable identity alone keeps atlas placement steady enough, or packing also needs anchoring (for example per-cluster regions) — **delegated**, measured against the per-layer memo hit rate.

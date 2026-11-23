@@ -141,3 +141,24 @@ The rival, a cell-bounded closure, needs a "can see" relation. The only sound on
 - **8 B per ray (triangle and distance).** The owner chose 4 B (triangle, with distance re-intersected), compressed and streamed.
 - **Stable identity only, SH left as one entry.** Rejected. SH costs 68–69 s on every light or geometry edit (§Measurements), so the 45 s edit targets fail without SH locality.
 - **Per-light grain for direct layers.** Rejected. All of stress-street's static lights are the linked lamps, and a lamp edit sits inside every lamp's reach, so per-light keys still re-bake about 127 s of lightmap work for the owner's case. Per-sample grain re-derives each texel's segments from its chart-local seed and re-traces only those meeting changed triangles. It stays exact without stored hits, because direct visibility is any-hit.
+
+## IP
+
+Engineering research on 2026-11-23; not legal advice.
+
+**Crytek US20140327673A1.**
+- Application 13/887,266, priority 2013-05-03, published 2014-11-06.
+- Abandoned 2017-01-23 for failure to respond to an office action: the "STCB" legal event at https://patents.google.com/patent/US20140327673A1/en. That status is Google's mirror of USPTO data; Patent Center was not reachable to confirm it.
+- No foreign family and no continuation, and none can follow a dead parent.
+- The A1 claims are framed as real-time: claim 1 in its preamble, claim 11 "during run time", claims 13 and 21 a GPU. The spec ([0021]) defines real-time as 15–60 fps.
+- Its [0018] discloses recomputing only the intersections tied to a modified sample. As a 2014 publication, that is prior art.
+
+**Older art for the design.** Read from snippets; full texts were outside the network allowlist.
+- Murakami & Hirota, "Incremental ray tracing" (1989 workshop; Springer 1992).
+- Jevans, "Object space temporal coherence for ray tracing" (GI 1992).
+- Brière & Poulin (SIGGRAPH 1996).
+- Bala, Dorsey & Teller (EGWR 1999).
+- Chen, "Incremental radiosity" (SIGGRAPH 1990).
+- Drettakis & Sillion (SIGGRAPH 1997).
+
+**Cited-by patent.** NVIDIA US11922567B2 is live. Its claim 1 covers server-computed indirect lighting sent to a client, which does not reach a build cache.

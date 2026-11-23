@@ -34,7 +34,7 @@
 | US20250037360A1 | Sony Interactive Entertainment | ≈2023 | Pending | Nothing found | 2 |
 | US8451270B2 "Real-time radiosity system in a video game" | Microsoft | 2008-06-25 | PTA 905 days → ≈2030-12 unless fees lapsed; fee status not checked | Full PDF | 3, 4, 6 |
 | US7408550 | Bunnell (no assignee on face) | filed 2007-07-23 | ≤ 2027-07-23; fee status not checked | Full PDF | 3 |
-| US20140327673A1 | Crytek | published 2014 | Unknown; if granted, live concern | Full PDF claims | 3, 4, 6 |
+| US20140327673A1 | Crytek | published 2014 | Abandoned 2017-01-23 (failure to respond to office action; no family); prior art | Full PDF claims; status from Google Patents legal events (2026-11-23) | 3, 4, 6 |
 | US11534688B2 / US12263404B2 | Take-Two | 2018-04-02 | '404 adjusted expiry 2039-09-04 (Google) | Full claims, Google Patents, read 2026-10-30 | 7 |
 
 **NVIDIA as prior art.** US20210012562A1 published 2021-01-14, before Tencent US12293451B2's 2021-04-02 priority. Its probes update by ray tracing, not transfer × coefficient, so its overlap with '451 is weak; it is better art for piece 1.
@@ -105,11 +105,11 @@ Not found: Geomerics/ARM filings on the Enlighten runtime solve or radiosity-der
 | Suntracker '148/'479 | Per-channel "canonical radiosity solutions" in GPU texture memory, read per vertex in a vertex shader × channel intensity; dependents: channel texel-array index, global dimmer or sky multiplier, inverse gamma | CPU solve | Appears absent; keep any per-light layer sum out of a vertex shader |
 | ARM US10672177 | Final-gather rays distributed by directional irradiance | Cosine-distributed link rays | Appears absent if rays never follow a prior solution |
 | Microsoft US8451270 (full text) | Cl. 1: transfer-patch partition with curvature limits and UV packing. Cl. 7: per texel, a Z-buffered cube map of visible patch ids sorted by flux, top contributors stored in a texture + indirection texture. Cl. 11: real-time GPU radiosity in UV space, one pass per bounce | CPU links, no UV bundles | Appears absent; never ship per-texel flux-sorted lists |
-| Crytek US20140327673A1 (full text) | Cl. 1: samples each holding "an indication of intersections of sample rays with other samples", a lighting contribution per sample, GI from those. Cl. 6: index array of hit samples. Cl. 9: per-sample light lists | Top-K links between patches | **Concern if granted**; status unknown |
+| Crytek US20140327673A1 (full text) | Cl. 1: samples each holding "an indication of intersections of sample rays with other samples", a lighting contribution per sample, GI from those. Cl. 6: index array of hit samples. Cl. 9: per-sample light lists | Top-K links between patches | Abandoned 2017-01-23; prior art, no live claims |
 | Bunnell US7408550 (full text) | Deformable geometry, control mesh, iteration seeded from the prior frame, a specific form-factor formula | Static geometry | Appears absent beyond warm-starting |
 | Portal- or door-gated transport | None found for portal gating; Take-Two describes door-driven baked ambient (piece 7) | Sealed-portal links zeroed | Prior art: Drettakis & Sillion 1997; Doom 3 2004 |
 
-**Verdict: needs counsel** (Tencent '451; Crytek '673 if granted). The '451 risk is not redesign-only: see piece 5.
+**Verdict: needs counsel** (Tencent '451; Crytek '673 is abandoned). The '451 risk is not redesign-only: see piece 5.
 
 **Free design-arounds.** Never project lights onto SH or any basis; no low-rank link compression; cosine link rays; no per-texel flux-sorted lists. Unit per-light emission × runtime intensity is the risky shape under §Tencent US12293451B2 design rules.
 
@@ -136,7 +136,7 @@ Not found: Geomerics/ARM filings on the Enlighten runtime solve or radiosity-der
 | Tencent US12293451B2 | Probe transfer × light projection coefficient | SH links × patch radiance | Same question as piece 3 |
 | Square Enix '372 | Zone-visibility culling | Same reader as piece 2 | Same as piece 2 |
 
-**Verdict: needs counsel** (also Crytek '673 if granted; a lightmap-gather variant raises '451 element (a) if a per-light change triggers it).
+**Verdict: needs counsel** (Crytek '673 is abandoned; a lightmap-gather variant raises '451 element (a) if a per-light change triggers it).
 
 **Free design-arounds.** Re-gather on door events and a fixed cadence over dirty patches, never from a per-light change record. Runtime SH in a separate resource from the reflection probe record; the glossy reader never reads it; no per-texel re-shading; no time-slicing of tile faces.
 
@@ -164,7 +164,7 @@ Not found: Geomerics/ARM filings on the Enlighten runtime solve or radiosity-der
 |---|---|---|---|
 | ARM '177 | Final-gather rays distributed by directional irradiance | Uniform or cosine gather from the radiance cache | Appears absent while rays never follow a prior result |
 | MS '270 cl. 7 | Per-texel flux-sorted patch lists in a texture + indirection | Cache dropped before packing | Absent |
-| Crytek '673 | Samples storing ray hits on other samples → GI | Bake-only gather | Distinguishable on "real-time" if the claims require it |
+| Crytek '673 | Samples storing ray hits on other samples → GI | Bake-only gather | Abandoned 2017-01-23; prior art. Its [0018] and Murakami & Hirota 1989–92 / Jevans 1992 incremental ray tracing disclose re-tracing only rays crossing changed geometry |
 | '451 cl. 3 | Transfer per lightmap texel, per basis function (cl. 7) | One summed static bounce layer | Absent: no coefficient multiplies it. Per-light unit bounce per texel × a runtime scalar would be the risky shape (cl. 3–4) |
 | Square Enix '372 | Binary zone visibility at read time | Door influence graph and light → cell reach scope work only | Absent while no reader drops probes on a binary test |
 | Valve 2007 (prior art) | Distance-field magnification | Distance-to-edge owner masks | Art; the combination with owner lights is untriaged |
@@ -333,12 +333,12 @@ Snippet only, sites blocked: UE4 Precomputed Lighting Scenarios (4.13 unconfirme
 | 1 | Appears clear | — | +15–40 s | SH −20–40% | ≈0 |
 | 2 | Needs counsel | Square Enix '372; Tencent WO cl. 1, 18 | +94–279 s; −SH bake only with a new bounce source | −SH grid (49–125 MiB mandatory on the hallway); +4–38 MiB resident; 131–397 MiB disk | Entities ≈0; fog +0–30%; glossy 0.5–1.2 ms/MP (1660) |
 | 3 | Needs counsel | Tencent '451 (unit per-light terms × intensity) | +105–430 s | +6–12 MB VRAM; 144–512 MB links | Door ≈1 ms (4 threads); animated needs hybrid |
-| 4 | Needs counsel | Tencent WO cl. 10; '451; Crytek '673 | ≈0 | +9.5–17.5 MB | ≈0.2 ms per door event |
+| 4 | Needs counsel | Tencent WO cl. 10; '451 | ≈0 | +9.5–17.5 MB | ≈0.2 ms per door event |
 | 5 | Top counsel question | '451 cl. 1, 5–6 on id 27; direct-only id 25 / id 45 absent | Shipped | Shipped | Shipped |
 | 6 | Appears clear | ARM '177 gather; '451 cl. 3–4 if bounce is rescaled at runtime | Faster SH bake (*est.*) | Bake RAM ~24–100 MB | None new |
 | 7 | Appears clear (granted claims) | Take-Two continuations; '451: direct half absent, bounce half for static lights out-leaning | Masks per (door, light) | ≤ ~10% of lightmap mandatory set (gate) | Door events only |
 
-**Top IP risks.** (1) Tencent US12293451B2 claims 1, 5–6 against id 27 (per-light unit bounce × curve, per probe) and any feature that rescales baked bounce by a light's state. A scalar or RGB term is no design-around; follow §Tencent US12293451B2 design rules. (2) Square Enix US10137372B2 claim 37 against any reader that turns a probe's visibility into a per-zone verdict; keep continuous, point-distance-dependent weights and follow the '372 rules in §Piece 2. Its plane and mask claims appear absent while no per-probe plane, zone or mask is stored. (3) Tencent WO2026113651A1: claim 1 widens to every glossy surface; claim 10 on runtime data beside a reflection probe; claims 11–13 keep re-shading rejected. (4) A future Take-Two continuation claiming door-driven baked layers; the granted '688 and '404 claims do not reach them. (5) Crytek US20140327673A1 against runtime links, if granted.
+**Top IP risks.** (1) Tencent US12293451B2 claims 1, 5–6 against id 27 (per-light unit bounce × curve, per probe) and any feature that rescales baked bounce by a light's state. A scalar or RGB term is no design-around; follow §Tencent US12293451B2 design rules. (2) Square Enix US10137372B2 claim 37 against any reader that turns a probe's visibility into a per-zone verdict; keep continuous, point-distance-dependent weights and follow the '372 rules in §Piece 2. Its plane and mask claims appear absent while no per-probe plane, zone or mask is stored. (3) Tencent WO2026113651A1: claim 1 widens to every glossy surface; claim 10 on runtime data beside a reflection probe; claims 11–13 keep re-shading rejected. (4) A future Take-Two continuation claiming door-driven baked layers; the granted '688 and '404 claims do not reach them. (5) Retired: Crytek US20140327673A1 was abandoned 2017-01-23.
 
 **Questions for counsel, ranked.**
 1. Pull '451's file wrapper (17/985,107) before ppubs needs sign-in on 2026-11-07: action grounds, response arguments, reasons for allowance. Also any PTAB or court proceeding, and any CNIPA invalidation of CN112927341B.
@@ -349,7 +349,7 @@ Snippet only, sites blocked: UE4 Precomputed Lighting Scenarios (4.13 unconfirme
 6. Does '451 (a) cover continuous curves?
 7. Equivalents for a lerp of absolute states with t from a light curve; inducement exposure from SDK modders authoring animated lights.
 8. '372 claim 37: does bilinearly sampling a per-probe octahedral tile of depth moments toward the point "determine which zone contains the point", and does a point-distance-dependent Chebyshev bound "determine visibility of said determined zone"? Given claim 11, does the floor matter beyond evidence? Pull the wrapper (15/377,913) for why the planes entered claim 1 and why "grid of regions" made claim 37 allowable. Sharpened in nine parts: [ip-372-direction-aware-visibility.md](ip-372-direction-aware-visibility.md) §Questions for counsel.
-9. Status: Crytek '673 (granted?), Microsoft '270, Bunnell '550, Disney '837 and Suntracker fees; NVIDIA abandonment.
+9. Status: Microsoft '270, Bunnell '550, Disney '837 and Suntracker fees; NVIDIA abandonment.
 10. Take-Two: confirm no pending continuation of 18/056,862 claims the door-ambient description. The granted claims do not touch doors.
 11. Tencent WO claim 1 against water and glossy world reflections; claim 10 against runtime probe gathers.
 12. Is Suntracker's "per vertex in a vertex shader" limiting against compute compose?

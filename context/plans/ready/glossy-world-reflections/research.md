@@ -112,7 +112,7 @@ Basis for the 2026-11-22 claim-1 ruling, from `reflection-probes/ip-check.md` §
 - The application is pending. US national phase is due about 2027-05-28, EP about 2027-06-28; claims may narrow before grant.
 - The overlay redraws each face and samples its material per fragment, as water does, with no G-buffer. It adds no claim-1 element and keeps every dependent-claim fence. The description names metal and glass among its reflectors; that adds no element.
 
-`gi-rtx-lite/index.md` and the roadmap's Lighting extensions row gated glossy world surfaces on counsel; the ruling lifts that gate at promotion. Compile-time exponent-driven prefiltering has no recorded patent in the project's IP notes; it was not searched. The floor layer's blur is charted in `ip-check.md` here.
+`gi-rtx-lite/index.md` and the roadmap's Lighting extensions row gated glossy world surfaces on counsel; the ruling lifted that gate at promotion. Compile-time exponent-driven prefiltering has no recorded patent in the project's IP notes; it was not searched. The floor layer's blur is charted in `ip-check.md` here.
 
 ## Live lighting
 

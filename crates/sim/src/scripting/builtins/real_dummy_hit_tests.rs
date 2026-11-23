@@ -275,7 +275,7 @@ fn real_dummy_torso_aim_hits_local_and_mesh_only_display_copy() {
             .unwrap_or(torso);
         let target_model = (pose[torso].w_axis.truncate() + pose[child].w_axis.truncate()) * 0.5;
         let transform = registry.get_component::<Transform>(id).unwrap();
-        let target = model_matrix(transform, mesh.origin_offset)
+        let target = model_matrix(transform, mesh.origin_offset, mesh.body_frame)
             .unwrap()
             .transform_point3(target_model);
         let player = map_placement("player_spawn", "player", "288 256 24");

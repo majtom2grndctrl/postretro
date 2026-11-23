@@ -3,7 +3,7 @@
 // See: context/lib/networking.md
 
 use postretro_combat_model::TuningPayload;
-use postretro_entities::components::mesh::{MeshAttachment, MeshComponent};
+use postretro_entities::components::mesh::{BodyFrame, MeshAttachment, MeshComponent};
 use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
 use postretro_entities::{EntityId, EntityRegistry, EntityTypeDescriptor};
 use postretro_foundation::NavAgentParams;
@@ -18,6 +18,8 @@ pub(super) const ACTIVE_WEAPON_SOCKET: &str = "hand_r";
 /// Whether a descriptor-backed player body is being presented to its owning
 /// viewer or to another client. `shadowOnly` is authored for the first-person
 /// owner view; peers must still see that same descriptor as a forward avatar.
+/// Either role marks the body [`BodyFrame::View`]: a player's transform stays in
+/// the view frame, so its model front takes the half turn at the body seam.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PlayerViewerRole {
     Local,
@@ -49,8 +51,11 @@ fn apply_player_viewer_role(
         return;
     };
     let shadow_only = role.shadow_only(descriptor_shadow_only);
-    if mesh.shadow_only != shadow_only {
+    // Set on every call, not only when the mesh was just built: a re-arm or
+    // re-apply keeps an existing mesh, so the frame must not wait on a rebuild.
+    if mesh.shadow_only != shadow_only || mesh.body_frame != BodyFrame::View {
         mesh.shadow_only = shadow_only;
+        mesh.body_frame = BodyFrame::View;
         let _ = registry.set_component(id, mesh);
     }
 }
@@ -58,7 +63,8 @@ fn apply_player_viewer_role(
 /// Apply the peer-view policy to a descriptor-backed player mesh that another
 /// host-side spawn path already materialized. Listen-host slot pawns use the full
 /// authoritative descriptor spawn, so they need this presentation-only override
-/// without re-materializing any gameplay components.
+/// without re-materializing any gameplay components. That spawn already marks
+/// the body [`BodyFrame::View`] by its `NetworkSlot` path; this step keeps it so.
 pub(super) fn apply_remote_player_viewer_role(
     entity_class: &str,
     descriptors: &[EntityTypeDescriptor],
@@ -1085,6 +1091,179 @@ mod tests {
             reg.has_component_kind(id, ComponentKind::PlayerMovement),
             Ok(false)
         );
+    }
+
+    /// A snapshot-spawned entity whose transform rotation is `rotation`.
+    fn spawn_rotated(reg: &mut EntityRegistry, rotation: Quat) -> EntityId {
+        let id = spawn_transform_only(reg);
+        reg.set_component(
+            id,
+            Transform {
+                position: Vec3::new(1.0, 2.0, 3.0),
+                rotation,
+                scale: Vec3::ONE,
+            },
+        )
+        .unwrap();
+        id
+    }
+
+    fn remote_request(
+        entity_id: EntityId,
+        network_id: u32,
+        class: &str,
+    ) -> RemoteEntityMaterialize {
+        RemoteEntityMaterialize {
+            network_id: postretro_net::wire::NetworkId(network_id),
+            entity_id,
+            entity_class: class.to_string(),
+            initial_animation_state: None,
+            active_weapon_archetype: None,
+            weapon_attachment_changed: false,
+        }
+    }
+
+    // The client roles. The host tags both player bodies `pawn:`, and each
+    // viewer-role step marks the body the view frame: the client's own pawn and
+    // a remote avatar front model +Z along the view, along the aim yaw until a
+    // lower-body heading lands, then along it. A world copy of the same player
+    // descriptor arrives tagged `descriptor:` with a model-frame transform and
+    // draws as placed (pin R3). The frame comes from the local materialization;
+    // nothing on the wire carries it.
+    #[test]
+    fn client_player_bodies_front_model_plus_z_along_the_view_and_a_world_copy_stays_model() {
+        use postretro_entities::PoseInputs;
+        use postretro_entities::components::mesh::{BodyFrame, MODEL_FRONT_TO_VIEW_FORWARD};
+
+        let descriptors = vec![player_mesh_descriptor("co_op_avatar")];
+        let (aim, heading) = (1.3_f32, 0.4_f32);
+        let mut reg = EntityRegistry::new();
+
+        let own = spawn_rotated(&mut reg, Quat::from_rotation_y(aim));
+        materialize_armed_local_pawn(
+            &ArmedLocalPawn {
+                network_id: postretro_net::wire::NetworkId(10),
+                entity_id: own,
+                entity_class: Some("pawn:co_op_avatar".to_string()),
+            },
+            &descriptors,
+            &mut reg,
+            descriptors[0].movement.as_ref(),
+            None,
+            false,
+            &Default::default(),
+        );
+        let avatar = spawn_rotated(&mut reg, Quat::from_rotation_y(aim));
+        assert!(materialize_armed_remote_player(
+            &remote_request(avatar, 11, "pawn:co_op_avatar"),
+            &descriptors,
+            &mut reg,
+            None,
+        ));
+
+        for (pawn, role) in [(own, "client own pawn"), (avatar, "client remote avatar")] {
+            let rotation = reg.get_component::<Transform>(pawn).unwrap().rotation;
+            let mut mesh = reg.get_component::<MeshComponent>(pawn).unwrap().clone();
+            assert_eq!(mesh.body_frame, BodyFrame::View, "{role}");
+            assert!(
+                (mesh.presentation_rotation(rotation) * Vec3::Z)
+                    .abs_diff_eq(Quat::from_rotation_y(aim) * Vec3::NEG_Z, 1e-6),
+                "{role}: model +Z along Ry(aim)*(-Z) on its first drawn frame"
+            );
+            mesh.pose_inputs = Some(PoseInputs {
+                aim_yaw: aim,
+                heading_yaw: heading,
+                ..Default::default()
+            });
+            assert!(
+                (mesh.presentation_rotation(rotation) * Vec3::Z)
+                    .abs_diff_eq(Quat::from_rotation_y(heading) * Vec3::NEG_Z, 1e-6),
+                "{role}: model +Z along Ry(heading)*(-Z)"
+            );
+        }
+
+        let placed = Quat::from_rotation_y(aim) * MODEL_FRONT_TO_VIEW_FORWARD;
+        let copy = spawn_rotated(&mut reg, placed);
+        assert!(materialize_armed_remote_enemy(
+            &remote_request(copy, 12, "descriptor:co_op_avatar"),
+            &descriptors,
+            &mut reg,
+            None,
+        ));
+        let copy_mesh = reg.get_component::<MeshComponent>(copy).unwrap();
+        assert_eq!(copy_mesh.body_frame, BodyFrame::Model);
+        assert_eq!(
+            copy_mesh.presentation_rotation(placed),
+            placed,
+            "a world copy of a player descriptor draws as placed, unturned"
+        );
+    }
+
+    // A re-arm or re-apply keeps a mesh that already exists (the mesh helper
+    // returns early), so the viewer-role step marks the body frame on every
+    // call, never only when it builds the mesh. A rejoin's re-arm, or a body
+    // some earlier step materialized, still draws turned and keeps its live
+    // animation state.
+    #[test]
+    fn client_viewer_role_marks_an_existing_player_mesh_view_without_rebuilding_it() {
+        use postretro_entities::components::mesh::BodyFrame;
+
+        let descriptors = vec![player_mesh_descriptor("co_op_avatar")];
+        let mut reg = EntityRegistry::new();
+        let own = spawn_transform_only(&mut reg);
+        let avatar = spawn_transform_only(&mut reg);
+        for id in [own, avatar] {
+            assert!(
+                crate::scripting::builtins::net_descriptor::materialize_net_mesh_presentation(
+                    "co_op_avatar",
+                    &descriptors,
+                    &mut reg,
+                    id,
+                    None,
+                )
+            );
+            let mut mesh = reg.get_component::<MeshComponent>(id).unwrap().clone();
+            assert_eq!(
+                mesh.body_frame,
+                BodyFrame::Model,
+                "fixture: the shared descriptor mesh carries no frame"
+            );
+            mesh.animation.as_mut().unwrap().current_state = "moved".to_string();
+            reg.set_component(id, mesh).unwrap();
+        }
+
+        let armed = ArmedLocalPawn {
+            network_id: postretro_net::wire::NetworkId(10),
+            entity_id: own,
+            entity_class: Some("pawn:co_op_avatar".to_string()),
+        };
+        for rebuild_movement in [false, true] {
+            materialize_armed_local_pawn(
+                &armed,
+                &descriptors,
+                &mut reg,
+                descriptors[0].movement.as_ref(),
+                None,
+                rebuild_movement,
+                &Default::default(),
+            );
+        }
+        assert!(materialize_armed_remote_player(
+            &remote_request(avatar, 11, "pawn:co_op_avatar"),
+            &descriptors,
+            &mut reg,
+            None,
+        ));
+
+        for (id, role) in [(own, "own pawn"), (avatar, "remote avatar")] {
+            let mesh = reg.get_component::<MeshComponent>(id).unwrap();
+            assert_eq!(mesh.body_frame, BodyFrame::View, "{role}");
+            assert_eq!(
+                mesh.animation.as_ref().unwrap().current_state,
+                "moved",
+                "{role}: the live mesh was kept, not rebuilt"
+            );
+        }
     }
 
     // A remote enemy's mesh derives its zero-phase loops from the

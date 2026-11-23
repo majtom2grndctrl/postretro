@@ -711,6 +711,83 @@ mod tests {
         assert_eq!(allocator.entity_for_network_id(expected_net_id), None);
     }
 
+    // The host-side remote role: a network-slot accept materializes the player
+    // body through the descriptor spawn and its viewer-role step, which mark it
+    // the view body frame, so its model front draws along the slot pawn's view.
+    // A re-accept of the same live slot (a rejoin) keeps the pawn and its frame;
+    // a host relevel re-runs this accept in the fresh install.
+    #[test]
+    fn descriptor_accept_marks_the_slot_pawn_body_view_and_a_reaccept_keeps_it() {
+        use crate::scripting::builtins::data_archetype_test_fixtures::{
+            mesh_descriptor, placement,
+        };
+        use postretro_entities::Transform;
+        use postretro_entities::components::mesh::{BodyFrame, MeshComponent};
+
+        const CLIENT_ID: u64 = 44;
+        let mut descriptor = mesh_descriptor("avatar", true);
+        descriptor.movement =
+            Some(crate::predict_reconcile_harness_test_fixtures::player_descriptor());
+        descriptor.mesh.as_mut().unwrap().shadow_only = true;
+        let descriptors = [descriptor];
+        let mut spawn = placement("player_spawn", &[("entity_class", "avatar")]);
+        spawn.angles = glam::Vec3::new(0.0, 1.1, 0.0);
+        let spawn_points = [spawn];
+
+        let mut registry = EntityRegistry::new();
+        let mut allocator = NetworkIdAllocator::new();
+        let mut replicable = ReplicableSet::new();
+        let mut slot_pawns = SlotPawns::new();
+        let mut command_queues = HostCommandQueues::new();
+        let mut owners = MovementOwners::new();
+        let mut weapon_owners = WeaponOwners::new();
+        let mut open_shots = OpenAuthorizedShots::new();
+        let mut pending_hit_declarations = PendingHitDeclarations::new();
+        let mut weaponless_fire_logged = std::collections::HashSet::new();
+
+        let mut accepted = Vec::new();
+        for _ in 0..2 {
+            let pawn = host_handle_accept_descriptor_at_placement(
+                &mut registry,
+                &mut allocator,
+                &mut replicable,
+                &mut slot_pawns,
+                &mut command_queues,
+                &mut owners,
+                &mut weapon_owners,
+                &mut open_shots,
+                &mut pending_hit_declarations,
+                &mut weaponless_fire_logged,
+                CLIENT_ID,
+                &spawn_points,
+                0,
+                &descriptors,
+                None,
+                None,
+            )
+            .expect("descriptor accept spawns the slot pawn");
+            let rotation = registry.get_component::<Transform>(pawn).unwrap().rotation;
+            assert_eq!(
+                rotation,
+                spawn_points[0].rotation_quat(),
+                "the slot pawn's transform stays in the view frame"
+            );
+            let mesh = registry.get_component::<MeshComponent>(pawn).unwrap();
+            assert_eq!(mesh.body_frame, BodyFrame::View);
+            assert!(
+                !mesh.shadow_only,
+                "peers see the descriptor as a forward avatar"
+            );
+            assert!(
+                (mesh.presentation_rotation(rotation) * glam::Vec3::Z)
+                    .abs_diff_eq(rotation * glam::Vec3::NEG_Z, 1e-6),
+                "model +Z draws along the slot pawn's view forward"
+            );
+            accepted.push(pawn);
+        }
+        assert_eq!(accepted[0], accepted[1], "a re-accept keeps the live pawn");
+    }
+
     #[test]
     fn ordered_participation_then_demotion_leaves_no_host_pawn() {
         use postretro_net::handshake::HoldingCause;

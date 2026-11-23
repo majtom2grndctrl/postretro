@@ -295,4 +295,37 @@ mod tests {
         let serialized = serde_json::to_value(&shadow_only).unwrap();
         assert_eq!(serialized["shadow_only"], true);
     }
+
+    // Each peer derives a player body's frame when it materializes the body; a
+    // save or a replicated payload carrying it would let one peer's frame
+    // override another's, and a restored body would skip its derivation step.
+    #[test]
+    fn player_body_frame_never_serializes_and_a_restored_mesh_has_no_body_frame() {
+        let body = MeshComponent::stateless("models/player.gltf".to_string())
+            .with_shadow_only(true)
+            .with_body_frame(BodyFrame::View);
+
+        let json = serde_json::to_value(&body).expect("mesh component serializes");
+        let object = json.as_object().expect("mesh component is a JSON object");
+        assert!(
+            object
+                .keys()
+                .all(|key| !key.contains("frame") && !key.contains("body")),
+            "a player body's mesh payload carries no body-frame key: {json}"
+        );
+        assert_eq!(
+            object.len(),
+            2,
+            "only the model and the authored shadow_only flag persist: {json}"
+        );
+
+        let restored: MeshComponent = serde_json::from_value(json).expect("mesh component parses");
+        assert_eq!(
+            restored.body_frame,
+            BodyFrame::Model,
+            "a deserialized mesh carries no body frame until its peer derives one"
+        );
+        assert_eq!(restored.model, body.model);
+        assert!(restored.shadow_only);
+    }
 }

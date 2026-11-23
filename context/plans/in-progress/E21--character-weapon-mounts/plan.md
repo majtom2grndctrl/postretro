@@ -21,39 +21,43 @@ read at: 6fcfc4b18
 
 ## AC-to-proof
 
-| AC | Proof | Status |
-|---|---|---|
-| R1 entry mounts at declared sockets on every path | netcode harness tests: SP, listen host own + slot pawn, client own + remote | achievable as stated |
-| R2 two-socket entry, one not `hand_r` | same harness, two-socket fixture | achievable as stated |
-| R3 two rigs, same weapon, own bake each | host + client harness, two player classes | achievable as stated |
-| R4 switch swaps sockets, base returns, no-entry weapon, same model shared socket (P4) | writer unit tests + one path test | achievable as stated |
-| R5 no active weapon shows base attachments (P3) | writer unit test at install and after drop | achievable as stated |
-| R6 two switches same tick | host dirty-queue test | achievable as stated |
-| R7 client own pawn non-default class on arming snapshot (P1) | client harness test | achievable as stated |
-| R8 class change at level transition (P5) | host + client test | achievable as stated |
-| R9 no wire record gains a field | wire-size/record drift guard + diff review | achievable as stated |
-| R10 fire origin and hit tests identical with/without table | sim/netcode test comparing origins and hits | achievable as stated |
-| M1 loadout missing entry warns at load; pickup warns at first wield; no table logs nothing | log-capture tests | achievable as stated |
-| M2 loadout weapon warns at load, not again on wield | log-capture test | achievable as stated |
-| M3 once per character+weapon per level load, per peer | log-capture test across respawn, switch, reload | achievable as stated |
-| M4 no table keeps base attachments incl. `hand_r` | writer test through switches | achievable as stated |
-| M5 missing rig socket warns once naming character/weapon/socket; no generic warning; other sockets mount | log-capture test | achievable as stated |
-| M6 table models in sweep + prediction; failed model warns once; other sockets mount | preload tests + log-capture | achievable as stated |
-| L1 rejecting load rules in both runtimes; misspelled mesh key; all `content/` loads | scripting-core JS + Luau tests; dev mod init test | achievable as stated |
-| L2 unknown weapon name warns once, others mount | log-capture test | achievable as stated |
-| L3 `thirdPersonModel` rejected in both runtimes; absent from `content/` | scripting-core tests + grep | achievable as stated |
-| L4 load rules check incoming; rename commits; added loadout weapon mounts nothing, warns once | hot-reload staged-commit test | achievable as stated |
-| L5 shared/spread `weaponMounts` lowers the same in both runtimes | scripting-core JS + Luau tests | achievable as stated |
-| L6 table edit under hot reload deferred (P2), applied next level load | deferral test + switch test | achievable as stated |
-| C1 every exo_red table model VERIFIED, beside viewmodel as `exo_red.gltf`/`.bin`, not a viewmodel | table-driven test in `crates/postretro` | achievable as stated |
-| C2 exo_red table covers the ten weapons; dev player logs no missing-entry warning | test over dev descriptors + log capture | achievable as stated |
-| C3 viewmodel assets byte-identical to 956a929b | `git diff --stat 956a929b -- content/dev/models/cyberpunk_weapons` shows only `exo_red.*` | achievable as stated |
-| C4 `ar_4/` holds three rig bakes, no `model.gltf`; no `ar_4_*`; no code/test/doc names old path | tree check + grep + existing limitator/squad tests | achievable as stated |
-| C5 moved bakes reference own buffer, still VERIFIED | tool test | achievable as stated |
-| S1 Scripting surface example loads in both runtimes, same descriptor | scripting-core fixture test | achievable as stated |
-| Manual 1 exo_red holds each weapon, scale/grip, through idle/walk/run/switch | owner, in-engine | manual |
-| Manual 2 two-client co-op at 150 ms RTT | owner, in-engine | manual |
-| Manual 3 body shadow shows seated weapon | owner, in-engine | manual |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| R1 entry mounts at declared sockets on every path | netcode harness tests: SP, listen host own + slot pawn, client own + remote | achievable as stated | pass: `weapon_mounts::path_tests::an_entry_mounts_its_models_at_their_sockets_on_every_path` (SP, host own, slot, client own, client remote) |
+| R2 two-socket entry, one not `hand_r` | same harness, two-socket fixture | achievable as stated | pass: same path test, two-socket fixture; `an_entry_mounts_each_model_at_its_socket_over_the_base_and_binds_through_the_resolver` |
+| R3 two rigs, same weapon, own bake each | host + client harness, two player classes | achievable as stated | pass: `two_player_classes_on_different_rigs_mount_their_own_bakes_on_host_and_client` |
+| R4 switch swaps sockets, base returns, no-entry weapon, same model shared socket (P4) | writer unit tests + one path test | achievable as stated | pass: `a_switch_removes_the_old_entry_and_returns_each_covered_base_attachment`, `a_switch_to_an_entry_sharing_a_model_returns_the_extra_socket_to_its_base_or_empties_it`, `a_switch_swaps_entries_and_returns_base_attachments_on_host_and_client` |
+| R5 no active weapon shows base attachments (P3) | writer unit test at install and after drop | achievable as stated | pass: `no_active_weapon_at_install_or_after_a_drop_shows_every_base_attachment` |
+| R6 two switches same tick | host dirty-queue test | achievable as stated | pass: `two_switches_in_one_host_tick_leave_only_the_final_entry_mounted`, `two_switches_between_snapshots_leave_only_the_final_entry_on_host_and_client` |
+| R7 client own pawn non-default class on arming snapshot (P1) | client harness test | achievable as stated | pass: `a_client_own_pawn_of_a_non_default_class_mounts_its_class_entry_on_the_arming_snapshot` (through the shared `materialize_snapshot_presentation`) |
+| R8 class change at level transition (P5) | host + client test | achievable as stated | pass: `a_class_change_at_a_level_transition_mounts_the_new_class_entry_on_host_and_client` |
+| R9 no wire record gains a field | wire-size/record drift guard + diff review | achievable as stated | pass: no diff under `crates/net/`; client own pawn mounts only from the replicated weapon (owner ruling), pinned by `a_client_own_pawn_mounts_the_host_confirmed_weapon_through_a_predicted_switch_and_refusal` and `a_repoint_remounts_a_single_player_pawn_and_leaves_a_client_own_pawn_mount_alone` |
+| R10 fire origin and hit tests identical with/without table | sim/netcode test comparing origins and hits | achievable as stated | pass: `fire_origin_and_hits_are_identical_with_and_without_a_weapon_mount_table` |
+| M1 loadout missing entry warns at load; pickup warns at first wield; no table logs nothing | log-capture tests | achievable as stated | pass: `install_check_warns_once_for_each_loadout_weapon_the_table_lacks_naming_both`, `a_picked_up_weapon_without_an_entry_warns_once_per_character_and_weapon_per_level_load`, `install_check_logs_nothing_for_a_character_without_a_table`, `level_install_warns_once_for_a_loadout_weapon_the_player_table_lacks` |
+| M2 loadout weapon warns at load, not again on wield | log-capture test | achievable as stated | pass: `a_loadout_weapon_warned_at_install_does_not_warn_again_at_first_wield` (sim and netcode) |
+| M3 once per character+weapon per level load, per peer | log-capture test across respawn, switch, reload | achievable as stated | pass: `a_missing_entry_warns_again_after_the_next_level_load`; path switch test (once per peer) |
+| M4 no table keeps base attachments incl. `hand_r` | writer test through switches | achievable as stated | pass: `a_character_without_a_table_keeps_its_base_hand_prop_through_every_switch_silently` |
+| M5 missing rig socket warns once naming character/weapon/socket; no generic warning; other sockets mount | log-capture test | achievable as stated | pass: `an_entry_socket_the_rig_lacks_warns_once_and_the_entry_other_sockets_still_mount` |
+| M6 table models in sweep + prediction; failed model warns once; other sockets mount | preload tests + log-capture | achievable as stated | pass: `every_weapon_mount_table_model_is_swept_and_predicted_on_both_roles`, `an_entry_model_missing_from_the_preload_warns_once_and_the_other_sockets_still_mount` |
+| L1 rejecting load rules in both runtimes; misspelled mesh key; all `content/` loads | scripting-core JS + Luau tests; dev mod init test | achievable as stated | pass: `weapon_mount_load_rules_reject_identically_naming_the_character`, `unknown_mesh_keys_reject_in_both_runtimes_and_known_ones_parse`, `a_misspelled_mesh_key_fails_load_naming_the_key_and_the_character`; dev-mod load `coop_fixture_twins_evaluate_validate_and_cpu_install_equivalently` |
+| L2 unknown weapon name warns once, others mount | log-capture test | achievable as stated | pass: `an_entry_naming_no_weapon_never_mounts_and_the_other_entries_still_mount`, `an_entry_naming_no_weapon_warns_once_per_level_load` |
+| L3 `thirdPersonModel` rejected in both runtimes; absent from `content/` | scripting-core tests + grep | achievable as stated | pass: `retired_third_person_model_rejects_as_an_unknown_weapon_field_in_both_runtimes`; dev-mod load; grep clean |
+| L4 load rules check incoming; rename commits; added loadout weapon mounts nothing, warns once | hot-reload staged-commit test | achievable as stated | pass: `a_reload_renaming_a_weapon_and_its_mount_entry_commits`, `a_loadout_weapon_added_with_its_entry_in_one_reload_mounts_nothing_until_the_next_level_load` |
+| L5 shared/spread `weaponMounts` lowers the same in both runtimes | scripting-core JS + Luau tests | achievable as stated | pass: `a_shared_weapon_mounts_table_lowers_the_same_for_every_definition_in_both_runtimes`, `reusing_a_defined_characters_components_or_mesh_lowers_the_same_in_both_runtimes` |
+| L6 table edit under hot reload deferred (P2), applied next level load | deferral test + switch test | achievable as stated | pass: `a_staged_weapon_mounts_edit_is_deferred_with_the_mesh_warning`, `a_switch_after_a_deferred_table_edit_mounts_the_pre_edit_entry_until_the_next_level_load` |
+| C1 every exo_red table model VERIFIED, beside viewmodel as `exo_red.gltf`/`.bin`, not a viewmodel | table-driven test in `crates/postretro` | achievable as stated | pass: `every_dev_player_weapon_mount_is_a_verified_exo_red_bake_beside_its_viewmodel` and its two negative tests |
+| C2 exo_red table covers the ten weapons; dev player logs no missing-entry warning | test over dev descriptors + log capture | achievable as stated | pass: `dev_player_weapon_mount_table_covers_exactly_the_dev_arsenal`, `dev_player_level_install_warns_about_no_missing_weapon_mount_entry` |
+| C3 viewmodel assets byte-identical to 956a929b | `git diff --stat 956a929b -- content/dev/models/cyberpunk_weapons` shows only `exo_red.*` | achievable as stated | pass: `git diff --stat 956a929b -- content/dev/models/cyberpunk_weapons` lists only the 12 `exo_red.*` additions (checked at land, not an ongoing test) |
+| C4 `ar_4/` holds three rig bakes, no `model.gltf`; no `ar_4_*`; no code/test/doc names old path | tree check + grep + existing limitator/squad tests | achievable as stated | pass: tree and `git grep`; tool test asserts no `ar_4/model.gltf` |
+| C5 moved bakes reference own buffer, still VERIFIED | tool test | achievable as stated | pass: `every_moved_ar_4_rig_bake_declares_its_mount_and_verifies_on_its_rig` (JSON buffer list for all three, limitator included) |
+| S1 Scripting surface example loads in both runtimes, same descriptor | scripting-core fixture test | achievable as stated | pass: `the_weapon_mounts_surface_example_lowers_identically_in_both_runtimes` |
+| Manual 1 exo_red holds each weapon, scale/grip, through idle/walk/run/switch | owner, in-engine | manual | outstanding: owner, in-engine |
+| Manual 2 two-client co-op at 150 ms RTT | owner, in-engine | manual | outstanding: owner, in-engine (own shadow's weapon trails a switch about one RTT, by ruling) |
+| Manual 3 body shadow shows seated weapon | owner, in-engine | manual | outstanding: owner, in-engine |
+
+Gate: `cargo fmt --check`, workspace `clippy -D warnings`, `cargo check --release`, `crate-graph --check` and both reducer unittests pass. Full `cargo test --workspace --no-fail-fast` passes except three pre-existing failures in crates this branch does not touch: `postretro-renderer` `smooth_specular_matches_the_frozen_pre_change_function`, and `xtask` `mover_shot_gates` `static_only_worlds_stay_in_sites_that_never_fire` and `static_line_of_sight_remains_only_in_host_hit_validation` (Windows path separators in scanned paths).
+
+Review: round 1 (10 lenses) found one must-fix (client predicted-switch class) plus SDK re-lowering, the unloaded-holder warning, limitator buffer coverage, client glue coverage, test file size and doc drift; all fixed. Round 2 (2 lenses on the fixes) found two client mount writers reading different sources; owner ruled for the replicated weapon, applied. Left by design: `weaponMounts: []` is a declared table and stays loud; the load check warns for every character with a table; inherited JS/Luau attachment-shape error text; reordering entries triggers the mesh deferral; a failed shared bake warns per socket.
 
 ## Tasks
 
@@ -65,4 +69,4 @@ read at: 6fcfc4b18
 | 4 | Retire `thirdPersonModel`: field, validation, readers, deferral, typedefs, fixtures, content | worker | 3 | done: `cargo check --workspace --tests` clean; `-p postretro-scripting-core` 1160 pass incl. `retired_third_person_model_rejects_as_an_unknown_weapon_field_in_both_runtimes`; `-p postretro-sim typedef` 59; `-p postretro-foundation weapon` 28; dev-mod load twin test pass; zero code/content/sdk hits |
 | 5 | exo_red table in `player.ts`, table-driven content test, dev-load no-warning test | integrating executor (worker) | 2, 3, 4 | done: verdict moved to `postretro-model::mount::check_declared_weapon_mount` (tool CLI output byte-identical over 16 cases); `cargo test -p postretro-model mount` 22, `-p postretro-tool mount` 18, `-p postretro --features dev-tools --bin postretro weapon_mount_content_tests` 5; `git diff --stat 956a929b -- content/dev/models/cyberpunk_weapons` shows only `exo_red.*` additions |
 | 6 | Docs: `entity_model.md`, `resource_management.md` §7, `networking.md`, `docs/weapon-mounts.md`, `docs/character-animation.md`, `docs/scripting-reference.md` | worker (docs) | 4 | done (edit-only; describes behavior, quotes no warning text) |
-| 7 | Preflight, review panel, fix loop | integrating executor | 1–6 | |
+| 7 | Preflight, review panel, fix loop | integrating executor | 1–6 | done: preflight and two review rounds; fixes 87fb7dd30, 62782530a, 04b92b69e |

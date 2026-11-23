@@ -2100,6 +2100,7 @@ mod tests {
                 shadow_only: false,
                 attachments: Vec::new(),
                 pose_inputs: None,
+                body_frame: Default::default(),
             },
         )
         .unwrap();
@@ -2142,6 +2143,7 @@ mod tests {
                 shadow_only: false,
                 attachments: Vec::new(),
                 pose_inputs: None,
+                body_frame: Default::default(),
             },
         )
         .unwrap();
@@ -2182,6 +2184,7 @@ mod tests {
                 shadow_only: false,
                 attachments: Vec::new(),
                 pose_inputs: None,
+                body_frame: Default::default(),
             },
         )
         .unwrap();

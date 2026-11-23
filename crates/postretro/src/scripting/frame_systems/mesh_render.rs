@@ -348,10 +348,7 @@ impl MeshRenderCollector {
             let forward_visible = portal_visible && !mesh.shadow_only;
             let dynamic_shadow_visible = portal_visible || mesh.shadow_only;
             let handle = ModelHandle::from(mesh.model.clone());
-            let current_presentation_rotation = presentation_body_rotation(
-                current.rotation,
-                mesh.pose_inputs.map(|inputs| inputs.heading_yaw),
-            );
+            let current_presentation_rotation = mesh.presentation_rotation(current.rotation);
             let current_model_transform = glam::Mat4::from_scale_rotation_translation(
                 current.scale,
                 current_presentation_rotation,
@@ -398,10 +395,7 @@ impl MeshRenderCollector {
             };
             let holder_transform = glam::Mat4::from_scale_rotation_translation(
                 transform.scale,
-                presentation_body_rotation(
-                    transform.rotation,
-                    mesh.pose_inputs.map(|inputs| inputs.heading_yaw),
-                ),
+                mesh.presentation_rotation(transform.rotation),
                 transform.position + mesh.origin_offset,
             );
             let holder_index = self.instances.len();
@@ -521,20 +515,6 @@ impl MeshRenderCollector {
     pub(crate) fn resample_count(&self) -> u32 {
         self.resample_count
     }
-}
-
-/// Pose split inputs are world-space: render the model root at lower-body heading,
-/// then let the modifier rotate the upper body by `aim_yaw - heading_yaw`. Gameplay
-/// and replicated transforms retain aim yaw; only mesh presentation receives this
-/// lower-body root override (travel, folded toward aim while backpedaling).
-pub(super) fn presentation_body_rotation(
-    transform_rotation: glam::Quat,
-    heading_yaw: Option<f32>,
-) -> glam::Quat {
-    heading_yaw
-        .filter(|yaw| yaw.is_finite())
-        .map(glam::Quat::from_rotation_y)
-        .unwrap_or(transform_rotation)
 }
 
 fn selected_static_shadow_light_reaches_bounds(world: &LevelWorld, bounds: &Aabb) -> bool {
@@ -1336,6 +1316,7 @@ mod tests {
                 shadow_only: false,
                 attachments: Vec::new(),
                 pose_inputs: None,
+                body_frame: Default::default(),
             },
         )
         .unwrap();

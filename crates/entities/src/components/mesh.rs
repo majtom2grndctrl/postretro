@@ -1,7 +1,7 @@
 // Mesh component: model handle and presentation state for mesh entities.
 // See: context/lib/scripting.md §10.3 (Mesh Animation)
 
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Quat, Vec3};
 use postretro_foundation::PoseInputs;
 use serde::{Deserialize, Serialize};
 
@@ -51,6 +51,42 @@ impl MeshAttachment {
     }
 }
 
+/// Half turn about +Y from a model's front (glTF +Z) to the view frame's forward
+/// (−Z). The one constant both facing seams compose: placement
+/// (`MapEntity::model_rotation_quat`) and the body seam ([`BodyFrame::View`]).
+/// See: context/lib/entity_model.md §4 (Facing convention)
+pub const MODEL_FRONT_TO_VIEW_FORWARD: Quat = Quat::from_xyzw(0.0, 1.0, 0.0, 0.0);
+
+/// Which frame a mesh holder's transform rotation is in. Every model fronts
+/// glTF +Z. A placed entity's rotation already turns that front along its
+/// arrow ([`Model`](Self::Model)). A player pawn keeps its rotation in the view
+/// frame, forward −Z, so camera, movement and the wire stay unturned; its body
+/// takes the half turn wherever that rotation becomes a model→world matrix
+/// ([`View`](Self::View)).
+///
+/// Each peer derives it when it materializes the body, like `shadow_only`: it
+/// never crosses the wire or enters a save.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BodyFrame {
+    /// The transform rotation turns model +Z to the entity's front.
+    #[default]
+    Model,
+    /// The transform rotation is a view-frame rotation (forward −Z); the body
+    /// seam adds [`MODEL_FRONT_TO_VIEW_FORWARD`].
+    View,
+}
+
+impl BodyFrame {
+    /// Model→world rotation for a holder whose transform (or presentation)
+    /// rotation is `frame_rotation`.
+    pub fn model_rotation(self, frame_rotation: Quat) -> Quat {
+        match self {
+            Self::Model => frame_rotation,
+            Self::View => frame_rotation * MODEL_FRONT_TO_VIEW_FORWARD,
+        }
+    }
+}
+
 /// Marks an entity as rendering a mesh model. `model` is the model handle
 /// the `prop_mesh` classname handler reads from a map entity's `model` key — the
 /// content-canonical path passed to `postretro_model::gltf_loader::load_model`. It
@@ -94,6 +130,10 @@ pub struct MeshComponent {
     /// Gameplay and persistence intentionally ignore this transient value.
     #[serde(skip)]
     pub pose_inputs: Option<PoseInputs>,
+    /// Frame of the holder's transform rotation. Presentation state each peer
+    /// derives at materialization; never persisted or replicated.
+    #[serde(skip)]
+    pub body_frame: BodyFrame,
 }
 
 impl MeshComponent {
@@ -108,6 +148,7 @@ impl MeshComponent {
             shadow_only: false,
             attachments: Vec::new(),
             pose_inputs: None,
+            body_frame: BodyFrame::Model,
         }
     }
 
@@ -120,7 +161,32 @@ impl MeshComponent {
             shadow_only: false,
             attachments: Vec::new(),
             pose_inputs: None,
+            body_frame: BodyFrame::Model,
         }
+    }
+
+    pub fn with_body_frame(mut self, body_frame: BodyFrame) -> Self {
+        self.body_frame = body_frame;
+        self
+    }
+
+    /// Rotation the body is drawn at: the lower-body `heading_yaw` from this
+    /// mesh's pose inputs when an animated mesh carries one, else the
+    /// transform's own rotation, then the body-frame turn. A stateless mesh's
+    /// pose inputs are foot-probe defaults (heading 0), so its heading never
+    /// replaces the transform yaw.
+    pub fn presentation_rotation(&self, transform_rotation: Quat) -> Quat {
+        let heading = self
+            .animation
+            .as_ref()
+            .and(self.pose_inputs)
+            .map(|inputs| inputs.heading_yaw)
+            .filter(|yaw| yaw.is_finite());
+        self.body_frame.model_rotation(
+            heading
+                .map(Quat::from_rotation_y)
+                .unwrap_or(transform_rotation),
+        )
     }
 
     pub fn with_origin_offset(mut self, origin_offset: Vec3) -> Self {

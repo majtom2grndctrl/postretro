@@ -3435,6 +3435,7 @@ fn leg_probe_fixture(position: Vec3, yaw: f32) -> (EntityRegistry, EntityId, Hit
                 shadow_only: false,
                 attachments: Vec::new(),
                 pose_inputs: None,
+                body_frame: Default::default(),
             },
         )
         .expect("leg entity mesh should attach");

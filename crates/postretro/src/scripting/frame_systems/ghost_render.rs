@@ -25,7 +25,7 @@ use postretro_visibility::VisibleCells;
 use super::attachments::{self, SocketPoseResolver};
 use super::mesh_anim::MeshClipTables;
 use super::mesh_render::{
-    presentation_body_rotation, resolve_sample, should_resample, state_fingerprint,
+    resolve_sample, should_resample, state_fingerprint,
 };
 use crate::ghost_links::GhostMember;
 
@@ -235,10 +235,7 @@ impl GhostRenderCollector {
         let source = member.source;
         let holder_transform = Mat4::from_scale_rotation_translation(
             source.scale,
-            presentation_body_rotation(
-                source.rotation,
-                mesh.pose_inputs.map(|inputs| inputs.heading_yaw),
-            ),
+            mesh.presentation_rotation(source.rotation),
             source.position + mesh.origin_offset,
         );
         let seed = member.entity.to_raw();

@@ -263,3 +263,28 @@ fn unknown_mesh_keys_reject_in_both_runtimes_and_known_ones_parse() {
     );
     assert_eq!(js_known, lua_known);
 }
+
+// `thirdPersonModel` is retired: the character's `weaponMounts` table is the
+// only third-person source, so a weapon carrying the old field is rejected as
+// an unknown field rather than silently ignored.
+#[test]
+fn retired_third_person_model_rejects_as_an_unknown_weapon_field_in_both_runtimes() {
+    let js = js_error(
+        r#"({ components: { weapon: {
+            damage: 12, range: 64, primary: { trigger: "press", recoveryMs: 180, steps: [{ kind: "shot" }] }, resolution: "hitscan",
+            thirdPersonModel: "models/smg/model.gltf"
+        } } })"#,
+    );
+    let lua = lua_error(
+        r#"return { components = { weapon = {
+            damage = 12, range = 64, primary = { trigger = "press", recoveryMs = 180, steps = { { kind = "shot" } } }, resolution = "hitscan",
+            thirdPersonModel = "models/smg/model.gltf"
+        } } }"#,
+    );
+    for error in [&js, &lua] {
+        assert!(
+            error.contains("unknown field `thirdPersonModel`"),
+            "{error}"
+        );
+    }
+}

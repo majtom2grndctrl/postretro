@@ -76,7 +76,6 @@ pub(super) fn weapon(resolution: ResolutionMode) -> WeaponDescriptor {
         }),
         splash: None,
         credit_source: None,
-        third_person_model: None,
         viewmodel: None,
         placement: None,
         muzzle_offset: Some([0.1, -0.1, -0.5]),

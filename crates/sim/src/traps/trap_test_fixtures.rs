@@ -73,7 +73,6 @@ pub(crate) fn weapon(primary: WeaponActivationDescriptor) -> WeaponDescriptor {
         projectile: Some(projectile(12.0)),
         splash: None,
         credit_source: Some("trap.test-bolt".to_string()),
-        third_person_model: None,
         viewmodel: None,
         placement: None,
         muzzle_offset: None,

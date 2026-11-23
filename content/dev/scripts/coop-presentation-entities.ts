@@ -23,7 +23,7 @@ export const coopHealthWeaponEntity = defineEntity({ canonicalName: "coop_health
   health: { max: 48, hitbox: { halfExtents: [0.3, 0.2, 0.5], offset: [0, 0.2, 0] } },
   mesh: { model: SMG }, touchable: { mode: "press", radius: 1 },
   weapon: {
-    damage: 8, range: 48, resolution: "hitscan", thirdPersonModel: SMG, viewmodel: SMG,
+    damage: 8, range: 48, resolution: "hitscan", viewmodel: SMG,
     damageType: ballistic,
     muzzleOffset: [0, 0.274, -0.567],
     primary: { trigger: "press", recoveryMs: 240, steps: [activation.shot()] },
@@ -35,7 +35,7 @@ export const coopHealthWeaponEntity = defineEntity({ canonicalName: "coop_health
 export const coopHeatTestEntity = defineEntity({ canonicalName: "coop_heat_test", components: {
   mesh: { model: SMG }, touchable: { mode: "press", radius: 1 },
   weapon: {
-    damage: 1, range: 48, resolution: "hitscan", thirdPersonModel: SMG, viewmodel: SMG,
+    damage: 1, range: 48, resolution: "hitscan", viewmodel: SMG,
     damageType: ballistic,
     muzzleOffset: [0, 0.274, -0.567],
     primary: { trigger: "hold", recoveryMs: 150, steps: [activation.shot()] },

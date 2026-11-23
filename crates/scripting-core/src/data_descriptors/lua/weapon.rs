@@ -26,22 +26,19 @@ pub(super) fn weapon_descriptor_from_lua(
 
 /// Reject unsupported VM values before the JSON bridge can treat them as omission.
 fn validate_optional_weapon_model_paths_lua(weapon: &Table) -> Result<(), DescriptorError> {
-    for field in ["thirdPersonModel", "viewmodel"] {
-        if !weapon.contains_key(field).map_err(lua_err)? {
-            continue;
-        }
-        let raw: LuaValue = weapon.get(field).map_err(lua_err)?;
-        if matches!(&raw, LuaValue::Nil | LuaValue::String(_)) {
-            continue;
-        }
-        return Err(DescriptorError::InvalidShape {
-            reason: format!(
-                "`components.weapon.{field}` must be a string when supplied, got {}",
-                raw.type_name()
-            ),
-        });
+    if !weapon.contains_key("viewmodel").map_err(lua_err)? {
+        return Ok(());
     }
-    Ok(())
+    let raw: LuaValue = weapon.get("viewmodel").map_err(lua_err)?;
+    if matches!(&raw, LuaValue::Nil | LuaValue::String(_)) {
+        return Ok(());
+    }
+    Err(DescriptorError::InvalidShape {
+        reason: format!(
+            "`components.weapon.viewmodel` must be a string when supplied, got {}",
+            raw.type_name()
+        ),
+    })
 }
 
 /// Preserve malformed sound-key evidence before the JSON bridge coerces it to null.

@@ -2,7 +2,6 @@
 
 mode: compact
 status: active
-paused: owner paused builds 2026-11-22 after Task 3; resume at the Task 3 full-suite runs, then Task 4
 read at: 6fcfc4b18
 
 ## Corrections
@@ -59,8 +58,8 @@ read at: 6fcfc4b18
 |---|---|---|---|---|
 | 1 | Descriptor: `MeshDescriptor.weapon_mounts`, both bridges, unknown-mesh-key and entry load rules, SDK lowering (copy) and typedefs, surface fixture | worker (descriptor) | — | done: `cargo test -p postretro-scripting-core` 1157 pass (11 `weapon_mount`); `-p postretro-sim typedef` 59 pass; dev-mod load twin test pass |
 | 2 | Content assets: ar_4 reorg into rig-named bakes, consumer updates, model-crate check move, ar_4 tool tests | worker (content, no cargo while 1 builds) | — | done (model-crate check move deferred to 5): `cargo test -p postretro-tool mount` 22 pass incl. `every_moved_ar_4_rig_bake_declares_its_mount_and_verifies_on_its_rig` |
-| 3 | Writer: compose base + entry by wielder class on all four paths, warnings, preload, install-time checks; resolution and missing-data tests | worker (netcode) | 1 | built; focused runs pass: `cargo test -p postretro-netcode weapon_mount` 23, `-p postretro-sim weapon_mount` 6, `-p postretro --features dev-tools --bin postretro level_load::model_tests` 5 (+1 ignored). Outstanding before Task 4: full `cargo test -p postretro-netcode`, `-p postretro-sim`, `cargo check -p postretro --features dev-tools --tests` |
-| 4 | Retire `thirdPersonModel`: field, validation, readers, deferral, typedefs, fixtures, content | worker | 3 | |
+| 3 | Writer: compose base + entry by wielder class on all four paths, warnings, preload, install-time checks; resolution and missing-data tests | worker (netcode) | 1 | built; focused runs pass: `cargo test -p postretro-netcode weapon_mount` 23, `-p postretro-sim weapon_mount` 6, `-p postretro --features dev-tools --bin postretro level_load::model_tests` 5 (+1 ignored). Full suites: `cargo test -p postretro-netcode` 1137 pass, `-p postretro-sim` 2253 pass, `cargo check -p postretro --features dev-tools --tests` clean |
+| 4 | Retire `thirdPersonModel`: field, validation, readers, deferral, typedefs, fixtures, content | worker | 3 | done: `cargo check --workspace --tests` clean; `-p postretro-scripting-core` 1160 pass incl. `retired_third_person_model_rejects_as_an_unknown_weapon_field_in_both_runtimes`; `-p postretro-sim typedef` 59; `-p postretro-foundation weapon` 28; dev-mod load twin test pass; zero code/content/sdk hits |
 | 5 | exo_red table in `player.ts`, table-driven content test, dev-load no-warning test | integrating executor | 2, 3, 4 | table in `player.ts` done (co-op wieldables exported); content test pending |
 | 6 | Docs: `entity_model.md`, `resource_management.md` §7, `networking.md`, `docs/weapon-mounts.md`, `docs/character-animation.md`, `docs/scripting-reference.md` | worker (docs) | 4 | done (edit-only; describes behavior, quotes no warning text) |
 | 7 | Preflight, review panel, fix loop | integrating executor | 1–6 | |

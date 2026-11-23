@@ -131,19 +131,12 @@ impl WeaponDescriptor {
                 }
             }
         }
-        for (field, path) in [
-            ("thirdPersonModel", self.third_person_model.as_deref()),
-            ("viewmodel", self.viewmodel.as_deref()),
-        ] {
-            if let Some(path) = path
-                && !is_portable_content_relative_asset_path(path)
-            {
-                return Err(DescriptorError::InvalidShape {
-                    reason: format!(
-                        "`components.weapon.{field}` must be a non-empty, content-relative model path using forward slashes with no parent traversal"
-                    ),
-                });
-            }
+        if let Some(path) = self.viewmodel.as_deref()
+            && !is_portable_content_relative_asset_path(path)
+        {
+            return Err(DescriptorError::InvalidShape {
+                reason: "`components.weapon.viewmodel` must be a non-empty, content-relative model path using forward slashes with no parent traversal".to_string(),
+            });
         }
         if let Some(sounds) = self.sounds.as_ref() {
             for (field, key) in sounds.keys() {

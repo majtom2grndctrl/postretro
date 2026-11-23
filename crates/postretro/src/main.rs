@@ -7786,7 +7786,6 @@ mod tests {
                 projectile: None,
                 splash: None,
                 credit_source: None,
-                third_person_model: None,
                 viewmodel: viewmodel.map(str::to_owned),
                 placement,
                 muzzle_offset: None,

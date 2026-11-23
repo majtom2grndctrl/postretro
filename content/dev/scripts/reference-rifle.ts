@@ -33,7 +33,6 @@ export const referenceRifleEntity = defineEntity({
       bloomDecayDelayMs: 120,
       movementSpreadDegrees: 3.0,
       spreadVerticalBias: 0.3,
-      thirdPersonModel: "models/cyberpunk_weapons/rifle/model.gltf",
       viewmodel: "models/cyberpunk_weapons/rifle/model.gltf",
       placement: riflePlacement,
       // Authored from the viewmodel's rigid `muzzle` socket.

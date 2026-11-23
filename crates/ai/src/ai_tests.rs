@@ -11174,7 +11174,6 @@ fn projectile_weapon_descriptor(
             }),
             splash: None,
             credit_source: Some("enemy.rifle".to_string()),
-            third_person_model: None,
             viewmodel: None,
             placement: None,
             muzzle_offset: None,

@@ -37,19 +37,16 @@ pub(super) fn weapon_descriptor_from_js<'js>(
 fn validate_optional_weapon_model_paths_js<'js>(
     weapon: &Object<'js>,
 ) -> Result<(), DescriptorError> {
-    for field in ["thirdPersonModel", "viewmodel"] {
-        if !weapon.contains_key(field).map_err(js_err)? {
-            continue;
-        }
-        let raw: JsValue = weapon.get(field).map_err(js_err)?;
-        if raw.is_null() || raw.is_undefined() || raw.as_string().is_some() {
-            continue;
-        }
-        return Err(DescriptorError::InvalidShape {
-            reason: format!("`components.weapon.{field}` must be a string when supplied"),
-        });
+    if !weapon.contains_key("viewmodel").map_err(js_err)? {
+        return Ok(());
     }
-    Ok(())
+    let raw: JsValue = weapon.get("viewmodel").map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() || raw.as_string().is_some() {
+        return Ok(());
+    }
+    Err(DescriptorError::InvalidShape {
+        reason: "`components.weapon.viewmodel` must be a string when supplied".to_string(),
+    })
 }
 
 /// Placement is an authored presentation contract, so a supplied unsupported

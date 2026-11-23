@@ -90,10 +90,7 @@ fn defer_visual_asset_descriptor_refreshes(
             }
         }
         let presentation_paths = |weapon: Option<&crate::data_descriptors::WeaponDescriptor>| {
-            weapon.and_then(|weapon| {
-                (weapon.third_person_model.is_some() || weapon.viewmodel.is_some())
-                    .then(|| (weapon.third_person_model.clone(), weapon.viewmodel.clone()))
-            })
+            weapon.and_then(|weapon| weapon.viewmodel.clone())
         };
         let old_presentation = presentation_paths(old_weapon);
         let next_presentation = presentation_paths(next.weapon.as_ref());
@@ -106,13 +103,7 @@ fn defer_visual_asset_descriptor_refreshes(
             "[Scripting] staged descriptor refresh deferred components.weapon presentation models for `{name}`; active model uploads and socket bindings remain in use until the next level load"
         );
         if let Some(next_weapon) = next.weapon.as_mut() {
-            if let Some(old_weapon) = old_weapon {
-                next_weapon.third_person_model = old_weapon.third_person_model.clone();
-                next_weapon.viewmodel = old_weapon.viewmodel.clone();
-            } else {
-                next_weapon.third_person_model = None;
-                next_weapon.viewmodel = None;
-            }
+            next_weapon.viewmodel = old_weapon.and_then(|old_weapon| old_weapon.viewmodel.clone());
         } else if let Some(old_weapon) = old_weapon {
             // Removing a weapon with live presentation models would leave its
             // holder attachment stale. Keep the full descriptor until reload.
@@ -137,9 +128,7 @@ fn defer_visual_asset_descriptor_refreshes(
             continue;
         }
         let weapon_presentation_installed = old.weapon.as_ref().is_some_and(|weapon| {
-            weapon.third_person_model.is_some()
-                || weapon.viewmodel.is_some()
-                || weapon.projectile.is_some()
+            weapon.viewmodel.is_some() || weapon.projectile.is_some()
         });
         if old.mesh.is_none() && !weapon_presentation_installed {
             continue;
@@ -1839,7 +1828,6 @@ mod tests {
 
     fn weapon_descriptor(
         damage: f32,
-        third_person_model: Option<&str>,
         viewmodel: Option<&str>,
     ) -> WeaponDescriptor {
         WeaponDescriptor {
@@ -1864,7 +1852,6 @@ mod tests {
             projectile: None,
             splash: None,
             credit_source: None,
-            third_person_model: third_person_model.map(str::to_string),
             viewmodel: viewmodel.map(str::to_string),
             placement: None,
             muzzle_offset: None,
@@ -1951,11 +1938,7 @@ mod tests {
                 None,
             ),
         ];
-        old[0].weapon = Some(weapon_descriptor(
-            10.0,
-            Some("models/old_weapon.gltf"),
-            Some("models/old_view.gltf"),
-        ));
+        old[0].weapon = Some(weapon_descriptor(10.0, Some("models/old_view.gltf")));
         {
             let weapon = old[0].weapon.as_mut().unwrap();
             weapon.resolution = ResolutionMode::Projectile;
@@ -1987,11 +1970,7 @@ mod tests {
             ),
         ];
 
-        next[0].weapon = Some(weapon_descriptor(
-            25.0,
-            Some("models/new_weapon.gltf"),
-            Some("models/new_view.gltf"),
-        ));
+        next[0].weapon = Some(weapon_descriptor(25.0, Some("models/new_view.gltf")));
         {
             let weapon = next[0].weapon.as_mut().unwrap();
             weapon.resolution = ResolutionMode::Projectile;
@@ -2022,10 +2001,6 @@ mod tests {
         assert_eq!(
             active_weapon.damage, 25.0,
             "weapon tuning still hot reloads"
-        );
-        assert_eq!(
-            active_weapon.third_person_model.as_deref(),
-            Some("models/old_weapon.gltf")
         );
         assert_eq!(
             active_weapon.viewmodel.as_deref(),
@@ -2062,9 +2037,9 @@ mod tests {
                 .weapon
                 .as_ref()
                 .unwrap()
-                .third_person_model
+                .viewmodel
                 .as_deref(),
-            Some("models/new_weapon.gltf"),
+            Some("models/new_view.gltf"),
             "the next-level snapshot retains new presentation paths"
         );
         assert!(
@@ -2100,15 +2075,11 @@ mod tests {
             None,
         );
         let mut weapon_backed = descriptor("weapon_backed", None, None);
-        weapon_backed.weapon = Some(weapon_descriptor(
-            10.0,
-            Some("models/weapon.gltf"),
-            Some("models/view.gltf"),
-        ));
+        weapon_backed.weapon = Some(weapon_descriptor(10.0, Some("models/view.gltf")));
         let mut tuning_only = descriptor("tuning_only", None, None);
-        tuning_only.weapon = Some(weapon_descriptor(10.0, None, None));
+        tuning_only.weapon = Some(weapon_descriptor(10.0, None));
         let mut projectile_backed = descriptor("projectile_backed", None, None);
-        let mut projectile_weapon = weapon_descriptor(10.0, None, None);
+        let mut projectile_weapon = weapon_descriptor(10.0, None);
         projectile_weapon.resolution = ResolutionMode::Projectile;
         projectile_weapon.projectile = Some(projectile_descriptor(
             ProjectileBodyVisual::Model {
@@ -2138,7 +2109,7 @@ mod tests {
     fn staged_refresh_defers_new_projectile_assets_until_level_install() {
         let old = vec![descriptor("new_projectile", None, None)];
         let mut next = old.clone();
-        let mut weapon = weapon_descriptor(18.0, None, None);
+        let mut weapon = weapon_descriptor(18.0, None);
         weapon.resolution = ResolutionMode::Projectile;
         weapon.projectile = Some(projectile_descriptor(
             ProjectileBodyVisual::Sprite {

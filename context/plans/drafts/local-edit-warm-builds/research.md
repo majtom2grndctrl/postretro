@@ -191,3 +191,4 @@ Orderings the Acceptance rows cite.
 | RW-14 | Two edits, one build | e1 and e2 in different places → one warm build | Re-trace = union of both crossing sets; equals cold |
 | RW-15 | Kill mid-record write | build killed after some record chunks, before SH entry → rebuild | Equals cold; re-trace ≤ crossing set + rays of chunks failing digest |
 | RW-16 | Two worktrees, one map | W1 edits e1, W2 edits e2, built alternately on one cache | Each equals its cold build; each re-traces at most the union of e1's and e2's crossing sets |
+| RW-17 | Default budget fit | empty cache, default `--cache-max-size` → cold stress-street → warm one-brush edit | Spared set plus ray records priced under the budget; SH local; no ceiling or eviction warning |

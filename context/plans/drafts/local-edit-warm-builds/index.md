@@ -1,6 +1,6 @@
 # local-edit-warm-builds
 
-Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Progress reporting, controls, and logging, §Id-51 consumers · `done/surface-radiance-cache/` · `done/incremental-bake-per-element/` · `done/level-compiler-tui/` · `context/research/gi-rtx-lite/ip-check.md` · read at 3703dd164
+Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Ray traversal, §Source-format neutrality, §Compiler pipeline step 12 (Exact skips), §Progress reporting, controls, and logging, §Id-51 consumers · `docs/level_design.md` §Compiling Your Map · `done/surface-radiance-cache/` · `done/incremental-bake-per-element/` · `done/level-compiler-tui/` · background: `context/research/gi-rtx-lite/ip-check.md` · read at 3703dd164
 
 ## Problem
 **Basis.** Owner-observed defect in the authoring loop: an edit's rebuild costs what the whole map costs, and the build cannot show why. After a TrenchBroom linked-group update, prl-build rebuilds as if the cache were empty. On stress-street, raising one brush in one lamp instance costs 234 s warm against 21 s for a no-op. Every cache stage misses, though 99.5% of lightmap texels come out byte-identical (`research.md` §Measurements).
@@ -102,20 +102,22 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Pr
 - [ ] every static light dimmed to zero, then a brush edit, then one light restored (RW-12).
 - [ ] Two local edits, each built warm in turn: the second build re-traces only the samples and rays its own edit reaches, and equals a cold build of the twice-edited map (RW-1).
 - [ ] Two edits in different places between builds re-trace exactly the union of their crossing sets, and the build equals cold (RW-14).
+- [ ] Two worktrees of one map, each with its own edit, built alternately on one cache: each build equals its cold build and re-traces at most the union of both edits' crossing sets (RW-16).
 
 **Locality.**
 - [ ] After a local brush edit that renumbers faces and moves other charts in the atlas, a light whose reach excludes the edit hits every lightmap entry it had.
 - [ ] A renumbering-only edit, with no geometry near any light, hits every per-light lightmap, SH delta and mover entry.
 - [ ] A tint or intensity change with no presence change re-traces no lightmap visibility.
-- [ ] Re-saving a linked group through TrenchBroom with no authored change hits every lightmap and SH entry; its light-origin rewrite stays within the quantum.
+- [ ] Re-saving a linked group through TrenchBroom with no authored change, in a fixture where at least one rotated instance's light origin text changes, hits every lightmap and SH entry; its light-origin rewrite stays within the quantum.
 - [ ] Two light origins that round to the same quantum point bake identical bytes; a move across the quantum re-bakes that light.
-- [ ] Re-ordering a brush face's plane points with no geometric change hits every entry.
+- [ ] Re-ordering a brush face's plane points, writing a brush's sides in another order, and re-cloning a rotated linked instance with no geometric change each emit the same corners in the same order and hit every entry.
 - [ ] After a brush edit that meets only a texel's footprint clip segment or lead-in, never its light-ward segments, that texel re-traces, and the warm build equals cold.
 - [ ] An edit that grows the map's bounds moves no existing probe, and its SH re-trace is exactly the crossing set.
 - [ ] A local edit re-bakes only the reflection probes, camera cells and chunk light lists whose recorded inputs it touches; every other one hits.
-- [ ] After a local edit, every atlas layer whose placements and contributing partitions are unchanged hits its encode memo, equals the cold build's encoded layer byte for byte, and replays the cold build's texel-step warnings.
+- [ ] After a local edit, every atlas layer whose placements, layer size, contributing partitions, those lights' photometric fields and encode parameters are unchanged hits its encode memo, equals the cold build's encoded layer byte for byte, and replays the cold build's texel-step warnings.
 - [ ] A cluster payload memo hit equals the cold build's encoded payload byte for byte.
 - [ ] After a brush edit inside a light's reach, that light re-traces only texels on changed charts, texels whose segment meets the changed triangles, and texels whose cull verdict changed. The build reports the count.
+- [ ] After an edit that brings a triangle within a culled tile's shaft margin without meeting any of its segments, that tile's texels re-trace and count in the re-traced total, and the warm build equals cold.
 - [ ] After a local edit, the SH rays re-traced are exactly the crossing set; the build reports the count.
 
 **Refusals.**
@@ -126,7 +128,8 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Pr
 - [ ] A tracer test pins the locality rule: an answer never changes when a triangle whose padded bounds miss the segment is added or removed, including when two triangles tie at the hit distance and the change renumbers every other triangle.
 
 **Footprint.**
-- [ ] The Build Summary reports the cache footprint with the ray records.
+- [ ] The Build Summary reports the cache footprint with the ray records, and the ray-record footprint against its ceiling.
+- [ ] At the default `--cache-max-size`, stress-street's ray records price under the ceiling, and a warm one-brush edit traces SH locally with no ceiling or eviction warning (RW-17).
 - [ ] A map priced past the ray-record ceiling bakes SH whole, byte-identical to cold, and warns by name. The ceiling never exceeds the cache budget less the spared set.
 - [ ] When the sweep evicts a map's ray records, its next Build Summary says SH traced whole because of the eviction.
 - [ ] Evicting a map's ray records through the start-of-build sweep, at a budget too small to keep them, costs one full SH trace on its next build; the output stays byte-identical, and the build after that is local again. Evicting only some of its record chunks re-traces at most those chunks' rays (RW-3).
@@ -150,15 +153,15 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Build Cache, §Pr
 - [ ] The bar renders correctly in full and compact layouts at every width from 2 cells up.
 - [ ] Under `NO_COLOR` the segments stay distinct by glyph alone.
 - [ ] The number format covers 0, 999, 1,000 → `1.00k`, 999,500 → `1.00M`, and the largest 64-bit count.
-- [ ] A stage with one fresh unit in a million still shows one fresh cell.
+- [ ] A stage with one fresh unit in a million still shows one fresh cell, and a stage with no fresh unit shows none.
 - [ ] A local edit's progress reads mostly cached: a unit re-evaluated from records or patched without a re-trace counts cached.
 - [ ] Plain reporter lines, the Build Summary's cached share and the telemetry events carry the same counts the TUI shows. Finish events carry the final counts; a stage with no published total carries null counts (RW-10).
 - [ ] The Build Summary's totals name the fully cached stages and the fresh compute time, and the summary telemetry event carries both.
-- [ ] After a one-light edit and after a one-brush edit, the Build Summary names the changed light or source brush as the cause of each traced stage, with re-traced counts.
+- [ ] After a one-light edit and after a one-brush edit, the Build Summary names the changed light or source brush as the cause of each traced stage, with re-traced counts, and names no unchanged light or brush.
 
 **Durable record.**
 - [ ] `build_pipeline.md` states the new cache contract (§Build Cache), the tracer locality rule (§Ray traversal), and the progress presentation rules with the carried TUI conventions (§Progress reporting); no `context/lib/` doc still says a geometry edit re-keys every layer.
-- [ ] `docs/level_design.md` explains the progress bar, the summary's cost lines and the light-position quantum, naming no compiler diagnostic flag.
+- [ ] `docs/level_design.md` explains the progress bar, the summary's cost lines, which edits cost the most, and the light-position quantum, naming no compiler diagnostic flag.
 
 ### Manual
 Targets are owner targets: a miss stops the build and reports to the owner; it is not an executor tuning loop. Runs use default worker count and default `--cache-max-size`, timed as wall time from launch to exit, warm from a copy of the baseline cache.

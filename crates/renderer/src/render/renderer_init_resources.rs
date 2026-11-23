@@ -473,6 +473,7 @@ fn timing_pass_labels() -> Vec<&'static str> {
     pass_labels[TIMING_PAIR_DYNAMIC_CUBE_DEPTH] = "dynamic_cube_depth_upper";
     pass_labels[TIMING_PAIR_RESOLVE] = "resolve";
     pass_labels[TIMING_PAIR_FLUID_SURFACE] = "fluid_surface";
+    pass_labels[TIMING_PAIR_FLUID_REFLECTION_SUMS] = "fluid_reflection_sums";
     pass_labels[TIMING_PAIR_FLUID_REFLECTION] = "fluid_reflection";
     pass_labels[TIMING_PAIR_PLANAR_REFLECTION] = "planar_reflection";
     pass_labels[TIMING_PAIR_PLANAR_FORWARD] = "planar_forward";

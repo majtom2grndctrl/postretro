@@ -139,7 +139,8 @@ pub(super) fn mirror_at(reflectivity: f32) -> FluidSurfaceLook {
 
 /// The probe capture's uniform colour, f16 bits: linear (0, 0.5, 0).
 const PROBE_GREEN: [u16; 3] = [0, 0x3800, 0];
-const PROBE_TILE: u32 = 8;
+/// The probe tiles' edge, texels.
+pub(super) const PROBE_TILE: u32 = 8;
 
 /// One probe over a box holding the whole scene, its capture a uniform
 /// green with zero distances (box projection, no capture shadow), bound to

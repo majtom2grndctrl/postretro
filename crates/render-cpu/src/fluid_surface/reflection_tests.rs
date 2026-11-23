@@ -1682,3 +1682,289 @@ fn promotion_never_moves_the_ratio() {
     }
     assert_eq!(weighted.last(), Some(&Vec3::ZERO));
 }
+
+/// A deterministic xorshift stream for the sums' parity cases.
+struct Cases(u64);
+
+impl Cases {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+
+    /// Uniform in [0, 1).
+    fn unit(&mut self) -> f32 {
+        (self.next() >> 40) as f32 / (1u64 << 24) as f32
+    }
+
+    fn below(&mut self, bound: u32) -> u32 {
+        (self.next() % u64::from(bound)) as u32
+    }
+
+    fn direction(&mut self) -> Vec3 {
+        loop {
+            let v = Vec3::new(self.unit(), self.unit(), self.unit()) * 2.0 - Vec3::ONE;
+            if v.length_squared() > 1.0e-4 && v.length_squared() <= 1.0 {
+                return v.normalize();
+            }
+        }
+    }
+
+    fn rgb(&mut self, scale: f32) -> [f32; 3] {
+        [
+            self.unit() * scale,
+            self.unit() * scale,
+            self.unit() * scale,
+        ]
+    }
+}
+
+/// The area light's colour curve.
+const AREA_COLOR_CURVE: [[f32; 3]; 3] = [[1.0, 0.9, 0.8], [0.2, 0.3, 1.4], [0.7, 0.7, 0.7]];
+/// The area light's brightness curve.
+const AREA_BRIGHTNESS: [f32; 3] = [1.0, 0.25, 3.0];
+
+/// An area light's compose descriptor: its base colour carries colour ×
+/// intensity, and a colour curve over a long period, as the compiler
+/// stores a `light_area` whose glass glow lies in its share.
+fn area_light(intensity: f32) -> AnimatedLightScaleDescriptor<'static> {
+    AnimatedLightScaleDescriptor {
+        period: 3.0,
+        phase: 0.25,
+        base_color: [intensity, 0.8 * intensity, 0.6 * intensity],
+        brightness: &AREA_BRIGHTNESS,
+        color: &AREA_COLOR_CURVE,
+        is_active: true,
+    }
+}
+
+/// Per channel, the larger of 1 and the summed magnitude of the ratio's terms
+/// toward `direction`: the parity tolerance's scale.
+fn ratio_term_scale(
+    stored: &[FluidProbeLightGpu; REFLECTION_PROBE_LIGHTS_PER_PROBE],
+    direction: Vec3,
+    frame: &FluidReflectionLights<'_>,
+) -> Vec3 {
+    let lobes = reflection_probe_lobe_weights(direction.to_array());
+    let mut scale = Vec3::ZERO;
+    for light in stored {
+        if !reflection_light_present(frame, light.roster_index) {
+            continue;
+        }
+        let change = reflection_light_change(
+            reflection_light_value(frame, light.roster_index),
+            Vec3::from(light.reference),
+        );
+        scale += (reflection_light_share(&light.shares, &lobes) * change).abs();
+    }
+    scale.max(Vec3::ONE)
+}
+
+fn assert_sums_match_ratio(
+    stored: &[FluidProbeLightGpu; REFLECTION_PROBE_LIGHTS_PER_PROBE],
+    direction: Vec3,
+    frame: &FluidReflectionLights<'_>,
+    what: &str,
+) {
+    let sums = reflection_probe_sums(stored, frame);
+    let blended = reflection_ratio_from_sums(&sums, direction);
+    let per_fragment = reflection_ratio(stored, direction, frame);
+    let tolerance = ratio_term_scale(stored, direction, frame) * 1.0e-4;
+    assert!(
+        blended.is_finite(),
+        "{what}: blended ratio {blended} toward {direction}"
+    );
+    assert!(
+        (blended - per_fragment).abs().cmple(tolerance).all(),
+        "{what}: sums blend {blended} vs per-fragment {per_fragment} toward {direction} \
+         (tolerance {tolerance})"
+    );
+}
+
+// Acceptance row 1 (reflection-probe-fluid-pass-performance): the ratio
+// blended from a probe's per-lobe sums matches
+// the per-fragment ratio within 1e-4 of the larger of 1 and the summed
+// terms' magnitude, across random probes, lights, lobes and directions, and
+// in the named edge cases: an area light among the stored lights, a slot
+// holding no light, a light past the descriptor table, a zero reference
+// channel and a ratio clamping at zero.
+#[test]
+fn ratio_blended_from_probe_sums_matches_the_per_fragment_ratio() {
+    let mut cases = Cases(0x9E37_79B9_7F4A_7C15);
+    // Six descriptors: flat, flickering, an area light, one switched off.
+    let descriptors = [
+        flat_light([1.5, 0.5, 2.0], true),
+        flicker([0.4, 1.2, 0.8], 0.3),
+        area_light(40.0),
+        flat_light([3.0, 3.0, 3.0], false),
+        flicker([2.0, 0.1, 0.0], 0.7),
+        flat_light([0.0, 0.2, 5.0], true),
+    ];
+    let mut checked = 0;
+    for _ in 0..2_000 {
+        let time = cases.unit() * 10.0;
+        let frame = lights(&descriptors, time);
+        let stored: [FluidProbeLightGpu; REFLECTION_PROBE_LIGHTS_PER_PROBE] =
+            std::array::from_fn(|_| {
+                // Roster indices past the six descriptors and the reserved
+                // value index nothing.
+                let roster_index = match cases.below(9) {
+                    7 => 31,
+                    8 => REFLECTION_PROBE_NO_LIGHT,
+                    index => index.min(5),
+                };
+                let mut reference = cases.rgb(4.0);
+                if cases.below(5) == 0 {
+                    reference[cases.below(3) as usize] = 0.0;
+                }
+                entry(
+                    roster_index,
+                    reference,
+                    std::array::from_fn(|_| cases.rgb(1.0)),
+                )
+            });
+        for _ in 0..6 {
+            assert_sums_match_ratio(&stored, cases.direction(), &frame, "random case");
+            checked += 1;
+        }
+    }
+    assert!(checked >= 10_000);
+
+    // An area light among the stored lights, beside a slot holding no light
+    // and a light past the descriptor table.
+    let area = [flat_light([1.0; 3], true), area_light(40.0)];
+    let mut stored = unused_entries();
+    stored[0] = entry(1, [40.0, 32.0, 24.0], LOBED_SHARES);
+    stored[1] = entry(0, [2.0, 1.0, 1.0], LOBED_SHARES);
+    stored[3] = entry(2, [1.0; 3], [[1.0; 3]; REFLECTION_PROBE_LOBE_COUNT]);
+    for time in [0.0, 0.4, 1.7, 2.9] {
+        let frame = lights(&area, time);
+        assert!(!reflection_light_present(&frame, 2), "past the table");
+        for direction in sphere_directions() {
+            assert_sums_match_ratio(&stored, direction, &frame, "area light");
+        }
+    }
+
+    // A zero reference channel adds no term, live value or not.
+    let mut stored = unused_entries();
+    stored[0] = entry(0, [1.0, 0.0, 0.0], LOBED_SHARES);
+    let red = [flat_light([3.0, 5.0, 0.25], true)];
+    for direction in sphere_directions() {
+        assert_sums_match_ratio(&stored, direction, &lights(&red, 0.0), "zero reference");
+    }
+    let sums = reflection_probe_sums(&stored, &lights(&red, 0.0));
+    assert!(
+        sums.iter().all(|sum| sum.y == 0.0 && sum.z == 0.0),
+        "{sums:?}"
+    );
+
+    // Full shares on every lobe with every light off clamp at zero.
+    let full = [[1.0; 3]; REFLECTION_PROBE_LOBE_COUNT];
+    let stored: [FluidProbeLightGpu; REFLECTION_PROBE_LIGHTS_PER_PROBE] =
+        std::array::from_fn(|i| entry(i as u32, [1.0, 0.5, 2.0], full));
+    let off: Vec<_> = (0..REFLECTION_PROBE_LIGHTS_PER_PROBE)
+        .map(|_| flat_light([1.0, 0.5, 2.0], false))
+        .collect();
+    for direction in sphere_directions() {
+        assert_sums_match_ratio(&stored, direction, &lights(&off, 0.0), "clamped");
+        assert_eq!(
+            reflection_ratio_from_sums(
+                &reflection_probe_sums(&stored, &lights(&off, 0.0)),
+                direction
+            ),
+            Vec3::ZERO
+        );
+    }
+}
+
+// A light whose live value overflows its reference to +Inf: the sums cap its
+// change at the ceiling, so they and the blended ratio stay finite and the
+// light blows out the directions it reaches instead of blanking the whole
+// probe. Every channel the per-fragment ratio keeps finite still matches.
+// The random cases above stay below the ceiling (their largest change is
+// about 3.4e4 at that seed), so it never engages there.
+#[test]
+fn a_live_value_overflowing_its_reference_caps_the_sums_and_blanks_nothing() {
+    // Red is shared on every lobe, so the per-fragment red is +Inf toward
+    // every direction. Uncapped, every red sum would be +Inf, and each
+    // direction's zero lobe weights would turn its blend into NaN.
+    const OVERFLOW_SHARES: [[f32; 3]; REFLECTION_PROBE_LOBE_COUNT] = [
+        [0.6, 0.0, 0.4],
+        [0.1, 0.2, 0.0],
+        [0.9, 0.0, 0.5],
+        [0.3, 0.7, 0.2],
+        [0.5, 0.4, 0.8],
+    ];
+    let overflow_reference = [0.5, 1.0, 1.0];
+    let descriptors = [
+        flat_light([f32::MAX, 2.0, 1.0], true),
+        flat_light([2.0, 3.0, 0.5], true),
+    ];
+    let frame = lights(&descriptors, 0.0);
+    let mut stored = unused_entries();
+    stored[0] = entry(0, overflow_reference, OVERFLOW_SHARES);
+    stored[1] = entry(1, [1.0; 3], LOBED_SHARES);
+    let change = reflection_light_change(
+        reflection_light_value(&frame, 0),
+        Vec3::from(overflow_reference),
+    );
+    assert_eq!(
+        change.x,
+        f32::INFINITY,
+        "the live value overflows its reference"
+    );
+
+    let sums = reflection_probe_sums(&stored, &frame);
+    assert!(sums.iter().all(|sum| sum.is_finite()), "{sums:?}");
+    // The capped light adds at most the ceiling, the other light at most 1.
+    assert!(
+        sums.iter()
+            .all(|sum| sum.x <= FLUID_REFLECTION_CHANGE_CEILING + 1.0),
+        "{sums:?}"
+    );
+    for direction in sphere_directions() {
+        let blended = reflection_ratio_from_sums(&sums, direction);
+        let per_fragment = reflection_ratio(&stored, direction, &frame);
+        assert!(
+            blended.is_finite(),
+            "blended ratio {blended} toward {direction}"
+        );
+        assert!(
+            blended.x > 1.0,
+            "the light blows out {direction} rather than blanking it: {blended}"
+        );
+        assert_eq!(per_fragment.x, f32::INFINITY, "toward {direction}");
+        let tolerance = ratio_term_scale(&stored, direction, &frame) * 1.0e-4;
+        for channel in 0..3 {
+            if per_fragment[channel].is_finite() {
+                assert!(
+                    (blended[channel] - per_fragment[channel]).abs() <= tolerance[channel],
+                    "channel {channel}: sums blend {blended} vs per-fragment {per_fragment} \
+                     toward {direction} (tolerance {tolerance})"
+                );
+            }
+        }
+        assert!(
+            per_fragment.y.is_finite() && per_fragment.z.is_finite(),
+            "green and blue stay finite toward {direction}: {per_fragment}"
+        );
+    }
+}
+
+// The sums pass's dispatch covers every installed probe: one invocation
+// per probe, whole workgroups.
+#[test]
+fn the_sums_pass_dispatches_whole_workgroups_over_every_installed_probe() {
+    let width = FLUID_PROBE_SUMS_WORKGROUP_WIDTH;
+    assert_eq!(reflection_probe_sums_workgroups(0), 0);
+    assert_eq!(reflection_probe_sums_workgroups(1), 1);
+    assert_eq!(reflection_probe_sums_workgroups(width), 1);
+    assert_eq!(reflection_probe_sums_workgroups(width + 1), 2);
+    assert_eq!(
+        reflection_probe_sums_workgroups(MAX_REFLECTION_PROBES as u32) * width,
+        MAX_REFLECTION_PROBES as u32
+    );
+    assert_eq!(FLUID_PROBE_SUMS_BYTES, 20_480);
+}

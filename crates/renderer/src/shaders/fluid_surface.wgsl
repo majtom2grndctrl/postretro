@@ -98,8 +98,10 @@ struct AnimationDescriptor {
     direction_count: u32,
 };
 // Per animated-baked light compose descriptors, roster-indexed (the loader
-// refuses section 54 unless the roster-to-descriptor table is identity): the
-// reflection's live lighting reads them as SH compose does.
+// refuses section 54 unless the roster-to-descriptor table is identity). No
+// fluid entry reads it; it stays declared for the shared group-3 layout and
+// the kept per-fragment oracle (`fluid_reflection_ratio`). The sums pass reads
+// the same buffer.
 @group(3) @binding(11) var<storage, read> anim_descriptors: array<AnimationDescriptor>;
 // Curve samples and per-dynamic-light descriptors, as the forward pass reads
 // them, so a scripted light pulses on the water as it does on the walls.
@@ -159,6 +161,17 @@ struct FluidProbeTable {
 // inverse L1 distance from the capture point to what each texel saw, 0 where
 // it saw nothing. Sampled at level 0 through the same sampler.
 @group(4) @binding(3) var fluid_probe_distance: texture_2d_array<f32>;
+// The probes' live-lighting sums: one RGB sum per lobe per probe, probe-major,
+// written this frame by the sums pass before the fluid pass, read only by
+// fs_main_reflecting. Laid out at the probe cap; mirrors render-cpu
+// `FLUID_PROBE_SUMS_BYTES`.
+// IP rule (owner review to change, rendering_pipeline.md §7.3a): only
+// probe-bound faces of geometry with fixed position and orientation read the
+// sums; a probe bound to a moving surface keeps the per-fragment ratio.
+struct FluidProbeSums {
+    lobes: array<vec4<f32>, 1280>,
+};
+@group(4) @binding(4) var<uniform> fluid_probe_sums: FluidProbeSums;
 
 // --- Group 5: fluid scene inputs, rebuilt with the scene targets and the reflection target ---
 // Scene depth, loaded under the pass's read-only depth attachment.

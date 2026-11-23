@@ -1,0 +1,25 @@
+{
+  "map": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/7dacbf8e-a146-48c6-bc94-d7f57e2739b7/scratchpad/mt5/content/dev/maps/glossy-reflections-test.prl",
+  "camera": {
+    "position": [
+      -3.5,
+      1.6,
+      -3.5
+    ],
+    "yaw_deg": 45.0,
+    "pitch_deg": -89.0,
+    "fov_deg": 100.0
+  },
+  "resolution": [
+    3840,
+    2160
+  ],
+  "output": "/Users/dhiester/Projects/Personal/postretro/measurements/fluid-base-pass-cost/metal/runs/glossy-down-4k-after-m17f-high.png",
+  "measurement": {
+    "report": "/Users/dhiester/Projects/Personal/postretro/measurements/fluid-base-pass-cost/metal/runs/glossy-task6-glossy-down-4k-after-m17f-high-r1.report.json",
+    "warmup_frames": 300,
+    "sample_frames": 300
+  },
+  "light_term_mask": 383,
+  "reflection_quality": "high"
+}

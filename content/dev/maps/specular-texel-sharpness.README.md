@@ -33,7 +33,8 @@ The build takes a few seconds and should end with `Warnings: 0` and
 
 ## Fixture materials
 
-`tools/gen_specular_texel_fixtures.py` writes all nineteen PNGs into
+`tools/gen_specular_texel_fixtures.py` writes these nineteen PNGs, and the
+`glossy-reflections-test` side rooms' fifteen, into
 `content/dev/textures/test/`. Regenerate them with it and never edit them by
 hand; its test checks every texel:
 

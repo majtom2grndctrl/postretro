@@ -84,7 +84,8 @@ pub enum DeclaredMountCheckError {
 }
 
 /// Check `weapon`'s persisted `extras.mount` against `holder`'s `socket` at
-/// `clip`/`time`: the check `solve-weapon-mount --check` reports as VERIFIED.
+/// `clip`/`time`: the same declared-axes check `solve-weapon-mount --check`
+/// runs on persisted axes.
 ///
 /// Refuses a weapon without declared axes or without its applied Euler rather
 /// than falling back to geometric detection, which can never verify.

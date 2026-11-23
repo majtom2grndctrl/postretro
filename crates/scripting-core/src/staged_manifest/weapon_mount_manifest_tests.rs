@@ -1,7 +1,8 @@
 // Character weapon mounts through the SDK and the staged manifest load in both
-// runtimes: the E21 Scripting surface example (row S1), one table shared by
-// several definitions (row L5), the builders' by-value weapon check, and a
-// misspelled mesh key failing load (row L1).
+// runtimes: the Scripting surface example (row S1), one table shared by
+// several definitions (row L5), a defined character reused in another
+// definition, the builders' by-value weapon check, and a misspelled mesh key
+// failing load (row L1).
 // See: context/lib/entity_model.md §2 (MeshComponent) · context/lib/scripting.md §1
 
 use std::fs;
@@ -387,4 +388,154 @@ fn a_misspelled_mesh_key_fails_load_naming_the_key_and_the_character() {
     );
     assert_fails_mentioning("QuickJS", &js, needle);
     assert_fails_mentioning("Luau", &luau, needle);
+}
+
+const REUSED_JS: &str = r#"
+    const rifle = defineEntity({ canonicalName: "reference_rifle", components: { weapon: WEAPON } });
+    const player = defineEntity({ canonicalName: "player", components: {
+        mesh: { model: "models/exo_red/model.gltf",
+                weaponMounts: [{ weapon: rifle, attachments: { hand_r: "models/cyberpunk_weapons/rifle/exo_red.gltf" } }] },
+        inventory: { loadout: [rifle] },
+    } });
+    const entities = [
+        rifle,
+        player,
+        defineEntity({ canonicalName: "components_direct", components: player.components }),
+        defineEntity({ canonicalName: "components_spread", components: { ...player.components } }),
+        defineEntity({ canonicalName: "mesh_direct", components: { mesh: player.components.mesh } }),
+        defineEntity({ canonicalName: "mesh_spread", components: { mesh: { ...player.components.mesh, shadowOnly: true } } }),
+        defineEntity({ ...player, canonicalName: "entity_spread" }),
+    ];
+    globalThis.__postretroModManifest = defineMod({ name: "Reused", id: "reused", version: "1", entities });
+"#;
+
+const REUSED_LUAU: &str = r#"
+    local rifle = defineEntity({ canonicalName = "reference_rifle", components = { weapon = WEAPON } })
+    local player = defineEntity({ canonicalName = "player", components = {
+        mesh = { model = "models/exo_red/model.gltf",
+                 weaponMounts = { { weapon = rifle, attachments = { hand_r = "models/cyberpunk_weapons/rifle/exo_red.gltf" } } } },
+        inventory = { loadout = { rifle } },
+    } })
+    local meshSpread = table.clone(player.components.mesh)
+    meshSpread.shadowOnly = true
+    local entitySpread = table.clone(player)
+    entitySpread.canonicalName = "entity_spread"
+    local entities = {
+        rifle,
+        player,
+        defineEntity({ canonicalName = "components_direct", components = player.components }),
+        defineEntity({ canonicalName = "components_spread", components = table.clone(player.components) }),
+        defineEntity({ canonicalName = "mesh_direct", components = { mesh = player.components.mesh } }),
+        defineEntity({ canonicalName = "mesh_spread", components = { mesh = meshSpread } }),
+        defineEntity(entitySpread),
+    }
+    return defineMod({ name = "Reused", id = "reused", version = "1", entities = entities })
+"#;
+
+// A defined character's `components`, its `mesh` (direct or spread), or the
+// defined entity itself fed into another `defineEntity` lowers to the same
+// names: the builders pass through what they already lowered.
+#[test]
+fn reusing_a_defined_characters_components_or_mesh_lowers_the_same_in_both_runtimes() {
+    let js = built(
+        "reused_js",
+        &[("start-script.js", &REUSED_JS.replace("WEAPON", WEAPON_TS))],
+    );
+    let luau = built(
+        "reused_luau",
+        &[(
+            "start-script.luau",
+            &REUSED_LUAU.replace("WEAPON", WEAPON_LUAU),
+        )],
+    );
+    assert_eq!(js.entities, luau.entities, "both runtimes produce one set");
+    for name in [
+        "player",
+        "components_direct",
+        "components_spread",
+        "mesh_direct",
+        "mesh_spread",
+        "entity_spread",
+    ] {
+        assert_eq!(
+            mounts_of(&js, name),
+            Some(vec![mount("reference_rifle", RIFLE_BAKE)]),
+            "`{name}` lowers the reused table"
+        );
+    }
+    for name in [
+        "player",
+        "components_direct",
+        "components_spread",
+        "entity_spread",
+    ] {
+        let entity = js
+            .entities
+            .iter()
+            .find(|entity| entity.canonical_name.as_deref() == Some(name))
+            .unwrap();
+        assert_eq!(
+            entity.inventory.as_ref().unwrap().loadout,
+            ["reference_rifle"],
+            "`{name}` keeps the reused loadout"
+        );
+    }
+}
+
+// Passing lowered data through never admits an authored name: a string
+// `weapon` beside reused entries, or a string loadout entry, still rejects.
+#[test]
+fn an_authored_string_weapon_still_rejects_beside_reused_entries_in_both_runtimes() {
+    let player_js = r#"const rifle = defineEntity({ canonicalName: "reference_rifle", components: { weapon: WEAPON } });
+        const player = defineEntity({ canonicalName: "player", components: { mesh: { model: "m.gltf",
+            weaponMounts: [{ weapon: rifle, attachments: { hand_r: "r.gltf" } }] }, inventory: { loadout: [rifle] } } });"#
+        .replace("WEAPON", WEAPON_TS);
+    let player_luau = r#"local rifle = defineEntity({ canonicalName = "reference_rifle", components = { weapon = WEAPON } })
+        local player = defineEntity({ canonicalName = "player", components = { mesh = { model = "m.gltf",
+            weaponMounts = { { weapon = rifle, attachments = { hand_r = "r.gltf" } } } }, inventory = { loadout = { rifle } } } })"#
+        .replace("WEAPON", WEAPON_LUAU);
+    let cases = [
+        (
+            "mount",
+            r#"{ mesh: { model: "m.gltf", weaponMounts: [...player.components.mesh.weaponMounts,
+                 { weapon: "reference_rifle", attachments: { hand_r: "p.gltf" } }] } }"#,
+            r#"{ mesh = { model = "m.gltf", weaponMounts = { player.components.mesh.weaponMounts[1],
+                 { weapon = "reference_rifle", attachments = { hand_r = "p.gltf" } } } } }"#,
+            "components.mesh.weaponMounts[1].weapon must reference an entity descriptor",
+        ),
+        (
+            "loadout",
+            r#"{ mesh: player.components.mesh, inventory: { loadout: ["reference_rifle"] } }"#,
+            r#"{ mesh = player.components.mesh, inventory = { loadout = { "reference_rifle" } } }"#,
+            "components.inventory.loadout[0] must reference an entity descriptor",
+        ),
+    ];
+    for (label, js_components, luau_components, needle) in cases {
+        let js = format!(
+            r#"{player_js}
+               defineEntity({{ canonicalName: "second", components: {js_components} }});
+               globalThis.__postretroModManifest = defineMod({{ name: "M", id: "m", version: "1" }});"#
+        );
+        let luau = format!(
+            r#"{player_luau}
+               defineEntity({{ canonicalName = "second", components = {luau_components} }})
+               return defineMod({{ name = "M", id = "m", version = "1" }})"#
+        );
+        assert_fails_mentioning(
+            &format!("QuickJS {label}"),
+            &build(
+                &format!("reused_reject_js_{label}"),
+                &[("start-script.js", &js)],
+            ),
+            needle,
+        );
+        assert_fails_mentioning(
+            &format!("Luau {label}"),
+            &build(
+                &format!("reused_reject_luau_{label}"),
+                &[("start-script.luau", &luau)],
+            ),
+            needle,
+        );
+    }
 }

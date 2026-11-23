@@ -26,8 +26,7 @@ const MOUNT_SOCKET: &str = "hand_r";
 const BAKE_FILE: &str = "exo_red.gltf";
 const BAKE_BUFFER: &str = "exo_red.bin";
 
-/// The weapons exo_red's table must cover (E21 character weapon mounts,
-/// Acceptance → Content), by canonical name.
+/// The weapons exo_red's table must cover, by canonical name.
 const EXO_RED_TABLE_WEAPONS: [&str; 10] = [
     "reference_shotgun",
     "reference_pistol",
@@ -96,12 +95,13 @@ fn buffer_uris(gltf: &Path) -> Result<Vec<String>, String> {
 /// Every way `table` breaks the Content contract, one line per violation:
 /// each model listed for `socket` resolves under `content_root`, loads,
 /// declares `extras.mount` with its applied euler, passes the declared check
-/// on `holder` at the reference pose, sits beside its entry weapon's
-/// viewmodel as [`BAKE_FILE`] over [`BAKE_BUFFER`], and is no weapon's
-/// viewmodel.
+/// on `holder` (named `holder_name` in each line) at the reference pose, sits
+/// beside its entry weapon's viewmodel as [`BAKE_FILE`] over [`BAKE_BUFFER`],
+/// and is no weapon's viewmodel.
 fn table_violations(
     table: &[WeaponMountDescriptor],
     descriptors: &[EntityTypeDescriptor],
+    holder_name: &str,
     holder: &LoadedModel,
     content_root: &Path,
 ) -> Vec<String> {
@@ -119,7 +119,7 @@ fn table_violations(
                 |what: String| violations.push(format!("{weapon} {socket} {model}: {what}"));
             if socket != MOUNT_SOCKET {
                 fail(format!(
-                    "mounts on {socket:?}; exo_red's bakes are fitted to {MOUNT_SOCKET:?}"
+                    "mounts on {socket:?}; {holder_name}'s bakes are fitted to {MOUNT_SOCKET:?}"
                 ));
                 continue;
             }
@@ -169,7 +169,7 @@ fn table_violations(
             ) {
                 Ok(check) if check.passed() => {}
                 Ok(check) => fail(format!(
-                    "declared mount check failed on exo_red: {}",
+                    "declared mount check failed on {holder_name}: {}",
                     check.failures.join(", ")
                 )),
                 Err(error) => fail(format!("declared mount check errored: {error}")),
@@ -184,15 +184,21 @@ fn exo_red(content_root: &Path) -> LoadedModel {
         .expect("exo_red loads and binds its clips")
 }
 
-// E21 Content: every model the dev player's table lists is a VERIFIED exo_red
-// fit, beside its weapon's viewmodel, named for the rig, and no viewmodel.
+// Every model the dev player's table lists is a VERIFIED exo_red fit, beside
+// its weapon's viewmodel, named for the rig, and no viewmodel.
 #[test]
 fn every_dev_player_weapon_mount_is_a_verified_exo_red_bake_beside_its_viewmodel() {
     let descriptors = dev_descriptors();
     let content_root = dev_content_root();
     let table = player_table(&descriptors);
     assert!(!table.is_empty(), "the dev player's table lists bakes");
-    let violations = table_violations(table, &descriptors, &exo_red(&content_root), &content_root);
+    let violations = table_violations(
+        table,
+        &descriptors,
+        HOLDER_MODEL,
+        &exo_red(&content_root),
+        &content_root,
+    );
     assert!(
         violations.is_empty(),
         "table violations:\n{}",
@@ -200,7 +206,7 @@ fn every_dev_player_weapon_mount_is_a_verified_exo_red_bake_beside_its_viewmodel
     );
 }
 
-// E21 Content: the table covers the dev arsenal, one entry per weapon.
+// The table covers the dev arsenal, one entry per weapon.
 #[test]
 fn dev_player_weapon_mount_table_covers_exactly_the_dev_arsenal() {
     let descriptors = dev_descriptors();
@@ -215,8 +221,8 @@ fn dev_player_weapon_mount_table_covers_exactly_the_dev_arsenal() {
     assert_eq!(covered, BTreeSet::from(EXO_RED_TABLE_WEAPONS));
 }
 
-// E21 Content: with the dev player's real table, its level install logs no
-// missing-entry warning on either net role.
+// With the dev player's real table, its level install logs no missing-entry
+// warning on either net role.
 #[test]
 fn dev_player_level_install_warns_about_no_missing_weapon_mount_entry() {
     let descriptors = dev_descriptors();
@@ -243,8 +249,8 @@ fn dev_player_level_install_warns_about_no_missing_weapon_mount_entry() {
     }
 }
 
-// E21 Content: an entry repointed at its weapon's viewmodel fails the table
-// check, so the guard cannot pass on a viewmodel standing in for a bake.
+// An entry repointed at its weapon's viewmodel fails the table check, so the
+// guard cannot pass on a viewmodel standing in for a bake.
 #[test]
 fn a_weapon_mount_entry_repointed_at_a_viewmodel_fails_the_table_check() {
     let descriptors = dev_descriptors();
@@ -256,7 +262,13 @@ fn a_weapon_mount_entry_repointed_at_a_viewmodel_fails_the_table_check() {
         weapon: "reference_rifle".to_string(),
         attachments: [(MOUNT_SOCKET.to_string(), rifle_viewmodel)].into(),
     }];
-    let violations = table_violations(&table, &descriptors, &exo_red(&content_root), &content_root);
+    let violations = table_violations(
+        &table,
+        &descriptors,
+        HOLDER_MODEL,
+        &exo_red(&content_root),
+        &content_root,
+    );
     assert!(
         violations
             .iter()
@@ -294,8 +306,8 @@ fn without_extras_mount(document: &str) -> String {
     serde_json::to_string_pretty(&json).expect("bake JSON writes")
 }
 
-// E21 Content: a re-export of a listed bake that drops `extras.mount` fails
-// the table check rather than falling back to the geometric assist.
+// A re-export of a listed bake that drops `extras.mount` fails the table
+// check rather than falling back to the geometric assist.
 #[test]
 fn a_listed_bake_re_exported_without_extras_mount_fails_the_table_check() {
     let descriptors = dev_descriptors();
@@ -320,7 +332,13 @@ fn a_listed_bake_re_exported_without_extras_mount_fails_the_table_check() {
         attachments: [(MOUNT_SOCKET.to_string(), model.to_string())].into(),
     }];
 
-    let violations = table_violations(&table, &descriptors, &exo_red(&dev_root), scratch.path());
+    let violations = table_violations(
+        &table,
+        &descriptors,
+        HOLDER_MODEL,
+        &exo_red(&dev_root),
+        scratch.path(),
+    );
     assert_eq!(violations.len(), 1, "{violations:?}");
     assert!(
         violations[0].contains("declares no extras.mount"),

@@ -3,9 +3,10 @@
 
 //! Design-time mount math in the raw glTF frame.
 //!
-//! Blender conversion stays outside this module except for the one composition
-//! the declared-axes check needs ([`check_declared_mount`]): turning a persisted
-//! `extras.mount.euler` into the baked frame. Euler decomposition and bake
+//! Blender conversion lives here only as far as the declared-axes check
+//! ([`check_declared_mount`]) needs it to turn a persisted `extras.mount.euler`
+//! into the baked frame: the XYZ Euler composition and the glTF/Blender basis
+//! change, which the tool's solver shares. Euler decomposition and bake
 //! commands belong to the authoring tool. The socket resolver uses the regular
 //! model loader and neutral pose sampler so its reference-pose frame is the same
 //! frame used by runtime attachments.

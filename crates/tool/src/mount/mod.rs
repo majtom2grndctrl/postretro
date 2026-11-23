@@ -268,8 +268,9 @@ fn print_detected_baked_frame(detection: MountDetection) {
 fn print_non_reference_mount_pose_note(clip: &str, time: f32) {
     if !is_reference_mount_pose(clip, time) {
         println!(
-            "NOTE: pose (clip {clip:?}, time {}) is not the reference (clip \"idle_aiming\", time 0). A rigid bake is exact only at this pose or the reference, not both; wrist-reorienting poses such as limitator \"reloading\" need a skinned weapon.",
+            "NOTE: pose (clip {clip:?}, time {}) is not the reference (clip {REFERENCE_MOUNT_CLIP:?}, time {}). A rigid bake is exact only at this pose or the reference, not both; wrist-reorienting poses such as limitator \"reloading\" need a skinned weapon.",
             format_number(time),
+            REFERENCE_MOUNT_TIME,
         );
     }
 }
@@ -512,8 +513,8 @@ converter.postprocess_gltf(
         crate_root().join("../../content/dev/models")
     }
 
-    /// The committed exo_red weapon bakes (E21 character weapon mounts), listed
-    /// rather than scanned so a missing bake fails instead of shrinking the set.
+    /// The committed exo_red weapon bakes, listed rather than scanned so a
+    /// missing bake fails instead of shrinking the set.
     const EXO_RED_BAKE_WEAPONS: [&str; 6] =
         ["pistol", "rifle", "shotgun", "smg", "rpg", "sci_fi_weapon"];
 
@@ -537,7 +538,7 @@ converter.postprocess_gltf(
         ])
     }
 
-    /// exo_red's `mixamorig:Hips` rest rotation before the E21 re-face, ≈ Ry(180°),
+    /// exo_red's `mixamorig:Hips` rest rotation before its re-face, ≈ Ry(180°),
     /// as the text committed at 83802575a spelled it.
     const EXO_RED_PRE_REFACE_HIPS_REST: &str =
         "-3.8753523400579266e-15, 1, 2.6843682832122795e-08, 7.549789415861596e-08";
@@ -604,8 +605,8 @@ converter.postprocess_gltf(
 
     #[test]
     fn every_committed_exo_red_bake_verifies_on_exo_red() {
-        // E21 player model front: exo_red fronts glTF +Z, the holder front the
-        // check assumes, so each bake solved for it reports VERIFIED.
+        // exo_red fronts glTF +Z, the holder front the check assumes, so each
+        // bake solved for it reports VERIFIED.
         let holder = content_models().join("exo_red/model.gltf");
         for weapon in EXO_RED_BAKE_WEAPONS {
             let bake = exo_red_bake(weapon);
@@ -624,25 +625,37 @@ converter.postprocess_gltf(
         }
     }
 
+    /// The `uri` of every buffer `gltf` declares, in order.
+    fn buffer_uris(gltf: &Path) -> Vec<String> {
+        let text = std::fs::read_to_string(gltf)
+            .unwrap_or_else(|error| panic!("{} reads: {error}", gltf.display()));
+        let document: serde_json::Value = serde_json::from_str(&text)
+            .unwrap_or_else(|error| panic!("{} parses: {error}", gltf.display()));
+        document["buffers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|buffer| buffer["uri"].as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+
     #[test]
     fn every_moved_ar_4_rig_bake_declares_its_mount_and_verifies_on_its_rig() {
-        // E21 character weapon mounts: each rig's bake lives beside the shared
-        // ar_4 source, named for its rig, with a buffer named for itself.
+        // Each rig's bake lives beside the shared ar_4 source, named for its
+        // rig, with a buffer named for itself.
         let ar_4 = content_models().join("ar_4");
+        for rig in ["limitator", "rodin_sci-fi_trooper_m", "cyberpunk_warrior_f"] {
+            assert_eq!(
+                buffer_uris(&ar_4.join(format!("{rig}.gltf"))),
+                [format!("{rig}.bin")],
+                "{rig}: the bake's only buffer is its own {rig}.bin"
+            );
+        }
+        // limitator's bake declares no `extras.mount`, so only the moved
+        // bakes have a declared mount to verify.
         for rig in ["rodin_sci-fi_trooper_m", "cyberpunk_warrior_f"] {
             let bake = ar_4.join(format!("{rig}.gltf"));
             let holder = content_models().join(rig).join("model.gltf");
-            let text = std::fs::read_to_string(&bake)
-                .unwrap_or_else(|error| panic!("{rig} bake reads: {error}"));
-            let own_buffer = format!("\"uri\": \"{rig}.bin\"");
-            assert!(
-                text.contains(&own_buffer),
-                "{rig}: the bake's buffer is its own {rig}.bin"
-            );
-            assert!(
-                !text.contains("model.bin"),
-                "{rig}: the bake does not name a model.bin"
-            );
             let declared = load_model(&bake)
                 .unwrap_or_else(|error| panic!("{rig} bake loads: {error}"))
                 .mount;

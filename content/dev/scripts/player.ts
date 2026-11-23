@@ -22,7 +22,7 @@ import {
 // exo_red's third-person mounts: each bake is fitted to exo_red's `hand_r`
 // with `postretro-tool solve-weapon-mount`, kept beside its weapon's viewmodel
 // and named for the rig (docs/weapon-mounts.md).
-const EXO_RED_MOUNT = (weaponFolder: string) => ({
+const exoRedMount = (weaponFolder: string) => ({
   hand_r: `models/cyberpunk_weapons/${weaponFolder}/exo_red.gltf`,
 });
 
@@ -92,17 +92,17 @@ export const playerEntity = defineEntity({
       // One entry per weapon this character may wield; a weapon without one
       // mounts nothing and warns.
       weaponMounts: [
-        { weapon: referenceShotgunEntity, attachments: EXO_RED_MOUNT("shotgun") },
-        { weapon: referencePistolEntity, attachments: EXO_RED_MOUNT("pistol") },
-        { weapon: referenceRifleEntity, attachments: EXO_RED_MOUNT("rifle") },
-        { weapon: referencePlasmaBoltEntity, attachments: EXO_RED_MOUNT("rpg") },
-        { weapon: referenceRocketEntity, attachments: EXO_RED_MOUNT("sci_fi_weapon") },
+        { weapon: referenceShotgunEntity, attachments: exoRedMount("shotgun") },
+        { weapon: referencePistolEntity, attachments: exoRedMount("pistol") },
+        { weapon: referenceRifleEntity, attachments: exoRedMount("rifle") },
+        { weapon: referencePlasmaBoltEntity, attachments: exoRedMount("rpg") },
+        { weapon: referenceRocketEntity, attachments: exoRedMount("sci_fi_weapon") },
         // Spreads the reference rifle, so it shares the rifle's bake.
-        { weapon: incendiaryRifleEntity, attachments: EXO_RED_MOUNT("rifle") },
-        { weapon: wieldableFixtureAutoEntity, attachments: EXO_RED_MOUNT("smg") },
-        { weapon: wieldableFixturePressEntity, attachments: EXO_RED_MOUNT("shotgun") },
-        { weapon: coopHealthWeaponEntity, attachments: EXO_RED_MOUNT("smg") },
-        { weapon: coopHeatTestEntity, attachments: EXO_RED_MOUNT("smg") },
+        { weapon: incendiaryRifleEntity, attachments: exoRedMount("rifle") },
+        { weapon: wieldableFixtureAutoEntity, attachments: exoRedMount("smg") },
+        { weapon: wieldableFixturePressEntity, attachments: exoRedMount("shotgun") },
+        { weapon: coopHealthWeaponEntity, attachments: exoRedMount("smg") },
+        { weapon: coopHeatTestEntity, attachments: exoRedMount("smg") },
       ],
       animations: {
         idle: { clip: "idle", loop: true, crossfadeMs: 50 },

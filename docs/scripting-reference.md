@@ -424,19 +424,23 @@ only `hand_r`.
 
 Leave `weaponMounts` out for a character whose weapon is part of its model, like
 a robot with a gun arm: it mounts no weapon and logs nothing. Declaring the
-table, even empty, turns missing data into warnings. Each warns once per
-character and weapon per level load:
+table, even empty, turns missing data into warnings. None repeats within one
+level load:
 
-- A loadout weapon with no entry warns at level load.
+- A loadout weapon with no entry warns at level load, once per character and
+  weapon.
 - Any other weapon with no entry, such as a pickup, warns the first time the
-  character wields it. It mounts nothing.
-- A socket the character's model lacks warns, naming the character, weapon and
-  socket, and draws nothing there. The entry's other sockets still mount.
-- A listed model that fails to load warns. The entry's other sockets still mount.
+  character wields it, once per character and weapon. It mounts nothing.
+- A socket the character's model lacks warns once per character, weapon and
+  socket, naming all three, and draws nothing there. The entry's other sockets
+  still mount.
+- A listed model that fails to load warns once per character, weapon and
+  socket. The entry's other sockets still mount.
 - If the character's own model fails to load, wielding a weapon that has an
-  entry warns, naming the character, weapon and model. Nothing from the entry
-  mounts.
-- An entry whose weapon name matches no weapon warns and mounts nothing.
+  entry warns once per character and weapon, naming the character, weapon and
+  model. Nothing from the entry mounts.
+- An entry whose weapon name matches no weapon warns once per character and
+  name, and mounts nothing.
 
 These fail the mod's load:
 

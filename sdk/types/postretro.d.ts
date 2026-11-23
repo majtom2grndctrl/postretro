@@ -54,7 +54,7 @@ declare module "postretro" {
     playbackRate?: number;
   };
 
-  /** Authored mesh component preset attached to `EntityTypeDescriptor.components.mesh`. A descriptor carrying `components.mesh` is directly map-placeable via `canonicalName`. `model` is the model handle; `animations` declares the per-entity logical animation-state map (state name → clip + loop + crossfade + interrupt). When `animations` is present it must be non-empty and `defaultState` must name a declared state; omit both for a stateless mesh. */
+  /** Authored mesh component preset attached to `EntityTypeDescriptor.components.mesh`. A descriptor carrying `components.mesh` is directly map-placeable via `canonicalName`. `model` is the model handle; `animations` declares the per-entity logical animation-state map (state name → clip + loop + crossfade + interrupt). When `animations` is present it must be non-empty and `defaultState` must name a declared state; omit both for a stateless mesh. Unknown keys are rejected. */
   export type MeshDescriptor = {
     /** Model handle this entity renders. Must be non-empty. */
     model: string;
@@ -731,7 +731,7 @@ declare module "postretro" {
     viewmodel?: string;
     /** Optional sound keys for this weapon's events, played whoever wields it. Each key names a sound under the mod's `sounds/` directory without its extension (`sfx/pistol_fire`). Presentation only; resolved fire/impact keys accompany observer cues, while weapon tuning excludes sound keys. */
     sounds?: WeaponSounds;
-    /** Optional per-weapon first-person placement. Position uses metres from screen center (right/up/forward map to +X/+Y/-Z) and rotation uses degrees. Whole-value resolution is per-instance (future) > this field > character (future) > mod `defaultWeaponPlacement` > legacy BASE_OFFSET with zero rotation. v1 supplies no character or per-instance placement. It never changes the third-person hand socket. */
+    /** Optional per-weapon first-person placement. Position uses metres from screen center (right/up/forward map to +X/+Y/-Z) and rotation uses degrees. Whole-value resolution is per-instance (future) > this field > character (future) > mod `defaultWeaponPlacement` > legacy BASE_OFFSET with zero rotation. v1 supplies no character or per-instance placement. It never changes a third-person weapon mount (`mesh.weaponMounts`). */
     placement?: WeaponPlacementDescriptor;
     /** Optional model-local [x, y, z] offset in metres in the viewmodel's own frame. Omit it to spawn projectiles at the camera eye; when set, it moves the projectile spawn to the barrel while still converging on the crosshair. Author values come from the viewmodel rigid `muzzle` socket read. */
     muzzleOffset?: readonly [number, number, number];
@@ -1756,7 +1756,7 @@ declare module "postretro" {
     input?: ModInput;
     /** Mod-global switching policy. Optional; omission preserves immediate direct selection, zero cycle dwell, and reload interruption. */
     switching?: SwitchingDescriptor;
-    /** Optional mod-global first-person weapon placement. It is the lowest authored tier in whole-value resolution: per-instance (future) > per-weapon > character (future) > this default > legacy BASE_OFFSET with zero rotation. v1 supplies no character or per-instance placement. It never changes the third-person hand socket. */
+    /** Optional mod-global first-person weapon placement. It is the lowest authored tier in whole-value resolution: per-instance (future) > per-weapon > character (future) > this default > legacy BASE_OFFSET with zero rotation. v1 supplies no character or per-instance placement. It never changes a third-person weapon mount (`mesh.weaponMounts`). */
     defaultWeaponPlacement?: WeaponPlacementDescriptor;
     /** Engine-global entity-type registrations. Optional; survive level unload and are committed only after manifest validation and required durable-identity validation succeed. */
     entities?: ReadonlyArray<EntityTypeDescriptor>;
@@ -3199,9 +3199,9 @@ declare module "postretro" {
   };
   /** `ModManifest.presentationOverlays`: one overlay, or an array with at most one per source kind. */
   export type PresentationOverlays = PresentationOverlay | readonly PresentationOverlay[];
-  /** An entity descriptor returned by `defineEntity` that declares a weapon block and can be referenced from an inventory loadout. */
+  /** An entity descriptor returned by `defineEntity` that declares a weapon block and can be referenced from an inventory loadout or from `mesh.weaponMounts[].weapon`. */
   export type WeaponEntityDescriptor = EntityTypeDescriptor & { components: EntityTypeComponents & { weapon: WeaponDescriptor } };
-  /** Lowers `components.inventory.loadout` weapon descriptor references to their canonical names after validating each reference by value. */
+  /** Lowers `components.inventory.loadout` and `components.mesh.weaponMounts[].weapon` weapon descriptor references to their canonical names after validating each reference by value. */
   export function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T;
   /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`; `:` is not allowed, and the id may not consist entirely of dots. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `fluids`, `ghostStyles`, `maps`, `uiTrees`, `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor or an array of them, at most one per source kind. `factionSentimentDecay` is an optional non-negative return-to-baseline rate and defaults to zero (hold). */
   export function defineMod(config: ModManifestInput): ModManifest;

@@ -189,9 +189,10 @@ A rigid bake is exact only at the solve pose. A wrist-reorienting animation
 single rigid bake.
 
 A rigid bake fits only rigs whose hand frames match its solve, so each rig gets
-its own bake of each weapon. The rifle the Limitator holds is
-`content/dev/models/ar_4/limitator.gltf`; the trooper and warrior rigs each have
-their own bake in that folder. A folder whose raw source lives outside your
-project, like `ar_4/`, holds bakes only.
-
-Weapons NPCs carry still mount through `mesh.attachments`, not `weaponMounts`.
+its own bake of each weapon, named `<rig>.gltf` for the character model's folder
+name under `content/dev/models/`. The rifle the Limitator holds is
+`content/dev/models/ar_4/limitator.gltf`; the rifle squads' trooper and warrior
+each have their own bake in that folder, `rodin_sci-fi_trooper_m.gltf` and
+`cyberpunk_warrior_f.gltf`. These NPC bakes mount through `mesh.attachments`,
+not `weaponMounts`, as every weapon an NPC carries still does. A folder whose
+raw source lives outside your project, like `ar_4/`, holds bakes only.

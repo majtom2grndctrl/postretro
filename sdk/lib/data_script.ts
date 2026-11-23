@@ -375,6 +375,12 @@ export type Reaction<S = {}> = NamedReactionDescriptor<S> & {
 // builders can lower them into manifest data.
 const storeDeclarations = new WeakMap<object, StoreDeclaration>();
 
+// Lists and entries these builders already lowered. A defined entity's
+// `components`, `inventory` or `mesh` fed into another `defineEntity` passes
+// them through; an authored string never lands here, so it still rejects.
+const loweredLoadouts = new WeakSet<object>();
+const loweredWeaponMountEntries = new WeakSet<object>();
+
 /** Identity builder for entity type descriptors returned from `ModManifest.entities`. `descriptor` is the full archetype object: optional `canonicalName`, optional `components.inventory.loadout`, and optional component presets. Pure: no engine side effects. */
 /**
  * Lowers authored weapon descriptor references to the canonical names carried
@@ -384,6 +390,7 @@ const storeDeclarations = new WeakMap<object, StoreDeclaration>();
 function lowerLoadoutReferences(descriptor: import("postretro").EntityTypeDescriptor): void {
   const loadout = descriptor.components?.inventory?.loadout;
   if (loadout === undefined) return;
+  if (loweredLoadouts.has(loadout)) return;
   const loweredLoadout = loadout as unknown as string[];
 
   for (let index = 0; index < loadout.length; index += 1) {
@@ -401,6 +408,7 @@ function lowerLoadoutReferences(descriptor: import("postretro").EntityTypeDescri
     }
     loweredLoadout[index] = entry.canonicalName;
   }
+  loweredLoadouts.add(loadout);
 }
 
 /**
@@ -408,7 +416,8 @@ function lowerLoadoutReferences(descriptor: import("postretro").EntityTypeDescri
  * canonical name, with the same by-value checks as the loadout. It lowers a
  * copy: the authored list, its entries, and a shared or spread `mesh` or
  * `components` object stay untouched, so one list serves several
- * `defineEntity` calls. The lowered copy lands on this descriptor only.
+ * `defineEntity` calls. The lowered copy lands on this descriptor only, and
+ * its entries pass through a later `defineEntity` unchanged.
  */
 function lowerWeaponMountReferences(descriptor: import("postretro").EntityTypeDescriptor): void {
   const components = descriptor.components;
@@ -424,6 +433,7 @@ function lowerWeaponMountReferences(descriptor: import("postretro").EntityTypeDe
     if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
       return entry;
     }
+    if (loweredWeaponMountEntries.has(entry)) return entry;
     const weapon = (entry as { weapon?: unknown }).weapon;
     const weaponName = `${entryName}.weapon`;
     if (weapon === null || typeof weapon !== "object" || Array.isArray(weapon)) {
@@ -437,7 +447,9 @@ function lowerWeaponMountReferences(descriptor: import("postretro").EntityTypeDe
     if (typeof reference.canonicalName !== "string" || reference.canonicalName.length === 0) {
       throw new Error(`${weaponName} must reference a descriptor with a canonical name`);
     }
-    return { ...(entry as object), weapon: reference.canonicalName };
+    const loweredEntry = { ...(entry as object), weapon: reference.canonicalName };
+    loweredWeaponMountEntries.add(loweredEntry);
+    return loweredEntry;
   });
 
   (descriptor as { components: unknown }).components = {

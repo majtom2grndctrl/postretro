@@ -655,6 +655,11 @@ local defenseLayerDeclarations = setmetatable({}, { __mode = "k" })
 local damageTypeDeclarations = setmetatable({}, { __mode = "k" })
 local statusDeclarations = setmetatable({}, { __mode = "k" })
 local storeDeclarations = setmetatable({}, { __mode = "k" })
+-- Lists and entries these builders already lowered. A defined entity's
+-- `components`, `inventory` or `mesh` fed into another `defineEntity` passes
+-- them through; an authored string never lands here, so it still rejects.
+local loweredLoadouts = setmetatable({}, { __mode = "k" })
+local loweredWeaponMountEntries = setmetatable({}, { __mode = "k" })
 
 -- Part chunks (`data_script/*.luau`) evaluate before this module and publish
 -- through the temporary `__postretroDataScriptParts` bridge; the host clears it
@@ -692,6 +697,9 @@ local function lowerLoadoutReferences(descriptor: EntityTypeDescriptor)
   end
 
   local loadout = components.inventory.loadout
+  if loweredLoadouts[loadout] then
+    return
+  end
   for index, entry in ipairs(loadout) do
     local entryName = "components.inventory.loadout[" .. tostring(index - 1) .. "]"
     if type(entry) ~= "table" or hasNumericKey(entry) then
@@ -708,13 +716,15 @@ local function lowerLoadoutReferences(descriptor: EntityTypeDescriptor)
     end
     (loadout :: any)[index] = entry.canonicalName
   end
+  loweredLoadouts[loadout] = true
 end
 
 -- Lower each `components.mesh.weaponMounts` entry's weapon reference to its
 -- canonical name, with the same by-value checks as the loadout. It lowers a
 -- copy: the authored list, its entries, and a shared or spread `mesh` or
 -- `components` table stay untouched, so one list serves several
--- `defineEntity` calls. The lowered copy lands on this descriptor only.
+-- `defineEntity` calls. The lowered copy lands on this descriptor only, and
+-- its entries pass through a later `defineEntity` unchanged.
 local function lowerWeaponMountReferences(descriptor: EntityTypeDescriptor)
   local components = (descriptor :: any).components
   if type(components) ~= "table" or type(components.mesh) ~= "table" then
@@ -730,7 +740,7 @@ local function lowerWeaponMountReferences(descriptor: EntityTypeDescriptor)
   -- still rejects a table that is not a list.
   local lowered = table.clone(weaponMounts)
   for index, entry in ipairs(weaponMounts) do
-    if type(entry) ~= "table" or hasNumericKey(entry) then
+    if type(entry) ~= "table" or hasNumericKey(entry) or loweredWeaponMountEntries[entry] then
       continue
     end
     local weaponName = "components.mesh.weaponMounts[" .. tostring(index - 1) .. "].weapon"
@@ -749,12 +759,15 @@ local function lowerWeaponMountReferences(descriptor: EntityTypeDescriptor)
     end
     local loweredEntry = table.clone(entry)
     loweredEntry.weapon = weapon.canonicalName
+    loweredWeaponMountEntries[loweredEntry] = true
     lowered[index] = loweredEntry
   end
 
   local loweredMesh = table.clone(mesh)
   loweredMesh.weaponMounts = lowered
   local loweredComponents = table.clone(components)
+  -- The `;` ends this statement: without it Luau reads the parenthesized cast
+  -- below as a call on `loweredMesh`.
   loweredComponents.mesh = loweredMesh;
   (descriptor :: any).components = loweredComponents
 end

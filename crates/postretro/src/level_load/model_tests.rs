@@ -224,9 +224,9 @@ fn dev_descriptors_with_player_table(
     descriptors
 }
 
-// E21 M6: a mount joins its holder only on a weapon switch, so the install
-// sweep and the prediction must both carry every model a table lists, on
-// both net roles, before any pawn wields the weapon.
+// A mount joins its holder only on a weapon switch, so the install sweep and
+// the prediction must both carry every model a table lists, on both net roles,
+// before any pawn wields the weapon.
 #[test]
 fn every_weapon_mount_table_model_is_swept_and_predicted_on_both_roles() {
     let descriptors = dev_descriptors_with_player_table(vec![
@@ -253,8 +253,8 @@ fn every_weapon_mount_table_model_is_swept_and_predicted_on_both_roles() {
     }
 }
 
-// E21 M1: a character that declares a table warns at level install for each
-// loadout weapon it lacks, naming both, once per install on each peer.
+// A character that declares a table warns at level install for each loadout
+// weapon it lacks, naming both, once per install on each peer.
 #[test]
 fn level_install_warns_once_for_a_loadout_weapon_the_player_table_lacks() {
     let descriptors = dev_descriptors_with_player_table(Vec::new());

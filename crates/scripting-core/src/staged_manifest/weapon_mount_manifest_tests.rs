@@ -1,0 +1,390 @@
+// Character weapon mounts through the SDK and the staged manifest load in both
+// runtimes: the E21 Scripting surface example (row S1), one table shared by
+// several definitions (row L5), the builders' by-value weapon check, and a
+// misspelled mesh key failing load (row L1).
+// See: context/lib/entity_model.md §2 (MeshComponent) · context/lib/scripting.md §1
+
+use std::fs;
+
+use postretro_entities::data_descriptors::WeaponMountDescriptor;
+
+use super::tests::temp_mod_root;
+use super::*;
+
+const WEAPON_TS: &str = r#"{ damage: 1, range: 10, resolution: "hitscan", primary: { trigger: "press", recoveryMs: 100, steps: [{ kind: "shot" }] } }"#;
+const WEAPON_LUAU: &str = r#"{ damage = 1, range = 10, resolution = "hitscan", primary = { trigger = "press", recoveryMs = 100, steps = { { kind = "shot" } } } }"#;
+
+const RIFLE_BAKE: &str = "models/cyberpunk_weapons/rifle/exo_red.gltf";
+const PISTOL_BAKE: &str = "models/cyberpunk_weapons/pistol/exo_red.gltf";
+
+fn bundle_typescript(label: &str, modules: &[(&str, String)]) -> String {
+    let dir = temp_mod_root(&format!("weapon_mounts_ts_{label}"));
+    for (file, source) in modules {
+        fs::write(dir.join(file), source).expect("TypeScript module writes");
+    }
+    let entry = fs::canonicalize(dir.join(modules[0].0)).expect("entry exists");
+    postretro_script_compiler::bundle_entry(&entry).expect("the fixture bundles")
+}
+
+fn build(label: &str, files: &[(&str, &str)]) -> StagedManifestBuildResult {
+    let dir = temp_mod_root(&format!("weapon_mounts_{label}"));
+    for (file, source) in files {
+        fs::write(dir.join(file), source).expect("fixture should be written");
+    }
+    build_staged_manifest(&dir, 1, &StagedManifestBuildConfig::default())
+}
+
+fn built(label: &str, files: &[(&str, &str)]) -> Box<transfer::StagedManifest> {
+    let result = build(label, files);
+    match result.status {
+        StagedManifestBuildStatus::Built(manifest) => manifest,
+        other => panic!("{label} must build: {other:?} {:?}", result.diagnostics),
+    }
+}
+
+fn assert_fails_mentioning(label: &str, result: &StagedManifestBuildResult, needle: &str) {
+    assert_eq!(
+        result.status,
+        StagedManifestBuildStatus::Failed,
+        "{label} must fail load"
+    );
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains(needle)),
+        "{label}: no diagnostic mentions `{needle}`: {:?}",
+        result.diagnostics
+    );
+}
+
+fn mount(weapon: &str, model: &str) -> WeaponMountDescriptor {
+    WeaponMountDescriptor {
+        weapon: weapon.to_string(),
+        attachments: [("hand_r".to_string(), model.to_string())]
+            .into_iter()
+            .collect(),
+    }
+}
+
+fn mounts_of(
+    manifest: &transfer::StagedManifest,
+    name: &str,
+) -> Option<Vec<WeaponMountDescriptor>> {
+    manifest
+        .entities
+        .iter()
+        .find(|entity| entity.canonical_name.as_deref() == Some(name))
+        .unwrap_or_else(|| panic!("`{name}` registers"))
+        .mesh
+        .as_ref()
+        .and_then(|mesh| mesh.weapon_mounts.clone())
+}
+
+// The brief's Scripting surface example, verbatim apart from the weapon
+// modules it imports and the manifest that registers it.
+const PLAYER_TS: &str = r#"
+import { defineEntity } from "postretro";
+import { referencePistolEntity as pistol } from "./reference-pistol";
+import { referenceRifleEntity as rifle } from "./reference-rifle";
+
+export const playerEntity = defineEntity({
+  canonicalName: "player",
+  components: {
+    mesh: {
+      model: "models/exo_red/model.gltf",
+      shadowOnly: true,
+      // Each bake fitted to exo_red's hand with `postretro-tool solve-weapon-mount`,
+      // kept beside its weapon and named for the rig.
+      weaponMounts: [
+        { weapon: rifle, attachments: { hand_r: "models/cyberpunk_weapons/rifle/exo_red.gltf" } },
+        { weapon: pistol, attachments: { hand_r: "models/cyberpunk_weapons/pistol/exo_red.gltf" } },
+      ],
+      // animations… as today
+    },
+    inventory: { loadout: [rifle, pistol] },
+    // movement, health… as today
+  },
+});
+// Weapons no longer carry `thirdPersonModel`; `viewmodel` stays.
+"#;
+
+const START_TS: &str = r#"
+import { defineMod } from "postretro";
+import { playerEntity } from "./player";
+import { referencePistolEntity } from "./reference-pistol";
+import { referenceRifleEntity } from "./reference-rifle";
+
+export default defineMod({
+  name: "Mounts", id: "e21.mounts", version: "1",
+  entities: [referenceRifleEntity, referencePistolEntity, playerEntity],
+});
+"#;
+
+const PLAYER_LUAU: &str = r#"
+local pistol = require("./reference-pistol.luau").referencePistolEntity
+local rifle = require("./reference-rifle.luau").referenceRifleEntity
+
+return {
+  playerEntity = defineEntity({
+    canonicalName = "player",
+    components = {
+      mesh = {
+        model = "models/exo_red/model.gltf",
+        shadowOnly = true,
+        weaponMounts = {
+          { weapon = rifle, attachments = { hand_r = "models/cyberpunk_weapons/rifle/exo_red.gltf" } },
+          { weapon = pistol, attachments = { hand_r = "models/cyberpunk_weapons/pistol/exo_red.gltf" } },
+        },
+      },
+      inventory = { loadout = { rifle, pistol } },
+    },
+  }),
+}
+"#;
+
+const START_LUAU: &str = r#"
+local playerEntity = require("./player.luau").playerEntity
+local referencePistolEntity = require("./reference-pistol.luau").referencePistolEntity
+local referenceRifleEntity = require("./reference-rifle.luau").referenceRifleEntity
+
+return defineMod({
+  name = "Mounts", id = "e21.mounts", version = "1",
+  entities = { referenceRifleEntity, referencePistolEntity, playerEntity },
+})
+"#;
+
+fn weapon_module_ts(binding: &str, name: &str) -> String {
+    format!(
+        "import {{ defineEntity }} from \"postretro\";\nexport const {binding} = defineEntity({{ canonicalName: \"{name}\", components: {{ weapon: {WEAPON_TS} }} }});\n"
+    )
+}
+
+fn weapon_module_luau(binding: &str, name: &str) -> String {
+    format!(
+        "return {{ {binding} = defineEntity({{ canonicalName = \"{name}\", components = {{ weapon = {WEAPON_LUAU} }} }}) }}\n"
+    )
+}
+
+// S1: the Scripting surface example loads in both runtimes and lowers each
+// weapon handle to its canonical name, giving one descriptor.
+#[test]
+fn the_weapon_mounts_surface_example_lowers_identically_in_both_runtimes() {
+    let bundled = bundle_typescript(
+        "surface",
+        &[
+            ("start-script.ts", START_TS.to_string()),
+            ("player.ts", PLAYER_TS.to_string()),
+            (
+                "reference-pistol.ts",
+                weapon_module_ts("referencePistolEntity", "reference_pistol"),
+            ),
+            (
+                "reference-rifle.ts",
+                weapon_module_ts("referenceRifleEntity", "reference_rifle"),
+            ),
+        ],
+    );
+    let ts = built("surface_ts", &[("start-script.js", &bundled)]);
+    let pistol_luau = weapon_module_luau("referencePistolEntity", "reference_pistol");
+    let rifle_luau = weapon_module_luau("referenceRifleEntity", "reference_rifle");
+    let luau = built(
+        "surface_luau",
+        &[
+            ("start-script.luau", START_LUAU),
+            ("player.luau", PLAYER_LUAU),
+            ("reference-pistol.luau", &pistol_luau),
+            ("reference-rifle.luau", &rifle_luau),
+        ],
+    );
+    assert_eq!(ts.entities, luau.entities, "both runtimes produce one set");
+
+    assert_eq!(
+        mounts_of(&ts, "player"),
+        Some(vec![
+            mount("reference_rifle", RIFLE_BAKE),
+            mount("reference_pistol", PISTOL_BAKE),
+        ])
+    );
+    let player = ts
+        .entities
+        .iter()
+        .find(|entity| entity.canonical_name.as_deref() == Some("player"))
+        .unwrap();
+    assert!(player.mesh.as_ref().unwrap().shadow_only);
+    assert_eq!(
+        player.inventory.as_ref().unwrap().loadout,
+        ["reference_rifle", "reference_pistol"]
+    );
+}
+
+const SHARED_JS: &str = r#"
+    const rifle = defineEntity({ canonicalName: "reference_rifle", components: { weapon: WEAPON } });
+    const mounts = [{ weapon: rifle, attachments: { hand_r: "models/cyberpunk_weapons/rifle/exo_red.gltf" } }];
+    const base = { model: "models/exo_red/model.gltf", weaponMounts: mounts };
+    const sharedMesh = { model: "models/exo_red/model.gltf", weaponMounts: mounts };
+    const sharedComponents = { mesh: { model: "models/exo_red/model.gltf", weaponMounts: mounts } };
+    const entities = [
+        rifle,
+        defineEntity({ canonicalName: "direct_a", components: { mesh: { model: "models/a.gltf", weaponMounts: mounts } } }),
+        defineEntity({ canonicalName: "direct_b", components: { mesh: { model: "models/b.gltf", weaponMounts: mounts } } }),
+        defineEntity({ canonicalName: "spread_a", components: { mesh: { ...base, shadowOnly: true } } }),
+        defineEntity({ canonicalName: "spread_b", components: { mesh: { ...base } } }),
+        defineEntity({ canonicalName: "mesh_a", components: { mesh: sharedMesh } }),
+        defineEntity({ canonicalName: "mesh_b", components: { mesh: sharedMesh } }),
+        defineEntity({ canonicalName: "components_a", components: sharedComponents }),
+        defineEntity({ canonicalName: "components_b", components: sharedComponents }),
+    ];
+    if (mounts[0].weapon !== rifle || base.weaponMounts !== mounts || sharedMesh.weaponMounts !== mounts
+        || sharedComponents.mesh.weaponMounts !== mounts) {
+        throw new Error("defineEntity changed the authored weapon-mount table");
+    }
+    globalThis.__postretroModManifest = defineMod({ name: "Shared", id: "shared", version: "1", entities });
+"#;
+
+const SHARED_LUAU: &str = r#"
+    local rifle = defineEntity({ canonicalName = "reference_rifle", components = { weapon = WEAPON } })
+    local mounts = { { weapon = rifle, attachments = { hand_r = "models/cyberpunk_weapons/rifle/exo_red.gltf" } } }
+    local base = { model = "models/exo_red/model.gltf", weaponMounts = mounts }
+    local sharedMesh = { model = "models/exo_red/model.gltf", weaponMounts = mounts }
+    local sharedComponents = { mesh = { model = "models/exo_red/model.gltf", weaponMounts = mounts } }
+    local spreadA = table.clone(base)
+    spreadA.shadowOnly = true
+    local entities = {
+        rifle,
+        defineEntity({ canonicalName = "direct_a", components = { mesh = { model = "models/a.gltf", weaponMounts = mounts } } }),
+        defineEntity({ canonicalName = "direct_b", components = { mesh = { model = "models/b.gltf", weaponMounts = mounts } } }),
+        defineEntity({ canonicalName = "spread_a", components = { mesh = spreadA } }),
+        defineEntity({ canonicalName = "spread_b", components = { mesh = table.clone(base) } }),
+        defineEntity({ canonicalName = "mesh_a", components = { mesh = sharedMesh } }),
+        defineEntity({ canonicalName = "mesh_b", components = { mesh = sharedMesh } }),
+        defineEntity({ canonicalName = "components_a", components = sharedComponents }),
+        defineEntity({ canonicalName = "components_b", components = sharedComponents }),
+    }
+    if mounts[1].weapon ~= rifle or base.weaponMounts ~= mounts or sharedMesh.weaponMounts ~= mounts
+        or sharedComponents.mesh.weaponMounts ~= mounts then
+        error("defineEntity changed the authored weapon-mount table")
+    end
+    return defineMod({ name = "Shared", id = "shared", version = "1", entities = entities })
+"#;
+
+// L5: one table shared by several `defineEntity` calls (directly, through a
+// spread or shared `mesh`, or through a shared `components`) lowers to the
+// same names for every definition, and the authored table keeps its handles.
+#[test]
+fn a_shared_weapon_mounts_table_lowers_the_same_for_every_definition_in_both_runtimes() {
+    let js = built(
+        "shared_js",
+        &[("start-script.js", &SHARED_JS.replace("WEAPON", WEAPON_TS))],
+    );
+    let luau = built(
+        "shared_luau",
+        &[(
+            "start-script.luau",
+            &SHARED_LUAU.replace("WEAPON", WEAPON_LUAU),
+        )],
+    );
+    assert_eq!(js.entities, luau.entities);
+    for name in [
+        "direct_a",
+        "direct_b",
+        "spread_a",
+        "spread_b",
+        "mesh_a",
+        "mesh_b",
+        "components_a",
+        "components_b",
+    ] {
+        assert_eq!(
+            mounts_of(&js, name),
+            Some(vec![mount("reference_rifle", RIFLE_BAKE)]),
+            "`{name}` lowers the shared table"
+        );
+    }
+}
+
+// The builders reject a weapon-mount reference that is not a weapon
+// descriptor by value, as they do a loadout entry.
+#[test]
+fn the_sdk_rejects_a_non_weapon_mount_reference_by_value_in_both_runtimes() {
+    let cases = [
+        ("number", "42", "42", "must reference an entity descriptor"),
+        (
+            "bare name",
+            r#""reference_rifle""#,
+            r#""reference_rifle""#,
+            "must reference an entity descriptor",
+        ),
+        (
+            "descriptor without weapon",
+            r#"{ canonicalName: "crate", components: {} }"#,
+            r#"{ canonicalName = "crate", components = {} }"#,
+            "must reference a descriptor with a weapon block",
+        ),
+        (
+            "non-object weapon block",
+            r#"{ canonicalName: "crate", components: { weapon: [] } }"#,
+            r#"{ canonicalName = "crate", components = { weapon = 42 } }"#,
+            "must reference a descriptor with a weapon block",
+        ),
+        (
+            "weapon without canonical name",
+            r#"{ components: { weapon: {} } }"#,
+            r#"{ components = { weapon = {} } }"#,
+            "must reference a descriptor with a canonical name",
+        ),
+    ];
+    for (label, js_weapon, luau_weapon, reason) in cases {
+        let needle = format!("components.mesh.weaponMounts[0].weapon {reason}");
+        let js = format!(
+            r#"defineEntity({{ canonicalName: "player", components: {{ mesh: {{ model: "m.gltf",
+                 weaponMounts: [{{ weapon: {js_weapon}, attachments: {{ hand_r: "r.gltf" }} }}] }} }} }});
+               globalThis.__postretroModManifest = defineMod({{ name: "M", id: "m", version: "1" }});"#
+        );
+        let luau = format!(
+            r#"defineEntity({{ canonicalName = "player", components = {{ mesh = {{ model = "m.gltf",
+                 weaponMounts = {{ {{ weapon = {luau_weapon}, attachments = {{ hand_r = "r.gltf" }} }} }} }} }} }})
+               return defineMod({{ name = "M", id = "m", version = "1" }})"#
+        );
+        assert_fails_mentioning(
+            &format!("QuickJS {label}"),
+            &build(&format!("reject_js_{label}"), &[("start-script.js", &js)]),
+            &needle,
+        );
+        assert_fails_mentioning(
+            &format!("Luau {label}"),
+            &build(
+                &format!("reject_luau_{label}"),
+                &[("start-script.luau", &luau)],
+            ),
+            &needle,
+        );
+    }
+}
+
+// L1: a misspelled `mesh` key fails the mod load in both runtimes, naming the
+// key and the character, rather than silently opting the character out.
+#[test]
+fn a_misspelled_mesh_key_fails_load_naming_the_key_and_the_character() {
+    let needle = "entity `player`: `components.mesh.weaponMount` is not a mesh field";
+    let js = build(
+        "misspelled_js",
+        &[(
+            "start-script.js",
+            r#"globalThis.__postretroModManifest = defineMod({ name: "M", id: "m", version: "1",
+                 entities: [defineEntity({ canonicalName: "player", components: { mesh: {
+                   model: "models/exo_red/model.gltf", weaponMount: [] } } })] });"#,
+        )],
+    );
+    let luau = build(
+        "misspelled_luau",
+        &[(
+            "start-script.luau",
+            r#"return defineMod({ name = "M", id = "m", version = "1",
+                 entities = { defineEntity({ canonicalName = "player", components = { mesh = {
+                   model = "models/exo_red/model.gltf", weaponMount = {} } } }) } })"#,
+        )],
+    );
+    assert_fails_mentioning("QuickJS", &js, needle);
+    assert_fails_mentioning("Luau", &luau, needle);
+}

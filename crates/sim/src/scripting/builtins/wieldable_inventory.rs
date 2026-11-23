@@ -1003,6 +1003,7 @@ mod tests {
             animations: Default::default(),
             default_state: None,
             locomotion: None,
+            weapon_mounts: None,
         });
         weapon_descriptor.health = Some(
             postretro_scripting_core::data_descriptors::HealthDescriptor {

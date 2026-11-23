@@ -2,6 +2,10 @@
 // See: context/lib/scripting.md
 
 use super::super::*;
+use super::mesh_weapon_mounts::{
+    reject_unknown_mesh_keys, string_map_from_js, weapon_mounts_from_js,
+};
+use postretro_entities::data_descriptors::mesh_owner_label;
 use rquickjs::object::Filter;
 
 /// Deserialize an entity-type descriptor from a JS object. Shape:
@@ -70,7 +74,10 @@ pub fn entity_descriptor_from_js<'js>(
                         Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
                             reason: "`components.mesh` must be an object".to_string(),
                         })?;
-                    mesh = Some(mesh_descriptor_from_js(&mesh_obj)?);
+                    mesh = Some(mesh_descriptor_from_js(
+                        &mesh_obj,
+                        &mesh_owner_label(canonical_name.as_deref()),
+                    )?);
                 }
             }
             if components_obj.contains_key("movement").map_err(js_err)? {
@@ -303,49 +310,35 @@ fn reject_object_where_move_selector_belongs(
 }
 
 /// Parse a `components.mesh` object (JS). Shape:
-/// `{ model: string, attachments?: { [socket]: string }, animations?: { [state]: { clip, loop?, crossfadeMs?, interrupt? } }, defaultState?: string }`.
-/// Gathers raw fields and delegates validation to [`MeshDescriptor::build`] so
-/// both FFI paths share identical rules.
-pub fn mesh_descriptor_from_js<'js>(obj: &Object<'js>) -> Result<MeshDescriptor, DescriptorError> {
+/// `{ model: string, attachments?: { [socket]: string }, animations?: { [state]: { clip, loop?, crossfadeMs?, interrupt? } }, defaultState?: string, weaponMounts?: { weapon: string, attachments: { [socket]: string } }[] }`.
+/// Any other own key rejects load. `owner` names the character in those
+/// errors and in the weapon-mount rules. Gathers raw fields and delegates
+/// validation to [`MeshDescriptor::build`] so both FFI paths share identical
+/// rules.
+pub fn mesh_descriptor_from_js<'js>(
+    obj: &Object<'js>,
+    owner: &str,
+) -> Result<MeshDescriptor, DescriptorError> {
+    reject_unknown_mesh_keys(owner, obj)?;
     let model = get_required_string_js(obj, "model")?;
 
     let mut attachments = HashMap::new();
     if obj.contains_key("attachments").map_err(js_err)? {
         let raw: JsValue = obj.get("attachments").map_err(js_err)?;
-        if raw.type_of() != rquickjs::Type::Object {
-            return Err(DescriptorError::InvalidShape {
-                reason: "`components.mesh.attachments` must be a plain object map".to_string(),
-            });
-        }
-        let attachment_obj =
-            Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
-                reason: "`components.mesh.attachments` must be a plain object map".to_string(),
-            })?;
-        if let Some(prototype) = attachment_obj.get_prototype() {
-            let object_constructor: Object = attachment_obj
-                .ctx()
-                .globals()
-                .get("Object")
-                .map_err(js_err)?;
-            let object_prototype: Object = object_constructor.get("prototype").map_err(js_err)?;
-            if prototype.as_value() != object_prototype.as_value() {
-                return Err(DescriptorError::InvalidShape {
-                    reason: "`components.mesh.attachments` must be a plain object map".to_string(),
-                });
-            }
-        }
-        for entry in attachment_obj.props::<String, JsValue>() {
-            let (socket, value) = entry.map_err(js_err)?;
-            let attachment_model = value
-                .as_string()
-                .ok_or_else(|| DescriptorError::InvalidShape {
-                    reason: format!("`components.mesh.attachments.{socket}` must be a string"),
-                })?
-                .to_string()
-                .map_err(js_err)?;
-            attachments.insert(socket, attachment_model);
-        }
+        attachments = string_map_from_js(raw, "components.mesh.attachments")
+            .map_err(|reason| DescriptorError::InvalidShape { reason })?;
     }
+
+    let weapon_mounts = if obj.contains_key("weaponMounts").map_err(js_err)? {
+        let raw: JsValue = obj.get("weaponMounts").map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            None
+        } else {
+            Some(weapon_mounts_from_js(owner, raw)?)
+        }
+    } else {
+        None
+    };
 
     let mut animations_present = false;
     let mut states = Vec::new();
@@ -401,16 +394,20 @@ pub fn mesh_descriptor_from_js<'js>(obj: &Object<'js>) -> Result<MeshDescriptor,
         None
     };
 
-    MeshDescriptor::build(RawMeshDescriptor {
-        model,
-        attachments,
-        states,
-        default_state,
-        animations_present,
-        locomotion,
-        shadow_bias_scale,
-        shadow_only,
-    })
+    MeshDescriptor::build(
+        RawMeshDescriptor {
+            model,
+            attachments,
+            states,
+            default_state,
+            animations_present,
+            locomotion,
+            shadow_bias_scale,
+            shadow_only,
+            weapon_mounts,
+        },
+        owner,
+    )
 }
 
 /// Gather one animation-state entry from a JS object. `loop` defaults to

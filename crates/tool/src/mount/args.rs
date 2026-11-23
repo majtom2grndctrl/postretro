@@ -396,7 +396,7 @@ mod tests {
         let parsed = parse_solve_weapon_mount_args(os_args(&[
             "content/dev/models/limitator/model.gltf",
             "--weapon",
-            "content/dev/models/ar_4/model.gltf",
+            "content/dev/models/ar_4/limitator.gltf",
             "--barrel",
             "0",
             "1",
@@ -408,7 +408,7 @@ mod tests {
             "--raw-source",
             "raw/ar 4.glb",
             "--out",
-            "content/dev/models/ar_4/model.gltf",
+            "content/dev/models/ar_4/limitator.gltf",
             "--grip",
             "0.0",
             "-0.05",
@@ -431,7 +431,7 @@ mod tests {
         assert_eq!(parsed.time, 0.0);
         assert_eq!(
             parsed.weapon_path,
-            PathBuf::from("content/dev/models/ar_4/model.gltf")
+            PathBuf::from("content/dev/models/ar_4/limitator.gltf")
         );
         assert_eq!(parsed.barrel, Some(Vec3::Y));
         assert_eq!(parsed.up, Some(Vec3::Z));
@@ -439,7 +439,7 @@ mod tests {
         assert_eq!(parsed.raw_source.as_deref(), Some("raw/ar 4.glb"));
         assert_eq!(
             parsed.out.as_deref(),
-            Some("content/dev/models/ar_4/model.gltf")
+            Some("content/dev/models/ar_4/limitator.gltf")
         );
         assert_eq!(parsed.thresholds, MountCheckThresholds::default());
         assert_eq!(
@@ -570,9 +570,9 @@ mod tests {
         assert_eq!(
             parse_read_muzzle_offset_args(&os_args(&[
                 "--read-muzzle-offset",
-                "content/dev/models/ar_4/model.gltf",
+                "content/dev/models/ar_4/limitator.gltf",
             ])),
-            Ok(Some(PathBuf::from("content/dev/models/ar_4/model.gltf"))),
+            Ok(Some(PathBuf::from("content/dev/models/ar_4/limitator.gltf"))),
         );
         assert_eq!(
             parse_read_muzzle_offset_args(&os_args(&["holder.gltf"])),

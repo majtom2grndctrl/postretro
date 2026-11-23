@@ -56,8 +56,8 @@ read at: 6fcfc4b18
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Descriptor: `MeshDescriptor.weapon_mounts`, both bridges, unknown-mesh-key and entry load rules, SDK lowering (copy) and typedefs, surface fixture | worker (descriptor) | — | |
-| 2 | Content assets: ar_4 reorg into rig-named bakes, consumer updates, model-crate check move, ar_4 tool tests | worker (content, no cargo while 1 builds) | — | |
+| 1 | Descriptor: `MeshDescriptor.weapon_mounts`, both bridges, unknown-mesh-key and entry load rules, SDK lowering (copy) and typedefs, surface fixture | worker (descriptor) | — | done: `cargo test -p postretro-scripting-core` 1157 pass (11 `weapon_mount`); `-p postretro-sim typedef` 59 pass; dev-mod load twin test pass |
+| 2 | Content assets: ar_4 reorg into rig-named bakes, consumer updates, model-crate check move, ar_4 tool tests | worker (content, no cargo while 1 builds) | — | done (model-crate check move deferred to 5): `cargo test -p postretro-tool mount` 22 pass incl. `every_moved_ar_4_rig_bake_declares_its_mount_and_verifies_on_its_rig` |
 | 3 | Writer: compose base + entry by wielder class on all four paths, warnings, preload, install-time checks; resolution and missing-data tests | worker (netcode) | 1 | |
 | 4 | Retire `thirdPersonModel`: field, validation, readers, deferral, typedefs, fixtures, content | worker | 3 | |
 | 5 | exo_red table in `player.ts`, table-driven content test, dev-load no-warning test | integrating executor | 2, 3, 4 | |

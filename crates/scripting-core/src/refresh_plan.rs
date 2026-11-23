@@ -1239,6 +1239,7 @@ mod tests {
                 animations: Default::default(),
                 default_state: None,
                 locomotion: None,
+                weapon_mounts: None,
             });
             let old = [descriptor];
             let mut new = old.clone();
@@ -2368,6 +2369,7 @@ mod tests {
             animations: descriptor_states,
             default_state: Some("idle".into()),
             locomotion: None,
+            weapon_mounts: None,
         };
 
         let make_descriptor = |name: &str| EntityTypeDescriptor {

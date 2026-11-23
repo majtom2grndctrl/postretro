@@ -2426,7 +2426,7 @@ fn hot_reload_then_load_predicts_the_reloaded_model() {
     let test = "hot_reload_then_load_predicts_the_reloaded_model";
     const CLASSNAME: &str = "p9_reload_crate";
     const OLD: &str = super::lifecycle_commit_tests::MODEL;
-    const NEW: &str = "models/ar_4/model.gltf";
+    const NEW: &str = "models/ar_4/limitator.gltf";
     let level = crate::level_load::model_tests::write_level_with_entities(vec![
         crate::level_load::model_tests::record(CLASSNAME, &[], 0),
     ]);
@@ -2453,6 +2453,7 @@ fn hot_reload_then_load_predicts_the_reloaded_model() {
         animations: Default::default(),
         default_state: None,
         locomotion: None,
+        weapon_mounts: None,
     });
     script_ctx(&app)
         .data_registry

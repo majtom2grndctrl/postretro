@@ -11,7 +11,7 @@ or mount axes at this stage.
 ```bash
 blender --background --python tools/prop_to_gltf.py -- \
   --input raw/weapons/ar_4.glb \
-  --output content/dev/models/ar_4/model.gltf \
+  --output content/dev/models/ar_4/limitator.gltf \
   --grip 0.0 -0.05 0.12 \
   --scale 0.68
 ```
@@ -30,12 +30,12 @@ is baked. They are not axes copied from the grip/scale-only output.
 
 ```bash
 bin/postretro-tool solve-weapon-mount content/dev/models/limitator/model.gltf \
-  --weapon content/dev/models/ar_4/model.gltf \
+  --weapon content/dev/models/ar_4/limitator.gltf \
   --mount-joint hand_r \
   --barrel 0 1 0 \
   --up 0 0 1 \
   --raw-source raw/weapons/ar_4.glb \
-  --out content/dev/models/ar_4/model.gltf \
+  --out content/dev/models/ar_4/limitator.gltf \
   --grip 0.0 -0.05 0.12 \
   --scale 0.68
 ```
@@ -71,7 +71,7 @@ Normally, verify the final asset without re-supplying axes or Euler values:
 
 ```bash
 bin/postretro-tool solve-weapon-mount content/dev/models/limitator/model.gltf \
-  --weapon content/dev/models/ar_4/model.gltf \
+  --weapon content/dev/models/ar_4/limitator.gltf \
   --mount-joint hand_r \
   --check
 ```
@@ -100,7 +100,7 @@ paste-ready descriptor value:
 
 ```bash
 bin/postretro-tool solve-weapon-mount --read-muzzle-offset \
-  content/dev/models/ar_4/model.gltf
+  content/dev/models/ar_4/limitator.gltf
 ```
 
 The tool prints `muzzleOffset: [x, y, z]`. Copy the array into the weapon

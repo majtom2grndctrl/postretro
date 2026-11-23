@@ -271,7 +271,7 @@ fn prepared_models_match_the_oracle_sweep() {
     let handles = [
         PROP_MODEL,
         "models/does_not_exist/scene.gltf",
-        "models/ar_4/model.gltf",
+        "models/ar_4/limitator.gltf",
         "models/pose-modifier-fixture/joint_zones.gltf",
         "models/mutant/model.gltf",
     ];

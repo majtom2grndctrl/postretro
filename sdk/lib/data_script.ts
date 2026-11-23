@@ -404,6 +404,49 @@ function lowerLoadoutReferences(descriptor: import("postretro").EntityTypeDescri
 }
 
 /**
+ * Lowers each `components.mesh.weaponMounts` entry's weapon reference to its
+ * canonical name, with the same by-value checks as the loadout. It lowers a
+ * copy: the authored list, its entries, and a shared or spread `mesh` or
+ * `components` object stay untouched, so one list serves several
+ * `defineEntity` calls. The lowered copy lands on this descriptor only.
+ */
+function lowerWeaponMountReferences(descriptor: import("postretro").EntityTypeDescriptor): void {
+  const components = descriptor.components;
+  const mesh = components?.mesh;
+  if (components === null || components === undefined || mesh === null || mesh === undefined) {
+    return;
+  }
+  const weaponMounts: unknown = mesh.weaponMounts;
+  if (!Array.isArray(weaponMounts)) return;
+
+  const lowered = weaponMounts.map((entry: unknown, index: number) => {
+    const entryName = `components.mesh.weaponMounts[${index}]`;
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      return entry;
+    }
+    const weapon = (entry as { weapon?: unknown }).weapon;
+    const weaponName = `${entryName}.weapon`;
+    if (weapon === null || typeof weapon !== "object" || Array.isArray(weapon)) {
+      throw new Error(`${weaponName} must reference an entity descriptor`);
+    }
+    const reference = weapon as import("postretro").EntityTypeDescriptor;
+    const weaponBlock = reference.components?.weapon;
+    if (weaponBlock === null || typeof weaponBlock !== "object" || Array.isArray(weaponBlock)) {
+      throw new Error(`${weaponName} must reference a descriptor with a weapon block`);
+    }
+    if (typeof reference.canonicalName !== "string" || reference.canonicalName.length === 0) {
+      throw new Error(`${weaponName} must reference a descriptor with a canonical name`);
+    }
+    return { ...(entry as object), weapon: reference.canonicalName };
+  });
+
+  (descriptor as { components: unknown }).components = {
+    ...components,
+    mesh: { ...mesh, weaponMounts: lowered },
+  };
+}
+
+/**
  * Replaces each fluent ref in a life state's `assistable` with its IR: a ref
  * keeps its node outside the object, so it would not survive serialization.
  */
@@ -452,6 +495,7 @@ export function defineEntity<T>(
   descriptor: T & import("postretro").EntityTypeDescriptor,
 ): T {
   lowerLoadoutReferences(descriptor);
+  lowerWeaponMountReferences(descriptor);
   lowerAssistableReferences(descriptor);
   lowerDefenseLayerReferences(descriptor);
   return descriptor;

@@ -1217,3 +1217,43 @@ fn anonymous_particle_state_is_absent_from_both_sdk_type_surfaces() {
         assert!(output.contains("\"sprite_visual\""));
     }
 }
+
+// Both descriptor readers reject a `components.mesh` key, or a weapon-mount
+// entry key, outside the accepted lists, so the SDK's declared fields must be
+// exactly those lists: a typed field the readers reject breaks content, and an
+// accepted key the SDK omits goes untyped.
+#[test]
+fn mesh_sdk_fields_match_the_keys_the_descriptor_readers_accept() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+    use postretro_entities::data_descriptors::{MESH_DESCRIPTOR_KEYS, WEAPON_MOUNT_KEYS};
+    use postretro_scripting_core::primitives_registry::TypeShape;
+    use std::collections::BTreeSet;
+
+    let mut registry = PrimitiveRegistry::new();
+    register_all(&mut registry, ScriptCtx::new());
+    let sdk_fields = |name: &str| -> BTreeSet<&str> {
+        let registered = registry
+            .iter_types()
+            .find(|registered| registered.name == name)
+            .unwrap_or_else(|| panic!("the SDK registers `{name}`"));
+        let TypeShape::Struct { fields } = &registered.shape else {
+            panic!("`{name}` is a struct type");
+        };
+        fields
+            .iter()
+            .map(|field| field.name.trim_end_matches('?'))
+            .collect()
+    };
+    assert_eq!(
+        sdk_fields("MeshDescriptor"),
+        MESH_DESCRIPTOR_KEYS
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>()
+    );
+    assert_eq!(
+        sdk_fields("WeaponMountDescriptor"),
+        WEAPON_MOUNT_KEYS.iter().copied().collect::<BTreeSet<_>>()
+    );
+}

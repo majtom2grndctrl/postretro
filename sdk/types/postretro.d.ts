@@ -60,6 +60,8 @@ declare module "postretro" {
     model: string;
     /** Optional socket-name → content-relative prop-model map. Both socket names and model paths must be non-empty. Attachments are presentation-only and follow their holder's authored socket. */
     attachments?: { readonly [socket: string]: string };
+    /** Optional per-weapon mounts fitted to this model's rig: for each weapon the character may wield, the props it holds while that weapon is active. While a weapon is active its entry's sockets replace `attachments` on the same sockets; when the weapon leaves, those sockets return to `attachments`. A weapon with no entry mounts nothing. Omit the table for a character whose weapon is part of its model: it mounts no weapon and logs nothing. Declaring it, even empty, warns about each wielded weapon it lacks. Each weapon appears at most once. Presentation only: fire origin and hit tests ignore it. A hot-reload edit applies at the next level load. */
+    weaponMounts?: ReadonlyArray<WeaponMountDescriptor>;
     /** Per-model skinned pool-shadow receiver-bias multiplier. Defaults to 1.0; must be finite and in 0.0..=4.0. Set 0.0 to disable the receiver offset for this model. */
     shadowBiasScale?: number;
     /** When true, hides this mesh from the main view: it renders only into shadow-depth passes and, at Reflection quality very high and ultra, the water mirror. Optional; defaults to false. For player descriptors this applies only to the owning local view; peer viewers render the avatar forward. */
@@ -70,6 +72,14 @@ declare module "postretro" {
     defaultState?: string;
     /** Optional locomotion calibration block. Carries the `speedScale` rate-scaling toggle; omit for the default (rate-scaled) behavior. */
     locomotion?: LocomotionDescriptor;
+  };
+
+  /** One entry of `MeshDescriptor.weaponMounts`: the props a character mounts while it wields one weapon, each baked for this character's rig (`postretro-tool solve-weapon-mount`). Unknown keys are rejected. */
+  export type WeaponMountDescriptor = {
+    /** The weapon this entry mounts for: the value `defineEntity` returned for a descriptor declaring a weapon block, as in `components.inventory.loadout`. The SDK lowers it to the weapon's canonical name. */
+    weapon: WeaponEntityDescriptor;
+    /** Socket-name → content-relative prop-model map, mounted while this weapon is active. Must be non-empty; each model path uses forward slashes and stays inside the content root. */
+    attachments: { readonly [socket: string]: string };
   };
 
   /** Authored per-archetype locomotion calibration attached to `MeshDescriptor.locomotion`. Sibling to the per-state `travelSpeed` override. */

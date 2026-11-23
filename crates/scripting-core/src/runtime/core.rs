@@ -1833,6 +1833,7 @@ mod tests {
             animations: HashMap::new(),
             default_state: None,
             locomotion: None,
+            weapon_mounts: None,
         }
     }
 
@@ -2531,3 +2532,7 @@ mod tests {
         fs::remove_dir_all(mod_root).expect("temporary mod root should be removed");
     }
 }
+
+#[cfg(all(test, debug_assertions))]
+#[path = "weapon_mount_reload_tests.rs"]
+mod weapon_mount_reload_tests;

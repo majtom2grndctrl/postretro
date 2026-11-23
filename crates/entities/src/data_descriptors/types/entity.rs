@@ -13,6 +13,8 @@ use crate::data_descriptors::{
     TouchableDescriptor, WeaponDescriptor,
 };
 use crate::provenance::DescriptorComponentKind;
+
+use super::weapon_mounts::{WeaponMountDescriptor, validate_weapon_mounts};
 pub use postretro_foundation::data_descriptors::LightDescriptor;
 
 /// Authored mesh component preset attached to an [`EntityTypeDescriptor`].
@@ -33,6 +35,9 @@ pub use postretro_foundation::data_descriptors::LightDescriptor;
 /// `defaultState` without an `animations` block is also rejected. Clip resolution
 /// against the model's clip metadata is resolved at level load by
 /// `resolve_mesh_entity_clips`; `AnimationState::clip_index` stays `None` at parse.
+/// `weapon_mounts` follows the rules in
+/// [`super::weapon_mounts::validate_weapon_mounts`], and the readers reject any
+/// key outside [`super::weapon_mounts::MESH_DESCRIPTOR_KEYS`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct MeshDescriptor {
     pub model: String,
@@ -61,6 +66,12 @@ pub struct MeshDescriptor {
     /// the `speed_scale = true` default. Threaded onto the runtime
     /// [`crate::components::mesh::MeshAnimation`] at spawn.
     pub locomotion: Option<LocomotionDescriptor>,
+    /// The character's weapon-mount table (`weaponMounts` on the wire): for
+    /// each weapon it may wield, the props fitted to this model's rig. `None`
+    /// when the table is absent, which opts the character out of mounted
+    /// weapons silently; `Some` (even empty) declares the table. Part of the
+    /// mesh, so the hot-reload mesh deferral covers it.
+    pub weapon_mounts: Option<Vec<WeaponMountDescriptor>>,
 }
 
 /// Authored per-archetype locomotion calibration attached to
@@ -125,6 +136,7 @@ pub struct RawMeshDescriptor {
     pub locomotion: Option<LocomotionDescriptor>,
     pub shadow_bias_scale: Option<f32>,
     pub shadow_only: bool,
+    pub weapon_mounts: Option<Vec<WeaponMountDescriptor>>,
 }
 
 impl MeshDescriptor {
@@ -149,8 +161,9 @@ impl MeshDescriptor {
     /// Player presentation treats it as an owning-view exception: the local body
     /// remains shadow-only while peer viewers render the same avatar forward.
     /// `shadowBiasScale` is optional on the wire, defaults to 1.0, and must be
-    /// finite in 0.0..=4.0.
-    pub fn build(raw: RawMeshDescriptor) -> Result<Self, DescriptorError> {
+    /// finite in 0.0..=4.0. `owner` names the character in weapon-mount
+    /// errors ([`super::weapon_mounts::mesh_owner_label`]).
+    pub fn build(raw: RawMeshDescriptor, owner: &str) -> Result<Self, DescriptorError> {
         let RawMeshDescriptor {
             model,
             attachments,
@@ -160,6 +173,7 @@ impl MeshDescriptor {
             locomotion,
             shadow_bias_scale,
             shadow_only,
+            weapon_mounts,
         } = raw;
         if model.is_empty() {
             return Err(DescriptorError::InvalidShape {
@@ -181,6 +195,10 @@ impl MeshDescriptor {
                     ),
                 });
             }
+        }
+
+        if let Some(entries) = weapon_mounts.as_deref() {
+            validate_weapon_mounts(owner, entries)?;
         }
 
         let shadow_bias_scale = shadow_bias_scale.unwrap_or(1.0);
@@ -359,6 +377,7 @@ impl MeshDescriptor {
             animations,
             default_state,
             locomotion,
+            weapon_mounts,
         })
     }
 }
@@ -509,24 +528,28 @@ mod tests {
     // state, and keeps any it sets; a state with no base keeps its own.
     #[test]
     fn a_travel_variant_inherits_its_base_states_unset_rate_fields() {
-        let mesh = MeshDescriptor::build(RawMeshDescriptor {
-            model: "brute".to_string(),
-            attachments: HashMap::new(),
-            states: vec![
-                raw_state("run", Some(3.0), None, None),
-                raw_state("run_left", None, None, None),
-                raw_state("run_right", Some(2.0), None, None),
-                raw_state("leap", None, Some(false), Some(1.25)),
-                raw_state("leap_backward", None, None, None),
-                raw_state("leap_left", None, Some(true), Some(2.0)),
-                raw_state("idle_left", None, None, None),
-            ],
-            default_state: Some("run".to_string()),
-            animations_present: true,
-            locomotion: None,
-            shadow_bias_scale: None,
-            shadow_only: false,
-        })
+        let mesh = MeshDescriptor::build(
+            RawMeshDescriptor {
+                model: "brute".to_string(),
+                attachments: HashMap::new(),
+                states: vec![
+                    raw_state("run", Some(3.0), None, None),
+                    raw_state("run_left", None, None, None),
+                    raw_state("run_right", Some(2.0), None, None),
+                    raw_state("leap", None, Some(false), Some(1.25)),
+                    raw_state("leap_backward", None, None, None),
+                    raw_state("leap_left", None, Some(true), Some(2.0)),
+                    raw_state("idle_left", None, None, None),
+                ],
+                default_state: Some("run".to_string()),
+                animations_present: true,
+                locomotion: None,
+                shadow_bias_scale: None,
+                shadow_only: false,
+                weapon_mounts: None,
+            },
+            "entity `brute`",
+        )
         .expect("the mesh builds");
         let rates = |name: &str| {
             let state = &mesh.animations[name];

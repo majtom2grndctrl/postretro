@@ -1272,6 +1272,10 @@ mod seam_surface_example_tests;
 mod attack_handle_tests;
 
 #[cfg(test)]
+#[path = "staged_manifest/weapon_mount_manifest_tests.rs"]
+mod weapon_mount_manifest_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::data_descriptors::ModThemeTokens;

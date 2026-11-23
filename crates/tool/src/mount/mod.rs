@@ -674,6 +674,44 @@ converter.postprocess_gltf(
     }
 
     #[test]
+    fn every_moved_ar_4_rig_bake_declares_its_mount_and_verifies_on_its_rig() {
+        // E21 character weapon mounts: each rig's bake lives beside the shared
+        // ar_4 source, named for its rig, with a buffer named for itself.
+        let ar_4 = content_models().join("ar_4");
+        for rig in ["rodin_sci-fi_trooper_m", "cyberpunk_warrior_f"] {
+            let bake = ar_4.join(format!("{rig}.gltf"));
+            let holder = content_models().join(rig).join("model.gltf");
+            let text = std::fs::read_to_string(&bake)
+                .unwrap_or_else(|error| panic!("{rig} bake reads: {error}"));
+            let own_buffer = format!("\"uri\": \"{rig}.bin\"");
+            assert!(
+                text.contains(&own_buffer),
+                "{rig}: the bake's buffer is its own {rig}.bin"
+            );
+            assert!(
+                !text.contains("model.bin"),
+                "{rig}: the bake does not name a model.bin"
+            );
+            let declared = load_model(&bake)
+                .unwrap_or_else(|error| panic!("{rig} bake loads: {error}"))
+                .mount;
+            assert!(
+                declared.is_some_and(|mount| mount.euler.is_some()),
+                "{rig}: the bake declares its axes and applied euler"
+            );
+            assert_eq!(
+                hand_r_mount_check(&holder, &bake),
+                Ok(0),
+                "{rig}: VERIFIED: mount check passed on its rig"
+            );
+        }
+        assert!(
+            !ar_4.join("model.gltf").exists(),
+            "ar_4 holds named bakes, no model.gltf"
+        );
+    }
+
+    #[test]
     fn exo_red_bake_check_fails_on_a_minus_z_exo_red() {
         // The check discriminates: on the pre-re-face exo_red (Hips rest
         // Ry(180°), front −Z) every bake's barrel points back along −Z.

@@ -60,6 +60,7 @@ fn life_state_late_join_full_baseline_carries_downed_teammate_and_presents_crouc
             .collect(),
         default_state: Some("idle".into()),
         locomotion: None,
+        weapon_mounts: None,
     });
     life.ctx
         .data_registry

@@ -953,6 +953,7 @@ mod tests {
                 animations: Default::default(),
                 default_state: None,
                 locomotion: None,
+                weapon_mounts: None,
             }),
             health: None,
             behavior: None,

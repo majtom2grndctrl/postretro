@@ -421,6 +421,7 @@ mod tests {
                 animations: states,
                 default_state: Some("idle".to_string()),
                 locomotion: None,
+                weapon_mounts: None,
             }),
             health: None,
             behavior: None,

@@ -710,6 +710,55 @@ local function lowerLoadoutReferences(descriptor: EntityTypeDescriptor)
   end
 end
 
+-- Lower each `components.mesh.weaponMounts` entry's weapon reference to its
+-- canonical name, with the same by-value checks as the loadout. It lowers a
+-- copy: the authored list, its entries, and a shared or spread `mesh` or
+-- `components` table stay untouched, so one list serves several
+-- `defineEntity` calls. The lowered copy lands on this descriptor only.
+local function lowerWeaponMountReferences(descriptor: EntityTypeDescriptor)
+  local components = (descriptor :: any).components
+  if type(components) ~= "table" or type(components.mesh) ~= "table" then
+    return
+  end
+  local mesh = components.mesh
+  local weaponMounts = mesh.weaponMounts
+  if type(weaponMounts) ~= "table" then
+    return
+  end
+
+  -- Keys outside the sequence stay as authored, so the descriptor reader
+  -- still rejects a table that is not a list.
+  local lowered = table.clone(weaponMounts)
+  for index, entry in ipairs(weaponMounts) do
+    if type(entry) ~= "table" or hasNumericKey(entry) then
+      continue
+    end
+    local weaponName = "components.mesh.weaponMounts[" .. tostring(index - 1) .. "].weapon"
+    local weapon = entry.weapon
+    if type(weapon) ~= "table" or hasNumericKey(weapon) then
+      error(weaponName .. " must reference an entity descriptor", 3)
+    end
+    if type(weapon.components) ~= "table"
+      or type(weapon.components.weapon) ~= "table"
+      or hasNumericKey(weapon.components.weapon)
+    then
+      error(weaponName .. " must reference a descriptor with a weapon block", 3)
+    end
+    if type(weapon.canonicalName) ~= "string" or weapon.canonicalName == "" then
+      error(weaponName .. " must reference a descriptor with a canonical name", 3)
+    end
+    local loweredEntry = table.clone(entry)
+    loweredEntry.weapon = weapon.canonicalName
+    lowered[index] = loweredEntry
+  end
+
+  local loweredMesh = table.clone(mesh)
+  loweredMesh.weaponMounts = lowered
+  local loweredComponents = table.clone(components)
+  loweredComponents.mesh = loweredMesh;
+  (descriptor :: any).components = loweredComponents
+end
+
 -- Replace each fluent ref in a life state's `assistable` with its IR: a ref
 -- keeps its node outside the table, so it would not survive serialization.
 local function lowerAssistableReferences(descriptor: EntityTypeDescriptor)
@@ -766,6 +815,7 @@ end
 
 function DataScriptSdk.defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
   lowerLoadoutReferences(descriptor)
+  lowerWeaponMountReferences(descriptor)
   lowerAssistableReferences(descriptor)
   lowerDefenseLayerReferences(descriptor)
   return descriptor

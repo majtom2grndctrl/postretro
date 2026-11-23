@@ -6,43 +6,7 @@ use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 
 use super::exclusion::ExclusionScene;
 use super::placement::{FaceGeometry, PLANE_TOLERANCE_M, PlacedProbe};
-
-/// An orthonormal frame of the reflector: heights along its normal, 2D
-/// coordinates in its plane.
-pub(super) struct PlaneBasis {
-    pub(super) normal: DVec3,
-    u: DVec3,
-    v: DVec3,
-}
-
-impl PlaneBasis {
-    pub(super) fn new(normal: DVec3) -> Self {
-        let normal = normal.normalize();
-        // The world axis least aligned with the normal, made perpendicular.
-        let a = normal.abs();
-        let helper = if a.x <= a.y && a.x <= a.z {
-            DVec3::X
-        } else if a.y <= a.z {
-            DVec3::Y
-        } else {
-            DVec3::Z
-        };
-        let u = (helper - normal * helper.dot(normal)).normalize();
-        Self {
-            normal,
-            u,
-            v: normal.cross(u),
-        }
-    }
-
-    fn height(&self, p: DVec3) -> f64 {
-        p.dot(self.normal)
-    }
-
-    fn project(&self, p: DVec3) -> DVec2 {
-        DVec2::new(p.dot(self.u), p.dot(self.v))
-    }
-}
+use super::plane_basis::PlaneBasis;
 
 /// An axis-aligned rectangle in the reflector's plane.
 #[derive(Debug, Clone, Copy)]

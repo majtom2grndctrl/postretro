@@ -31,6 +31,7 @@ pub mod fog_cell_masks;
 pub mod fog_volumes;
 pub mod geometry;
 pub mod ghost_links;
+pub mod glossy_opt_in;
 #[cfg(feature = "gltf-resolve")]
 pub mod gltf_resolve;
 pub mod indirect_display;
@@ -58,6 +59,7 @@ pub mod sh_pool_cost;
 pub mod sh_reconstruct;
 pub mod sh_volume;
 pub mod shadowmask_atlas;
+pub mod specular_smoothness;
 pub mod sprite_collection;
 pub mod teleporters;
 pub mod texture_cache_keys;

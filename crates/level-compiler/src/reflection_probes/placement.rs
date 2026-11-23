@@ -41,7 +41,8 @@ pub(crate) fn tied(a: f64, b: f64) -> bool {
 /// Area-weighted geometry of one planar surface polygon.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct FaceGeometry {
-    /// Unit Newell normal, outward from the fluid (its winding's normal).
+    /// Unit Newell normal, its winding's: outward from a fluid, the front of
+    /// a world face.
     pub normal: DVec3,
     pub area: f64,
     /// Area centroid: a collinear vertex adds a zero-area fan triangle, so

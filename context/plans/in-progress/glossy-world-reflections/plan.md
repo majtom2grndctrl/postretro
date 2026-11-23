@@ -1,10 +1,35 @@
 # glossy-world-reflections — plan of record
 
 mode: resumable
-status: approved
+status: blocked
 read at: 8dda8a34a
 
 Source unchanged since the brief's `a7bf2a19`; every cited symbol re-read at `8dda8a34a` (compiler, runtime, shaders).
+
+## Block (2026-11-22): the 256 cap does not hold on production-scale content
+
+**Premise.** Decisions "Probe cap stays at 256" and "Generalized probes" (one probe per coplanar glossy face group) together assume glossy content fits the cap, with drops at the margin. The first slice existed to test that on real content (Path, First slice).
+
+**Evidence (Task 1 census).** Groups are coplanar (1°, 1 mm), edge-connected glossy faces, the probe estimate; water is id 54's existing count. The owner's private maps are labelled A–L; the label-to-name key is held outside this repo. Their committed PRLs predate current loader versions (AlphaLights v4, ClusterShPayloads v2), so geometry is a past compile's: right for a census, not for anything else.
+
+| Map | Glossy faces | Planes | Groups (up/down/other) | Groups < 1 m² | Water | Estimate |
+|---|---|---|---|---|---|---|
+| A | 7148 | 472 | 1708 (273/229/1206) | 1330 | 37 | 1745 |
+| B | 5893 | 770 | 2203 (400/146/1657) | 1411 | 26 | 2229 |
+| C | 1562 | 159 | 355 | 243 | 0 | 355 |
+| D | 1210 | 188 | 336 | 144 | 28 | 364 |
+| E | 1099 | 207 | 293 | 109 | 0 | 293 |
+| G | 665 | 205 | 320 | 201 | 1 | 321 |
+| F, H, I, J | 747, 468, 199, 182 | — | 225, 219, 94, 98 | — | 0 | under cap |
+| `specular-texel-sharpness` (dev) | 56 | 14 | 15 | 6 | 0 | 15 |
+
+Six of twelve maps pass 256; A and B by 7–9×. One probe per plane does not fit A or B (472, 770 planes), and groups of 1 m² or more alone are 378 and 792. Under the Decisions as written, smallest-first drops would leave most glossy faces on those maps unreflected, so the Problem's "every static world face whose material paints sharpness above a floor reflects its room" fails on the content the owner calls closest to production. No `content/dev` map but the sharpness dev map has a glossy material (`campaign-test` has none).
+
+**Options for the owner** (executor recommends 1):
+1. **A world-face probe class at the minimum-blur resolution.** World faces never read sharper than m_min = 2, the 32² tile, so their probes capture at 32² with a chain to 4², packed many per array layer, under their own cap (4096 ≈ 13.6 MiB: colour ≈ 1.3 KiB + distance 2 KiB per probe, about today's 256-probe water cost). Water's probes and their 128² arrays stay exactly as built, so water parity is by construction; a probe binding water and a glossy floor stays a water-class probe. Changes Decisions Blur, Probe cap and the Wire format (a second tile size and per-class layout); the world share table and sums move to storage buffers in the overlay's own layout. Coarser distance tiles widen the capture-shadow fade on world faces. Capture rays fall ~16× per world probe.
+2. **Merge small groups.** Groups under an area floor bind to the nearest same-facing probe whose capture point lies in front of them in the same room, else draw no reflection. Keeps format and cap; changes Generalized probes. Not enough alone for A and B.
+3. **Raise the cap at 128²** (the roadmap's `reflection-probe-streaming` territory): ≈ 115 MiB for B, layers past 256 need packing anyway.
+4. **Keep the Decisions**: accept that most glossy faces on large maps drop, and ask authors to cut probe counts with `reflection_volume` boxes (one probe per facing per box).
 
 ## Corrections
 - **Self-transparency is per face, the exclusion mask per brush.** `hit.rs` `ProbeExclusion` / `closest_hit_masked` skip whole brushes (`face_brushes`); a glossy face's own brush usually has other faces the probe must see. → Extend the primary-ray mask with a per-probe face set (bound reflector faces), beside the brush set, keyed into `stage_key.rs` `cache_key` with `exclusions`.
@@ -123,7 +148,7 @@ Rows numbered in brief order. GPU proofs run with `POSTRETRO_REQUIRE_GPU=1` on M
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | **Census (risk: cap lock on real content).** Opt-in predicate in level-format; slot loader from `.prm`; reflector-face census over id-17 faces grouped by plane; a `prl-build` report line (glossy faces, groups, probes vs cap). Run on the owner's census fixture. Rows 3 (compiler half) | integrating executor | — | |
+| 1 | **Census (risk: cap lock on real content).** Opt-in predicate in level-format; slot loader from `.prm`; reflector-face census over id-17 faces grouped by plane; a `prl-build` report line (glossy faces, groups, probes vs cap). Run on the owner's census fixture. Rows 3 (compiler half) | integrating executor | — | done: `level-format` `specular_smoothness` (the one decode; render-cpu re-exports it) and `glossy_opt_in`; compiler `glossy_materials`, `world_reflectors`, `glossy_census` (one info line per build), `plane_basis` (moved out of `exclusion_underside.rs`). Placement, capture, cache key and output bytes unchanged. Harness: `POSTRETRO_GLOSSY_CENSUS_PRLS=<absolute paths, :-separated> POSTRETRO_GLOSSY_CENSUS_PRM_ROOT=<baked/materials> cargo test -p postretro-level-compiler --bin prl-build -- glossy_probe_census --ignored --nocapture`. Result: Block, above |
 | 2 | **Mover register screen (risk: cliff).** Spike the pixel and smooth mover entries writing highlights to a second output; screen with `tools/metal_register_screen/`. Land nothing if it crosses; go to checkpoint 3 | integrating executor | — | done: clear. Exactness-preserving shape (a third, untinted-specular sum beside `total` / `tinted_total`; second `@location(1)` `Rgba16Float` output; colour expressions untouched): `fs_pixel` 127 → 127 VGPRs, `fs_smooth` 119 → 119 (cliff at 128), SGPRs 104 both. Checkpoint 3 not needed. Task 11 must also teach the screen tool a second target: `screen.swift` declares `colorAttachments[1]`, and `regs.py` accepts the AMD slice's `air.new.packedFragmentFunction` tag (same offsets) a two-output entry carries. Spare shape if headroom is ever needed: one specular sum, added to `total` only when untinted, `tinted_total` = `select(0, sum, tinted)` |
 | 3 | **Format v3.** Six lobes (−Y last), colour mip count (1 until Task 7), world binding list in id-17 numbering; loader cross-checks; v2 refused. Rows 18, 61 | worker (level-format, loader) | — | |
 | 4 | **Probe resources leave fluid ownership.** Level-owned probe records (arrays, table, sums), ledger row, sums dispatch ahead of the first probe-term draw, gated on fluid or overlay draws; ownership scans rewritten keeping their fences. Rows 55, 57, 64, 65 | integrating executor | 3 | |

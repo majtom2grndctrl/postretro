@@ -9,8 +9,9 @@ use crate::map_data::{BrushVolume, ReflectionCapture};
 use crate::partition::Aabb;
 
 use super::capture_bounds::ProjectionBox;
-use super::exclusion_underside::{PlaneBasis, bound_water, downward_faces, has_underside};
+use super::exclusion_underside::{bound_water, downward_faces, has_underside};
 use super::placement::PlacedProbe;
+use super::plane_basis::PlaneBasis;
 
 /// Water reflects about its plane, whose normal is up.
 pub(crate) const WATER_REFLECTOR_NORMAL: DVec3 = DVec3::Y;

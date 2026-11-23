@@ -17,9 +17,12 @@ mod derived;
 mod emissive_factor;
 mod exclusion;
 mod exclusion_underside;
+mod glossy_census;
+mod glossy_materials;
 mod hit;
 mod lightmap_sample;
 pub(crate) mod placement;
+mod plane_basis;
 mod reference;
 mod roster;
 mod sdf_lights;
@@ -27,6 +30,7 @@ mod sh_sample;
 mod shading;
 mod share;
 mod stage_key;
+mod world_reflectors;
 
 #[cfg(test)]
 mod area_glow_capture_tests;
@@ -48,6 +52,10 @@ mod distance_tests;
 mod exclusion_stage_tests;
 #[cfg(test)]
 mod exclusion_tests;
+#[cfg(test)]
+mod glossy_census_prl_tests;
+#[cfg(test)]
+mod glossy_census_tests;
 #[cfg(test)]
 pub(crate) mod placement_test_fixtures;
 #[cfg(test)]
@@ -288,6 +296,14 @@ fn bake_or_load_with(
     constants: &ExclusionConstants,
     classify: impl FnOnce(&ExclusionScene<'_>, &[PlacedProbe], &ExclusionConstants) -> Vec<Vec<u32>>,
 ) -> anyhow::Result<Option<ReflectionProbesSection>> {
+    // Placement binds no glossy world face yet: the census reports the probes
+    // they will ask for, on every build, water or not.
+    glossy_census::report_census(
+        inputs.geometry,
+        inputs.texture_keys,
+        inputs.prm_root,
+        control.governor(),
+    );
     if inputs.reflection_volumes.is_empty()
         && up_facing_faces(inputs.environment_volumes).is_empty()
     {

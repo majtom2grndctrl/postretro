@@ -7,7 +7,7 @@ use glam::{DVec2, DVec3};
 /// coordinates in its plane. A pure function of the normal, so two faces with
 /// one normal share one frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct PlaneBasis {
+pub(crate) struct PlaneBasis {
     pub(super) normal: DVec3,
     u: DVec3,
     v: DVec3,
@@ -45,6 +45,11 @@ impl PlaneBasis {
     /// inverse of [`Self::project`] and [`Self::height`].
     pub(super) fn lift(&self, p: DVec2, height: f64) -> DVec3 {
         self.u * p.x + self.v * p.y + self.normal * height
+    }
+
+    /// The plane's two unit axes, the directions [`Self::project`] measures.
+    pub(super) fn axes(&self) -> [DVec3; 2] {
+        [self.u, self.v]
     }
 }
 

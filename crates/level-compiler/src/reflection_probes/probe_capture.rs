@@ -14,7 +14,7 @@ use super::capture::{RowCapture, TILE_INTERIOR, capture_row, encode_distance_til
 use super::capture_exclusion::ProbeExclusion;
 use super::placement::{PlacedProbe, fluid_bindings, world_bindings};
 use super::shading::CaptureScene;
-use super::share::{ShareReport, ShareSums};
+use super::share::{ShareHemisphere, ShareReport, ShareSums};
 
 /// [`capture_probes`] with each probe's primary rays skipping its
 /// `excluded` brushes (sorted brush indices, one set per probe).
@@ -70,6 +70,7 @@ pub(super) fn capture_probes(
             let captured = capture_row(
                 scene,
                 probes[probe].capture_point_vec3(),
+                ShareHemisphere::of(&probes[probe].facing),
                 &exclusions[probe],
                 row,
                 references,

@@ -78,8 +78,8 @@ pub(crate) fn report_census(geometry: &GeometryResult, materials: &GlossyMateria
 }
 
 /// The census's report line. The group count is the probe estimate glossy
-/// faces ask for against the cap; placement, when it runs, groups floors by
-/// plane and fitted box instead, so its count can differ.
+/// faces ask for against the cap; placement, when it runs, groups faces by
+/// facing, plane and fitted box instead, so its count can differ.
 fn log_census(census: &GlossyCensus) {
     log::info!(
         "[ReflectionProbes] glossy census: {} of {} material(s) reflect; {} world face(s) on {} \

@@ -4,6 +4,7 @@
 use glam::{DVec3, Vec3};
 
 use super::box_fit::{FIT_AZIMUTHS, FIT_RING_COUNT, WorldBounds, fit_box, fit_rays};
+use super::fit_frame::FitFrame;
 use super::hit::SceneTracer;
 use super::reflection_probes_test_fixtures::{GeometryBuilder, box_room, rect};
 use crate::bvh_build::build_bvh;
@@ -14,7 +15,7 @@ fn fit(geometry: &crate::geometry::GeometryResult, origin: DVec3) -> (DVec3, DVe
     let bounds =
         WorldBounds::from_positions(geometry.geometry.vertices.iter().map(|v| &v.position))
             .unwrap();
-    fit_box(&tracer, origin, &bounds, &fit_rays())
+    fit_box(&tracer, origin, &bounds, &fit_rays(), FitFrame::UP)
 }
 
 fn quad(builder: &mut GeometryBuilder, normal: Vec3, corners: [Vec3; 4]) {
@@ -24,6 +25,62 @@ fn quad(builder: &mut GeometryBuilder, normal: Vec3, corners: [Vec3; 4]) {
 fn assert_box(actual: (DVec3, DVec3), min: [f64; 3], max: [f64; 3]) {
     let close = |a: DVec3, b: [f64; 3]| (a - DVec3::from(b)).abs().max_element() < 1e-3;
     assert!(close(actual.0, min) && close(actual.1, max), "{actual:?}");
+}
+
+/// [`fit`] in the frame of a face facing `normal`.
+fn fit_facing(
+    geometry: &crate::geometry::GeometryResult,
+    origin: DVec3,
+    normal: DVec3,
+) -> (DVec3, DVec3) {
+    let (bvh, primitives, _) = build_bvh(geometry).unwrap();
+    let tracer = SceneTracer::new(&bvh, &primitives, geometry);
+    let bounds =
+        WorldBounds::from_positions(geometry.geometry.vertices.iter().map(|v| &v.position))
+            .unwrap();
+    fit_box(
+        &tracer,
+        origin,
+        &bounds,
+        &fit_rays(),
+        FitFrame::nearest(normal),
+    )
+}
+
+// Row 5's boxes: a wall's or a ceiling's fit runs along its own normal, so
+// its box is the room in front of it, floored at the fit origin's plane.
+#[test]
+fn fit_box_from_a_wall_or_a_ceiling_reaches_the_room_in_front_of_it() {
+    let room = box_room([-4.0, -1.0, -3.0], [5.0, 3.0, 2.0]);
+    let cases = [
+        (
+            DVec3::new(-3.998, 1.0, -0.5),
+            DVec3::X,
+            [-3.998, -1.0, -3.0],
+            [5.0, 3.0, 2.0],
+        ),
+        (
+            DVec3::new(4.998, 1.0, -0.5),
+            DVec3::NEG_X,
+            [-4.0, -1.0, -3.0],
+            [4.998, 3.0, 2.0],
+        ),
+        (
+            DVec3::new(1.0, 1.0, -2.998),
+            DVec3::Z,
+            [-4.0, -1.0, -2.998],
+            [5.0, 3.0, 2.0],
+        ),
+        (
+            DVec3::new(1.0, 2.998, -0.5),
+            DVec3::NEG_Y,
+            [-4.0, -1.0, -3.0],
+            [5.0, 2.998, 2.0],
+        ),
+    ];
+    for (origin, normal, min, max) in cases {
+        assert_box(fit_facing(&room, origin, normal), min, max);
+    }
 }
 
 #[test]

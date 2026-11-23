@@ -21,6 +21,7 @@ use super::exclusion::{
     classify_probes_within_boxes, excluded_by_rule, floor_ratio, size_threshold, thin_floor,
     water_width,
 };
+use super::facing::Facing;
 use super::hit::SceneTracer;
 use super::placement::{PlacedProbe, PlacementScene, place_probes};
 use super::placement_test_fixtures::{
@@ -216,6 +217,7 @@ fn probe(bound_area: f64, faces: Vec<(u32, u32)>) -> PlacedProbe {
         box_min: [-100.0; 3],
         box_max: [100.0; 3],
         capture_point: [0.0; 3],
+        facing: Facing::Up,
         bound_area,
         fluid_faces: faces,
         world_faces: Vec::new(),

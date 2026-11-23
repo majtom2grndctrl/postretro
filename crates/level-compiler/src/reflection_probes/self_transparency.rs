@@ -45,9 +45,11 @@ impl FacePlanes {
         Self { planes }
     }
 
-    /// The static faces in the plane of `probe`'s bound world faces, facing
+    /// The static faces in the planes of `probe`'s bound world faces, facing
     /// as they do, ascending; empty for a probe binding none. `world_faces`
-    /// holds the placed world faces in id-17 order.
+    /// holds the placed world faces in id-17 order. A probe binding faces on
+    /// several planes of its facing (an authored box over two floor heights)
+    /// passes through each of them, and through nothing between them.
     ///
     /// The capture point sits 2 mm off that plane, so a face in it fills the
     /// texels at the capture's horizon with hits a few centimetres away, and
@@ -82,12 +84,10 @@ impl FacePlanes {
         else {
             return Vec::new();
         };
-        let (low, high) = bound
+        let heights: Vec<f64> = bound
             .iter()
             .map(|face| face.geometry.centroid.dot(normal))
-            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), h| {
-                (lo.min(h), hi.max(h))
-            });
+            .collect();
         self.planes
             .iter()
             .enumerate()
@@ -95,9 +95,10 @@ impl FacePlanes {
                 let (face_normal, centroid) = (*plane)?;
                 let height = centroid.dot(normal);
                 (face_normal.dot(normal) >= UP_FACING_MIN_COS
-                    && height > low - PLANE_TOLERANCE_M
-                    && height < high + PLANE_TOLERANCE_M)
-                    .then_some(face as u32)
+                    && heights
+                        .iter()
+                        .any(|&bound| (height - bound).abs() < PLANE_TOLERANCE_M))
+                .then_some(face as u32)
             })
             .collect()
     }

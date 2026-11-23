@@ -865,8 +865,8 @@ pub struct Args {
     /// always writes them. Packing only — no stage key
     /// folds it, and `--release` does not imply it.
     whole_load_sh: bool,
-    /// When true, glossy world floors take derived reflection probes (id 54
-    /// world bindings). Off by default until large-map probe support lands:
+    /// When true, glossy world faces of every facing take reflection probes,
+    /// derived or claimed by a `reflection_volume` (id 54 world bindings). Off by default until large-map probe support lands:
     /// without it every map bakes id 54 as it did before glossy placement.
     /// A probe-stage input, so it keys that stage.
     glossy_reflections: bool,
@@ -970,7 +970,7 @@ fn help_text() -> String {
          --bake-fidelity <low|high> Interactive mover lighting fidelity: low is fast and the Build Summary marks each mover it shortens; high bakes every mover as --release does; not allowed with --release, which always bakes high (default: low)\n    \
          --uncompressed-irradiance  Store the lightmap irradiance atlas uncompressed as Rgba16Float instead of BC6H — larger; for debugging/quality comparison (default: off, BC6H)\n    \
          --whole-load-sh            Write the SH bodies of ids 27/34/35/41/45 beside id 50 so POSTRETRO_SH_STREAMING=off can load the level; larger, a dev and test seam (default: off, streaming reads only their metadata)\n    \
-         --glossy-reflections       Give glossy world floors (a material with `_p` sharpness and `_s`) derived reflection probes; a dev seam until large-map probe support lands (default: off, only water binds probes)\n    \
+         --glossy-reflections       Give glossy world faces (a material with `_p` sharpness and `_s`) reflection probes: floors, walls, ceilings and slopes, derived or in a reflection_volume; a dev seam until large-map probe support lands (default: off, only water binds probes)\n    \
          --probe-depth-tile-cap <N> Probe depth tiles (id 59's and the movers' live tiles together) a level may hold, at most {probe_depth_tile_max}; lower only to test the tile trim and range error (default: {probe_depth_tile_max})\n    \
          --mover-payload-resident-bar <SIZE> Bytes of each mover probe channel payload block kept resident in id 57 before it streams with id 50's cells, at most {mover_payload_bar}; lower only to test streamed placement (default: {mover_payload_bar})\n    \
          --direction-texel-scale <N> Per-axis static-direction atlas reduction, power of two in 1..={direction_texel_scale_max} (default: {direction_texel_scale})\n    \

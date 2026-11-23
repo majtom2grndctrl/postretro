@@ -1,14 +1,15 @@
-// Reflection-probe box fit: the room a water face sees, from rays cast against the static world.
-// See: context/lib/resource_management.md §5.1
+// Reflection-probe box fit: the room a reflector face sees, from rays cast against the static world.
+// See: context/lib/resource_management.md §5.1, §5.4
 
 use glam::DVec3;
 
+use super::fit_frame::FitFrame;
 use super::hit::SceneTracer;
 
 /// Fit rays: the zenith plus this many azimuths (from +X toward +Z) on each
 /// elevation ring, every [`FIT_ELEVATION_STEP_DEG`] from the horizon up to
-/// [`FIT_RING_COUNT`] rings. Water sees only its upper hemisphere, so no ray
-/// points below the horizon. Eight azimuths per quadrant put rays on the box
+/// [`FIT_RING_COUNT`] rings, in a fit frame's local axes ([`FitFrame`]).
+/// A face sees only its own hemisphere, so no ray points below the horizon. Eight azimuths per quadrant put rays on the box
 /// axes and both diagonals; 2.5° rings see a far wall through the band
 /// between a low rim prop and the ceiling (e24's still pool sees 3.4°).
 pub(super) const FIT_AZIMUTHS: usize = 32;
@@ -107,9 +108,9 @@ impl WorldBounds {
     }
 }
 
-/// Box sides a fitted plane can bound: +X, −X, +Z, −Z and the ceiling. The
-/// floor of the box is the capture plane itself, since water reads only its
-/// upper hemisphere.
+/// Box sides a fitted plane can bound, in the fit frame: +X, −X, +Z, −Z and
+/// the ceiling. The floor of the box is the capture plane itself, since a
+/// face reads only its own hemisphere.
 const SIDES: [(usize, f64); 5] = [(0, 1.0), (0, -1.0), (2, 1.0), (2, -1.0), (1, 1.0)];
 const CEILING: usize = 4;
 
@@ -117,7 +118,11 @@ const CEILING: usize = 4;
 /// along that side's axis.
 type Wall = (usize, f64);
 
-/// The box a face's water sees, from `origin` just above it: the room shell.
+/// The box a face sees, from `origin` just off it: the room shell, in world
+/// axes. The fit runs in `frame` (the identity for up-facing faces), so for
+/// a wall or a ceiling "up" below is along its normal, "walls" are the room
+/// surfaces around it and "the ceiling" is the surface across from it; a
+/// slope fits as the floor, ceiling or wall it is nearest.
 /// Walls vote by azimuth column, walking each column up from the horizon.
 /// Each wall hit tops the column in turn until its first ceiling-facing
 /// (downward) hit closes it. After that, a wall tops the column only when it
@@ -158,10 +163,12 @@ pub(crate) fn fit_box(
     origin: DVec3,
     bounds: &WorldBounds,
     rays: &[FitRay],
+    frame: FitFrame,
 ) -> (DVec3, DVec3) {
-    let origin = bounds.clamp(origin);
     let reach = bounds.diagonal() as f32 + 1.0;
-    let origin_f32 = origin.as_vec3();
+    let bounds = frame.bounds_to_local(bounds);
+    let origin = bounds.clamp(frame.to_local(origin));
+    let origin_f32 = frame.to_world(origin).as_vec3();
     // Per column: the wall that tops it, the last wall below its first
     // ceiling hit, the last wall that topped it past a ceiling before it was
     // sealed, and the last wall at all. A column is sealed once a ceiling hit
@@ -177,11 +184,15 @@ pub(crate) fn fit_box(
     // Rays run ring by ring upward, so a column's later wall hit is higher.
     for ray in rays {
         let direction = ray.direction;
-        let (point, facing) = match tracer.closest_hit(origin_f32, direction.as_vec3(), reach) {
+        let world_direction = frame.to_world(direction).as_vec3();
+        let (point, facing) = match tracer.closest_hit(origin_f32, world_direction, reach) {
             Some(hit) => {
-                let surface = tracer.surface(&hit, origin_f32, direction.as_vec3());
+                let surface = tracer.surface(&hit, origin_f32, world_direction);
                 let point = origin + direction * f64::from(hit.distance);
-                (point, facing_side(surface.normal.as_dvec3()))
+                (
+                    point,
+                    facing_side(frame.to_local(surface.normal.as_dvec3())),
+                )
             }
             None => (bounds.exit_point(origin, direction), None),
         };
@@ -250,7 +261,7 @@ pub(crate) fn fit_box(
             lo[axis] = lo[axis].min(plane);
         }
     }
-    (bounds.clamp(lo), bounds.clamp(hi))
+    frame.box_to_world(bounds.clamp(lo), bounds.clamp(hi))
 }
 
 /// The box side a surface facing `normal` can bound: a wall facing −X bounds

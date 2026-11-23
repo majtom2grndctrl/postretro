@@ -19,6 +19,7 @@ use super::capture_point::{
     nearest_point_on_polygon,
 };
 use super::derived::FIT_MATCH_TOLERANCE_M;
+use super::facing::Facing;
 use super::hit::SceneTracer;
 use super::placement::{
     CAPTURE_LIFT_M, PlacedProbe, PlacementScene, ReflectorFace, fluid_bindings, place_probes,
@@ -404,9 +405,9 @@ fn a_derived_centroid_within_the_clearance_of_a_wall_moves_clear_and_is_kept() {
     let (lo, hi) = probe_box(&probes[0]);
     assert!(p.cmpge(lo).all() && p.cmple(hi).all(), "{p} in {lo}..{hi}");
     let classifier = PointClassifier::new(&fixture.tree, &fixture.exterior, &fixture.environment);
-    assert_eq!(classifier.fault(p), None);
+    assert_eq!(classifier.fault(p, &Facing::Up), None);
     assert_eq!(
-        classifier.fault(centroid),
+        classifier.fault(centroid, &Facing::Up),
         Some(PointFault::Crowded),
         "crowded where it started"
     );
@@ -601,7 +602,7 @@ fn an_offset_point_in_a_wall_drops_and_one_just_beside_it_moves_clear() {
         );
         let classifier =
             PointClassifier::new(&fixture.tree, &fixture.exterior, &fixture.environment);
-        assert_eq!(classifier.fault(p), None, "{offset}: {p}");
+        assert_eq!(classifier.fault(p, &Facing::Up), None, "{offset}: {p}");
         assert_near(
             DVec3::new(p.x, p.y, 0.0),
             DVec3::new(engine([0.0, 128.0, 0.0]).x, water_y, 0.0),

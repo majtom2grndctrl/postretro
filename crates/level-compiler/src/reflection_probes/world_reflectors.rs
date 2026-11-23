@@ -7,6 +7,7 @@ use glam::{DVec2, DVec3};
 
 use crate::geometry::GeometryResult;
 
+use super::facing::Facings;
 use super::glossy_materials::GlossyMaterials;
 use super::placement::{FaceGeometry, ReflectorFace, ReflectorSource};
 use super::plane_basis::PlaneBasis;
@@ -86,21 +87,22 @@ pub(crate) fn world_reflector_faces(
     WorldReflectors { faces, unrecovered }
 }
 
-/// The glossy faces placement binds, as reflector faces in id-17 order: the
-/// up-facing ones, by water's test. Walls, ceilings and slopes bind nothing
-/// yet; placement takes them here once probes capture over any facing.
+/// The glossy faces placement binds, as reflector faces in id-17 order, each
+/// with its facing ([`Facings`]): floors by water's up-facing test, then
+/// walls, ceilings and slopes, faces within 1° of one another sharing one.
 pub(crate) fn bound_reflector_faces(reflectors: &WorldReflectors) -> Vec<ReflectorFace> {
+    let mut facings = Facings::default();
     reflectors
         .faces
         .iter()
-        .filter(|face| face.geometry.is_up_facing())
-        .map(|face| ReflectorFace {
-            source: ReflectorSource::World { face: face.face },
-            geometry: face.geometry,
-            outline: face
-                .outline_points()
-                .map(|p| DVec2::new(p.x, p.z))
-                .collect(),
+        .map(|face| {
+            let points: Vec<DVec3> = face.outline_points().collect();
+            ReflectorFace::new(
+                ReflectorSource::World { face: face.face },
+                face.geometry,
+                facings.facing_of(face.geometry.normal),
+                &points,
+            )
         })
         .collect()
 }

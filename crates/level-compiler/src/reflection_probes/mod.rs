@@ -1,7 +1,7 @@
 //! Reflection-probe capture stage (PRL id 54): place authored and derived
 //! probes over up-facing fluid faces and, behind `--glossy-reflections`,
-//! glossy world floors; capture each probe's static world into an
-//! octahedral colour tile and a distance tile.
+//! glossy world faces of every facing; capture each probe's static world
+//! into an octahedral colour tile and a distance tile.
 //! See: context/lib/resource_management.md §5 · build_pipeline.md §Compiler pipeline, §Build Cache
 
 mod animated_direct;
@@ -19,6 +19,9 @@ mod derived;
 mod emissive_factor;
 mod exclusion;
 mod exclusion_underside;
+mod facing;
+mod fit_frame;
+mod front_side;
 mod glossy_census;
 mod glossy_materials;
 mod glossy_placement;
@@ -64,6 +67,8 @@ mod exclusion_tests;
 mod glossy_census_prl_tests;
 #[cfg(test)]
 mod glossy_census_tests;
+#[cfg(test)]
+mod glossy_facing_tests;
 #[cfg(test)]
 mod glossy_placement_tests;
 #[cfg(test)]
@@ -221,9 +226,9 @@ pub(crate) struct ReflectionProbeInputs<'a> {
     /// light's glow, `_glow` keying this stage and no lighting bake.
     pub area_glow: Option<&'a AreaGlowSection>,
     pub prm_root: &'a Path,
-    /// `prl-build --glossy-reflections`: glossy world floors take derived
-    /// probes. Off, every map bakes as it did before glossy placement, its
-    /// glossy materials included.
+    /// `prl-build --glossy-reflections`: glossy world faces take probes,
+    /// derived or authored. Off, every map bakes as it did before glossy
+    /// placement, its glossy materials included.
     pub glossy_reflections: bool,
 }
 

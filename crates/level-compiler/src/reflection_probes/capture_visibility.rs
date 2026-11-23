@@ -1,11 +1,12 @@
 // Reflection-probe capture visibility: warn when a capture point sees less than half of its probe's bound reflector.
 // See: context/lib/resource_management.md §5.1 · rendering_pipeline.md §7.3a
 
-use glam::{DVec2, DVec3, Vec3};
+use glam::{DVec2, Vec3};
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::octahedral::irradiance_tile_texel_coord;
 use postretro_level_format::reflection_probes::ReflectionProbesSection;
 
+use super::facing::Facing;
 use super::placement::{PlacedProbe, ReflectorFace, ReflectorSource, up_facing_faces};
 use crate::bc6h::f16_bits_to_f32;
 
@@ -25,7 +26,7 @@ const AT_CAPTURE_POINT_M: f32 = 1.0e-6;
 
 /// Warn, naming the probe and its source entity, for every probe whose
 /// capture point sees less than [`MIN_SEEN_FRACTION`] of the reflector it
-/// binds: its water, or its glossy world floors among `world_faces` (the
+/// binds: its water, or its glossy world faces among `world_faces` (the
 /// placed world faces, in id-17 order).
 ///
 /// "Sees" is [`DistanceTile::sees`], the runtime's capture-shadow cutoff read
@@ -40,7 +41,7 @@ const AT_CAPTURE_POINT_M: f32 = 1.0e-6;
 /// The remedy it names follows the probe's source: an authored box can move
 /// its point with `_capture_offset` or be split; a derived probe's entity is
 /// its fluid, which has no such key, so the hidden water needs its own
-/// `reflection_volume`. A glossy floor's probe names none: no key places it.
+/// `reflection_volume`. A glossy face's probe names none.
 pub(crate) fn warn_hidden_reflectors(
     section: &ReflectionProbesSection,
     probes: &[PlacedProbe],
@@ -56,10 +57,14 @@ pub(crate) fn warn_hidden_reflectors(
             continue;
         }
         if !probe.world_faces.is_empty() {
+            let what = if probe.facing.is_up() {
+                "glossy floor"
+            } else {
+                "glossy faces"
+            };
             log::warn!(
                 "[ReflectionProbes] probe {index} of entity {}: its capture point {:?} sees \
-                 {:.0}% of the glossy floor it binds, and floor it cannot see draws no \
-                 reflection",
+                 {:.0}% of the {what} it binds, and what it cannot see draws no reflection",
                 probe.source_entity,
                 probe.capture_point,
                 seen * 100.0,
@@ -103,11 +108,11 @@ fn seen_fraction(tile: &DistanceTile, probe: &PlacedProbe, faces: &[ReflectorFac
             continue;
         };
         let face = &faces[at];
-        let height = face.geometry.plane_height();
+        let height = face.plane_height();
         face_samples(&face.outline, |point, area| {
             total += area;
-            let surface = DVec3::new(point.x, height, point.y).as_vec3();
-            if tile.sees(capture, surface) {
+            let surface = face.facing.lift(point, height).as_vec3();
+            if tile.sees(capture, surface, &probe.facing) {
                 seen += area;
             }
         });
@@ -115,7 +120,7 @@ fn seen_fraction(tile: &DistanceTile, probe: &PlacedProbe, faces: &[ReflectorFac
     if total > 0.0 { seen / total } else { 1.0 }
 }
 
-/// Every sample of a convex `outline` (horizontal `(x, z)`), with the area
+/// Every sample of a convex `outline` (in-plane coordinates), with the area
 /// it stands for: a fan from the first vertex, each triangle split into
 /// equal sub-triangles sampled at their centroids.
 fn face_samples(outline: &[DVec2], mut sample: impl FnMut(DVec2, f64)) {
@@ -190,14 +195,20 @@ impl DistanceTile {
     }
 
     /// Whether the capture point sees `point`, meaning the fluid shader draws
-    /// a probe term there: with `v` the offset clamped to the horizon as the
-    /// shader clamps every tap, `h = |v|₁ · w(v) − 1 < κ`
-    /// ([`CAPTURE_SHADOW_MARGIN`]). The shader fades that term within κ and
-    /// beside the shadow's edge; past κ it draws none. A miss stores 0, so
-    /// open sky is always seen.
-    pub(crate) fn sees(&self, capture: Vec3, point: Vec3) -> bool {
+    /// a probe term there: with `v` the offset clamped to `facing`'s
+    /// hemisphere (the horizon, for water) as the shader clamps every tap,
+    /// `h = |v|₁ · w(v) − 1 < κ` ([`CAPTURE_SHADOW_MARGIN`]). The shader
+    /// fades that term within κ and beside the shadow's edge; past κ it draws
+    /// none. A miss stores 0, so open sky is always seen.
+    pub(crate) fn sees(&self, capture: Vec3, point: Vec3, facing: &Facing) -> bool {
         let offset = point - capture;
-        let level = Vec3::new(offset.x, offset.y.max(0.0), offset.z);
+        let level = match facing {
+            Facing::Up => Vec3::new(offset.x, offset.y.max(0.0), offset.z),
+            Facing::Other(_) => {
+                let normal = facing.normal().as_vec3();
+                offset - normal * offset.dot(normal).min(0.0)
+            }
+        };
         let l1 = level.abs().element_sum();
         l1 < AT_CAPTURE_POINT_M || l1 * self.sample(level) < 1.0 + CAPTURE_SHADOW_MARGIN
     }

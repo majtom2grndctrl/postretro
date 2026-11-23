@@ -27,11 +27,12 @@ pub(crate) fn glossy_world_faces(
     }
     let reflectors = world_reflector_faces(inputs.geometry, &materials);
     let faces = bound_reflector_faces(&reflectors);
+    let up = faces.iter().filter(|face| face.facing.is_up()).count();
     log::info!(
-        "[ReflectionProbes] glossy reflections on: {} of {} glossy world face(s) face up and \
-         take probes; walls, ceilings and slopes bind none yet",
+        "[ReflectionProbes] glossy reflections on: {} glossy world face(s) take probes, {up} \
+         facing up and {} walls, ceilings or slopes",
         faces.len(),
-        reflectors.faces.len(),
+        faces.len() - up,
     );
     faces
 }

@@ -1,5 +1,5 @@
-// Derived reflection probes: one per group of unclaimed up-facing reflector faces whose fitted boxes match.
-// See: context/lib/resource_management.md §5.1
+// Derived reflection probes: one per group of unclaimed reflector faces of one facing and plane whose fitted boxes match.
+// See: context/lib/resource_management.md §5.1, §5.4
 
 use glam::DVec3;
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
@@ -7,6 +7,8 @@ use rayon::prelude::*;
 
 use super::box_fit::{fit_box, fit_rays};
 use super::capture_point::capture_point_over;
+use super::facing::Facing;
+use super::front_side::served;
 use super::placement::{
     CAPTURE_LIFT_M, PlacedProbe, PlacementScene, ReflectorFace, ReflectorSource,
     WORLD_SOURCE_ENTITY, plane_heights, plane_of,
@@ -22,15 +24,18 @@ pub(crate) const FIT_MATCH_TOLERANCE_M: f64 = 0.25;
 type FittedBox = (DVec3, DVec3);
 
 /// Derived probes for `faces`: the unclaimed fluid faces in id-52 order, or
-/// the glossy world floors in id-17 order. Water's probes come in fluid
-/// entity order, then by each group's first face; the static world is one
-/// source. Each face fits its own box from its own area centroid; a group is
-/// a connected component of the box-match relation among one source's faces
-/// at one plane height, so face order never changes it, and a matte strip
-/// or a non-glossy surround splitting a floor into pieces never splits its
-/// probe: probe boundaries belong behind occluders, not in open floor. The
-/// group stores the union box and captures from its horizontal area
-/// centroid, 2 mm above its plane, moved clear of a wall within
+/// the unclaimed glossy world faces in id-17 order. Water's probes come in
+/// fluid entity order, then by each group's first face; the static world is
+/// one source. Each face fits its own box from its own area centroid, lifted
+/// along its facing's normal; a group is a connected component of the
+/// box-match relation among one source's faces of one facing at one plane
+/// height along it, so face order never changes it, faces on different
+/// planes or facing opposite ways never share, and a matte strip or a
+/// non-glossy surround splitting a floor or a wall into pieces never splits
+/// its probe: probe boundaries belong behind occluders, not in open floor.
+/// The group stores the union box (grown to hold its faces, for any facing
+/// but up) and captures from its in-plane area centroid, 2 mm off its plane
+/// along the normal, moved clear of a wall within
 /// [`super::capture_point::CAPTURE_CLEARANCE_M`]. A probe whose point is in
 /// solid, inside any fluid or outside the hull drops, warned with its
 /// source; its faces bind nothing.
@@ -46,8 +51,14 @@ pub(crate) fn derive_probes(
         .par_iter()
         .map(|face| {
             let _permit = scene.governor.enter();
-            let origin = face.geometry.centroid + DVec3::Y * CAPTURE_LIFT_M;
-            fit_box(scene.tracer, origin, scene.bounds, &rays)
+            let origin = face.geometry.centroid + face.facing.normal() * CAPTURE_LIFT_M;
+            fit_box(
+                scene.tracer,
+                origin,
+                scene.bounds,
+                &rays,
+                face.facing.fit_frame(),
+            )
         })
         .collect();
 
@@ -60,15 +71,28 @@ pub(crate) fn derive_probes(
             Some(volume) => volumes.volumes[volume as usize].source_entity,
             None => WORLD_SOURCE_ENTITY,
         };
-        let heights = plane_heights(faces[start..end].iter().map(|f| f.geometry.plane_height()));
+        let mut facings: Vec<Facing> = Vec::new();
+        for face in &faces[start..end] {
+            if !facings.contains(&face.facing) {
+                facings.push(face.facing);
+            }
+        }
         let mut groups: Vec<Vec<usize>> = Vec::new();
-        for &plane in &heights {
-            let on_plane: Vec<usize> = (start..end)
-                .filter(|&i| plane_of(&heights, faces[i].geometry.plane_height()) == plane)
+        for facing in facings {
+            let facing_faces: Vec<usize> = (start..end)
+                .filter(|&i| faces[i].facing == facing)
                 .collect();
-            let plane_boxes: Vec<FittedBox> = on_plane.iter().map(|&i| boxes[i]).collect();
-            for component in box_match_components(&plane_boxes) {
-                groups.push(component.into_iter().map(|k| on_plane[k]).collect());
+            let heights = plane_heights(facing_faces.iter().map(|&i| faces[i].plane_height()));
+            for &plane in &heights {
+                let on_plane: Vec<usize> = facing_faces
+                    .iter()
+                    .copied()
+                    .filter(|&i| plane_of(&heights, faces[i].plane_height()) == plane)
+                    .collect();
+                let plane_boxes: Vec<FittedBox> = on_plane.iter().map(|&i| boxes[i]).collect();
+                for component in box_match_components(&plane_boxes) {
+                    groups.push(component.into_iter().map(|k| on_plane[k]).collect());
+                }
             }
         }
         groups.sort_by_key(|group| group[0]);
@@ -99,15 +123,30 @@ fn group_probe(
     scene: &PlacementScene<'_>,
 ) -> Option<PlacedProbe> {
     let members: Vec<&ReflectorFace> = group.iter().map(|&i| faces[i]).collect();
+    let facing = members[0].facing;
     let (mut lo, mut hi) = boxes[group[0]];
     for &i in group {
         lo = lo.min(boxes[i].0);
         hi = hi.max(boxes[i].1);
     }
-    let plane = members
-        .iter()
-        .map(|m| m.geometry.plane_height())
-        .fold(f64::INFINITY, f64::min);
+    // A fitted box's floor is its fit origin's plane, which holds a face of
+    // a fit-frame axis (water, a wall, a ceiling) within the lift; a slope
+    // fits along its nearest axis and leans out of it. Box projection needs
+    // every bound fragment inside the box. Water's box is as it always was.
+    if !facing.is_up() {
+        for member in &members {
+            lo = lo.min(member.min);
+            hi = hi.max(member.max);
+        }
+    }
+    // Water captures over its lowest plane, as it always has; a world group
+    // in front of its frontmost, so the point serves every face it binds.
+    let heights = members.iter().map(|m| m.plane_height());
+    let plane = if members[0].world_face().is_some() {
+        heights.fold(f64::NEG_INFINITY, f64::max)
+    } else {
+        heights.fold(f64::INFINITY, f64::min)
+    };
     let box_min = lo.as_vec3();
     let box_max = hi.as_vec3();
     // Each member's centroid lies in its own box, so the group's lies in the
@@ -135,16 +174,25 @@ fn group_probe(
             return None;
         }
     };
-    Some(PlacedProbe {
+    let probe = PlacedProbe {
         source_entity,
         authored: false,
         box_min: box_min.to_array(),
         box_max: box_max.to_array(),
         capture_point: capture_point.to_array(),
+        facing,
         bound_area: members.iter().map(|m| m.geometry.area).sum(),
         fluid_faces: members.iter().filter_map(|m| m.fluid_face()).collect(),
         world_faces: members.iter().filter_map(|m| m.world_face()).collect(),
-    })
+    };
+    // A group lies on one plane and the settle moves only in it, so its
+    // capture point serves every face but one tilted against the facing; the
+    // rule holds every world probe as it holds authored ones.
+    let label = match probe.world_faces.first() {
+        Some(face) => format!("derived probe of glossy world face {face}"),
+        None => format!("derived probe of fluid entity {source_entity}"),
+    };
+    served(probe, &members, &label)
 }
 
 /// Connected components of the box-match relation (every bound within

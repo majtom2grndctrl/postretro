@@ -62,11 +62,11 @@ pub(super) fn parse_cache_payload(
 
 /// `blake3` over every input the capture reads, in a fixed order, plus the
 /// constants that shape its output. Placement enters as its output: every
-/// probe's box, capture point and bound faces. Exclusion enters as its
-/// inputs and output: the override table and the rule's `constants`, then
-/// each probe's `exclusions` (parallel to `probes`) with what the capture
-/// reads of the brushes CSG may hide, since geometry shows only what
-/// survived it. `tracer_epoch` is `ray_traversal::TRACER_EPOCH`: primary and
+/// probe's box, capture point, bound faces and, unless up, its facing.
+/// Exclusion enters as its inputs and output: the override table and the
+/// rule's `constants`, then each probe's `exclusions` (parallel to `probes`)
+/// with what the capture reads of the brushes CSG may hide, since geometry
+/// shows only what survived it. `tracer_epoch` is `ray_traversal::TRACER_EPOCH`: primary and
 /// shadow rays trace.
 pub(super) fn cache_key(
     inputs: &ReflectionProbeInputs<'_>,
@@ -123,6 +123,13 @@ pub(super) fn cache_key(
         placement.extend_from_slice(&(probe.world_faces.len() as u64).to_le_bytes());
         for face in &probe.world_faces {
             placement.extend_from_slice(&face.to_le_bytes());
+        }
+        // The hemisphere the shares cover. Up-facing probes add nothing, so
+        // water's key is unchanged.
+        if !probe.facing.is_up() {
+            for value in probe.facing.normal().to_array() {
+                placement.extend_from_slice(&value.to_le_bytes());
+            }
         }
     }
     section("placement", &placement);

@@ -137,6 +137,7 @@ Organized as five milestones along dependency seams. Shipped: the impact-policy 
 - [x] **charge-on-activation** — charge level (0..1) scales listed stats at release; orthogonal to the resource, so it composes with any resource kind.
 - [x] **secondary activation** — an optional alternate action beside primary fire. Each activation declares its behavior and events; charge composes with either.
 - [ ] **tracked deployables** — primary activation places persistent entities owned by the weapon instance; secondary activation acts on them, such as detonating placed charges. Defines ownership, limits, and cleanup.
+- [ ] **Descriptor instance overrides** — reuse one weapon with load-time tuning overrides while it stays that weapon for mounts and presentation, so NPCs can wield the reference rifle as a projectile weapon with NPC tuning. Owner request 2026-11-23. Drafted: `drafts/descriptor-instance-overrides/`.
 
 ### Resolution Modes
 

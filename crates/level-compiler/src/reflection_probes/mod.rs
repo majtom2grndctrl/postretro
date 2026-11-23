@@ -29,6 +29,7 @@ mod hit;
 mod lightmap_sample;
 pub(crate) mod placement;
 mod plane_basis;
+mod prefilter;
 mod probe_capture;
 mod probe_log;
 mod reference;

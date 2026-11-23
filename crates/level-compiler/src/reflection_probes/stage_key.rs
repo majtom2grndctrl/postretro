@@ -15,6 +15,7 @@ use super::capture_exclusion::ProbeExclusion;
 use super::emissive_factor::{AreaGlowFaces, EmissiveFaceFactors};
 use super::exclusion::ExclusionConstants;
 use super::placement::PlacedProbe;
+use super::prefilter::{colour_mip_count, key_bytes as prefilter_key_bytes};
 use super::reference::REFERENCE_MEAN_SAMPLES;
 use super::sdf_lights::SdfLights;
 use super::sh_sample::PRODUCTION_PROBE_OCCLUSION;
@@ -136,6 +137,12 @@ pub(super) fn cache_key(
     // The gate itself, not only the world faces it places: toggling it
     // re-bakes even a map whose placement it leaves unchanged.
     section("glossy reflections", &[u8::from(inputs.glossy_reflections)]);
+    // The colour chain's prefilter, only where it writes mips: a section
+    // binding only water keeps mip 0 alone, and its key.
+    let mip_count = colour_mip_count(probes);
+    if mip_count > 1 {
+        section("colour mips", &prefilter_key_bytes(mip_count));
+    }
     // Resolved values only: an edit that resolves the same keys the same.
     let overrides: Vec<u8> = inputs
         .capture_override

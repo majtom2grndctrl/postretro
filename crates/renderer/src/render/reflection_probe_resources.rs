@@ -348,6 +348,13 @@ impl ReflectionProbeResources {
     pub(crate) fn distance_size(&self) -> wgpu::Extent3d {
         self.distance.size()
     }
+
+    /// The colour and distance arrays themselves, for their usage and mip
+    /// count (tests).
+    #[cfg(test)]
+    pub(crate) fn arrays(&self) -> [&wgpu::Texture; 2] {
+        [&self.array, &self.distance]
+    }
 }
 
 fn buffer_row(

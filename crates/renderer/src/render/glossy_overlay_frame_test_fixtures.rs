@@ -407,7 +407,7 @@ fn test_delta_with(in: GlossyVertexOutput, reflection_is_static: bool, scale: f3
     let normal = normalize(in.normal);
     let view = normalize(uniforms.camera_position - in.world_position);
     let fresnel = glossy_fresnel(texel, dot(view, normal));
-    let probe = glossy_overlay_probe(in, view, normal);
+    let probe = glossy_overlay_probe(in, view, normal, texel.exponent);
     let d_static = glossy_overlay_static_diffuse(in.clip_position.xy);
     if reflection_is_static {
         return glossy_composite(d_static * scale, d_static, probe.weight, vec4<f32>(0.0),

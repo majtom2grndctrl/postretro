@@ -187,22 +187,43 @@ fn overlay_layout_binds_only_its_probe_records_and_static_diffuse() {
 }
 
 // IP fences: the probe comes from the face's binding by position, the layer
-// from the probe alone (inside the shared sample), and the live lighting is
-// the sums' blend; no stored light is evaluated per fragment.
+// from the probe alone (inside the overlay's sample, water's with the colour
+// tap blurred), and the live lighting is the sums' blend; no stored light is
+// evaluated per fragment.
 #[test]
 fn overlay_reads_its_probe_from_the_binding_and_lights_through_the_sums() {
     let term = squashed(wgsl_function(OVERLAY_WGSL, "glossy_overlay_probe"));
     assert!(
-        term.contains("returnfluid_reflection_sample(in.probe,in.world_position,view,normal);")
+        term.contains(
+            "returnglossy_overlay_sample(in.probe,in.world_position,view,normal,exponent);"
+        )
     );
-    assert_eq!(term.matches("fluid_reflection_sample(").count(), 1);
+    assert_eq!(term.matches("glossy_overlay_sample(").count(), 1);
+    assert!(!squashed(OVERLAY_WGSL).contains("fluid_reflection_sample("));
     assert!(squashed(wgsl_function(OVERLAY_WGSL, "vs_main")).contains("out.probe=in.probe;"));
-    let sample = squashed(wgsl_function(
+    let water = squashed(wgsl_function(
         include_str!("../shaders/fluid_reflection.wgsl"),
         "fluid_reflection_sample",
     ));
+    let sample = squashed(wgsl_function(OVERLAY_WGSL, "glossy_overlay_sample"));
     assert!(sample.contains("letlayer=fluid_probes.probes[probe].layer;"));
     assert!(sample.contains("fluid_reflection_ratio_from_sums(probe,search.lookup)"));
+    // Water's sample up to its colour tap: the same ray, layer and search,
+    // statement for statement, so the binding and search fences carry over.
+    let prefix = |body: &str| {
+        body[body.find('{').expect("body") + 1..]
+            .split("letuv=")
+            .next()
+            .expect("prefix")
+            .split("letcapture=")
+            .next()
+            .expect("prefix")
+            .to_string()
+    };
+    assert_eq!(prefix(&sample), prefix(&water));
+    assert!(
+        sample.contains("letcapture=glossy_overlay_probe_colour(search.lookup,layer,exponent);")
+    );
     let composed = squashed(GLOSSY_OVERLAY_SHADER_SOURCE);
     assert!(!composed.contains("fnfluid_reflection_ratio("));
     assert!(!composed.contains("anim_descriptors"));
@@ -228,7 +249,7 @@ fn overlay_adds_the_weighted_reflection_minus_static_diffuse() {
          letview=normalize(uniforms.camera_position-in.world_position);\
          letfresnel=glossy_fresnel(texel,dot(view,normal));\
          iffresnel<=0.0{returnvec3<f32>(0.0);}\
-         letprobe=glossy_overlay_probe(in,view,normal);\
+         letprobe=glossy_overlay_probe(in,view,normal,texel.exponent);\
          letd_static=glossy_overlay_static_diffuse(in.clip_position.xy);\
          returnglossy_composite(d_static,probe.capture,probe.weight,vec4<f32>(0.0),fresnel,\
          texel.colour);}"
@@ -290,7 +311,8 @@ fn overlay_weight_and_colour_mirror_the_cpu_reference() {
          select(GLOSSY_REFLECTIVITY_UNTINTED,\
          mix(GLOSSY_REFLECTIVITY_UNTINTED,GLOSSY_REFLECTIVITY_FULL_TINT,texel.tint),\
          texel.tinted),\
-         select(albedo,specular_tint(albedo,texel.tint),texel.tinted),);}"
+         select(albedo,specular_tint(albedo,texel.tint),texel.tinted),\
+         texel.exponent,);}"
     );
     assert_eq!(
         squashed(wgsl_function(OVERLAY_WGSL, "glossy_fresnel")),

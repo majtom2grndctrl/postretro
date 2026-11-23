@@ -3,9 +3,11 @@
 // coloured as the texel's highlight, W its Fresnel x `_s` x sharpness fade x
 // capture-shadow weight, and D_static forward's static diffuse at the same
 // pixel. Concatenated with material_shading.wgsl (the tint rule forward's
-// highlight reads), reflection_probe_lobes.wgsl, fluid_motion.wgsl,
-// fluid_reflection_ray.wgsl and fluid_reflection.wgsl, whose probe term and
-// Fresnel it reuses by name. Mirrors render-cpu `glossy_reflection`.
+// highlight reads), reflection_probe_blur.wgsl (the exponent -> mip function
+// that picks the colour mips R reads), reflection_probe_lobes.wgsl,
+// fluid_motion.wgsl, fluid_reflection_ray.wgsl and fluid_reflection.wgsl,
+// whose probe search, live lighting and Fresnel it reuses by name. Mirrors
+// render-cpu `glossy_reflection` and `reflection_probe_mips`.
 // See: context/lib/rendering_pipeline.md §7.3a (Glossy world faces)
 
 // --- Group 0: the shared camera uniforms, forward's struct member for member.
@@ -165,12 +167,15 @@ fn glossy_sharpness_fade(exponent: f32) -> f32 {
 // What one read of a texel's material says about its reflection: `_s` x the
 // sharpness fade, water's reflectivity raised by the tint, and the colour the
 // texel's highlight takes (the tint rule's for a tinted texel, raw albedo
-// without `_t`). A texel without smoothness shades at the minimum exponent,
-// below the floor, so it reflects nothing. Mirrors render-cpu `glossy_texel`.
+// without `_t`), and the exponent its highlight shades at, which picks the
+// colour mips R reads. A texel without smoothness shades at the minimum
+// exponent, below the floor, so it reflects nothing. Mirrors render-cpu
+// `glossy_texel`.
 struct GlossyTexel {
     mask: f32,
     reflectivity: f32,
     colour: vec3<f32>,
+    exponent: f32,
 };
 
 fn glossy_texel(slot: vec4<f32>, albedo: vec3<f32>) -> GlossyTexel {
@@ -181,6 +186,7 @@ fn glossy_texel(slot: vec4<f32>, albedo: vec3<f32>) -> GlossyTexel {
             mix(GLOSSY_REFLECTIVITY_UNTINTED, GLOSSY_REFLECTIVITY_FULL_TINT, texel.tint),
             texel.tinted),
         select(albedo, specular_tint(albedo, texel.tint), texel.tinted),
+        texel.exponent,
     );
 }
 
@@ -223,16 +229,54 @@ fn glossy_overlay_texel(uv: vec2<f32>, ddx: vec2<f32>, ddy: vec2<f32>) -> Glossy
 // off (the capture bakes every term together).
 // IP rule (owner review to change, rendering_pipeline.md §7.3a): the probe
 // comes from the face's binding alone, by position; the layer derives from
-// it inside `fluid_reflection_sample`, and no lookup-direction value picks a
+// it inside `glossy_overlay_sample`, and no lookup-direction value picks a
 // probe. No history, no precomputed intersection, and no tile is written.
-fn glossy_overlay_probe(in: GlossyVertexOutput, view: vec3<f32>,
-                        normal: vec3<f32>) -> FluidReflectionSample {
+fn glossy_overlay_probe(in: GlossyVertexOutput, view: vec3<f32>, normal: vec3<f32>,
+                        exponent: f32) -> FluidReflectionSample {
     if in.probe == FLUID_REFLECTION_NO_PROBE
         || !fluid_reflection_seen_from_above(normal, view)
         || !fluid_reflection_mask_on(uniforms.light_term_mask) {
         return FluidReflectionSample(vec3<f32>(0.0), 0.0);
     }
-    return fluid_reflection_sample(in.probe, in.world_position, view, normal);
+    return glossy_overlay_sample(in.probe, in.world_position, view, normal, exponent);
+}
+
+// Water's `fluid_reflection_sample` with the colour tap blurred by the
+// texel's exponent: the search runs first and ends; only its lookup and
+// weight reach the colour mips and the sums blend. The layer comes from the
+// face's probe index alone.
+fn glossy_overlay_sample(probe: u32, world_position: vec3<f32>, view: vec3<f32>,
+                         outward: vec3<f32>, exponent: f32) -> FluidReflectionSample {
+    let ray = fluid_reflection_above_horizon(fluid_reflection_mirror(view, outward));
+    let layer = fluid_probes.probes[probe].layer;
+    let search = fluid_reflection_search(world_position, ray, fluid_probes.probes[probe].box_min,
+        fluid_probes.probes[probe].box_max, fluid_probes.probes[probe].capture_point,
+        fluid_probes.tile.xy, layer);
+    let capture = glossy_overlay_probe_colour(search.lookup, layer, exponent);
+    return FluidReflectionSample(capture * fluid_reflection_ratio_from_sums(probe, search.lookup),
+        search.weight);
+}
+
+// The probe colour toward `direction` blurred by `exponent`: the two colour
+// mips the exponent -> mip function falls between, each read at its own
+// tile's UV (interiors do not nest, so one UV cannot address two mips),
+// blended. Mirrors render-cpu `reflection_probe_mip_colour`. IP rule (owner
+// review to change, rendering_pipeline.md §7.3a): the mips were prefiltered
+// at compile time and are only sampled here; the exponent picks a mip, never
+// a probe, and the blur reads no capture-shadow weight or distance tile.
+fn glossy_overlay_probe_colour(direction: vec3<f32>, layer: u32, exponent: f32) -> vec3<f32> {
+    let count = textureNumLevels(fluid_probe_array);
+    let mip = reflection_probe_exponent_mip(exponent, count);
+    let lower = u32(mip);
+    let upper = min(lower + 1u, count - 1u);
+    return mix(glossy_overlay_probe_mip(direction, layer, lower),
+        glossy_overlay_probe_mip(direction, layer, upper), mip - f32(lower));
+}
+
+// Colour mip `mip` toward `direction`, at that mip's own tile UV and level.
+fn glossy_overlay_probe_mip(direction: vec3<f32>, layer: u32, mip: u32) -> vec3<f32> {
+    let uv = fluid_reflection_tile_uv(direction, fluid_probes.tile.x >> mip, fluid_probes.tile.y);
+    return textureSampleLevel(fluid_probe_array, sh_atlas_sampler, uv, layer, f32(mip)).rgb;
 }
 
 // Forward's D_static at this fragment's own pixel.
@@ -249,7 +293,7 @@ fn glossy_overlay_delta(in: GlossyVertexOutput, texel: GlossyTexel) -> vec3<f32>
     if fresnel <= 0.0 {
         return vec3<f32>(0.0);
     }
-    let probe = glossy_overlay_probe(in, view, normal);
+    let probe = glossy_overlay_probe(in, view, normal, texel.exponent);
     let d_static = glossy_overlay_static_diffuse(in.clip_position.xy);
     return glossy_composite(d_static, probe.capture, probe.weight, vec4<f32>(0.0), fresnel,
         texel.colour);

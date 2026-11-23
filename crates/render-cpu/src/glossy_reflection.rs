@@ -34,6 +34,10 @@ pub struct GlossyTexel {
     /// The colour the reflection takes, as the texel's highlight does: the
     /// tint rule's colour for a tinted texel, the raw albedo without `_t`.
     pub colour: Vec3,
+    /// The texel's Blinn-Phong exponent, the one its highlight shades at:
+    /// it picks the colour mips the probe term reads
+    /// (`reflection_probe_mips::reflection_probe_mips`).
+    pub exponent: f32,
 }
 
 /// A texel's reflection inputs from its specular slot sample `slot` (R `_s`,
@@ -54,6 +58,7 @@ pub fn glossy_texel(slot: Vec4, albedo: Vec3) -> GlossyTexel {
             Some(t) => Vec3::from(tint_color(albedo.to_array(), t)),
             None => albedo,
         },
+        exponent,
     }
 }
 

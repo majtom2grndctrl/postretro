@@ -3,9 +3,16 @@
 // colour and distance tiles.
 // See: context/lib/resource_management.md §5 · build_pipeline.md §PRL section IDs
 
+mod blur;
 mod error;
 mod wire;
 
+pub use blur::{
+    REFLECTION_PROBE_MIN_BLUR_MIP, REFLECTION_PROBE_MIP0_TEXEL_ANGLE, reflection_lobe_half_width,
+    reflection_probe_exponent_mip, reflection_probe_full_colour_mip_count,
+    reflection_probe_mip_exponent, reflection_probe_mip_half_width,
+    reflection_probe_term_half_width,
+};
 pub use error::{BindingList, ReflectionProbesError};
 
 use crate::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
@@ -97,7 +104,10 @@ pub struct ReflectionProbesSection {
     pub tile_border: u32,
     /// `lightmap::IRRADIANCE_FORMAT_BC6H` or `IRRADIANCE_FORMAT_RGBA16F`.
     pub atlas_format: u32,
-    /// Colour mips per probe, at least 1; every mip whole 4×4 blocks.
+    /// Colour mips per probe, at least 1; every mip whole 4×4 blocks. The
+    /// compiler writes mip 0 alone for a section binding only fluid faces
+    /// (water reads mip 0), and the full chain to 4², each mip prefiltered by
+    /// its lobe (`blur`), when any world face binds.
     pub colour_mip_count: u32,
     /// Authored probes in map entity order, then derived water probes in
     /// fluid entity order, then derived glossy world-face probes.

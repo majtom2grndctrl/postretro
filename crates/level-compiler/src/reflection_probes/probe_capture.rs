@@ -10,9 +10,10 @@ use rayon::prelude::*;
 
 use crate::bake_control::BakeControl;
 
-use super::capture::{RowCapture, TILE_INTERIOR, capture_row, encode_distance_tile, encode_tile};
+use super::capture::{RowCapture, TILE_INTERIOR, capture_row, encode_distance_tile};
 use super::capture_exclusion::ProbeExclusion;
 use super::placement::{PlacedProbe, fluid_bindings, world_bindings};
+use super::prefilter::{colour_mip_count, encode_colour_chain};
 use super::shading::CaptureScene;
 use super::share::{ShareHemisphere, ShareReport, ShareSums};
 
@@ -79,12 +80,13 @@ pub(super) fn capture_probes(
             captured
         })
         .collect::<anyhow::Result<Vec<RowCapture>>>()?;
+    let mip_count = colour_mip_count(probes);
     let tiles: Vec<Vec<u8>> = rows
         .par_chunks(rows_per_tile)
         .map(|rows| {
             let _permit = control.governor().enter();
             let texels: Vec<&[glam::Vec3]> = rows.iter().map(|r| r.texels.as_slice()).collect();
-            encode_tile(&texels)
+            encode_colour_chain(&texels, mip_count)
         })
         .collect();
     let distances: Vec<u8> = rows
@@ -109,8 +111,8 @@ pub(super) fn capture_probes(
         tile_dimension: REFLECTION_PROBE_TILE_DIMENSION,
         tile_border: REFLECTION_PROBE_TILE_BORDER,
         atlas_format: IRRADIANCE_FORMAT_BC6H,
-        // Mip 0 alone until the prefilter writes the chain.
-        colour_mip_count: 1,
+        // The full prefiltered chain when a world face binds, else mip 0.
+        colour_mip_count: mip_count,
         probes: probes
             .iter()
             .zip(&shares)

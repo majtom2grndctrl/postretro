@@ -21,12 +21,14 @@ use super::{DEPTH_FORMAT, SCENE_COLOR_FORMAT};
 use crate::compute_cull::{ComputeCullPipeline, SetTextureFn};
 
 /// The overlay's shader: its own bindings and entries, the tint rule
-/// forward's highlight reads, then the probe term and Fresnel it reuses from
-/// the fluid shader's modules, by name.
+/// forward's highlight reads, the exponent → mip function, then the probe
+/// term and Fresnel it reuses from the fluid shader's modules, by name.
 pub(crate) const GLOSSY_OVERLAY_SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/glossy_overlay.wgsl"),
     "\n",
     include_str!("../shaders/material_shading.wgsl"),
+    "\n",
+    include_str!("../shaders/reflection_probe_blur.wgsl"),
     "\n",
     include_str!("../shaders/reflection_probe_lobes.wgsl"),
     "\n",
@@ -370,3 +372,7 @@ fn overlay_pipeline(
 #[cfg(test)]
 #[path = "glossy_overlay_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "glossy_overlay_mip_tests.rs"]
+mod mip_tests;

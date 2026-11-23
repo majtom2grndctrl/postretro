@@ -1,6 +1,6 @@
 # E10--npc-equipment-sets — research
 
-Read at e761fb13. Read at 07c46bddd: facts E21 changed. Read at bb7323fc5: source corrections throughout. Read at 73b072de3 (no source change since bb7323fc5): §Replication. Mount, shot-origin and NPC-materialize facts moved to `drafts/E10--npc-weapon-mounts/research.md` at the split. Findings that inform the brief; the brief carries the conclusions.
+Read at e761fb13. Read at 07c46bddd: facts E21 changed. Read at bb7323fc5: source corrections throughout. Read at 73b072de3 (no source change since bb7323fc5): §Replication. Read at f29bc577d (no source change since 73b072de3): §Set names, §Gear, §Example weapons. Mount, shot-origin and NPC-materialize facts moved to `drafts/E10--npc-weapon-mounts/research.md` at the split. Findings that inform the brief; the brief carries the conclusions.
 
 ## Today's binding
 - Attack rows name weapons statically: `AttackParams.weapon: Option<String>` (`crates/foundation/src/data_descriptors/types/behavior.rs`). The SDK passes the string through (`sdk/lib/data_script/attacks.ts`, `.luau`). `validate_attacks` checks shape only, not that the name exists. Stance lowering never reads `weapon`. Every `content/` call site that names a weapon string is in `content/dev/scripts/limitator.ts`. Identity-lowering precedent: `lowerWeaponMountReferences` (`sdk/lib/data_script.ts`, `.luau`).
@@ -35,7 +35,7 @@ Read at e761fb13. Read at 07c46bddd: facts E21 changed. Read at bb7323fc5: sourc
 - A capacity-0 layer is skipped by every hit: `drain_layers` skips a layer whose `value <= 0`.
 - Hot reload deferral: `defer_visual_asset_descriptor_refreshes` (`crates/scripting-core/src/runtime/core.rs`) defers `mesh` whole, `mesh.weaponMounts` included. It does not cover an `equipment` block, and it does not retain a removed descriptor's models.
 - `HealthComponent.max` is per entity and reset from the descriptor on reload.
-- Mount facts (entry shape, the E21 writer, the install check, the preload sweep, the AR_4 bakes): `drafts/E10--npc-weapon-mounts/research.md` §Mounts today. Set gear is not in any model sweep.
+- Mount facts (entry shape, the E21 writer, the install check, the preload sweep, the AR_4 bakes): `drafts/E10--npc-weapon-mounts/research.md` §Mounts today. Entry gear is not in any model sweep.
 
 ## Replication
 - An NPC's per-instance payloads are `Transform`, `MeshAnimationState`, `StatusPresence` and `presentation_binding`. No KVPs, no tags. Its class and client materialize path: `drafts/E10--npc-weapon-mounts/research.md` §Mounts today. No client path updates an NPC's attachments after materialize.
@@ -44,6 +44,23 @@ Read at e761fb13. Read at 07c46bddd: facts E21 changed. Read at bb7323fc5: sourc
 - `WIRE_VERSION` (`crates/net/src/handshake.rs`, 43 at 73b072de3) and `SNAPSHOT_VERSION` (`crates/net/src/wire.rs`, 27) both bump for a new record field.
 - `validate_active_weapon_metadata` rejects a false presence flag with a non-empty string (`MalformedActiveWeaponMetadata`) and a present value on a record without movement state (`ActiveWeaponMetadataWithoutMovement`).
 - The compatibility digest (`mod_digest.rs`) excludes entity descriptors.
+
+## Set names
+- `scripting.md` §2, Ghost style declarations: "The name is an explicit field, not binding-name sugar, because map files reference it as a string."
+- `scripting.md` §2, Damage type and defense layer declarations: binding-name sugar, though a mover's FGD `crush_damage_type` references a damage type by that name. An unknown name there warns once per level load and deals the default type. So §2 already holds one map-referenced name under sugar.
+- `scripting.md` §1, Handles over strings: "Strings remain where a map or content resolves the name". A set is both: a handle in script, a string in the map.
+- Luau has no build step: `defineDefenseLayer("armor")` passes the name (`content/dev/scripts/defenses.luau`), and the SDK's sugar diagnostic covers `defineStore`, `defineImpactEvent`, `defineDefenseLayer`, `defineDamageType` and `defineStatus` (`sdk/lib/data_script/impact_events.luau`).
+- Cost of sugar: a TS binding rename changes the set's name with no error; maps still naming the old one warn and draw.
+
+## Gear
+- No per-rig gear exists today. E21's `weaponMounts` entry is the per-rig precedent: `weapon` plus an `attachments` map baked for that character's rig, with an empty map rejected and paths checked (`validate_weapon_mounts`, `crates/entities/src/data_descriptors/types/weapon_mounts.rs`; `resource_management.md` §7).
+- Gear on the archetype's set entry is resolvable only with the entry's identity. A client holds the archetype descriptor by the NPC's `descriptor:` class, so the set name selects the entry; a list index would select a different entry on a peer whose list order differs.
+- Gear on a socket where a set weapon mounts would hide that gun while its shots leave its muzzle (`drafts/E10--npc-weapon-mounts/`), the same reason that brief rejects two models on one carried socket.
+
+## Example weapons
+- Projectile weapons in `content/dev/scripts/`: the enemy rifles (`enemy-rifle.ts`), `reference_plasma_bolt` and `reference_rocket` (`reference-projectiles.ts`). The arc, acid and incendiary rifles spread the hitscan reference rifle.
+- `drafts/E16--persistent-firing-modes/` merges `enemy_rifle_burst` and `enemy_rifle_long` into one modal rifle; `enemy_rifle`, the traps' single shot, is named by no attack and stays.
+- `reference_rocket` has a four-round magazine and the AI never reloads, so an NPC would dry-fire after four shots. `reference_plasma_bolt` spends a cell that refills after a pause; its charged secondary is never driven, since enemies drive primary only.
 
 ## Prior commitments touched
 - `done/E16--enemy-ranged-projectile/`: enemies carry no `Inventory`; a per-enemy weapon instance entity is a non-goal. Kept: a set is not an inventory.
@@ -55,6 +72,9 @@ Read at e761fb13. Read at 07c46bddd: facts E21 changed. Read at bb7323fc5: sourc
 - `done/E16--wieldable-switching-inventory/`: a live loadout edit applies at the next install, not to a live inventory. Held NPC equipment follows that rule on hot reload.
 - `done/E10--enemy-stances-and-telegraphs/`: rejects a reached rest with no way out. This brief runs that check once per declared set.
 - Roadmap "Patrol routes": per-instance variants chosen by map or script. It may cite this brief's selection rule but decides its own unknown-name behavior.
+- `drafts/E16--persistent-firing-modes/`: one modal weapon is one identity, so one `carries` guard and one set entry serve every mode. Sets choose weapons; attacks choose modes.
+- `drafts/descriptor-instance-overrides/`: delegates to whichever of it and this brief builds second the rule that a base weapon's mount entry serves the variants a set lists; `carries` keys on the variant.
+- `CarriedLoadoutWire` (`crates/net/src/wire/control.rs`): the player's carried loadout across level changes. An NPC's carried equipment is a different thing and never crosses a level.
 - `done/E21--character-weapon-mounts/`: its loud missing-entry rule for a declared table extends to set weapons through `drafts/E10--npc-weapon-mounts/`, which owns NPC mount consumption, the shot origin and the dev content move.
 
 ## Validation history input
@@ -65,3 +85,5 @@ The third `/validate-plan` returned Reshape: weapon mounts in sets ignored per-r
 Owner rulings of 2026-11-23 on shot origin, mount sharing and built-in muzzles now live in `drafts/E10--npc-weapon-mounts/research.md` §Validation history input.
 
 A later `/validate-plan` returned Reshape (2026-11-23). The owner split the brief: `drafts/E10--npc-weapon-mounts/` first, this brief on top. Rulings for this brief: the wire carries carried weapon identities, not resolved `(socket, model)` mounts; an unused mount entry warns rather than rejects, and only on an archetype that declares `equipment`.
+
+A later `/validate-plan` returned Direction sound (2026-11-23). Owner rulings: gear is per rig on the archetype's set entry, and travels as identity; build order is `drafts/E10--npc-weapon-mounts/`, then `drafts/E16--persistent-firing-modes/`, then this brief, so sets choose weapons and attacks choose modes; set names stay binding-name sugar over an explicit name field; the `drafts/descriptor-instance-overrides/` reconciliation is acknowledged; give-and-take-first and gear-in-the-set join the rivals. The owner reviews the changed Scripting surface. Gear as identity keeps the worn set's name past spawn, which the first Decision says does not survive: an owner item.

@@ -1,6 +1,6 @@
 # E10--npc-weapon-mounts — research
 
-Read at bb7323fc5, split from `drafts/E10--npc-equipment-sets/research.md`. Read at 73b072de3 (no source change since bb7323fc5): §Muzzle pose. Findings that inform the brief; the brief carries the conclusions.
+Read at bb7323fc5, split from `drafts/E10--npc-equipment-sets/research.md`. Read at 73b072de3 (no source change since bb7323fc5): §Muzzle pose. Read at f29bc577d (no source change since 73b072de3): §Blocked muzzle. Findings that inform the brief; the brief carries the conclusions.
 
 ## NPC shot origin
 Owner-observed 2026-11-23 on `movement-feel`: the `rifle_trooper` (white armor, `rodin_sci-fi_trooper_m`) fires from above its head. Pre-existing: `enemy_eye` dates from `3d45c494e` (2026-08-23, enemy static LOS fire gate), and E21 did not touch it.
@@ -27,8 +27,8 @@ Design smells (owner-agreed):
 2. Sight origin and shot origin are one point. Line of sight and cover are a different concern from weapon launch.
 3. Launch origin branches by actor kind: player projectiles go through `resolve_muzzle_launch_origin`, NPCs bypass it. That runs against `entity_model.md` §2's one weapon vocabulary, which has no player-vs-enemy branch.
 
-Directions weighed (the owner chose the held weapon's muzzle on 2026-11-23, with a built-in weapon's muzzle as a body socket):
-- A separate NPC launch point, routed through `resolve_muzzle_launch_origin` for the obstruction fallback and convergence. The eye stays for line of sight. The launch point is one of:
+Directions weighed (the owner chose the held weapon's muzzle on 2026-11-23, with a built-in weapon's muzzle as a body socket; a later ruling dropped the eye fallback, §Blocked muzzle):
+- A separate NPC launch point. The eye stays for line of sight. The launch point is one of:
   - an authored chest or shoulder offset in the facing frame;
   - the held weapon's muzzle: hand joint × rig bake × the bake's rigid `muzzle` socket.
 - Separately, make the eye an authored height or a factor-scaled one, so a hitbox edit stops moving it.
@@ -36,6 +36,15 @@ Directions weighed (the owner chose the held weapon's muzzle on 2026-11-23, with
 Costs of the held-muzzle source:
 - Reading the held mount for gameplay reverses E21's Decision "Gameplay never reads a mount" (`networking.md` §Weapon placement is content) and `resource_management.md` §7's presentation-only sockets, for host-only NPCs.
 - Aim drift with clip pose: a muzzle read from the posed hand moves with every clip. For scale, Mixamo rifle clips hold the hand-to-hand line 24° or more off the +Z mount (measured 2026-11-05: `idle_aiming` 24°, `firing_rifle` 38°).
+
+## Blocked muzzle
+Owner ruling, 2026-11-23, after `/validate-plan` returned Under-scoped: a muzzle whose path to the target is blocked whiffs; the shot never launches from the eye.
+- The eye gate: `line_of_sight_combined` from `enemy_eye` to `target_aim`, world and movers at the tick's pose (`perception.rs`). `perceive_target` debounces it through the LOS grace (`debounce_los`), and `fire_gate` reads the debounced verdict.
+- The fire proposal builds `WeaponAim` whenever target perception exists, visible or not (`compute.rs`). `advance_actor` cancels an execution only when the aim is absent, and each due shot launches at that tick's aim. So a running burst keeps firing after sight is lost.
+- `enemy_eye_height_clears_low_cover_but_full_cover_blocks_fire` (`crates/ai/src/ai_tests.rs`): a meshless NPC with a hitbox half-height 1.5 at offset 0, so its eye is 1.5 m; the pawn 2 m away, eye 0.5 m; walls at x = 1, 0.9 m (the eye ray crosses at 1.0 m, so it fires) and 1.25 m (blocked). Its attack is contact damage (8 HP, applied in-tick), not a projectile, so it proves the eye gate only.
+- The band the ruling accepts: cover between gun height and the hitbox top, near the NPC, passes the eye gate and blocks the muzzle. The measured eyes sit 0.08–0.12 m above the head top, and the trooper's 0.4–0.5 m above its gun (§NPC shot origin). An eye at head height would narrow it; the eye's derivation stays out of scope.
+- Rivals weighed: launch from the muzzle into the cover (the NPC shoots the lip in front of it); fall back to the eye as a pawn does (restores the defect); the chest or shoulder offset (the owner's earlier rejection: off the drawn gun).
+- Foreclosure flagged by validation: once the muzzle socket is gameplay, art edits are gameplay edits. Re-baking an AR_4 (its scale, seat or solve) or moving its `muzzle` node moves the shot start and changes which cover blocks the NPC. `solve-weapon-mount --check` measures orientation only (`resource_management.md` §7).
 
 ## Muzzle pose
 - The clip clock is `ClipClock` (`crates/entities/src/components/brain/clip_clock.rs`; rules in `crates/ai/src/clip_clock.rs`). `state` is the drawn animation state with its travel-variant suffix; `time` is unwrapped clip time, each tick's `dt × rate` from the state's start or drawn phase. `begin_tick` advances it for every brain on every tick the NPC acts, not only for clip-timed attacks. `state` is `None` when it tracks nothing.
@@ -61,6 +70,9 @@ Costs of the held-muzzle source:
 - The SDK has no per-use descriptor override. Spreading a weapon's components derives a new weapon identity: `incendiary_rifle` spreads `referenceRifleEntity.components` and its `weapon` block (`content/dev/scripts/status-hazards.ts`). The owner left shared weapons to `drafts/descriptor-instance-overrides/` (2026-11-23).
 
 ## Prior commitments touched
+- `done/E16--enemy-ranged-projectile/`: named the posed weapon-socket muzzle the decided fire origin and deferred it as a presentation follow-on, because the socket transform was not sampled at the fixed AI tick; its first cut fired from `enemy_eye`. This brief builds that origin, as a host gameplay query on clip time rather than presentation, and supersedes the first cut.
+- `index.md` §2, Designers over structure: load errors are for placements that cannot work. Two different models on one carried socket cannot: one would not draw while its shots left it.
+- `entity_model.md` §7c, Sight sees movers: the muzzle-path test joins the NPC line-of-sight tests that see movers.
 - `done/E21--character-weapon-mounts/`: "Gameplay never reads a mount", reversed here for host-only NPC shots. Its loud missing-entry rule extends to NPC tables. It deferred NPC consumption and the rifle squads' move to `mesh.weaponMounts` to E10; the limitator mounts the same rifle the same way, so it moves too.
 - `done/E21--bone-sockets-attachments/`: sockets are presentation-only. Reversed here for one query, host NPC shot origin.
 - `entity_model.md` §2: no branch on actor kind. Admitted here in launch origin only.
@@ -73,3 +85,5 @@ Costs of the held-muzzle source:
 `/validate-plan` on `drafts/E10--npc-equipment-sets/` returned Reshape (2026-11-23). The owner split the brief: this one first, equipment sets on top.
 
 Owner rulings, 2026-11-23: NPC shots launch from the carried weapon's muzzle, a built-in weapon's from a body socket named by a `mesh.weaponMounts` entry without `attachments` (the owner's reason: it avoids a precedent mutually exclusive with melee weapons, which later briefs expand on). A missing mount entry is loud, as in E21. Two carried weapons may share a socket when their entries name the same model, for now; consolidating such a pair into one modal weapon goes to `drafts/E16--persistent-firing-modes/`. One rifle for players and NPCs waits for `drafts/descriptor-instance-overrides/`. After the split: the muzzle pose uses game-tick clip time; an entry names `attachments` or `muzzle`, never both, and neither rejects; missing-muzzle behavior is delegated.
+
+A second `/validate-plan` returned Under-scoped (2026-11-23). Owner rulings: a blocked muzzle whiffs with no eye fallback, and sight, perception and target choice stay on the eye; the blocked-muzzle rivals and the superseded E16 first cut are recorded; the one-model-per-socket rule carries its reason; the art-is-gameplay foreclosure is noted. Order of the enemy-weapon briefs: this one, then `drafts/E16--persistent-firing-modes/`, then `drafts/E10--npc-equipment-sets/`.

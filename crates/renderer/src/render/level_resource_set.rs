@@ -286,6 +286,11 @@ pub(in crate::render) struct LevelResourceSet {
     pub(in crate::render) mesh_lights: LevelLightGroups,
     /// Kinematic-brush mover geometry and its group 2.
     pub(in crate::render) kinematic: kinematic_brush::KinematicLevelState,
+    /// This level's reflection probe records (arrays, share table, sums) and
+    /// the sums pass's group over them: `None` unless its id 54 binds a face,
+    /// fluid or world. Probe-term passes borrow them; they drop with the set.
+    pub(in crate::render) reflection_probes:
+        Option<reflection_probe_resources::ReflectionProbeResources>,
     /// This level's fluid surfaces; `None` until `install_fluid_surfaces`
     /// finds a drawable face.
     pub(in crate::render) fluid_surfaces: Option<fluid_surface::InstalledFluidSurfaces>,
@@ -382,6 +387,17 @@ impl Renderer {
             .and_then(|level| level.fluid_surfaces.as_ref())
     }
 
+    /// The active level's reflection probes, `None` with no level or none
+    /// installed.
+    pub(in crate::render) fn reflection_probes(
+        &self,
+    ) -> Option<&reflection_probe_resources::ReflectionProbeResources> {
+        self.full()
+            .level
+            .as_ref()
+            .and_then(|level| level.reflection_probes.as_ref())
+    }
+
     /// Test view over the fluid pass and the active level's surfaces.
     #[cfg(test)]
     pub(in crate::render) fn fluid_test(&self) -> fluid_surface::FluidTestView<'_> {
@@ -392,6 +408,7 @@ impl Renderer {
                 .level
                 .as_ref()
                 .and_then(|level| level.fluid_surfaces.as_ref()),
+            probes: self.reflection_probes(),
         }
     }
 

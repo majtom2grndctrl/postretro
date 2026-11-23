@@ -13,8 +13,8 @@ use super::prepared::measurement_animation_time_seconds;
 use super::scene::{CameraPose, CaptureScene};
 use crate::render::{
     CaptureAdapterIdentity, CaptureGpuTimingState, CaptureGpuTimingWindow, LightmapResidencyReport,
-    ResidencyAllocation, ResidencyAllocationShape, ResidencyAllocationState, ResidencySource,
-    ShResidencyReport, ShStreamingLifecycleSummary,
+    ReflectionProbeResidencyReport, ResidencyAllocation, ResidencyAllocationShape,
+    ResidencyAllocationState, ResidencySource, ShResidencyReport, ShStreamingLifecycleSummary,
 };
 
 const MEASUREMENT_SCHEMA: &str = "postretro.capture.measurement.v3";
@@ -75,6 +75,7 @@ pub(super) fn measurement_report(
         adapter: AdapterReport::from(adapter),
         renderer_accounted_sh: sh_residency.map(ShResidencyReportJson::from),
         renderer_accounted_lightmap: lightmap_residency.map(LightmapResidencyReportJson::from),
+        renderer_accounted_reflection_probes: None,
         lightmap_streaming: None,
         planar_reflection: None,
         cpu_completion: CpuCompletionReport {
@@ -96,6 +97,17 @@ pub(super) fn measurement_report(
 }
 
 impl MeasurementReport {
+    /// Attach the probe rows; `None` (before full init) leaves the report
+    /// without them.
+    pub(super) fn with_reflection_probe_residency(
+        mut self,
+        residency: Option<ReflectionProbeResidencyReport>,
+    ) -> Self {
+        self.renderer_accounted_reflection_probes =
+            residency.map(ReflectionProbeResidencyReportJson::from);
+        self
+    }
+
     pub(super) fn with_lightmap_streaming(mut self, residency: CaptureLightmapResidency) -> Self {
         self.lightmap_streaming = Some(LightmapStreamingReportJson::from(residency));
         self
@@ -185,6 +197,10 @@ pub(super) struct MeasurementReport {
     renderer_accounted_sh: Option<ShResidencyReportJson>,
     #[serde(skip_serializing_if = "Option::is_none")]
     renderer_accounted_lightmap: Option<LightmapResidencyReportJson>,
+    /// The active level's reflection probe rows: colour mips, distance,
+    /// share table and sums; empty rows for a level without probes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    renderer_accounted_reflection_probes: Option<ReflectionProbeResidencyReportJson>,
     /// How the capture owned its lightmap blocks and how many were resident.
     #[serde(skip_serializing_if = "Option::is_none")]
     lightmap_streaming: Option<LightmapStreamingReportJson>,
@@ -400,6 +416,26 @@ struct LightmapResidencyReportJson {
 
 impl From<LightmapResidencyReport> for LightmapResidencyReportJson {
     fn from(report: LightmapResidencyReport) -> Self {
+        Self {
+            rows: report
+                .allocations
+                .into_iter()
+                .map(ResidencyAllocationJson::from)
+                .collect(),
+            total_bytes: report.total_bytes,
+        }
+    }
+}
+
+/// Reflection probe rows, the same bytes the install log prints.
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+struct ReflectionProbeResidencyReportJson {
+    rows: Vec<ResidencyAllocationJson>,
+    total_bytes: u64,
+}
+
+impl From<ReflectionProbeResidencyReport> for ReflectionProbeResidencyReportJson {
+    fn from(report: ReflectionProbeResidencyReport) -> Self {
         Self {
             rows: report
                 .allocations
@@ -988,6 +1024,60 @@ mod tests {
             "the report names no cap: {lightmap}"
         );
         assert!(lightmap.get("counters").is_none(), "no counters, no object");
+    }
+
+    // glossy-world-reflections row 64: the probe family reaches the report.
+    #[test]
+    fn report_carries_reflection_probe_rows_when_attached() {
+        let report = || {
+            measurement_report(
+                &scene_with_measurement(),
+                99,
+                None,
+                adapter(),
+                None,
+                None,
+                vec![1.0],
+                CaptureGpuTimingState::NotRequested,
+                0,
+                Vec::new(),
+                crate::cpu_timing::capture_stages_report(
+                    postretro_stage_timing::TimingGate::OFF,
+                    &[],
+                    0,
+                ),
+            )
+        };
+        let before_full_init = as_json(report().with_reflection_probe_residency(None));
+        assert!(
+            before_full_init
+                .get("renderer_accounted_reflection_probes")
+                .is_none()
+        );
+        let probes = ReflectionProbeResidencyReport {
+            allocations: vec![ResidencyAllocation {
+                name: "probe_sums",
+                sources: vec![ResidencySource::Section(54), ResidencySource::Derived],
+                bytes: 24_576,
+                state: ResidencyAllocationState::Data,
+                shape: ResidencyAllocationShape::Buffer {
+                    binding_bytes: 24_576,
+                },
+            }],
+            total_bytes: 24_576,
+        };
+        let json = as_json(report().with_reflection_probe_residency(Some(probes)));
+        let probes = &json["renderer_accounted_reflection_probes"];
+        assert_eq!(probes["total_bytes"], 24_576);
+        assert_eq!(probes["rows"][0]["name"], "probe_sums");
+        assert_eq!(probes["rows"][0]["bytes"], 24_576);
+        let empty = as_json(
+            report().with_reflection_probe_residency(Some(ReflectionProbeResidencyReport::EMPTY)),
+        );
+        assert_eq!(
+            empty["renderer_accounted_reflection_probes"]["total_bytes"],
+            0
+        );
     }
 
     // A streamed capture records the residency counters under

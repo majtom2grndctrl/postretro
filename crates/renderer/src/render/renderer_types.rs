@@ -376,6 +376,21 @@ impl Renderer {
         )
     }
 
+    /// Resident bytes of the active level's reflection probes: its report,
+    /// or the empty report with no set active or a set without probes.
+    /// `None` only before full init.
+    pub fn reflection_probe_residency_report(&self) -> Option<ReflectionProbeResidencyReport> {
+        let full = self.full.as_ref()?;
+        Some(
+            full.level
+                .as_ref()
+                .and_then(|level| level.reflection_probes.as_ref())
+                .map_or(ReflectionProbeResidencyReport::EMPTY, |probes| {
+                    probes.residency_report()
+                }),
+        )
+    }
+
     /// Borrow the full-phase state. Panics if called before `finish_full_init`
     /// — every caller is on a full-ready-gated path (Frontend/Loading/Running/
     /// UI/scene), so reaching here boot-only is a logic error, not a runtime case.

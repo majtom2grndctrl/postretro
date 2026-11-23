@@ -537,9 +537,10 @@ fn fluid_reflection_pipeline_fragment_bindings_stay_within_limits() {
 // them), and its own entries are COMPUTE-only, so no render stage is charged
 // for them. Fluid group 4's sums entry stays FRAGMENT-only.
 #[test]
-fn fluid_sums_pipeline_compute_bindings_stay_within_limits() {
-    use crate::render::fluid_reflection_probes::fluid_sums_pass_bind_group_layout_entries;
-    let groups = fluid_surface::probe_sums::fluid_sums_pipeline_bind_group_layout_entries();
+fn reflection_probe_sums_pipeline_compute_bindings_stay_within_limits() {
+    use crate::render::reflection_probe_resources::probe_sums_pass_bind_group_layout_entries;
+    let groups =
+        crate::render::reflection_probe_sums::probe_sums_pipeline_bind_group_layout_entries();
     let compute: Vec<[u32; 4]> = groups
         .iter()
         .map(|entries| stage_inventory(entries, wgpu::ShaderStages::COMPUTE))
@@ -585,7 +586,7 @@ fn fluid_sums_pipeline_compute_bindings_stay_within_limits() {
             wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE
         );
     }
-    for entry in fluid_sums_pass_bind_group_layout_entries() {
+    for entry in probe_sums_pass_bind_group_layout_entries() {
         assert_eq!(entry.visibility, wgpu::ShaderStages::COMPUTE);
     }
     let group_4 = fluid_surface::fluid_params_bind_group_layout_entries();

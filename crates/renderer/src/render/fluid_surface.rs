@@ -1,9 +1,10 @@
 // Fluid surface pass: environment-volume surface faces drawn translucent,
 // two-sided and moving in whole texels, after skinned meshes and before billboards.
-// Submodules: the level install (`fluid_surface/install.rs`), the live-lighting
-// sums pass (`fluid_surface/probe_sums.rs`), the screen-space
+// Submodules: the level install (`fluid_surface/install.rs`), the screen-space
 // reflection pass (`fluid_surface/reflection_pass.rs`) and
 // planar routing (`fluid_surface/planar_routing.rs`: per-draw plane split, planar group 5).
+// The live-lighting sums pass and the probes it reads are the level's
+// (`reflection_probe_sums.rs`, `reflection_probe_resources.rs`).
 // See: context/lib/rendering_pipeline.md §7.3a
 
 use crate::render::gpu_create::GpuCreate;
@@ -23,6 +24,7 @@ use postretro_render_cpu::fluid_surface::{
 use postretro_render_cpu::frame_uniforms::LightTermMask;
 
 use super::fluid_reflection_probes::fluid_probe_bind_group_layout_entries;
+use super::reflection_probe_resources::ReflectionProbeResources;
 
 #[cfg(test)]
 pub(crate) use super::fluid_scene_inputs::FLUID_SCENE_UNIFORM_BYTES;
@@ -36,7 +38,6 @@ use super::*;
 // this module.
 mod install;
 mod planar_routing;
-pub(crate) mod probe_sums;
 // The per-fragment oracle: the reflecting variant with the kept per-fragment
 // ratio, for the sums pass's GPU gates.
 #[cfg(test)]
@@ -267,9 +268,6 @@ pub(crate) struct FluidSurfacePass {
     /// every tier; its target exists only while a level with a probe-bound
     /// face is installed at a tier that runs the screen-space layer.
     reflection: reflection_pass::FluidReflectionPass,
-    /// The live-lighting sums pass, its pipeline built at full init; the sums
-    /// and its group belong to the level's probe resources.
-    sums: probe_sums::FluidProbeSumsPass,
     /// The planar layer, its own group 5 and this frame's routed plane.
     planar: planar_routing::PlanarRouting,
 }
@@ -307,7 +305,6 @@ impl FluidSurfacePass {
             scene_depth,
             scene_color,
         );
-        let sums = probe_sums::FluidProbeSumsPass::new(device, camera_bgl, sh_bgl);
         let scene_inputs = FluidSceneInputs::new(device, scene_depth, reflection.bound_view());
         // Same group order as `fluid_pipeline_bind_group_layout_entries`.
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -330,7 +327,6 @@ impl FluidSurfacePass {
             params_bind_group_layout,
             scene_inputs,
             reflection,
-            sums,
             planar: Default::default(),
         }
     }
@@ -399,11 +395,12 @@ impl FluidSurfacePass {
     /// `pack_fluid_surfaces` into one shared buffer with per-volume material
     /// ranges. UVs normalize by `texture_dimensions` (indexed by texture
     /// index); faces whose texture is past `material_count` draw with the
-    /// placeholder material. `reflection_probes` (section 54) uploads whole
-    /// with the surfaces, and its bindings write each face's probe index; a
-    /// level without it binds dummies. Faces are cut along `lattice`, the
-    /// level's SH lattice, so the vertex stage's baked lighting varies within
-    /// a probe cell; without one they pack whole. A level with a probe-bound
+    /// placeholder material. `reflection_probes` (section 54) writes each
+    /// face's probe index through its bindings, and group 4 borrows `probes`,
+    /// the level's upload of it; a level without probes binds dummies. Faces
+    /// are cut along `lattice`, the level's SH lattice, so the vertex stage's
+    /// baked lighting varies within a probe cell; without one they pack
+    /// whole. A level with a probe-bound
     /// face installed at medium or above also creates the screen-space
     /// reflection target at the kept tier's fraction and rebinds group 5 to
     /// it; at Off and Low it keeps the placeholder.
@@ -414,6 +411,7 @@ impl FluidSurfacePass {
         queue: &crate::render::uploads::UploadQueue,
         volumes: &[EnvironmentVolumeRecord],
         reflection_probes: Option<&ReflectionProbesSection>,
+        probes: Option<&ReflectionProbeResources>,
         texture_dimensions: &[[u32; 2]],
         material_count: usize,
         lattice: Option<&FluidGridLattice>,
@@ -429,13 +427,13 @@ impl FluidSurfacePass {
             material_count,
             lattice,
         );
-        self.install_prepared(device, queue, prepared, volumes, reflection_probes)
+        self.install_prepared(device, queue, prepared, volumes, reflection_probes, probes)
     }
 
     /// The GPU half of [`Self::install`]: clear the previous level's targets,
     /// then upload what prep packed. `None` (no surface face) allocates
     /// nothing. `volumes` and `reflection_probes` are the ones `prepared` was
-    /// built from.
+    /// built from, and `probes` the level's upload of them.
     pub(crate) fn install_prepared(
         &mut self,
         device: &wgpu::Device,
@@ -443,6 +441,7 @@ impl FluidSurfacePass {
         prepared: Option<PreparedFluidSurfaces>,
         volumes: &[EnvironmentVolumeRecord],
         reflection_probes: Option<&ReflectionProbesSection>,
+        probes: Option<&ReflectionProbeResources>,
     ) -> Option<InstalledFluidSurfaces> {
         self.clear_level_targets(device);
         let installed = self.level_layout().build_surfaces(
@@ -451,6 +450,7 @@ impl FluidSurfacePass {
             prepared,
             volumes,
             reflection_probes,
+            probes,
         )?;
         // Probe binding is fixed at install, so it and the kept tier alone
         // key the target: reflectivity, retuned live, only switches draw
@@ -466,7 +466,8 @@ impl FluidSurfacePass {
 
     /// Whether this frame's fluid pass records a reflecting-variant draw under
     /// `light_term_mask` and `quality`, the frame's one mask snapshot and
-    /// tier: the sums pass's dispatch condition. It reads this pass's own
+    /// tier: the fluid half of the sums pass's dispatch condition
+    /// (`renderer_probe_sums_frame.rs`). It reads this pass's own
     /// draws. Unlike `has_reflecting_draws`, it reads neither the tier's
     /// screen-space gate nor the planar route, so Low and the selected plane
     /// dispatch.
@@ -483,26 +484,6 @@ impl FluidSurfacePass {
                     .frame_draws(light_term_mask.bits(), quality)
                     .any(|(_, variant)| variant.reflections())
         })
-    }
-
-    /// Record the sums pass over every probe `installed` holds, into the
-    /// frame's encoder. The caller records it once, on a frame
-    /// `has_probe_term_draws` admits, before the fluid pass.
-    pub(crate) fn record_probe_sums(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        timing: Option<&crate::render::frame_timing::FrameTiming>,
-        camera: &wgpu::BindGroup,
-        sh: &wgpu::BindGroup,
-        installed: &InstalledFluidSurfaces,
-    ) {
-        self.sums.record(encoder, timing, camera, sh, installed);
-    }
-
-    /// Sums-pass dispatches recorded so far (tests).
-    #[cfg(test)]
-    pub(crate) fn probe_sums_dispatches(&self) -> u32 {
-        self.sums.dispatches()
     }
 
     /// Record this frame's draws. The caller binds groups 0, 2 and 3; this
@@ -584,6 +565,8 @@ impl FluidSurfacePass {
 pub(crate) struct FluidTestView<'a> {
     pub(crate) pass: &'a FluidSurfacePass,
     pub(crate) installed: Option<&'a InstalledFluidSurfaces>,
+    /// The level's own probes, which group 4 binds unless it holds dummies.
+    pub(crate) probes: Option<&'a ReflectionProbeResources>,
 }
 
 #[cfg(test)]
@@ -607,18 +590,24 @@ impl FluidTestView<'_> {
             .map(|size| size.depth_or_array_layers)
     }
 
-    /// The installed probe array's tile width, height and layer count: 1×1
-    /// and one layer for the dummy.
-    pub(crate) fn probe_array_size(&self) -> Option<wgpu::Extent3d> {
-        self.installed
-            .map(|installed| installed.probes.array_size())
+    /// The probes group 4 binds: the install's dummies, else the level's.
+    fn bound_probes(&self) -> Option<&ReflectionProbeResources> {
+        let installed = self.installed?;
+        installed._probe_dummies.as_ref().or(self.probes)
     }
 
-    /// The installed distance array's tile width, height and layer count:
-    /// 1×1 and one layer for the dummy.
+    /// The bound probe array's tile width, height and layer count: 1×1 and
+    /// one layer for the dummy.
+    pub(crate) fn probe_array_size(&self) -> Option<wgpu::Extent3d> {
+        self.bound_probes()
+            .map(ReflectionProbeResources::array_size)
+    }
+
+    /// The bound distance array's tile width, height and layer count: 1×1
+    /// and one layer for the dummy.
     pub(crate) fn probe_distance_size(&self) -> Option<wgpu::Extent3d> {
-        self.installed
-            .map(|installed| installed.probes.distance_size())
+        self.bound_probes()
+            .map(ReflectionProbeResources::distance_size)
     }
 
     /// Parameter-row uploads since install.
@@ -681,14 +670,16 @@ fn create_fluid_pipeline(
 }
 
 impl Renderer {
-    /// Install the level's fluid surfaces and their reflection probes. Call
-    /// after `install_textures` and `install_level_geometry` (which drops the
-    /// previous level's and installs its SH volume): UVs normalize by the
-    /// installed diffuse dimensions, as `normalize_world_uvs` does for world
-    /// faces, and faces are cut along the lattice the SH sampler now reads.
-    /// Volumes without surface faces allocate nothing, probes included; a
-    /// level without any never opens the pass. `reflection_probes` is the
-    /// level's section 54.
+    /// Install the level's reflection probes, then its fluid surfaces over
+    /// them: the main-thread oracle's half of what a level build's geometry
+    /// part does. Call after `install_textures` and `install_level_geometry`
+    /// (which drops the previous level's and installs its SH volume): UVs
+    /// normalize by the installed diffuse dimensions, as `normalize_world_uvs`
+    /// does for world faces, and faces are cut along the lattice the SH
+    /// sampler now reads. `reflection_probes` is the level's section 54: it
+    /// uploads when it binds any face, fluid or world, whether or not the
+    /// level has fluid. Volumes without surface faces allocate no fluid
+    /// resource; a level without any never opens the pass.
     pub fn install_fluid_surfaces(
         &mut self,
         volumes: &[EnvironmentVolumeRecord],
@@ -710,11 +701,16 @@ impl Renderer {
             super::renderer_models::loaded_texture_dimensions(&level.loaded_textures);
         let material_count = level.gpu_textures.len();
         let lattice = level.sh_sampler_lattice();
+        level.reflection_probes =
+            full.reflection_probe_sums
+                .level_layout()
+                .build(device, queue.raw(), reflection_probes);
         level.fluid_surfaces = full.fluid_surface.install(
             device,
             queue,
             volumes,
             reflection_probes,
+            level.reflection_probes.as_ref(),
             &texture_dimensions,
             material_count,
             lattice.as_ref(),

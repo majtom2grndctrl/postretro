@@ -276,6 +276,13 @@ pub(crate) fn build_full_renderer(
         &depth_view,
         screen_effects.scene_color_view(),
     );
+    // The sums pass binds the camera and SH layouts; the sums and its group
+    // over them belong to each level. See: context/lib/rendering_pipeline.md §7.3a
+    let reflection_probe_sums = reflection_probe_sums::ReflectionProbeSumsPass::new(
+        device,
+        &uniform_bind_group_layout,
+        &sh_volume_resources.bind_group_layout,
+    );
     // Every planar pipeline builds here at every tier, so a tier change
     // compiles nothing. See: context/lib/rendering_pipeline.md §7.3a
     let planar_reflection = planar_reflection::PlanarReflectionPass::new(
@@ -371,6 +378,7 @@ pub(crate) fn build_full_renderer(
         kinematic_brush,
         kinematic_ghost,
         fluid_surface,
+        reflection_probe_sums,
         planar_reflection,
         rigid_occluder_depth,
         promoted_depth_cache,

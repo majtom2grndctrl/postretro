@@ -450,6 +450,7 @@ pub(in crate::render) fn build_level_set_core(
         sdf_shadow,
         mesh_lights,
         kinematic,
+        reflection_probes: None,
         fluid_surfaces: None,
         fog: Default::default(),
         fog_cell_masks: None,

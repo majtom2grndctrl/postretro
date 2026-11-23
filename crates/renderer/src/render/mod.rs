@@ -46,6 +46,9 @@ mod mover_travel;
 mod planar_reflection;
 mod promoted_depth_cache;
 pub(crate) mod queue_writes;
+mod reflection_probe_residency;
+mod reflection_probe_resources;
+mod reflection_probe_sums;
 pub(crate) mod residency;
 mod rigid_occluder_depth;
 mod screen_effects;
@@ -180,6 +183,7 @@ mod renderer_models;
 #[cfg(feature = "dev-tools")]
 mod renderer_playback;
 mod renderer_pre_scene;
+mod renderer_probe_sums_frame;
 mod renderer_render_frame;
 mod renderer_resources;
 mod renderer_shadow_passes;
@@ -279,6 +283,10 @@ pub use model_cache::{
     ModelEntryIdentity,
 };
 use promoted_depth_cache::{PromotedDepthCache, PromotedDepthCacheFramePlan};
+pub use reflection_probe_residency::{
+    REFLECTION_PROBE_COLOUR, REFLECTION_PROBE_DISTANCE, REFLECTION_PROBE_SHARE_TABLE,
+    REFLECTION_PROBE_SUMS, ReflectionProbeResidencyReport,
+};
 #[cfg(feature = "dev-tools")]
 pub use renderer_playback::PlaybackDrainCounters;
 pub use renderer_render_frame::{FrameScene, ShDrainFrameResult};

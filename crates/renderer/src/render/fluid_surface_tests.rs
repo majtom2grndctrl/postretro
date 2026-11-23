@@ -2,6 +2,7 @@
 // See: context/lib/testing_guide.md
 
 use super::*;
+use crate::render::reflection_probe_sums;
 use postretro_render_cpu::fluid_surface::reflection::FLUID_PROBE_TABLE_BYTES;
 use postretro_render_cpu::fluid_surface::{
     FLUID_PARAMS_STRIDE, FLUID_SLOTS_PER_WINDOW, FluidSurfaceVertex,
@@ -1797,7 +1798,7 @@ fn fluid_shade_fogs_from_the_outward_normal_and_the_reflecting_entry_returns_the
 // is not installed.
 #[test]
 fn the_install_filter_and_the_bound_face_predicate_agree() {
-    use crate::render::fluid_reflection_probes::installable_probe_section;
+    use crate::render::reflection_probe_resources::installable_probe_section;
     use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
     use postretro_level_format::reflection_probes::{
         REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1, REFLECTION_PROBE_LIGHTS_PER_PROBE,
@@ -3209,11 +3210,12 @@ fn fluid_pass_picks_variants_by_the_frames_group_0_mask() {
         .expect("the reflection pass records with the frame's mask and tier");
     assert!(snapshot < gate && gate < reflection && reflection < record);
     // The sums pass takes its dispatch by the same snapshot, before the
-    // reflection pass and the fluid pass.
+    // reflection pass and the fluid pass; its recorder hands both to the
+    // fluid pass's condition (`the_sums_dispatch_reads_the_fluid_passs_own_reflecting_draws`).
     let sums = frame
         .find(
-            "fluid_surface.has_probe_term_draws(self.fluid_surfaces(),frame_light_term_mask,\
-             frame_reflection_quality,)",
+            "self.record_reflection_probe_sums(encoder,render_world,frame_light_term_mask,\
+             frame_reflection_quality,);",
         )
         .expect("the sums dispatch reads the frame's mask and tier");
     assert!(snapshot < sums && sums < gate);
@@ -3526,10 +3528,9 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
     assert!(install.starts_with(
         "fninstall(&mutself,device:&wgpu::Device,queue:&crate::render::uploads::UploadQueue,"
     ));
-    assert!(
-        install
-            .ends_with("self.install_prepared(device,queue,prepared,volumes,reflection_probes)}")
-    );
+    assert!(install.ends_with(
+        "self.install_prepared(device,queue,prepared,volumes,reflection_probes,probes)}"
+    ));
     let install = code_only(wgsl_fn(source, "install_prepared"));
     assert!(install.starts_with(
         "fninstall_prepared(&mutself,device:&wgpu::Device,queue:&crate::render::uploads::UploadQueue,"
@@ -3890,12 +3891,20 @@ fn fluid_pass_declares_no_history_or_precomputed_intersection_binding() {
             include_str!("fluid_surface/install.rs"),
         ),
         (
-            "fluid_surface/probe_sums.rs",
-            include_str!("fluid_surface/probe_sums.rs"),
+            "reflection_probe_resources.rs",
+            include_str!("reflection_probe_resources.rs"),
+        ),
+        (
+            "reflection_probe_sums.rs",
+            include_str!("reflection_probe_sums.rs"),
+        ),
+        (
+            "renderer_probe_sums_frame.rs",
+            include_str!("renderer_probe_sums_frame.rs"),
         ),
         (
             "fluid_reflection_sums.wgsl",
-            probe_sums::composed_sums_shader_source(),
+            reflection_probe_sums::composed_sums_shader_source(),
         ),
     ] {
         let code = code_only(source).to_lowercase();
@@ -3907,8 +3916,9 @@ fn fluid_pass_declares_no_history_or_precomputed_intersection_binding() {
     // The sums pass's shader: the frame's clock, the roster-indexed
     // descriptors and their curve samples, the sums it writes and the share
     // table. Nothing named for history or intersections.
-    let sums_module = naga::front::wgsl::parse_str(probe_sums::composed_sums_shader_source())
-        .expect("sums shader parses");
+    let sums_module =
+        naga::front::wgsl::parse_str(reflection_probe_sums::composed_sums_shader_source())
+            .expect("sums shader parses");
     let mut sums_declared: Vec<(u32, u32, String)> = sums_module
         .global_variables
         .iter()
@@ -5458,21 +5468,30 @@ fn uses_name(code: &str, name: &str) -> bool {
     })
 }
 
-/// Of all production renderer code, only the fluid surface install binds the
-/// sums into group 4, only the sums pass dispatches over them, and only the
-/// probe resources name their group-4 binding. Their definitions in
-/// `fluid_reflection_probes.rs` do not count as uses.
+/// Of all production renderer code, only the fluid pass's group-4 entries
+/// bind the level's sums into a render group, and only the fluid surface
+/// install builds that group; only the sums pass dispatches over them, from
+/// one frame site; and only the fluid pass's probe bindings name their
+/// group-4 binding. Declarations do not count as uses.
 fn assert_the_sums_are_reached_only_by_their_owners() {
     let sources = production_renderer_sources();
     assert!(
         sources
             .iter()
-            .any(|(file, _)| file == "render/fluid_reflection_probes.rs"),
+            .any(|(file, _)| file == "render/reflection_probe_resources.rs"),
         "the scan reaches the renderer's sources"
     );
     for (name, owner) in [
-        ("sums_bind_group_entry", "render/fluid_surface/install.rs"),
-        ("sums_dispatch", "render/fluid_surface/probe_sums.rs"),
+        ("sums_binding", "render/fluid_reflection_probes.rs"),
+        (
+            "fluid_probe_bind_group_entries",
+            "render/fluid_surface/install.rs",
+        ),
+        ("sums_dispatch", "render/reflection_probe_sums.rs"),
+        (
+            "record_reflection_probe_sums",
+            "render/renderer_render_frame.rs",
+        ),
         (
             "FLUID_PROBE_SUMS_BINDING",
             "render/fluid_reflection_probes.rs",
@@ -5539,46 +5558,73 @@ fn the_sums_pass_records_after_the_flush_and_before_the_fluid_pass() {
         .contains(".write_animated_compose_descriptor(slot,")
     );
 
-    // The renderer: prefill, sums, fluid pass, in one recorded sequence.
+    // The renderer: prefill, pre-scene compute, sums, world forward, the
+    // fluid pass, in one recorded sequence (P5, P17, P20): every probe-term
+    // reader, the fluid pass and the glossy overlay after the skinned-mesh
+    // pass alike, reads this frame's sums.
     let scene_source = scene_source_with_fluid_passes();
     let scene = code_only(wgsl_fn(&scene_source, "record_scene_passes"));
     let prefill = scene.find("timing.begin_frame(encoder)").expect("prefill");
-    let sums = scene
-        .find(".record_probe_sums(encoder,")
-        .expect("the sums pass records into the frame's encoder");
+    let call = "self.record_reflection_probe_sums(encoder,render_world,\
+                frame_light_term_mask,frame_reflection_quality,);";
+    assert_eq!(scene.matches(call).count(), 1, "one sums call, the frame's");
+    assert_eq!(scene.matches("record_reflection_probe_sums(").count(), 1);
+    let sums = scene.find(call).expect("the sums recorder call");
+    let mut previous = prefill;
+    for (what, pass) in [
+        ("the pre-scene compute", "self.record_pre_scene_compute("),
+        ("the depth pre-pass", "self.record_depth_and_sdf_passes("),
+    ] {
+        let at = scene.find(pass).unwrap_or_else(|| panic!("{what} records"));
+        assert!(previous <= at && at < sums, "{what} precedes the sums");
+        previous = at;
+    }
+    let forward = scene
+        .find("label:Some(\"TexturedPass\")")
+        .expect("world forward");
+    let skinned = scene
+        .find("label:Some(\"SkinnedMeshPass\")")
+        .expect("skinned-mesh pass");
     let fluid = scene
         .find("label:Some(\"FluidSurfacePass\")")
         .expect("fluid pass");
-    assert!(prefill < sums && sums < fluid, "prefill, sums, fluid");
-    assert_eq!(scene.matches(".record_probe_sums(").count(), 1);
+    assert!(
+        sums < forward && forward < skinned && skinned < fluid,
+        "sums, world forward, skinned meshes, fluid"
+    );
+    // The recorder dispatches once, into the frame's encoder, over the
+    // active level's probes and the frame's camera and SH groups.
+    let recorder = code_only(wgsl_fn(
+        include_str!("renderer_probe_sums_frame.rs"),
+        "record_reflection_probe_sums",
+    ));
+    assert!(recorder.starts_with(
+        "fnrecord_reflection_probe_sums(&self,encoder:&mutwgpu::CommandEncoder,\
+         render_world:bool,frame_light_term_mask:LightTermMask,\
+         frame_reflection_quality:FluidReflectionQuality,){"
+    ));
+    assert_eq!(
+        recorder
+            .matches(
+                "full.reflection_probe_sums.record(encoder,full.frame_timing.as_ref(),\
+                 &full.uniform_bind_group,self.level().sh_bind_group(),probes,);"
+            )
+            .count(),
+        1,
+        "{recorder}"
+    );
+    assert!(recorder.contains("letSome(probes)=self.reflection_probes()else{return;};"));
     // No other recorder dispatches it.
-    for (file, source) in [
-        (
-            "renderer_render_frame.rs",
-            include_str!("renderer_render_frame.rs"),
-        ),
-        ("renderer_capture.rs", include_str!("renderer_capture.rs")),
-        (
-            "renderer_pre_scene.rs",
-            include_str!("renderer_pre_scene.rs"),
-        ),
-        (
-            "renderer_world_less_capture.rs",
-            include_str!("renderer_world_less_capture.rs"),
-        ),
-        (
-            "planar_reflection/record.rs",
-            include_str!("planar_reflection/record.rs"),
-        ),
-    ] {
-        assert!(
-            !code_only(production(source)).contains("record_probe_sums("),
-            "{file} records the sums pass"
-        );
+    for (file, source) in production_renderer_sources() {
+        let code = code_only(&source);
+        let records = code.matches(".reflection_probe_sums.record(").count();
+        let expected = usize::from(file == "render/renderer_probe_sums_frame.rs");
+        assert_eq!(records, expected, "{file} records the sums pass");
     }
 
-    // Between the sums pass and the fluid pass: the SSR pass alone, and
-    // neither it nor anything else there writes a buffer.
+    // Between the sums pass and the fluid pass no command writes a
+    // descriptor or sample buffer: queue writes there land ahead of the
+    // submission, and nothing there records a copy, clear or compute pass.
     let between = &scene[sums..fluid];
     let reflection_source = include_str!("fluid_surface/reflection_pass.rs");
     let reflection_recorder = code_only(wgsl_fn(reflection_source, "record_fluid_reflection_pass"));
@@ -5589,7 +5635,6 @@ fn the_sums_pass_records_after_the_flush_and_before_the_fluid_pass() {
         ("the SSR draws", reflection_draws.as_str()),
     ] {
         for write in [
-            "write_buffer",
             "write_descriptor",
             "upload_descriptors_if_dirty",
             "set_active(",
@@ -5601,6 +5646,15 @@ fn the_sums_pass_records_after_the_flush_and_before_the_fluid_pass() {
         ] {
             assert!(!code.contains(write), "{what} must not `{write}`");
         }
+    }
+    for (what, code) in [
+        ("the SSR recorder", reflection_recorder.as_str()),
+        ("the SSR draws", reflection_draws.as_str()),
+    ] {
+        assert!(
+            !code.contains("write_buffer"),
+            "{what} must not write a buffer"
+        );
     }
     assert!(between.contains("self.record_fluid_reflection_pass(encoder,"));
 }
@@ -5616,12 +5670,9 @@ fn the_sums_pass_owns_a_labelled_timing_pair() {
         labels
             .contains("pass_labels[TIMING_PAIR_FLUID_REFLECTION_SUMS] = \"fluid_reflection_sums\"")
     );
-    let record = code_only(wgsl_fn(
-        include_str!("fluid_surface/probe_sums.rs"),
-        "record",
-    ));
+    let record = code_only(wgsl_fn(include_str!("reflection_probe_sums.rs"), "record"));
     assert!(
-        record.contains("label:Some(\"FluidReflectionSumsPass\"),"),
+        record.contains("label:Some(\"ReflectionProbeSumsPass\"),"),
         "{record}"
     );
     assert!(
@@ -5633,8 +5684,8 @@ fn the_sums_pass_owns_a_labelled_timing_pair() {
     );
     assert_eq!(record.matches("dispatch_workgroups(").count(), 1);
     // The frame hands it the frame's timing, the one the prefill wrote.
-    let frame = code_only(include_str!("renderer_fluid_frame.rs"));
-    assert!(frame.contains(".record_probe_sums(encoder,full.frame_timing.as_ref(),"));
+    let frame = code_only(include_str!("renderer_probe_sums_frame.rs"));
+    assert!(frame.contains(".reflection_probe_sums.record(encoder,full.frame_timing.as_ref(),"));
 }
 
 // Acceptance row 4, pin P6 by source: the dispatch condition is the fluid
@@ -5671,13 +5722,38 @@ fn the_sums_dispatch_reads_the_fluid_passs_own_reflecting_draws() {
     assert!(code_only(wgsl_fn(source, "record_draws")).contains(
         "for(slot,variant)ininstalled.slots.frame_draws(light_term_mask.bits(),quality){"
     ));
-    // The frame gates the dispatch on that condition alone, inside the fluid
-    // pass's own gate.
-    let block = code_only(&fluid_pass_block());
-    assert!(block.contains(
-        "ifself.full().fluid_surface.has_probe_term_draws(self.fluid_surfaces(),\
-         frame_light_term_mask,frame_reflection_quality,)&&letSome(installed)=self.fluid_surfaces(){"
-    ));
+    // The frame gates the dispatch on a world frame with that condition or
+    // the glossy overlay's probe-term draws, one function over both inputs;
+    // the fluid pass's own block no longer dispatches.
+    let recorder_source = include_str!("renderer_probe_sums_frame.rs");
+    let recorder = code_only(wgsl_fn(recorder_source, "record_reflection_probe_sums"));
+    assert!(
+        recorder.contains(
+            "if!render_world{return;}\
+             letfluid_probe_term_draws=self.full().fluid_surface.has_probe_term_draws(\
+             self.fluid_surfaces(),frame_light_term_mask,frame_reflection_quality,);\
+             if!frame_dispatches_probe_sums(fluid_probe_term_draws,\
+             glossy_overlay_probe_term_draws()){return;}"
+        ),
+        "{recorder}"
+    );
+    for screen_space in ["runs_screen_space", "has_reflecting_draws", "planar_route"] {
+        assert!(
+            !recorder.contains(screen_space),
+            "the sums gate reads `{screen_space}`"
+        );
+    }
+    assert_eq!(
+        code_only(wgsl_fn(recorder_source, "frame_dispatches_probe_sums")),
+        "fnframe_dispatches_probe_sums(fluid_probe_term_draws:bool,\
+         overlay_probe_term_draws:bool,)->bool{fluid_probe_term_draws||overlay_probe_term_draws}"
+    );
+    // Until the overlay lands (Task 5) its input is a named constant false.
+    assert_eq!(
+        code_only(wgsl_fn(recorder_source, "glossy_overlay_probe_term_draws")),
+        "fnglossy_overlay_probe_term_draws()->bool{false}"
+    );
+    assert!(!code_only(&fluid_pass_block()).contains("probe_term_draws"));
 }
 
 // Acceptance row 5, IP fences (owner review to change, rendering_pipeline.md
@@ -5687,38 +5763,39 @@ fn the_sums_dispatch_reads_the_fluid_passs_own_reflecting_draws() {
 // written once at install.
 #[test]
 fn the_sums_ip_fences_hold() {
-    use crate::render::fluid_reflection_probes::{
-        FLUID_SUMS_PASS_SUMS_BINDING, fluid_sums_pass_bind_group_layout_entries,
+    use crate::render::reflection_probe_resources::{
+        PROBE_SUMS_PASS_SUMS_BINDING, probe_sums_pass_bind_group_layout_entries,
     };
     // One writable binding in the sums pass's layout: the sums.
-    let writable: Vec<(usize, u32)> = probe_sums::fluid_sums_pipeline_bind_group_layout_entries()
-        .iter()
-        .enumerate()
-        .flat_map(|(group, entries)| {
-            entries
-                .iter()
-                .filter(|entry| match entry.ty {
-                    wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only },
-                        ..
-                    } => !read_only,
-                    wgpu::BindingType::StorageTexture { access, .. } => {
-                        access != wgpu::StorageTextureAccess::ReadOnly
-                    }
-                    _ => false,
-                })
-                .map(move |entry| (group, entry.binding))
-                .collect::<Vec<_>>()
-        })
-        .collect();
+    let writable: Vec<(usize, u32)> =
+        reflection_probe_sums::probe_sums_pipeline_bind_group_layout_entries()
+            .iter()
+            .enumerate()
+            .flat_map(|(group, entries)| {
+                entries
+                    .iter()
+                    .filter(|entry| match entry.ty {
+                        wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only },
+                            ..
+                        } => !read_only,
+                        wgpu::BindingType::StorageTexture { access, .. } => {
+                            access != wgpu::StorageTextureAccess::ReadOnly
+                        }
+                        _ => false,
+                    })
+                    .map(move |entry| (group, entry.binding))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
     assert_eq!(
         writable,
         [(
-            probe_sums::FLUID_SUMS_OWN_GROUP as usize,
-            FLUID_SUMS_PASS_SUMS_BINDING
+            reflection_probe_sums::PROBE_SUMS_OWN_GROUP as usize,
+            PROBE_SUMS_PASS_SUMS_BINDING
         )]
     );
-    assert_eq!(fluid_sums_pass_bind_group_layout_entries().len(), 2);
+    assert_eq!(probe_sums_pass_bind_group_layout_entries().len(), 2);
     let sums_code = code_only(SUMS_WGSL);
     assert_eq!(sums_code.matches("read_write").count(), 1, "{sums_code}");
     assert!(sums_code.contains("var<storage,read_write>fluid_probe_sums:FluidProbeSums;"));
@@ -5726,8 +5803,8 @@ fn the_sums_ip_fences_hold() {
     assert!(!sums_code.contains("texture_storage"));
 
     // The capture's records: arrays sampled and copied into only, the share
-    // table uniform-only.
-    let probes = code_only(production(include_str!("fluid_reflection_probes.rs")));
+    // table uniform-only, every one written once at creation and never again.
+    let probes = code_only(production(include_str!("reflection_probe_resources.rs")));
     assert!(
         probes
             .contains("usage:wgpu::TextureUsages::TEXTURE_BINDING|wgpu::TextureUsages::COPY_DST,")
@@ -5736,7 +5813,7 @@ fn the_sums_ip_fences_hold() {
         assert!(!probes.contains(widened), "a probe array gains {widened}");
     }
     assert!(probes.contains(
-        "label:Some(\"FluidReflectionProbeTable\"),contents:&pack_probe_table(section),\
+        "label:Some(\"ReflectionProbeTable\"),contents:&pack_probe_table(section),\
          usage:wgpu::BufferUsages::UNIFORM,"
     ));
     assert_eq!(
@@ -5744,6 +5821,19 @@ fn the_sums_ip_fences_hold() {
         2,
         "one array usage"
     );
+    for write in [
+        "write_buffer",
+        "write_texture",
+        "copy_buffer_to",
+        "copy_texture_to",
+        "clear_buffer",
+        "clear_texture",
+    ] {
+        assert!(
+            !probes.contains(write),
+            "the probe records `{write}` after creation"
+        );
+    }
 
     // Of the shaders, only the fluid surface module and the sums pass name
     // the sums; never the SSR, planar, mover, model or world shaders.
@@ -5775,8 +5865,8 @@ fn the_sums_ip_fences_hold() {
         .collect();
     assert_eq!(ssr_probe_group, [0, 2]);
     // No other renderer source reaches the sums: of all production code,
-    // only the fluid surface install binds them and only the sums pass
-    // dispatches over them.
+    // only the fluid pass's group 4 binds them and only the sums pass
+    // dispatches over them, from the frame's one site.
     assert_the_sums_are_reached_only_by_their_owners();
 
     // The fluid vertex streams: vertex-only, written once at install.
@@ -5790,7 +5880,7 @@ fn the_sums_ip_fences_hold() {
         include_str!("fluid_surface/install.rs"),
         include_str!("fluid_surface/reflection_pass.rs"),
         include_str!("fluid_surface/planar_routing.rs"),
-        include_str!("fluid_surface/probe_sums.rs"),
+        include_str!("reflection_probe_sums.rs"),
         include_str!("renderer_fluid_frame.rs"),
     ];
     for source in renderer_sources {
@@ -5868,8 +5958,9 @@ fn the_sums_pass_light_evaluation_reads_no_promotion_mask_or_sh() {
 
     // `uniforms.time` at the offset the frame's group-0 upload writes it,
     // the fluid shader's.
-    let sums_module = naga::front::wgsl::parse_str(probe_sums::composed_sums_shader_source())
-        .expect("sums shader parses");
+    let sums_module =
+        naga::front::wgsl::parse_str(reflection_probe_sums::composed_sums_shader_source())
+            .expect("sums shader parses");
     let fluid_module = validated_module();
     assert_eq!(
         struct_member_offsets(&sums_module, "Uniforms"),
@@ -6026,11 +6117,13 @@ fn the_sums_pass_and_blend_wgsl_match_the_cpu_references() {
 }
 
 // Acceptance row 11: the sums pipeline builds at full init only; the sums and
-// the sums pass's group live in the level's probe resources, created only by
-// the fluid surface build; no pass or renderer-lifetime state holds them.
+// the sums pass's group live in the level's probe records, created only by the
+// level's probe build, which a level set's build and the main-thread oracle
+// both call; no pass or renderer-lifetime state holds them. The fluid install
+// borrows them, building only its dummies for a level with none.
 #[test]
 fn the_sums_live_with_the_level_and_their_pipeline_builds_at_full_init() {
-    let sums_pass = production(include_str!("fluid_surface/probe_sums.rs"));
+    let sums_pass = production(include_str!("reflection_probe_sums.rs"));
     let code = code_only(sums_pass);
     // Through the creation chokepoint (`gpu_create.rs`), so creation counts
     // see it.
@@ -6050,7 +6143,7 @@ fn the_sums_live_with_the_level_and_their_pipeline_builds_at_full_init() {
     // The pass holds its pipeline and layout, never the sums or a group.
     let pass_struct = {
         let start = code
-            .find("pub(crate)structFluidProbeSumsPass{")
+            .find("pub(crate)structReflectionProbeSumsPass{")
             .expect("sums pass struct");
         &code[start..start + code[start..].find('}').expect("struct end")]
     };
@@ -6061,19 +6154,34 @@ fn the_sums_live_with_the_level_and_their_pipeline_builds_at_full_init() {
     ] {
         assert!(!pass_struct.contains(held), "the sums pass holds `{held}`");
     }
-    let fluid = production(include_str!("fluid_surface.rs"));
-    let fluid_code = code_only(fluid);
-    assert_eq!(fluid_code.matches("FluidProbeSumsPass::new(").count(), 1);
-    assert!(
-        code_only(wgsl_fn(fluid, "new"))
-            .contains("probe_sums::FluidProbeSumsPass::new(device,camera_bgl,sh_bgl)")
-    );
+    // Built once, at full init, beside the fluid pass.
     let full_init = code_only(include_str!("renderer_full_init.rs"));
+    assert_eq!(
+        full_init
+            .matches(
+                "reflection_probe_sums::ReflectionProbeSumsPass::new(device,\
+                 &uniform_bind_group_layout,&sh_volume_resources.bind_group_layout,);"
+            )
+            .count(),
+        1
+    );
     assert!(full_init.contains("fluid_surface::FluidSurfacePass::new("));
+    for (file, source) in production_renderer_sources() {
+        let builds = code_only(&source)
+            .matches("ReflectionProbeSumsPass::new(")
+            .count();
+        let expected = usize::from(file == "render/renderer_full_init.rs");
+        assert_eq!(builds, expected, "{file} builds the sums pass");
+    }
+    // Neither the frame nor an install compiles a pipeline.
     for (file, source) in [
         (
             "renderer_render_frame.rs",
             include_str!("renderer_render_frame.rs"),
+        ),
+        (
+            "renderer_probe_sums_frame.rs",
+            include_str!("renderer_probe_sums_frame.rs"),
         ),
         (
             "renderer_fluid_frame.rs",
@@ -6085,70 +6193,123 @@ fn the_sums_live_with_the_level_and_their_pipeline_builds_at_full_init() {
             "fluid_surface/install.rs",
             include_str!("fluid_surface/install.rs"),
         ),
+        (
+            "reflection_probe_resources.rs",
+            include_str!("reflection_probe_resources.rs"),
+        ),
     ] {
         let code = code_only(production(source));
         for build in [
             "FluidSurfacePass::new(",
-            "FluidProbeSumsPass::new(",
+            "new_compute_pipeline(",
             "create_compute_pipeline(",
         ] {
             assert!(!code.contains(build), "{file} builds `{build}`");
         }
     }
 
-    // The sums buffer: created once, in the probe resources' constructor,
-    // which only the fluid surface build calls.
-    let probes = production(include_str!("fluid_reflection_probes.rs"));
+    // The sums buffer and the sums pass's group: created in the probe
+    // records' one constructor body, which the level's probe build alone
+    // calls for real probes and the fluid install alone calls for dummies.
+    let probes = production(include_str!("reflection_probe_resources.rs"));
     let probes_code = code_only(probes);
-    assert_eq!(
-        probes_code
-            .matches("label:Some(\"FluidReflectionProbeSums\"),")
-            .count(),
-        1
-    );
-    assert!(
-        code_only(wgsl_fn(probes, "new")).contains("label:Some(\"FluidReflectionProbeSums\"),")
-    );
-    assert!(
-        code_only(wgsl_fn(probes, "new"))
-            .contains("label:Some(\"FluidReflectionSumsPassBindGroup\"),")
-    );
-    let install = production(include_str!("fluid_surface/install.rs"));
-    assert!(code_only(wgsl_fn(install, "build_surfaces")).contains("FluidProbeResources::new("));
-    for (file, source) in [
-        ("fluid_surface.rs", fluid),
-        (
-            "fluid_surface/reflection_pass.rs",
-            production(include_str!("fluid_surface/reflection_pass.rs")),
-        ),
-        (
-            "fluid_surface/planar_routing.rs",
-            production(include_str!("fluid_surface/planar_routing.rs")),
-        ),
-        ("fluid_surface/probe_sums.rs", sums_pass),
-        (
-            "renderer_fluid_frame.rs",
-            include_str!("renderer_fluid_frame.rs"),
-        ),
-        ("level_build.rs", production(include_str!("level_build.rs"))),
+    let create = code_only(wgsl_fn(probes, "create"));
+    for label in [
+        "label:Some(\"ReflectionProbeSums\"),",
+        "label:Some(\"ReflectionProbeSumsPassBindGroup\"),",
     ] {
-        assert!(
-            !code_only(source).contains("FluidProbeResources::new("),
-            "{file}"
-        );
+        assert_eq!(probes_code.matches(label).count(), 1, "{label}");
+        assert!(create.contains(label), "{label}");
     }
-    // The fluid pass's own state names no sums buffer or group.
+    assert_eq!(probes_code.matches("Self::create(").count(), 2);
+    assert!(code_only(wgsl_fn(probes, "build")).contains(
+        "letprobes=ReflectionProbeResources::new(device,queue,section,&self.sums_layout);"
+    ));
+    assert!(code_only(wgsl_fn(probes, "build")).starts_with(
+        "fnbuild(&self,device:&wgpu::Device,\
+         queue:&dyncrate::render::queue_writes::QueueWrites,\
+         section:Option<&ReflectionProbesSection>,)->Option<ReflectionProbeResources>{\
+         letsection=level_probe_section(section)?;"
+    ));
+    let install = production(include_str!("fluid_surface/install.rs"));
+    assert!(
+        code_only(wgsl_fn(install, "build_surfaces"))
+            .contains("probes.is_none().then(||ReflectionProbeResources::dummies(device,queue));")
+    );
+    for (file, source) in production_renderer_sources() {
+        let code = code_only(&source);
+        let real = code.matches("ReflectionProbeResources::new(").count();
+        let dummies = code.matches("ReflectionProbeResources::dummies(").count();
+        let builds = code.matches(".level_layout().build(").count()
+            + code.matches(".reflection_probes.build(").count();
+        assert_eq!(
+            real,
+            usize::from(file == "render/reflection_probe_resources.rs"),
+            "{file} constructs probe records"
+        );
+        assert_eq!(
+            dummies,
+            usize::from(file == "render/fluid_surface/install.rs"),
+            "{file} constructs dummies"
+        );
+        // The level's probe build: the set build and the oracle's install.
+        let expected_builds =
+            usize::from(file == "render/level_build.rs" || file == "render/fluid_surface.rs");
+        assert_eq!(builds, expected_builds, "{file} builds a level's probes");
+    }
+    assert!(
+        code_only(wgsl_fn(
+            production(include_str!("level_build.rs")),
+            "build_geometry_set"
+        ))
+        .contains(
+            "set.reflection_probes=context.reflection_probes.build(&upload.device,\
+                 &upload.writes,extras.reflection_probes"
+        )
+    );
+    assert!(
+        code_only(wgsl_fn(
+            include_str!("fluid_surface.rs"),
+            "install_fluid_surfaces"
+        ))
+        .contains(
+            "level.reflection_probes=full.reflection_probe_sums.level_layout().build(device,\
+             queue.raw(),reflection_probes"
+        )
+    );
+    // The fluid pass's own state names no sums pass, buffer or group, and
+    // the fluid install holds only its dummies.
+    let fluid_code = code_only(production(include_str!("fluid_surface.rs")));
     let pass_struct = {
         let start = fluid_code
             .find("pub(crate)structFluidSurfacePass{")
             .expect("pass struct");
         &fluid_code[start..start + fluid_code[start..].find('}').expect("struct end")]
     };
-    assert!(pass_struct.contains("sums:probe_sums::FluidProbeSumsPass,"));
-    assert!(!pass_struct.contains("sums_bind_group"));
-    assert!(!pass_struct.contains("sums_buffer"));
+    for held in ["sums", "ReflectionProbe"] {
+        assert!(!pass_struct.contains(held), "the fluid pass holds `{held}`");
+    }
+    let install_code = code_only(install);
+    let installed_struct = {
+        let start = install_code
+            .find("pub(crate)structInstalledFluidSurfaces{")
+            .expect("installed struct");
+        &install_code[start..start + install_code[start..].find('}').expect("struct end")]
+    };
+    assert!(installed_struct.contains("_probe_dummies:Option<ReflectionProbeResources>,"));
+    assert_eq!(
+        installed_struct.matches("ReflectionProbeResources").count(),
+        1
+    );
+    // The level set owns the probe records.
+    let set = code_only(include_str!("level_resource_set.rs"));
+    assert!(set.contains(
+        "pub(incrate::render)reflection_probes:\
+         Option<reflection_probe_resources::ReflectionProbeResources>,"
+    ));
 
     // Across the whole renderer tree, not a hand-picked list: only the
-    // install binds the sums and only the sums pass dispatches over them.
+    // fluid pass's group 4 binds the sums and only the sums pass dispatches
+    // over them.
     assert_the_sums_are_reached_only_by_their_owners();
 }

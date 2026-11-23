@@ -73,10 +73,3 @@ impl FluidSurfacePass {
         )
     }
 }
-
-impl InstalledFluidSurfaces {
-    /// The level's live-lighting sums buffer, for readback and prefill.
-    pub(crate) fn sums_buffer_for_test(&self) -> &wgpu::Buffer {
-        self.probes.sums_buffer()
-    }
-}

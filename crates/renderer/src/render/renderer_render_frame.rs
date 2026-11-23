@@ -531,6 +531,13 @@ impl Renderer {
         // and never touches this target.
         let scene_color = self.full().screen_effects.scene_color_view().clone();
 
+        // The live-lighting sums, once, ahead of every probe-term reader.
+        self.record_reflection_probe_sums(
+            encoder,
+            render_world,
+            frame_light_term_mask,
+            frame_reflection_quality,
+        );
         {
             let _forward_scope = cpu.scope(RenderStage::Forward);
             let forward_ts = self

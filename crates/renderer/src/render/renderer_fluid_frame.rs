@@ -1,5 +1,6 @@
 // The frame's fluid passes: the scene-input upload, the screen-space
-// reflection pass and the fluid surface pass, in that order.
+// reflection pass and the fluid surface pass, in that order. The sums they
+// read dispatch earlier (`renderer_probe_sums_frame.rs`).
 // See: context/lib/rendering_pipeline.md §7.3a
 
 use super::*;
@@ -28,27 +29,6 @@ impl Renderer {
                 .as_mut()
                 .expect("renderer full-init must complete before full-ready paths run");
             full.fluid_surface.upload_scene_inputs(queue);
-        }
-        // The live-lighting sums, once, on a frame whose fluid pass records a
-        // reflecting draw under the frame's mask snapshot and tier, and before
-        // any fragment reads them. The frame's descriptor flush
-        // (`update_per_frame_uniforms`) and the light bridge's sample writes
-        // are queue writes that land before this submission; nothing recorded
-        // from here to the fluid pass writes a descriptor or sample buffer.
-        if self.full().fluid_surface.has_probe_term_draws(
-            self.fluid_surfaces(),
-            frame_light_term_mask,
-            frame_reflection_quality,
-        ) && let Some(installed) = self.fluid_surfaces()
-        {
-            let full = self.full();
-            full.fluid_surface.record_probe_sums(
-                encoder,
-                full.frame_timing.as_ref(),
-                &full.uniform_bind_group,
-                self.level().sh_bind_group(),
-                installed,
-            );
         }
         // The screen-space reflection layer, resolved into its own target
         // before the fluid pass samples it: the frame's reflecting draws,

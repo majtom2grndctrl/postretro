@@ -857,9 +857,9 @@ fn sums_prefilled_with_poison_render_like_cleared_sums_on_the_first_published_fr
             let id = level.build_off_main(renderer);
             let buffer = renderer
                 .level_set(id)
-                .and_then(|set| set.fluid_surfaces.as_ref())
-                .expect("the built set holds fluid surfaces")
-                .sums_buffer_for_test()
+                .and_then(|set| set.reflection_probes.as_ref())
+                .expect("the built set holds its probes")
+                .sums_buffer()
                 .clone();
             let bytes: Vec<u8> = std::iter::repeat_n(
                 fill.to_le_bytes(),

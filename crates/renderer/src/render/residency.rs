@@ -68,7 +68,7 @@ pub(crate) fn sources(section_ids: &[u16], derived: bool) -> Vec<ResidencySource
 
 /// Row for a texture that already exists, read back from the texture itself
 /// so the report describes exactly what is bound rather than what a
-/// constructor intended before a fallback.
+/// constructor intended before a fallback: every mip level counts.
 pub(crate) fn texture_row(
     name: &'static str,
     texture: &wgpu::Texture,
@@ -80,7 +80,12 @@ pub(crate) fn texture_row(
     ResidencyAllocation {
         name,
         sources: sources(section_ids, false),
-        bytes: texture_bytes(format, extent),
+        bytes: texture_chain_bytes(
+            format,
+            extent,
+            texture.dimension(),
+            texture.mip_level_count(),
+        ),
         state,
         shape: ResidencyAllocationShape::Texture {
             format: texture_format_name(format),
@@ -102,6 +107,20 @@ pub(crate) fn texture_bytes(format: wgpu::TextureFormat, extent: wgpu::Extent3d)
         * u64::from(block_bytes)
 }
 
+/// Bytes of a mip chain of `mip_levels` levels from `extent`, each level as
+/// [`texture_bytes`] counts it.
+pub(crate) fn texture_chain_bytes(
+    format: wgpu::TextureFormat,
+    extent: wgpu::Extent3d,
+    dimension: wgpu::TextureDimension,
+    mip_levels: u32,
+) -> u64 {
+    (0..mip_levels)
+        .map(|level| texture_bytes(format, extent.mip_level_size(level, dimension)))
+        .try_fold(0_u64, u64::checked_add)
+        .expect("residency texture chain bytes overflow")
+}
+
 pub(crate) fn texture_format_name(format: wgpu::TextureFormat) -> &'static str {
     match format {
         wgpu::TextureFormat::Bc5RgUnorm => "Bc5RgUnorm",
@@ -111,6 +130,7 @@ pub(crate) fn texture_format_name(format: wgpu::TextureFormat) -> &'static str {
         wgpu::TextureFormat::Rgba16Float => "Rgba16Float",
         wgpu::TextureFormat::Rgba16Uint => "Rgba16Uint",
         wgpu::TextureFormat::Rg16Float => "Rg16Float",
+        wgpu::TextureFormat::R16Float => "R16Float",
         format => panic!("unexpected residency texture format {format:?}"),
     }
 }
@@ -154,6 +174,26 @@ mod tests {
         assert_eq!(
             texture_bytes(wgpu::TextureFormat::Rg8Unorm, extent),
             5 * 7 * 2 * 2
+        );
+    }
+
+    // A probe colour array's chain: each level halves the tile, layers stay.
+    #[test]
+    fn texture_chain_bytes_sums_every_mip_of_an_array() {
+        let extent = wgpu::Extent3d {
+            width: 16,
+            height: 16,
+            depth_or_array_layers: 3,
+        };
+        let d2 = wgpu::TextureDimension::D2;
+        // BC6H 16², 8², 4²: 16, 4 and 1 blocks per layer at 16 B.
+        assert_eq!(
+            texture_chain_bytes(wgpu::TextureFormat::Bc6hRgbUfloat, extent, d2, 3),
+            (16 + 4 + 1) * 3 * 16
+        );
+        assert_eq!(
+            texture_chain_bytes(wgpu::TextureFormat::R16Float, extent, d2, 1),
+            texture_bytes(wgpu::TextureFormat::R16Float, extent)
         );
     }
 }

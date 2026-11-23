@@ -1402,12 +1402,12 @@ mod tests {
         let ticked = inputs(&registry);
         assert!((ticked.heading_yaw - AIM).abs() < 1.0e-5, "live heading");
         assert_eq!(ticked.foot_count, 2);
-        for slot in 0..2 {
-            assert!(ticked.feet[slot].hit, "live foot {slot} finds ground");
+        for (slot, foot) in ticked.feet.iter().take(2).enumerate() {
+            assert!(foot.hit, "live foot {slot} finds ground");
             assert!(
-                (ticked.feet[slot].contact_height - live[slot]).abs() < 1.0e-3,
+                (foot.contact_height - live[slot]).abs() < 1.0e-3,
                 "live foot {slot}: {} under the live heading, expected {}",
-                ticked.feet[slot].contact_height,
+                foot.contact_height,
                 live[slot]
             );
         }
@@ -1436,13 +1436,13 @@ mod tests {
         let reprobed = inputs(&registry);
         assert_eq!(reprobed.foot_count, 2);
         assert!((reprobed.heading_yaw - STRAFE).abs() < 1.0e-5);
-        for slot in 0..2 {
-            assert!(reprobed.feet[slot].hit, "foot {slot} finds ground");
+        for (slot, foot) in reprobed.feet.iter().take(2).enumerate() {
+            assert!(foot.hit, "foot {slot} finds ground");
             assert!(
-                (reprobed.feet[slot].contact_height - presented[slot]).abs() < 1.0e-3,
+                (foot.contact_height - presented[slot]).abs() < 1.0e-3,
                 "foot {slot}: {} should sit under the presented heading plus turn \
                  ({}), not the live heading ({})",
-                reprobed.feet[slot].contact_height,
+                foot.contact_height,
                 presented[slot],
                 live[slot]
             );

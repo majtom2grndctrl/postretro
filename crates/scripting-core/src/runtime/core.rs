@@ -127,9 +127,10 @@ fn defer_visual_asset_descriptor_refreshes(
         {
             continue;
         }
-        let weapon_presentation_installed = old.weapon.as_ref().is_some_and(|weapon| {
-            weapon.viewmodel.is_some() || weapon.projectile.is_some()
-        });
+        let weapon_presentation_installed = old
+            .weapon
+            .as_ref()
+            .is_some_and(|weapon| weapon.viewmodel.is_some() || weapon.projectile.is_some());
         if old.mesh.is_none() && !weapon_presentation_installed {
             continue;
         }
@@ -1826,10 +1827,7 @@ mod tests {
         }
     }
 
-    fn weapon_descriptor(
-        damage: f32,
-        viewmodel: Option<&str>,
-    ) -> WeaponDescriptor {
+    fn weapon_descriptor(damage: f32, viewmodel: Option<&str>) -> WeaponDescriptor {
         WeaponDescriptor {
             sounds: None,
             knockback: None,
@@ -2033,12 +2031,7 @@ mod tests {
             "the next-level snapshot retains the newly authored body and trail assets"
         );
         assert_eq!(
-            incoming[0]
-                .weapon
-                .as_ref()
-                .unwrap()
-                .viewmodel
-                .as_deref(),
+            incoming[0].weapon.as_ref().unwrap().viewmodel.as_deref(),
             Some("models/new_view.gltf"),
             "the next-level snapshot retains new presentation paths"
         );

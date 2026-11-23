@@ -19,6 +19,9 @@ use crate::replication::{ReplicableSet, produce_owned_snapshots};
 
 const CLIENT_ID: u64 = 1;
 
+/// One peer's mounted (socket, model) pairs.
+type Mounts = Vec<(String, String)>;
+
 /// A listen host and one connected client sharing a descriptor table. The
 /// host runs its dirty-queue synchronizer before each snapshot, as
 /// `net_serialize_and_send` does; the client applies each snapshot and runs
@@ -166,7 +169,7 @@ impl Session {
     }
 
     /// Host and client mounts for `pawn`, after one step.
-    fn mounts(&mut self, pawn: EntityId) -> (Vec<(String, String)>, Vec<(String, String)>) {
+    fn mounts(&mut self, pawn: EntityId) -> (Mounts, Mounts) {
         let copy = self.client_copy(pawn);
         (mounted(&self.host, pawn), mounted(&self.client, copy))
     }

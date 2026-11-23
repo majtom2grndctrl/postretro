@@ -4769,11 +4769,32 @@ impl App {
                 for resolution in
                     netcode::client_resolve_switch_outcomes(time_sync, pending_switch_declarations)
                 {
+                    let refused =
+                        matches!(resolution, netcode::CurrentSwitchResolution::Refused { .. });
                     client_weapon::settle_switch_resolution(
                         &mut registry,
                         &mut session.gameplay_input_latch,
                         resolution,
                     );
+                    // A refusal can land after the local lower repointed; the
+                    // mount follows the weapon the rollback restored.
+                    if refused
+                        && let Some(pawn) = registry.local_player_movement_pawn()
+                        && netcode::synchronize_client_weapon_attachment_for_pawn(
+                            &mut registry,
+                            pawn,
+                            replication,
+                            &net_descriptors,
+                            hit_zone_store,
+                        )
+                    {
+                        crate::resolve_mesh_entity_bindings_for_entities(
+                            &mut registry,
+                            mesh_clip_tables,
+                            hit_zone_store,
+                            [pawn],
+                        );
+                    }
                 }
                 for outcome in time_sync.drain_activation_outcomes() {
                     if let Some(effect) = self.client_weapon.records.outcome(&mut registry, outcome)
@@ -6123,8 +6144,9 @@ impl App {
     }
 
     /// Route committed inventory repoints to third-person presentation. Hosts queue
-    /// the change for their pre-snapshot attachment pass; single-player and a future
-    /// client-local inventory update their local pawn immediately.
+    /// the change for their pre-snapshot attachment pass; single player and a
+    /// connected client's predicted switch update their local pawn immediately, the
+    /// client resolving its pawn's class from the arming snapshot.
     fn update_repointed_weapon_attachments(
         &mut self,
         script_ctx: &postretro_entities::ScriptCtx,
@@ -6136,24 +6158,36 @@ impl App {
         let Some(session) = self.session.as_mut() else {
             return;
         };
-        if let Some(netcode::NetEndpoint::Host { weapon_owners, .. }) =
-            session.net_endpoint.as_mut()
-        {
-            for &pawn in repointed_pawns {
-                weapon_owners.mark_attachment_dirty(pawn);
+        let client_replication = match session.net_endpoint.as_mut() {
+            Some(netcode::NetEndpoint::Host { weapon_owners, .. }) => {
+                for &pawn in repointed_pawns {
+                    weapon_owners.mark_attachment_dirty(pawn);
+                }
+                return;
             }
-            return;
-        }
+            Some(netcode::NetEndpoint::Client { replication, .. }) => Some(&**replication),
+            None => None,
+        };
 
         let descriptors = script_ctx.data_registry.borrow().entities.clone();
         let mut registry = script_ctx.registry.borrow_mut();
         for &pawn in repointed_pawns {
-            if crate::netcode::synchronize_weapon_attachment_for_pawn(
-                &mut registry,
-                pawn,
-                &descriptors,
-                &session.hit_zone_store,
-            ) {
+            let changed = match client_replication {
+                Some(replication) => netcode::synchronize_client_weapon_attachment_for_pawn(
+                    &mut registry,
+                    pawn,
+                    replication,
+                    &descriptors,
+                    &session.hit_zone_store,
+                ),
+                None => netcode::synchronize_weapon_attachment_for_pawn(
+                    &mut registry,
+                    pawn,
+                    &descriptors,
+                    &session.hit_zone_store,
+                ),
+            };
+            if changed {
                 crate::resolve_mesh_entity_bindings_for_entities(
                     &mut registry,
                     &session.mesh_clip_tables,

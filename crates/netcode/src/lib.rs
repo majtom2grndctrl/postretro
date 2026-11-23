@@ -97,10 +97,11 @@ pub use splash_march::{MarchRelease, host_step_splash_marches};
 mod teleport_tests;
 pub mod weapon_cues;
 // Third-person weapon mounts: the one writer, its host and single-player
-// synchronizers, and the connected client's own-pawn apply.
+// synchronizers, and the connected client's own-pawn apply and sync.
 mod weapon_mounts;
 pub use weapon_mounts::{
-    synchronize_weapon_attachment_for_pawn, synchronize_weapon_owner_attachments,
+    synchronize_client_weapon_attachment_for_pawn, synchronize_weapon_attachment_for_pawn,
+    synchronize_weapon_owner_attachments,
 };
 // M15 Phase 3.5: the replicated-slot schema/fingerprint/lowering, the engine
 // production (`HostStateReplication`) and client apply (`ClientStateApply`) glue. The
@@ -1068,20 +1069,9 @@ pub fn client_receive_and_apply(
         // M15 Phase 3 Task 3 + Task 7: a `local_player` baseline arms client prediction
         // with the marked local pawn AND materializes its descriptor-backed presentation.
         // Arm and materialize BEFORE reconcile so the just-armed pawn reconciles on its
-        // arming snapshot too; the materialization call-site glue lives in
-        // `remote_materialize` (the focused seam also materializes remote enemies).
+        // arming snapshot too.
         if let Some(armed) = &outcome.armed_local_pawn {
             prediction.arm(armed.network_id, armed.entity_id);
-            frame_outcome.materialized_remote_entity_presentation |=
-                remote_materialize::materialize_armed_local_pawn(
-                    armed,
-                    descriptors,
-                    registry,
-                    host_movement_tuning,
-                    host_tuning,
-                    rebuild_movement_tuning,
-                    life_state_tables,
-                );
             frame_outcome.armed_local_pawn = Some(ClientArmedLocalPawn {
                 entity_id: armed.entity_id,
                 entity_class: armed.entity_class.as_deref().map(|class| {
@@ -1091,34 +1081,19 @@ pub fn client_receive_and_apply(
                 }),
             });
         }
-        // The local pawn's world body is shadow-only, but it still needs the same
-        // third-person weapon silhouette as peers see. Its viewmodel remains separate
-        // from this presentation-only attachment path.
         frame_outcome.materialized_remote_entity_presentation |=
-            weapon_mounts::apply_local_weapon_attachments(
-                &outcome.local_weapon_attachments,
-                replication,
-                registry,
-                descriptors,
-                hit_zone_store,
-            );
-        // Each non-local descriptor entity needing materialization is handled here, where
-        // the shared descriptor table is in scope (the net-facing apply is descriptor-blind).
-        // The host-stamped class distinguishes pawn paths from descriptor-world copies,
-        // even when both descriptors author Movement. A display copy receives Mesh, Light,
-        // Emitter, and query-only HitVolume, but never authority components. The local
-        // pawn's weapon attachment above and retired-projectile flashes below use separate
-        // paths. Materialization is idempotent and unknown-class-tolerant, so failed
-        // presentation still interpolates transform.
-        frame_outcome.materialized_remote_entity_presentation |=
-            snapshot_apply::materialize_remote_entities(
-                &outcome.remote_entities,
+            snapshot_apply::materialize_snapshot_presentation(
+                &outcome,
                 descriptors,
                 registry,
                 replication,
                 snapshot.server_tick,
                 agent_params,
                 hit_zone_store,
+                host_movement_tuning,
+                host_tuning,
+                rebuild_movement_tuning,
+                life_state_tables,
             );
         spawn_retired_projectile_presentation_flashes(
             registry,

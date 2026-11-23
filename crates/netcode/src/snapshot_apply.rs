@@ -9,6 +9,69 @@ use super::client::ClientReplication;
 use super::scripting_systems::hit_zones::HitZoneStore;
 use super::{client, descriptor_class, remote_materialize, weapon_mounts};
 
+/// The descriptor-aware half of one applied snapshot, in the order the mounts
+/// depend on: the armed local pawn's body (mesh and inventory), then its weapon
+/// mounts, which resolve its class from the arming record, then every remote
+/// entity. Returns whether any presentation mesh materialized. Prediction
+/// arming stays with the caller.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn materialize_snapshot_presentation(
+    outcome: &client::ApplyOutcome,
+    descriptors: &[EntityTypeDescriptor],
+    registry: &mut EntityRegistry,
+    replication: &mut ClientReplication,
+    server_tick: u32,
+    agent_params: Option<NavAgentParams>,
+    hit_zone_store: &HitZoneStore,
+    host_movement_tuning: Option<&postretro_foundation::PlayerMovementDescriptor>,
+    host_tuning: Option<&postretro_combat_model::TuningPayload>,
+    rebuild_movement_tuning: bool,
+    life_state_tables: &crate::life_state_tables::LifeStateTables,
+) -> bool {
+    let mut changed = false;
+    // The materialization call-site glue lives in `remote_materialize` (the
+    // focused seam also materializes remote enemies).
+    if let Some(armed) = &outcome.armed_local_pawn {
+        changed |= remote_materialize::materialize_armed_local_pawn(
+            armed,
+            descriptors,
+            registry,
+            host_movement_tuning,
+            host_tuning,
+            rebuild_movement_tuning,
+            life_state_tables,
+        );
+    }
+    // The local pawn's world body is shadow-only, but it still needs the same
+    // third-person weapon silhouette as peers see. Its viewmodel remains separate
+    // from this presentation-only attachment path.
+    changed |= weapon_mounts::apply_local_weapon_attachments(
+        &outcome.local_weapon_attachments,
+        replication,
+        registry,
+        descriptors,
+        hit_zone_store,
+    );
+    // Each non-local descriptor entity needing materialization is handled here, where
+    // the shared descriptor table is in scope (the net-facing apply is descriptor-blind).
+    // The host-stamped class distinguishes pawn paths from descriptor-world copies,
+    // even when both descriptors author Movement. A display copy receives Mesh, Light,
+    // Emitter, and query-only HitVolume, but never authority components. The local
+    // pawn's weapon attachment above and retired-projectile flashes (the caller's)
+    // use separate paths. Materialization is idempotent and unknown-class-tolerant,
+    // so failed presentation still interpolates transform.
+    changed |= materialize_remote_entities(
+        &outcome.remote_entities,
+        descriptors,
+        registry,
+        replication,
+        server_tick,
+        agent_params,
+        hit_zone_store,
+    );
+    changed
+}
+
 pub(super) fn materialize_remote_entities(
     remotes: &[client::RemoteEntityMaterialize],
     descriptors: &[EntityTypeDescriptor],

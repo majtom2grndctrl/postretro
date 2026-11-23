@@ -8,11 +8,13 @@ use postretro_entities::components::mesh::{MeshAttachment, MeshComponent};
 use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::{EntityId, EntityRegistry, EntityTypeDescriptor, MeshDescriptor};
 
+use crate::client::ClientReplication;
 use crate::command_queue::{WeaponOwners, active_wieldable_for_pawn};
+use crate::descriptor_class::decode_replicated_descriptor_class;
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::scripting_systems::weapon_mounts::{
-    warn_missing_weapon_mount_entry, warn_weapon_mount_model_missing,
-    warn_weapon_mount_socket_missing,
+    warn_missing_weapon_mount_entry, warn_weapon_mount_holder_missing,
+    warn_weapon_mount_model_missing, warn_weapon_mount_socket_missing,
 };
 
 /// The class a pawn's descriptor-less record resolves as, matching body
@@ -29,6 +31,10 @@ const DEFAULT_WIELDER_CLASS: &str = "player";
 /// silently. With a table, a weapon lacking an entry, an entry socket the
 /// holder's rig lacks, and an entry model the level did not load each warn once
 /// per level load and mount nothing for that weapon or socket.
+///
+/// A pawn without a mesh, or a wielder class whose descriptor has no mesh, is a
+/// silent no-op returning false: there is no body to mount on, and its spawn
+/// already reported any missing presentation.
 ///
 /// Replaces the attachments only when the (socket, model) set changes and
 /// returns whether it did; the caller then runs the binding resolver.
@@ -116,11 +122,20 @@ fn compose_mounted_attachments<'a>(
         return mounted;
     };
 
-    let holder = hit_zone_store.get_by_name(holder_model);
+    // An unloaded holder has no sockets to check the entry against, so the
+    // entry mounts nothing. The base attachments stay as authored; the binding
+    // resolver leaves them unresolved, as for any unloaded holder.
+    let Some(holder) = hit_zone_store.get_by_name(holder_model) else {
+        warn_weapon_mount_holder_missing(hit_zone_store, wielder_class, weapon, holder_model);
+        return mounted;
+    };
     let mut sockets: Vec<(&String, &String)> = entry.attachments.iter().collect();
     sockets.sort_unstable();
     for (socket, model) in sockets {
-        if !holder.is_some_and(|holder| holder.has_socket(socket)) {
+        // A socket the rig lacks is reported ahead of its model: nothing could
+        // mount there even once the model loads, so the socket is the fault to
+        // fix first. The model warning covers only sockets the rig has.
+        if !holder.has_socket(socket) {
             warn_weapon_mount_socket_missing(
                 hit_zone_store,
                 wielder_class,
@@ -187,54 +202,88 @@ pub fn synchronize_weapon_owner_attachments(
         .collect()
 }
 
-/// Synchronize one local pawn's third-person attachments from its active inventory
-/// weapon. Single-player has no dirty attachment queue, and the listen host installs
-/// its own pawn before the regular pre-snapshot synchronization can run.
+/// Synchronize one authoritative pawn's third-person attachments from its active
+/// inventory weapon. Single player has no dirty attachment queue, and the listen
+/// host installs its own pawn before the regular pre-snapshot synchronization can
+/// run. A connected client's own pawn carries no descriptor provenance, so it
+/// takes [`synchronize_client_weapon_attachment_for_pawn`] instead.
 pub fn synchronize_weapon_attachment_for_pawn(
     registry: &mut EntityRegistry,
     pawn: EntityId,
     descriptors: &[EntityTypeDescriptor],
     hit_zone_store: &HitZoneStore,
 ) -> bool {
+    let wielder_class = pawn_wielder_class(registry, pawn);
+    synchronize_pawn_as(registry, pawn, &wielder_class, descriptors, hit_zone_store)
+}
+
+/// Synchronize the connected client's own pawn from its local inventory after a
+/// predicted repoint or a refused switch's rollback. Its class is the arming
+/// snapshot's, as for the snapshot-delivered updates that
+/// [`apply_local_weapon_attachments`] applies.
+pub fn synchronize_client_weapon_attachment_for_pawn(
+    registry: &mut EntityRegistry,
+    pawn: EntityId,
+    replication: &ClientReplication,
+    descriptors: &[EntityTypeDescriptor],
+    hit_zone_store: &HitZoneStore,
+) -> bool {
+    let wielder_class = client_pawn_wielder_class(replication, pawn);
+    synchronize_pawn_as(registry, pawn, &wielder_class, descriptors, hit_zone_store)
+}
+
+fn synchronize_pawn_as(
+    registry: &mut EntityRegistry,
+    pawn: EntityId,
+    wielder_class: &str,
+    descriptors: &[EntityTypeDescriptor],
+    hit_zone_store: &HitZoneStore,
+) -> bool {
     let active_weapon_archetype =
         weapon_archetype(registry, active_wieldable_for_pawn(registry, pawn));
-    let wielder_class = pawn_wielder_class(registry, pawn);
     update_weapon_mount_attachments(
         registry,
         pawn,
-        &wielder_class,
+        wielder_class,
         descriptors,
         active_weapon_archetype.as_deref(),
         hit_zone_store,
     )
 }
 
+/// The canonical class the connected client's own pawn wields as: the arming
+/// snapshot's `pawn:` class. A record without one, or a pawn that is not the
+/// armed one, resolves as the default player, as body materialization does.
+fn client_pawn_wielder_class(replication: &ClientReplication, pawn: EntityId) -> String {
+    let armed = replication
+        .armed_local_pawn()
+        .filter(|armed| armed.entity_id == pawn);
+    let replicated_class = armed
+        .as_ref()
+        .and_then(|armed| armed.entity_class.as_deref())
+        .unwrap_or(DEFAULT_WIELDER_CLASS);
+    decode_replicated_descriptor_class(replicated_class)
+        .canonical_name()
+        .to_string()
+}
+
 /// Apply a snapshot's active-weapon updates to the connected client's own pawn.
 /// These run after the snapshot armed the pawn, so the armed class is the
-/// arming snapshot's `pawn:` class; a record without one resolves as the
-/// default player, as body materialization does.
+/// arming snapshot's `pawn:` class.
 pub(crate) fn apply_local_weapon_attachments(
     updates: &[crate::client::LocalWeaponAttachmentUpdate],
-    replication: &crate::client::ClientReplication,
+    replication: &ClientReplication,
     registry: &mut EntityRegistry,
     descriptors: &[EntityTypeDescriptor],
     hit_zone_store: &HitZoneStore,
 ) -> bool {
-    let armed = replication.armed_local_pawn();
     let mut changed = false;
     for update in updates {
-        let replicated_class = armed
-            .as_ref()
-            .filter(|armed| armed.entity_id == update.entity_id)
-            .and_then(|armed| armed.entity_class.as_deref())
-            .unwrap_or(DEFAULT_WIELDER_CLASS);
-        let wielder_class =
-            crate::descriptor_class::decode_replicated_descriptor_class(replicated_class)
-                .canonical_name();
+        let wielder_class = client_pawn_wielder_class(replication, update.entity_id);
         changed |= update_weapon_mount_attachments(
             registry,
             update.entity_id,
-            wielder_class,
+            &wielder_class,
             descriptors,
             update.active_weapon_archetype.as_deref(),
             hit_zone_store,
@@ -250,3 +299,11 @@ mod tests;
 #[cfg(test)]
 #[path = "weapon_mounts_path_tests.rs"]
 mod path_tests;
+
+#[cfg(test)]
+#[path = "weapon_mounts_reload_tests.rs"]
+mod reload_tests;
+
+#[cfg(test)]
+#[path = "weapon_mounts_fire_tests.rs"]
+mod fire_tests;

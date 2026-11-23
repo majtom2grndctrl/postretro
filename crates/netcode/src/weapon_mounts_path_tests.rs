@@ -9,11 +9,10 @@ use postretro_net::replication::ServerReplication;
 use postretro_test_log_capture::LogCapture;
 
 use super::tests::{
-    BACKPACK, GRIP_TAPE, PISTOL_EXO, RIFLE_EXO, RIFLE_TROOPER, SLING, TRIMMER, descriptors,
+    BACKPACK, GRIP_TAPE, PISTOL_EXO, RIFLE_EXO, RIFLE_TROOPER, SLING, TRIMMER, descriptors, equip,
     mounted, pairs, select, spawn_pawn, store,
 };
 use super::*;
-use crate::client::ClientReplication;
 use crate::netcode::{HostCommandQueues, MovementOwners, NetworkIdAllocator};
 use crate::replication::{ReplicableSet, produce_owned_snapshots};
 
@@ -25,8 +24,7 @@ type Mounts = Vec<(String, String)>;
 /// A listen host and one connected client sharing a descriptor table. The
 /// host runs its dirty-queue synchronizer before each snapshot, as
 /// `net_serialize_and_send` does; the client applies each snapshot and runs
-/// the own-pawn and remote-pawn mount paths in `client_receive_and_apply`'s
-/// order.
+/// the presentation pass `client_receive_and_apply` runs after it.
 struct Session {
     descriptors: Vec<EntityTypeDescriptor>,
     host: EntityRegistry,
@@ -121,32 +119,18 @@ impl Session {
         };
         let snapshot = raw.validate().expect("host snapshot validates");
         let outcome = self.replication.apply_snapshot(&mut self.client, &snapshot);
-        if let Some(armed) = &outcome.armed_local_pawn {
-            crate::remote_materialize::materialize_armed_local_pawn(
-                armed,
-                &self.descriptors,
-                &mut self.client,
-                None,
-                None,
-                false,
-                &Default::default(),
-            );
-        }
-        apply_local_weapon_attachments(
-            &outcome.local_weapon_attachments,
-            &self.replication,
-            &mut self.client,
-            &self.descriptors,
-            &self.client_store,
-        );
-        crate::snapshot_apply::materialize_remote_entities(
-            &outcome.remote_entities,
+        crate::snapshot_apply::materialize_snapshot_presentation(
+            &outcome,
             &self.descriptors,
             &mut self.client,
             &mut self.replication,
             self.tick,
             None,
             &self.client_store,
+            None,
+            None,
+            false,
+            &Default::default(),
         );
         if let Some(ack) = outcome.ack {
             self.server.apply_ack(
@@ -166,6 +150,18 @@ impl Session {
             .map()
             .get(&network_id)
             .expect("the client mapped the pawn")
+    }
+
+    /// The client's repoint pass for its own pawn `copy`, as the frame runs it
+    /// after a predicted switch and after a refused switch's rollback.
+    fn client_repoint(&mut self, copy: EntityId) -> bool {
+        synchronize_client_weapon_attachment_for_pawn(
+            &mut self.client,
+            copy,
+            &self.replication,
+            &self.descriptors,
+            &self.client_store,
+        )
     }
 
     /// Host and client mounts for `pawn`, after one step.
@@ -263,7 +259,7 @@ fn two_player_classes_on_different_rigs_mount_their_own_bakes_on_host_and_client
     }
 }
 
-// Pin P1: the client's own pawn arms with a non-default class and its active
+// The client's own pawn arms with a non-default class and its active
 // weapon on one snapshot.
 #[test]
 fn a_client_own_pawn_of_a_non_default_class_mounts_its_class_entry_on_the_arming_snapshot() {
@@ -282,6 +278,56 @@ fn a_client_own_pawn_of_a_non_default_class_mounts_its_class_entry_on_the_arming
     );
 }
 
+// The client's own pawn carries no descriptor provenance, so a predicted
+// repoint resolves its class from the arming snapshot, not the default.
+#[test]
+fn a_client_own_pawn_keeps_its_class_entry_through_a_predicted_switch_and_its_refusal() {
+    let mut session = Session::new();
+    let own = session.spawn("trooper", true, &["rifle", "carbine"]);
+    session.step();
+    let copy = session.client_copy(own);
+    assert!(
+        session
+            .client
+            .get_component::<DescriptorProvenance>(copy)
+            .is_err(),
+        "fixture: the armed client pawn has no provenance"
+    );
+    // Production composes the client inventory from host tuning, which this
+    // harness does not send.
+    equip(&mut session.client, copy, &["rifle", "carbine"], Some(0));
+    let rifle = pairs(&[("back", SLING), ("hand_r", RIFLE_TROOPER)]);
+    // The trooper's carbine entry, where the default player's would mount
+    // `RIFLE_EXO` and return the backpack.
+    let carbine = pairs(&[("hand_r", RIFLE_TROOPER)]);
+    assert_eq!(mounted(&session.client, copy), rifle);
+
+    // The predicted lower repoints the local inventory to the carbine.
+    select(&mut session.client, copy, Some(1));
+    assert!(session.client_repoint(copy));
+    assert_eq!(mounted(&session.client, copy), carbine, "predicted switch");
+
+    // The host refuses; the rollback restores the rifle and its mount, and the
+    // next snapshot leaves both.
+    assert!(crate::sim::refuse_local_wieldable_switch(
+        &mut session.client,
+        copy,
+        1,
+        0
+    ));
+    assert!(session.client_repoint(copy));
+    assert_eq!(mounted(&session.client, copy), rifle, "refused switch");
+    session.step();
+    assert_eq!(mounted(&session.client, copy), rifle, "after the refusal");
+
+    // A predicted switch the host accepts converges on the same entry.
+    select(&mut session.client, copy, Some(1));
+    assert!(session.client_repoint(copy));
+    session.switch(own, Some(1));
+    session.step();
+    assert_eq!(session.mounts(own), (carbine.clone(), carbine));
+}
+
 #[test]
 fn a_switch_swaps_entries_and_returns_base_attachments_on_host_and_client() {
     let logs = LogCapture::start();
@@ -297,7 +343,7 @@ fn a_switch_swaps_entries_and_returns_base_attachments_on_host_and_client() {
         ),
         (Some(2), pairs(&[("back", BACKPACK), ("hand_r", GRIP_TAPE)])),
         (Some(0), pairs(&[("back", SLING), ("hand_r", RIFLE_EXO)])),
-        // Pin P3: a drop shows every base attachment, the covered hand_r included.
+        // A drop shows every base attachment, the covered hand_r included.
         (None, pairs(&[("back", BACKPACK), ("hand_r", GRIP_TAPE)])),
     ] {
         session.switch(remote, slot);
@@ -341,7 +387,7 @@ fn two_switches_between_snapshots_leave_only_the_final_entry_on_host_and_client(
     }
 }
 
-// Pin P5: the next level's player_spawn names another class and the pawn
+// The next level's player_spawn names another class and the pawn
 // carries its active weapon through the transition.
 #[test]
 fn a_class_change_at_a_level_transition_mounts_the_new_class_entry_on_host_and_client() {

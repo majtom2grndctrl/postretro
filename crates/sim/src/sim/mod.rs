@@ -465,8 +465,8 @@ pub struct TickEvents {
     /// pawn or weapon gone by then still sounds its reload.
     pub reload: Vec<crate::emission::WeaponEmission>,
     /// Pawns whose active inventory slot repointed this tick. Presentation drains
-    /// this after simulation so the hand socket follows committed ownership, never
-    /// a pending selection.
+    /// this after simulation so the mounted weapon follows committed ownership,
+    /// never a pending selection.
     pub repointed_pawns: Vec<EntityId>,
     /// The host drop path restores meshes outside spawn-context resolution, so it
     /// reports them here for clip binding in the same fixed tick, before rendering.

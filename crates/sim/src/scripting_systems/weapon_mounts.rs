@@ -38,6 +38,24 @@ pub fn warn_weapon_mount_socket_missing(
     }
 }
 
+/// Warn once per level load that the wielder's own model is not in the level's
+/// loaded model set, so no entry socket can be checked and the entry mounts
+/// nothing. Distinct from a missing socket, which needs a loaded rig to judge.
+pub fn warn_weapon_mount_holder_missing(
+    store: &HitZoneStore,
+    character: &str,
+    weapon: &str,
+    holder_model: &str,
+) {
+    if store.mark_attachment_resolution_warning(format!(
+        "weapon-mount-holder:{character}:{weapon}:{holder_model}"
+    )) {
+        log::warn!(
+            "[Weapon mounts] entity `{character}` cannot mount weapon `{weapon}`: its model `{holder_model}` is not loaded; nothing mounts"
+        );
+    }
+}
+
 /// Warn once per level load that an entry's prop model is not in the level's
 /// loaded model set (it failed to load or was never preloaded).
 pub fn warn_weapon_mount_model_missing(

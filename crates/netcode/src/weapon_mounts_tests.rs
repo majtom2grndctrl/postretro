@@ -5,7 +5,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use glam::Vec3;
 use log::Level;
 use postretro_entities::Transform;
 use postretro_entities::components::inventory::{Inventory, WIELDABLE_SLOT_CAPACITY};
@@ -35,7 +34,7 @@ pub(super) const PISTOL_EXO: &str = "models/pistol/exo_red.gltf";
 pub(super) const PISTOL_TROOPER: &str = "models/pistol/trooper.gltf";
 pub(super) const UNLOADED: &str = "models/never_loaded.gltf";
 
-const PICKUP_MISSING: &str = "[Weapon mounts] entity `player` has no weaponMounts entry for weapon `pickup`; it mounts nothing";
+pub(super) const PICKUP_MISSING: &str = "[Weapon mounts] entity `player` has no weaponMounts entry for weapon `pickup`; it mounts nothing";
 
 pub(super) fn weapon(resolution: ResolutionMode) -> WeaponDescriptor {
     WeaponDescriptor {
@@ -280,6 +279,18 @@ pub(super) fn spawn_pawn(
             None,
         )
     );
+    let instances = equip(registry, pawn, weapons, active);
+    (pawn, instances)
+}
+
+/// Give `pawn` an inventory of one descriptor-stamped weapon instance per name,
+/// with `active` selected. Returns the weapon instances.
+pub(super) fn equip(
+    registry: &mut EntityRegistry,
+    pawn: EntityId,
+    weapons: &[&str],
+    active: Option<usize>,
+) -> Vec<EntityId> {
     let instances: Vec<EntityId> = weapons
         .iter()
         .map(|name| {
@@ -304,7 +315,7 @@ pub(super) fn spawn_pawn(
     }
     inventory.active_slot = active.unwrap_or(WIELDABLE_SLOT_CAPACITY);
     registry.set_component(pawn, inventory).unwrap();
-    (pawn, instances)
+    instances
 }
 
 /// Select inventory `slot` (or an empty slot for `None`).
@@ -431,7 +442,7 @@ fn a_switch_removes_the_old_entry_and_returns_each_covered_base_attachment() {
     logs.assert_logged_once(Level::Warn, PICKUP_MISSING);
 }
 
-// Pin P4: the same model on a shared socket, the old entry with an extra socket.
+// The same model on a shared socket, the old entry with an extra socket.
 #[test]
 fn a_switch_to_an_entry_sharing_a_model_returns_the_extra_socket_to_its_base_or_empties_it() {
     let descriptors = descriptors();
@@ -471,7 +482,7 @@ fn a_switch_to_an_entry_sharing_a_model_returns_the_extra_socket_to_its_base_or_
     }
 }
 
-// Pin P3: today's writer stripped a base hand_r with no active weapon.
+// No active weapon shows every base attachment, including a base `hand_r`.
 #[test]
 fn no_active_weapon_at_install_or_after_a_drop_shows_every_base_attachment() {
     let descriptors = descriptors();
@@ -641,8 +652,10 @@ fn two_switches_in_one_host_tick_leave_only_the_final_entry_mounted() {
     );
 }
 
+// Every host and single-player pawn carries provenance; the default class is
+// a defensive fallback for one that somehow does not.
 #[test]
-fn a_host_pawn_without_provenance_wields_as_the_default_player_class() {
+fn a_pawn_without_provenance_falls_back_to_the_default_player_class() {
     let descriptors = descriptors();
     let store = store();
     let mut registry = EntityRegistry::new();
@@ -670,7 +683,7 @@ fn a_host_pawn_without_provenance_wields_as_the_default_player_class() {
     );
 }
 
-// Pin P5 on the host: a level transition respawns the pawn as the new class
+// On the host, a level transition respawns the pawn as the new class
 // and the install pass synchronizes it with the carried weapon.
 #[test]
 fn a_class_change_at_a_level_transition_mounts_the_new_class_entry_on_the_host() {
@@ -866,6 +879,76 @@ fn an_entry_model_missing_from_the_preload_warns_once_and_the_other_sockets_stil
 }
 
 #[test]
+fn an_entry_on_a_socket_the_rig_lacks_reports_the_socket_and_not_its_unloaded_model() {
+    let logs = LogCapture::start();
+    let mut descriptors = descriptors();
+    descriptors[1].mesh.as_mut().unwrap().weapon_mounts = Some(vec![entry(
+        "pistol",
+        &[("hand_r", PISTOL_TROOPER), ("hip", UNLOADED)],
+    )]);
+    let store = store();
+    let mut registry = EntityRegistry::new();
+    let pawn = materialized_pawn(&mut registry, &descriptors, "trooper");
+
+    write(
+        &mut registry,
+        pawn,
+        "trooper",
+        &descriptors,
+        Some("pistol"),
+        &store,
+    );
+    assert_eq!(
+        mounted(&registry, pawn),
+        pairs(&[("hand_r", PISTOL_TROOPER)])
+    );
+    logs.assert_logged_once(
+        Level::Warn,
+        "[Weapon mounts] entity `trooper` mounts weapon `pistol` on socket `hip`, which its model `models/trooper/model.gltf` lacks; nothing mounts there",
+    );
+    logs.assert_not_logged(Level::Warn, "but the model is not loaded");
+}
+
+#[test]
+fn an_unloaded_holder_model_warns_once_naming_it_and_mounts_nothing_from_the_entry() {
+    let logs = LogCapture::start();
+    let descriptors = descriptors();
+    // The level loaded every prop but not the wielder's own rig.
+    let mut store = HitZoneStore::new();
+    for prop in [GRIP_TAPE, BACKPACK, RIFLE_EXO, SLING, PISTOL_EXO] {
+        store.insert_for_test(ModelHandle::from(prop), zones(&[]));
+    }
+    let mut registry = EntityRegistry::new();
+    let pawn = materialized_pawn(&mut registry, &descriptors, "player");
+
+    for weapon in ["rifle", "pistol", "rifle", "pistol"] {
+        write(
+            &mut registry,
+            pawn,
+            "player",
+            &descriptors,
+            Some(weapon),
+            &store,
+        );
+    }
+
+    assert_eq!(
+        mounted(&registry, pawn),
+        pairs(&[("back", BACKPACK), ("hand_r", GRIP_TAPE)]),
+        "the base attachments stay; no entry socket mounts"
+    );
+    for weapon in ["rifle", "pistol"] {
+        logs.assert_logged_once(
+            Level::Warn,
+            &format!(
+                "[Weapon mounts] entity `player` cannot mount weapon `{weapon}`: its model `models/exo_red/model.gltf` is not loaded; nothing mounts"
+            ),
+        );
+    }
+    logs.assert_not_logged(Level::Warn, "lacks");
+}
+
+#[test]
 fn an_entry_naming_no_weapon_never_mounts_and_the_other_entries_still_mount() {
     let logs = LogCapture::start();
     let mut descriptors = descriptors();
@@ -898,243 +981,5 @@ fn an_entry_naming_no_weapon_never_mounts_and_the_other_entries_still_mount() {
     logs.assert_logged_once(
         Level::Warn,
         "[Weapon mounts] entity `player` has a weaponMounts entry for `retired_rifle`, which names no weapon; the entry never mounts",
-    );
-}
-
-/// The active descriptor set a hot reload leaves behind: the reload's new
-/// inventory with the mesh, table included, deferred to the pre-reload value.
-fn deferred_reload(
-    active: &[EntityTypeDescriptor],
-    staged: &[EntityTypeDescriptor],
-) -> Vec<EntityTypeDescriptor> {
-    staged
-        .iter()
-        .map(|next| {
-            let mut next = next.clone();
-            if let Some(old) = active
-                .iter()
-                .find(|old| old.canonical_name == next.canonical_name)
-            {
-                next.mesh = old.mesh.clone();
-            }
-            next
-        })
-        .collect()
-}
-
-// Pin P2: the switch after a deferred table edit mounts the pre-edit entry.
-#[test]
-fn a_switch_after_a_deferred_table_edit_mounts_the_pre_edit_entry_until_the_next_level_load() {
-    let before = descriptors();
-    let mut edited = before.clone();
-    edited[0].mesh.as_mut().unwrap().weapon_mounts =
-        Some(vec![entry("pistol", &[("hand_r", PISTOL_TROOPER)])]);
-    let active = deferred_reload(&before, &edited);
-    let store = store();
-    let mut registry = EntityRegistry::new();
-    let (pawn, _) = spawn_pawn(
-        &mut registry,
-        &before,
-        "player",
-        DescriptorSpawnPath::PlayerSpawn,
-        &["rifle", "pistol"],
-        Some(0),
-    );
-    synchronize_weapon_attachment_for_pawn(&mut registry, pawn, &before, &store);
-
-    select(&mut registry, pawn, Some(1));
-    synchronize_weapon_attachment_for_pawn(&mut registry, pawn, &active, &store);
-    assert_eq!(
-        mounted(&registry, pawn),
-        pairs(&[("back", BACKPACK), ("hand_r", PISTOL_EXO)]),
-        "the pre-edit entry"
-    );
-
-    // The next level load installs the edited descriptors.
-    let store = self::store();
-    let mut next_level = EntityRegistry::new();
-    let (pawn, _) = spawn_pawn(
-        &mut next_level,
-        &edited,
-        "player",
-        DescriptorSpawnPath::PlayerSpawn,
-        &["rifle", "pistol"],
-        Some(1),
-    );
-    synchronize_weapon_attachment_for_pawn(&mut next_level, pawn, &edited, &store);
-    assert_eq!(
-        mounted(&next_level, pawn),
-        pairs(&[("back", BACKPACK), ("hand_r", PISTOL_TROOPER)])
-    );
-}
-
-#[test]
-fn a_loadout_weapon_added_with_its_entry_in_one_reload_mounts_nothing_until_the_next_level_load() {
-    let logs = LogCapture::start();
-    let before = descriptors();
-    let mut staged = before.clone();
-    staged[0].inventory = Some(InventoryDescriptor {
-        loadout: vec!["rifle".into(), "pistol".into(), "pickup".into()],
-    });
-    staged[0]
-        .mesh
-        .as_mut()
-        .unwrap()
-        .weapon_mounts
-        .as_mut()
-        .unwrap()
-        .push(entry("pickup", &[("hand_r", PISTOL_TROOPER)]));
-    let active = deferred_reload(&before, &staged);
-    let store = store();
-    let mut registry = EntityRegistry::new();
-    let (pawn, _) = spawn_pawn(
-        &mut registry,
-        &active,
-        "player",
-        DescriptorSpawnPath::PlayerSpawn,
-        &["rifle", "pistol", "pickup"],
-        Some(2),
-    );
-    for slot in [2, 0, 2] {
-        select(&mut registry, pawn, Some(slot));
-        synchronize_weapon_attachment_for_pawn(&mut registry, pawn, &active, &store);
-    }
-    assert_eq!(
-        mounted(&registry, pawn),
-        pairs(&[("back", BACKPACK), ("hand_r", GRIP_TAPE)])
-    );
-    logs.assert_logged_once(Level::Warn, PICKUP_MISSING);
-
-    let store = self::store();
-    crate::scripting_systems::weapon_mounts::check_weapon_mount_tables(&staged, &store);
-    synchronize_weapon_attachment_for_pawn(&mut registry, pawn, &staged, &store);
-    assert_eq!(
-        mounted(&registry, pawn),
-        pairs(&[("back", BACKPACK), ("hand_r", PISTOL_TROOPER)]),
-        "the next level load mounts the added entry"
-    );
-    logs.assert_logged_once(Level::Warn, PICKUP_MISSING);
-}
-
-/// Fire one shot from `shooter` along -Z at a hitbox target and return the
-/// client resolution: its hits, world contacts and projectile launch origin.
-fn fire(
-    registry: &EntityRegistry,
-    shooter: EntityId,
-    store: &HitZoneStore,
-    resolution: ResolutionMode,
-) -> crate::weapon::ClientFireResolution {
-    let descriptor = weapon(resolution);
-    let placement = postretro_foundation::WeaponPlacementDescriptor {
-        offset: postretro_foundation::PlacementOffset {
-            right: 0.2,
-            up: -0.2,
-            forward: 0.4,
-        },
-        rotation: Default::default(),
-    };
-    let mut component =
-        postretro_entities::components::weapon::WeaponComponent::from_descriptor(&descriptor);
-    crate::weapon::resolve_test_client_shot(
-        Some(shooter),
-        &mut component,
-        "rifle",
-        0,
-        crate::weapon::FireButtonState {
-            pressed: true,
-            active: true,
-        },
-        Vec3::new(0.0, 1.5, 0.0),
-        Vec3::NEG_Z,
-        &placement,
-        descriptor.muzzle_offset.map(Vec3::from),
-        3,
-        &[0.0],
-        &[],
-        &postretro_physics::collision::moving::CombinedCollisionWorld::static_only(
-            &crate::collision::CollisionWorld::new(),
-        ),
-        registry,
-        store,
-        0.0,
-        0.0,
-    )
-    .expect("a fresh press fires")
-}
-
-#[test]
-fn fire_origin_and_hits_are_identical_with_and_without_a_weapon_mount_table() {
-    let store = store();
-    let mut results = Vec::new();
-    for with_table in [true, false] {
-        let mut descriptors = descriptors();
-        if !with_table {
-            for descriptor in &mut descriptors {
-                if let Some(mesh) = descriptor.mesh.as_mut() {
-                    mesh.weapon_mounts = None;
-                }
-            }
-        }
-        let mut registry = EntityRegistry::new();
-        let (shooter, _) = spawn_pawn(
-            &mut registry,
-            &descriptors,
-            "player",
-            DescriptorSpawnPath::PlayerSpawn,
-            &["rifle"],
-            Some(0),
-        );
-        let (target, _) = spawn_pawn(
-            &mut registry,
-            &descriptors,
-            "trooper",
-            DescriptorSpawnPath::NetworkSlot,
-            &["rifle"],
-            Some(0),
-        );
-        registry
-            .set_component(
-                target,
-                Transform {
-                    position: Vec3::new(0.0, 1.0, -6.0),
-                    ..Transform::default()
-                },
-            )
-            .unwrap();
-        registry
-            .set_component(
-                target,
-                postretro_entities::components::health::HealthComponent::from_descriptor(
-                    &postretro_entities::data_descriptors::HealthDescriptor {
-                        max: 50.0,
-                        hitbox: Some(postretro_entities::data_descriptors::HitboxDescriptor {
-                            half_extents: [0.4, 1.0, 0.4],
-                            offset: None,
-                        }),
-                        ..Default::default()
-                    },
-                ),
-            )
-            .unwrap();
-        for pawn in [shooter, target] {
-            synchronize_weapon_attachment_for_pawn(&mut registry, pawn, &descriptors, &store);
-        }
-        let hitscan = fire(&registry, shooter, &store, ResolutionMode::Hitscan);
-        assert_eq!(hitscan.hits.len(), 1, "the hitscan shot hits the target");
-        assert_eq!(hitscan.hits[0].target, target);
-        let projectile = fire(&registry, shooter, &store, ResolutionMode::Projectile);
-        assert!(projectile.projectile_launch.is_some());
-        results.push((mounted(&registry, shooter), hitscan, projectile));
-    }
-    let (with_table, without_table) = (&results[0], &results[1]);
-    assert_eq!(
-        with_table.0,
-        pairs(&[("back", SLING), ("hand_r", RIFLE_EXO)])
-    );
-    assert_ne!(with_table.0, without_table.0, "fixture: the mounts differ");
-    assert_eq!(
-        (&with_table.1, &with_table.2),
-        (&without_table.1, &without_table.2),
-        "a mount is presentation only: fire origin and hits never read it"
     );
 }

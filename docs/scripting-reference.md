@@ -433,6 +433,9 @@ character and weapon per level load:
 - A socket the character's model lacks warns, naming the character, weapon and
   socket, and draws nothing there. The entry's other sockets still mount.
 - A listed model that fails to load warns. The entry's other sockets still mount.
+- If the character's own model fails to load, wielding a weapon that has an
+  entry warns, naming the character, weapon and model. Nothing from the entry
+  mounts.
 - An entry whose weapon name matches no weapon warns and mounts nothing.
 
 These fail the mod's load:

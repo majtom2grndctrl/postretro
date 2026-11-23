@@ -6,6 +6,7 @@ read at: 99cc0e0d5
 
 ## Corrections
 - Brief read at 83802575a → no cited seam changed by 99cc0e0d5; Decision reads reused.
+- Worker B's ghost test read yaw from the wrong `to_euler(YXZ)` slot (pitch); fixed in the test.
 - `main` did not build the `postretro` test target (`area_lights_surface_tests.rs` lacked `frontend_backdrop` after two branches merged) → fixed in its own commit (76a734288) before this work.
 
 ## Delegated answers
@@ -45,8 +46,8 @@ None (brief has no open questions).
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
 | 1 | Contract, draw seams (mesh_render, ghost_render), R1, placement constant, exo_red Hips re-face; first-slice proof: all six exo_red bakes `--check` VERIFIED on the real exo_red, `hand_r` the exact 180° image of its old pose | integrating executor | — | done |
-| 2 | Body-space seams: `hit_zones::model_matrix` + callers (zones, sockets, overlays, netcode `client_overlay_anchor`, `damaged_enemy_overlay`), foot probes at the drawn rotation; rows 12–16 | worker A | 1 | |
-| 3 | Body-frame materialization on every role and entry path, R3; draw/ghost/regression/serde rows 1–7; old-frame tests and comments | worker B | 1 | |
-| 4 | Converter default +Z, help text, docs and `license.txt` recipes, E21 research note; grep gate row 17 | worker C | — | |
-| 5 | exo_red rows 8–11 | worker D | 1 | |
+| 2 | Body-space seams: `hit_zones::model_matrix` + callers (zones, sockets, overlays, netcode `client_overlay_anchor`, `damaged_enemy_overlay`), foot probes at the drawn rotation; rows 12–16 | worker A | 1 | done: `hit_zones_body_frame_tests.rs`, `pose_inputs_body_frame_tests.rs` (f47d950ef); host-level R4: `host_seat_reprobe_plants_client_feet_under_the_presented_heading_plus_turn` |
+| 3 | Body-frame materialization on every role and entry path, R3; draw/ghost/regression/serde rows 1–7; old-frame tests and comments | worker B | 1 | done (f47d950ef): `descriptor_body_frame` at spawn; `apply_player_viewer_role` on every client viewer-role call; respawn relocates in place; mesh hot-reload declined |
+| 4 | Converter default +Z, help text, docs and `license.txt` recipes, E21 research note; grep gate row 17 | worker C | — | done (b1407e89d): default turn is `--yaw` alone; `no_docs_page_or_content_licence_keeps_a_yaw_180_recipe` |
+| 5 | exo_red rows 8–11 | worker D | 1 | done (b1407e89d): worst joint gap 2.8e-7 rot, 0.71 mm pos |
 | 6 | Integrate, gate, preflight, review loop | integrating executor | 2–5 | |

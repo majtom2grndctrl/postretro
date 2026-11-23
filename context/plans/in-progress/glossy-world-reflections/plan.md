@@ -1,12 +1,14 @@
 # glossy-world-reflections — plan of record
 
 mode: resumable
-status: blocked
+status: approved
 read at: 8dda8a34a
 
 Source unchanged since the brief's `a7bf2a19`; every cited symbol re-read at `8dda8a34a` (compiler, runtime, shaders).
 
-## Block (2026-11-22): the 256 cap does not hold on production-scale content
+## Block (2026-11-22, resolved): the 256 cap does not hold on production-scale content
+
+**Resolution (owner, 2026-11-22).** Build the brief as decided, behind a compile-time gate: glossy placement runs only under `prl-build --glossy-reflections`, used for the glossy test map, until large-map probe support (`reflection-probe-streaming` and its prerequisites) lands. The brief gains Decision "Gated", three Gate rows (G1–G3) and a deferred docs row. The world-face probe class (option 1 below) is noted for the streaming brief, not built here.
 
 **Premise.** Decisions "Probe cap stays at 256" and "Generalized probes" (one probe per coplanar glossy face group) together assume glossy content fits the cap, with drops at the margin. The first slice existed to test that on real content (Path, First slice).
 
@@ -66,6 +68,9 @@ Rows numbered in brief order. GPU proofs run with `POSTRETRO_REQUIRE_GPU=1` on M
 
 | AC | Row (short) | Proof | Status |
 |---|---|---|---|
+| G1 | Without the flag: byte-identical id 54, no world binding, no overlay, no world-face probe resource | compiler A/B over `content/dev` + GPU frame | achievable as stated |
+| G2 | Flag in the probe stage's cache key | compiler cache-key test | achievable as stated |
+| G3 | With the flag the rows below hold | fixtures build with the flag | achievable as stated |
 | 1 | Water placement, tiles, exclusion byte-equal; shares on 5 lobes, −Y zero | ignored compiler test over every water map in `content/dev`, comparing against A/B bakes, probes matched by bound faces | achievable as stated |
 | 2 | Water renders within 1/255 at parity views, every tier, both styles; water reads mip 0 | ignored capture A/B at the reflection-probes parity views; source scan pins water's `textureSampleLevel(…, 0.0)` | achievable as stated |
 | 3 | Non-opt-in material: no probe, binding, overlay draw; byte-identical render | compiler unit (each of no `_p`, no `_s`, no qualifying texel) + GPU frame A/B | achievable as stated |
@@ -134,7 +139,7 @@ Rows numbered in brief order. GPU proofs run with `POSTRETRO_REQUIRE_GPU=1` on M
 | 66 | Authored water probes past cap refuse; world-face-only drop first (P19) | compiler unit + error text | achievable as stated |
 | 67 | Surface Depth on: per-face marched reflection; off: no march; toggle same frame (P11) | GPU readback | achievable as stated |
 | 68 | Box over warning threshold builds, warns | compiler unit + log | achievable as stated |
-| 69 | `docs/level_design.md` and FGD help text | review-panel docs lens | achievable as stated |
+| 69 | `docs/level_design.md` and FGD help text | deferred until the gate lifts (owner); `context/` documents the flag and test map, review-panel docs lens | deferred (owner) |
 | M1 | Dev map: glossy floor and wall look | owner, in-engine | manual |
 | M2 | Dev map: monument and character | owner, in-engine | manual |
 | M3 | Pixel style blocks; no octahedral-fold seam at coarse mips | owner, in-engine | manual |
@@ -152,7 +157,7 @@ Rows numbered in brief order. GPU proofs run with `POSTRETRO_REQUIRE_GPU=1` on M
 | 2 | **Mover register screen (risk: cliff).** Spike the pixel and smooth mover entries writing highlights to a second output; screen with `tools/metal_register_screen/`. Land nothing if it crosses; go to checkpoint 3 | integrating executor | — | done: clear. Exactness-preserving shape (a third, untinted-specular sum beside `total` / `tinted_total`; second `@location(1)` `Rgba16Float` output; colour expressions untouched): `fs_pixel` 127 → 127 VGPRs, `fs_smooth` 119 → 119 (cliff at 128), SGPRs 104 both. Checkpoint 3 not needed. Task 11 must also teach the screen tool a second target: `screen.swift` declares `colorAttachments[1]`, and `regs.py` accepts the AMD slice's `air.new.packedFragmentFunction` tag (same offsets) a two-output entry carries. Spare shape if headroom is ever needed: one specular sum, added to `total` only when untinted, `tinted_total` = `select(0, sum, tinted)` |
 | 3 | **Format v3.** Six lobes (−Y last), colour mip count (1 until Task 7), world binding list in id-17 numbering; loader cross-checks; v2 refused. Rows 18, 61 | worker (level-format, loader) | — | |
 | 4 | **Probe resources leave fluid ownership.** Level-owned probe records (arrays, table, sums), ledger row, sums dispatch ahead of the first probe-term draw, gated on fluid or overlay draws; ownership scans rewritten keeping their fences. Rows 55, 57, 64, 65 | integrating executor | 3 | |
-| 5 | **First slice: one glossy floor (risks: self-occlusion, `Equal` landing).** Splits first (`renderer_render_frame.rs`, `compute_cull.rs`, `reflection_probes/mod.rs`, `pipeline.rs`). Derived up-facing floor probe with per-face self-transparency; world probe-index side stream; glossy bucket plan; overlay pipeline on its own layout; forward's D_static entry and pipeline forms; additive composite at m_min; timing pair. Measure on the 5300M → checkpoint 2. Rows 10, 28, 29, 51, 52 | integrating executor | 1, 3, 4 | |
+| 5 | **First slice: one glossy floor (risks: self-occlusion, `Equal` landing).** The `--glossy-reflections` gate (G1–G3); author `content/dev/maps/glossy-reflections-test.map` (glossy floor and wall from the sharpness dev materials, a pillar, a freestanding monument; grows with later tasks). Splits first (`renderer_render_frame.rs`, `compute_cull.rs`, `reflection_probes/mod.rs`, `pipeline.rs`). Derived up-facing floor probe with per-face self-transparency; world probe-index side stream; glossy bucket plan; overlay pipeline on its own layout; forward's D_static entry and pipeline forms; additive composite at m_min; timing pair. Measure on the 5300M → checkpoint 2. Rows 10, 28, 29, 51, 52 | integrating executor | 1, 3, 4 | |
 | 6 | **Weights and colour.** Sharpness fade, `_s` scale, Fresnel on the 0.04 base with tint, highlight-tint colour, capture shadow, mask gate. Rows 4, 27, 30, 31, 32, 34 | integrating executor | 5 | |
 | 7 | **Colour mips.** Shared exponent → mip function; compile-time prefilter per mip with borders, BC6H to 4²; runtime `mip_level_count`; per-mip UV. Rows 2 (mip-0 scan), 23–26, 36 (probe half), 56 | worker (compiler prefilter) + integrating executor (runtime) | 3, 5 | |
 | 8 | **All orientations and authored facings.** Split `box_fit.rs`, `capture_exclusion.rs`; plane-generic fit rays, settle, capture point, shares (six lobes, face hemisphere); per-facing authored probes, `_capture_offset`, warnings. Rows 5–11, 19, 68 | worker (compiler) | 3, 5 | |

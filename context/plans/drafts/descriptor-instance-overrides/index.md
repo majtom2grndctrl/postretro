@@ -1,6 +1,6 @@
 # descriptor-instance-overrides
 
-Brief · compact · draft, owner decisions pending · Epic 16 · reads: `context/lib/entity_model.md` §2 (Weapon vocabulary, Weapon mounts), §4 · `context/lib/scripting.md` §1 (Authoring API style), §2 · `context/lib/networking.md` §What gates, and what replicates instead, §Weapon placement is content · composes with `drafts/E10--npc-equipment-sets/` · read at bb7323fc5
+Brief · compact · draft, owner decisions pending · Epic 16 · reads: `context/lib/entity_model.md` §2 (Weapon vocabulary, Weapon mounts), §4 · `context/lib/scripting.md` §1 (Authoring API style), §2 · `context/lib/networking.md` §What gates, and what replicates instead, §Weapon placement is content · composes with `drafts/E10--npc-weapon-mounts/` and `drafts/E10--npc-equipment-sets/` · read at bb7323fc5
 
 ## Problem
 Owner-requested capability (2026-11-23): an author reuses one weapon with tuning changed for one use, and it stays the same weapon. The motivating case: NPCs wield the player's reference rifle, overridden into a projectile weapon with the tuning of today's `enemy_rifle_burst` and `enemy_rifle_long`: 20 m/s dodgeable shots, 6 damage, three-shot bursts. A spread of the reference rifle already composes that tuning, but it derives a new weapon. Everything keyed on the weapon's name treats the result as a stranger, so every rig repeats a mount entry pointing at the same bake. When done:
@@ -17,7 +17,7 @@ Owner-requested capability (2026-11-23): an author reuses one weapon with tuning
 - **Non-goals.**
   - Per-instance runtime overrides on a live weapon: augments and rolls own them.
   - Enemy hitscan, an AI secondary lane, and AI reload: separate AI decisions; the override fits the weapon to the AI instead.
-  - NPC shot origin. The reference rifle's `muzzleOffset` does not move an NPC shot; E10's open question owns that.
+  - NPC shot origin. `drafts/E10--npc-weapon-mounts/` launches an NPC shot from its mounted muzzle, so the reference rifle's `muzzleOffset` does not move it.
   - The per-instance first-person placement tier: `done/weapon-placement/` reserves it for dual-wield.
   - Overriding a non-weapon component (mesh, touchable, health).
 - **Layer placement.** Composition is load-time and script-side: SDK or `scripting-core` lowering. The engine gains only the identity rule the identity question settles.
@@ -78,4 +78,4 @@ Owner-requested capability (2026-11-23): an author reuses one weapon with tuning
   - — owner: owner — **blocks build**
 - SDK surface: `defineWeaponVariant(base, { canonicalName, weapon, clear })` as sketched in Path, a `variantOf` key on `defineEntity`, or `base.with({ ... })` at the reference site after `token.with`. Both runtimes ship. Recommendation: `defineWeaponVariant`, returning a full weapon handle so every existing reference site accepts it. Explicit `canonicalName`, because maps, saves and the wire hold it. Not `.with`, which mints no identity. — owner: owner — **blocks build**
 - Variant of a variant: allowed, with the mount lookup walking up to the nearest base that has an entry. — **delegated**: the executor decides and reports it in the plan of record
-- E10's rule "a mount entry for a weapon none of the archetype's sets lists rejects load" must count a base entry as serving the variants sets list. — **delegated**: whichever of this brief and E10 builds second reconciles it and reports it in the plan of record
+- `drafts/E10--npc-equipment-sets/`'s rule "a mount entry for a weapon none of the archetype's sets lists warns" must count a base entry as serving the variants sets list. — **delegated**: whichever of this brief and E10 builds second reconciles it and reports it in the plan of record

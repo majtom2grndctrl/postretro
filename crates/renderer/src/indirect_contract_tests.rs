@@ -113,7 +113,7 @@ fn rust_violations(sources: &[Source]) -> Vec<String> {
                         name,
                         "draw_indexed_indirect" | "multi_draw_indexed_indirect"
                     )
-                    && is_owner(site, "compute_cull.rs", "", "draw_indirect_buckets")
+                    && is_owner(site, "indirect_draw_plan.rs", "", "draw_indirect_buckets")
             }
             ("call", "Instance::new") => {
                 is_renderer_instance_owner(site)

@@ -150,6 +150,7 @@ So a monument whose brushes are each shorter in plan than t is excluded with no 
 ## Overlay hazards
 
 - **Coplanar mover.** A mover face exactly coplanar with a world face passes the colour pass's `Equal` and draws over the world (`rendering_pipeline.md` §7.3). The overlay records after the mover pass, so its `Equal` redraw of the glossy world face would blend the world face's reflection over the mover there. It needs a guard (P15).
+- **`Equal` landing.** Forward writes no depth, has no `discard` and no MSAA, and the HDR target (`Rgba16Float`) blends, so an `Equal` redraw with forward's `@invariant` clip position lands on exactly the pixels forward shaded. BC6H stops the colour mip chain at 4².
 - **Glossy faces in captures.** Capture shading has no specular, so a glossy face seen in another probe's capture shows its diffuse only. No recursion. Accepted.
 - **Planar mirror.** The mirror view reuses main pipelines for world draws. Whether it also records the overlay is open.
 

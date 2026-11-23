@@ -170,6 +170,8 @@ Priorities to beat: Microsoft 2018-02-22; NVIDIA 2018-03-17; EA 2018-08-10; Perf
 | **Watch** | NVIDIA 18/612,293 issue and allowed claims; sibling 18/746,536 | '439 | — |
 | **Watch** | Tencent WO national phase; Nintendo '909 prosecution | Carried | — |
 
+**Water's SSR over a glossy floor (owner, 2026-11-22).** The overlay writes glossy floors' composited result into scene colour before water's screen-space pass reads it, so water reflecting an on-screen glossy floor shows that floor's reflection. Engineering reading: this is scene content, the lit result of another surface, not a read of water's probe tiles; water's pass still binds no probe colour or distance array, and water's coefficient never gains water's s. The owner accepted this reading.
+
 ## 8. For counsel
 
 1. **NVIDIA US20240257439A1 (18/612,293), allowed.** Read the allowed claims and the 2026-06-12 response. If claim 1 still reads "selecting a specular model … based at least on" a reflective-property value: is a material sharpness floor that decides whether a face draws an added image-based term such a selection? Art: Unity PPv1 (2016-10-10, `smoothness == 0` skip, source), UE4 SSR Max Roughness (2014, docs).

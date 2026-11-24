@@ -336,6 +336,82 @@ fn an_entry_takes_exactly_one_of_attachments_and_muzzle_socket_in_both_runtimes(
     assert_eq!(mesh.mount_models().collect::<Vec<_>>(), vec![model]);
 }
 
+/// An NPC whose attacks name `rifle` and `pistol`, with `mounts` as its table.
+fn js_npc(mounts: &str) -> String {
+    format!(
+        r#"(() => {{
+            const aim = {{ kind: "stance", name: "aim", animation: "aim" }};
+            const shoot = {{ kind: "attack", name: "shoot", weapon: "rifle", beginningStance: aim, release: {{ animation: "fire" }} }};
+            const alt = {{ kind: "attack", name: "alt", weapon: "pistol", beginningStance: aim, release: {{ animation: "fire" }} }};
+            return {{ canonicalName: "trooper", components: {{
+                mesh: {{ model: "models/trooper/model.gltf", mounts: {mounts} }},
+                behavior: {{
+                    initial: "approach", moveSpeed: 3,
+                    activities: {{ approach: {{ animation: "walk", motion: "chaseTarget" }} }},
+                    transitions: {{ approach: [{{ to: aim }}], aim: [{{ to: shoot }}, {{ to: alt, when: {{ op: "ge", a: {{ op: "input", name: "@brain.timeInActivityMs" }}, b: {{ op: "const", value: 2000 }} }} }}] }}
+                }}
+            }} }};
+        }})()"#
+    )
+}
+
+fn lua_npc(mounts: &str) -> String {
+    format!(
+        r#"local aim = {{ kind = "stance", name = "aim", animation = "aim" }}
+        local shoot = {{ kind = "attack", name = "shoot", weapon = "rifle", beginningStance = aim, release = {{ animation = "fire" }} }}
+        local alt = {{ kind = "attack", name = "alt", weapon = "pistol", beginningStance = aim, release = {{ animation = "fire" }} }}
+        return {{ canonicalName = "trooper", components = {{
+            mesh = {{ model = "models/trooper/model.gltf", mounts = {mounts} }},
+            behavior = {{
+                initial = "approach", moveSpeed = 3,
+                activities = {{ approach = {{ animation = "walk", motion = "chaseTarget" }} }},
+                transitions = {{ approach = {{ {{ to = aim }} }}, aim = {{ {{ to = shoot }}, {{ to = alt, when = {{ op = "ge", a = {{ op = "input", name = "@brain.timeInActivityMs" }}, b = {{ op = "const", value = 2000 }} }} }} }} }}
+            }}
+        }} }}"#
+    )
+}
+
+// Two weapons an NPC's attacks name may share a socket only with one model.
+// Entries no attack names are ignored, so they may disagree freely.
+#[test]
+fn attack_weapons_may_share_a_socket_only_with_one_model_in_both_runtimes() {
+    let a = "models/ar_4/a.gltf";
+    let b = "models/ar_4/b.gltf";
+    let js_table = |rifle: (&str, &str), pistol: (&str, &str)| {
+        format!(
+            r#"[{{ item: "rifle", attachments: {{ {}: "{}" }} }}, {{ item: "pistol", attachments: {{ {}: "{}" }} }}, {{ item: "knife", attachments: {{ hand_r: "{b}" }} }}]"#,
+            rifle.0, rifle.1, pistol.0, pistol.1
+        )
+    };
+    let lua_table = |rifle: (&str, &str), pistol: (&str, &str)| {
+        format!(
+            r#"{{ {{ item = "rifle", attachments = {{ {} = "{}" }} }}, {{ item = "pistol", attachments = {{ {} = "{}" }} }}, {{ item = "knife", attachments = {{ hand_r = "{b}" }} }} }}"#,
+            rifle.0, rifle.1, pistol.0, pistol.1
+        )
+    };
+
+    // Different models on one socket reject, naming the archetype and socket.
+    let conflict = js_error(&js_npc(&js_table(("hand_r", a), ("hand_r", b))));
+    let lua_conflict = lua_error(&lua_npc(&lua_table(("hand_r", a), ("hand_r", b))));
+    let expected = "entity `trooper`: attack weapons `pistol` and `rifle` mount different models on socket `hand_r`";
+    assert!(conflict.contains(expected), "QuickJS: {conflict}");
+    assert_eq!(
+        conflict, lua_conflict,
+        "both runtimes reject with one message"
+    );
+
+    // The same model on the shared socket, or different sockets, load.
+    for (rifle, pistol) in [(("hand_r", a), ("hand_r", a)), (("hand_r", a), ("hip", b))] {
+        let js = eval_js(&js_npc(&js_table(rifle, pistol)), |ctx, value| {
+            entity_descriptor_from_js(ctx, value).expect("QuickJS loads the NPC")
+        });
+        let lua = eval_lua(&lua_npc(&lua_table(rifle, pistol)), |value| {
+            entity_descriptor_from_lua(value).expect("Luau loads the NPC")
+        });
+        assert_eq!(js.mesh.unwrap().mounts, lua.mesh.unwrap().mounts);
+    }
+}
+
 // A model path that breaks the content-relative rule weapon models follow
 // rejects load in both runtimes, as `components.weapon.viewmodel` does.
 #[test]

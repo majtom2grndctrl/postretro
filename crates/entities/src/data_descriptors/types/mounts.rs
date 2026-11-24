@@ -190,3 +190,43 @@ pub fn validate_mounts(owner: &str, entries: &[MountDescriptor]) -> Result<(), D
     }
     Ok(())
 }
+
+/// The shared-socket rule for an NPC: the weapons its attacks name mount
+/// together, so two of them may put the same model on a socket but never
+/// different models. Entries for weapons no attack names are ignored.
+pub fn validate_shared_attack_sockets(
+    owner: &str,
+    mesh: &MeshDescriptor,
+    attack_weapons: &[&str],
+) -> Result<(), DescriptorError> {
+    // socket -> (weapon, model) of the first entry that claimed it.
+    let mut claimed: std::collections::BTreeMap<&str, (&str, &str)> =
+        std::collections::BTreeMap::new();
+    for weapon in attack_weapons {
+        let Some(attachments) = mesh
+            .mount(weapon)
+            .and_then(|entry| entry.attachments.as_ref())
+        else {
+            continue;
+        };
+        let mut sockets: Vec<_> = attachments.iter().collect();
+        sockets.sort();
+        for (socket, model) in sockets {
+            match claimed.get(socket.as_str()) {
+                Some((first, first_model)) if first_model != model => {
+                    return Err(mount_shape_error(
+                        owner,
+                        format_args!(
+                            "attack weapons `{first}` and `{weapon}` mount different models on socket `{socket}` (`{first_model}`, `{model}`); weapons an NPC's attacks name share a socket only with one model"
+                        ),
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    claimed.insert(socket.as_str(), (weapon, model.as_str()));
+                }
+            }
+        }
+    }
+    Ok(())
+}

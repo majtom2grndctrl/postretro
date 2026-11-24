@@ -497,6 +497,75 @@ mod tests {
         .expect("registry has room for one entity")
     }
 
+    // A connected client composes an NPC's mounted attachments from the same
+    // descriptor and function the host spawns with: nothing about the mounts
+    // crosses the wire, yet both peers hold the same list.
+    #[test]
+    fn a_remote_npc_composes_the_same_mounted_attachments_as_the_host() {
+        use crate::scripting::builtins::data_archetype_test_fixtures::behavior_enemy_descriptor;
+        use crate::scripting::builtins::npc_mounts::compose_attachments;
+        use postretro_entities::data_descriptors::MountDescriptor;
+
+        let mut descriptor = behavior_enemy_descriptor("trooper");
+        descriptor
+            .behavior
+            .as_mut()
+            .unwrap()
+            .attacks
+            .get_mut("claw")
+            .unwrap()
+            .weapon = Some("rifle".to_string());
+        let mesh = descriptor.mesh.as_mut().unwrap();
+        mesh.attachments = HashMap::from([("back".to_string(), "models/sling.gltf".to_string())]);
+        mesh.mounts = Some(vec![MountDescriptor {
+            item: "rifle".to_string(),
+            attachments: Some(HashMap::from([(
+                "hand_r".to_string(),
+                "models/ar_4/trooper.gltf".to_string(),
+            )])),
+            muzzle_socket: None,
+        }]);
+        let host = compose_attachments(&descriptor, descriptor.mesh.as_ref().unwrap());
+        assert_eq!(
+            host,
+            vec![
+                ("back".to_string(), "models/sling.gltf".to_string()),
+                ("hand_r".to_string(), "models/ar_4/trooper.gltf".to_string()),
+            ]
+        );
+
+        let descriptors = vec![descriptor];
+        let mut reg = EntityRegistry::new();
+        let id = spawn_transform_only(&mut reg);
+        materialize_armed_remote_enemy(
+            &RemoteEntityMaterialize {
+                network_id: postretro_net::wire::NetworkId(8),
+                entity_id: id,
+                entity_class: "descriptor:trooper".to_string(),
+                initial_animation_state: None,
+                active_weapon_archetype: None,
+                weapon_attachment_changed: false,
+            },
+            &descriptors,
+            &mut reg,
+            Some(NavAgentParams {
+                radius: 0.4,
+                height: 1.6,
+                step_height: 0.3,
+                max_slope_deg: 45.0,
+            }),
+        );
+
+        let client: Vec<(String, String)> = reg
+            .get_component::<MeshComponent>(id)
+            .expect("the remote NPC renders its descriptor mesh")
+            .attachments
+            .iter()
+            .map(|attachment| (attachment.socket.clone(), attachment.model.clone()))
+            .collect();
+        assert_eq!(client, host);
+    }
+
     // The remote-enemy glue resolves the request's class against the shared descriptor
     // table and attaches its display components without authoritative AI state.
     #[test]

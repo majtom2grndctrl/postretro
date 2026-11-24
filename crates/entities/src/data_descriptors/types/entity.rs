@@ -433,7 +433,8 @@ impl EntityTypeDescriptor {
     /// The checks only the mesh and the behavior together can make, run by
     /// both entity readers once each has parsed its own block: a stance
     /// release that repeats (`passes`) plays a looping state, in its own
-    /// state and every travel variant the mesh declares. A client replays each
+    /// state and every travel variant the mesh declares; and the weapons its
+    /// attacks name may share a mount socket only with one model. A client replays each
     /// pass from the replicated state name alone, which a one-shot cannot do.
     /// A state the mesh does not declare is left to spawn validation's
     /// warning.
@@ -441,7 +442,9 @@ impl EntityTypeDescriptor {
         let (Some(mesh), Some(behavior)) = (self.mesh.as_ref(), self.behavior.as_ref()) else {
             return Ok(());
         };
-        repeating_releases_loop(&behavior.envelope, &mesh.animations)
+        repeating_releases_loop(&behavior.envelope, &mesh.animations)?;
+        let owner = super::mounts::mesh_owner_label(self.canonical_name.as_deref());
+        super::mounts::validate_shared_attack_sockets(&owner, mesh, &behavior.attack_weapons())
     }
 
     /// Whether this descriptor declares a component in the provenance vocabulary.

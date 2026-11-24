@@ -195,6 +195,9 @@ its own bake of each weapon, named `<rig>.gltf` for the character model's folder
 name under `content/dev/models/`. The rifle the Limitator holds is
 `content/dev/models/ar_4/limitator.gltf`; the rifle squads' trooper and warrior
 each have their own bake in that folder, `rodin_sci-fi_trooper_m.gltf` and
-`cyberpunk_warrior_f.gltf`. These NPC bakes mount through `mesh.attachments`,
-not `mounts`, as every weapon an NPC carries still does. A folder whose
+`cyberpunk_warrior_f.gltf`. An NPC mounts every weapon its attacks name
+through `mesh.mounts`, one entry per weapon, and an entry wins over
+`mesh.attachments` on a socket both name. Two attack weapons may share a socket
+only with the same model; different models on one socket fail the load. A rig
+bake for an NPC carries a `muzzle` node at its barrel tip. A folder whose
 raw source lives outside your project, like `ar_4/`, holds bakes only.

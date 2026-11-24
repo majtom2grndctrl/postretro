@@ -347,3 +347,78 @@ fn a_listed_bake_re_exported_without_extras_mount_fails_the_table_check() {
         "{violations:?}"
     );
 }
+
+/// The dev NPCs that carry an AR_4 rifle, each on the bake fitted to its rig.
+const AR_4_NPCS: [&str; 3] = ["limitator", "rifle_trooper", "rifle_warrior"];
+
+fn descriptor_named<'a>(
+    descriptors: &'a [EntityTypeDescriptor],
+    name: &str,
+) -> &'a EntityTypeDescriptor {
+    descriptors
+        .iter()
+        .find(|descriptor| descriptor.canonical_name.as_deref() == Some(name))
+        .unwrap_or_else(|| panic!("the dev mod registers `{name}`"))
+}
+
+// The limitator and the rifle squads mount their rifle through `mesh.mounts`:
+// each composes exactly one `hand_r` attachment, the AR_4 bake named for its
+// own rig, and no dev descriptor names an AR_4 bake as a base attachment.
+#[test]
+fn dev_npcs_compose_one_hand_attachment_naming_their_own_rig_ar_4_bake() {
+    use postretro_sim::scripting::builtins::npc_mounts::compose_attachments;
+
+    let descriptors = dev_descriptors();
+    for name in AR_4_NPCS {
+        let descriptor = descriptor_named(&descriptors, name);
+        let mesh = descriptor.mesh.as_ref().expect("the NPC has a mesh");
+        let rig = mesh
+            .model
+            .split('/')
+            .nth(1)
+            .expect("a rig's model sits in its own folder");
+        assert_eq!(
+            compose_attachments(descriptor, mesh),
+            vec![("hand_r".to_string(), format!("models/ar_4/{rig}.gltf"))],
+            "{name} mounts its own rig's AR_4 bake and nothing else"
+        );
+    }
+    for descriptor in &descriptors {
+        let Some(mesh) = descriptor.mesh.as_ref() else {
+            continue;
+        };
+        for (socket, model) in &mesh.attachments {
+            assert!(
+                !model.starts_with("models/ar_4/"),
+                "{:?} names an AR_4 bake on base socket {socket}; NPCs mount them through mesh.mounts",
+                descriptor.canonical_name
+            );
+        }
+    }
+}
+
+// Each AR_4 bake carries the rigid `muzzle` node at its barrel tip that an
+// NPC's shot origin reads.
+#[test]
+fn every_ar_4_bake_loads_with_a_rigid_muzzle_socket() {
+    use postretro_model::gltf_loader::SocketBinding;
+
+    let folder = content_path(&dev_content_root(), "models/ar_4");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&folder).expect("the AR_4 bake folder exists") {
+        let path = entry.expect("readable entry").path();
+        if path.extension().is_none_or(|ext| ext != "gltf") {
+            continue;
+        }
+        let model = load_model(&path).unwrap_or_else(|error| panic!("{path:?} loads: {error}"));
+        assert!(
+            matches!(
+                model.sockets.get("muzzle"),
+                Some(SocketBinding::RigidRest(_))
+            ),
+            "{path:?} carries a rigid `muzzle` socket"
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 3, "limitator, trooper and warrior bakes");
+}

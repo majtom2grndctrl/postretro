@@ -7,9 +7,11 @@
 // Rifle Pack has no firing clip. The model is baked facing engine +Z (yaw 90)
 // so the AI facing (MESH_FORWARD = +Z) turns his front toward the target.
 //
-// The AR_4 rifle (Quaternius "Modular Sci Fi Guns", CC0) mounts on the `hand_r`
-// socket that mixamo_to_gltf.py tagged on the skeleton, with its grip-relative
-// orientation re-tuned for this skeleton bake so the barrel points forward.
+// The AR_4 rifle (Quaternius "Modular Sci Fi Guns", CC0) mounts through
+// `mesh.mounts` on the `hand_r` socket that mixamo_to_gltf.py tagged on the
+// skeleton, with its grip-relative orientation re-tuned for this skeleton bake
+// so the barrel points forward. Each weapon the attacks name has an entry; both
+// rifles share the one bake, so they may share the socket.
 //
 // In a fight it takes turns with its squad on the `ranged` token. Running a
 // far target down, it stops now and then to sight the rifle and fire one
@@ -24,6 +26,10 @@
 
 import { attackTurnFree, brain, defineAttack, defineEntity, defineStance } from "postretro";
 import { ranged } from "./attack-tokens";
+import { enemyRifleBurstEntity, enemyRifleLongEntity } from "./enemy-rifle";
+
+// The AR_4 bake fitted to this rig's `hand_r`.
+const LIMITATOR_RIFLE = "models/ar_4/limitator.gltf";
 
 // Ranged-combat tuning. Unlike the melee `reference_enemy`, the limitator wants
 // to hold a firing standoff rather than close to contact.
@@ -191,9 +197,10 @@ export const limitatorEntity = defineEntity({
     tolerance: 4,
     mesh: {
       model: "models/limitator/model.gltf",
-      attachments: {
-        hand_r: "models/ar_4/limitator.gltf",
-      },
+      mounts: [
+        { item: enemyRifleBurstEntity, attachments: { hand_r: LIMITATOR_RIFLE } },
+        { item: enemyRifleLongEntity, attachments: { hand_r: LIMITATOR_RIFLE } },
+      ],
       animations: {
         idle: { clip: "idle", loop: true },
         idle_aiming: { clip: "idle_aiming", loop: true },

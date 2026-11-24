@@ -708,12 +708,7 @@ pub(crate) fn descriptor_mesh_component(
     };
     // Descriptor maps are unordered. Give the component a stable attachment
     // order so later presentation collection is deterministic across runs.
-    let mut attachments: Vec<(String, String)> = mesh_desc
-        .attachments
-        .iter()
-        .map(|(socket, model)| (socket.clone(), model.clone()))
-        .collect();
-    attachments.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+    let attachments = super::npc_mounts::compose_attachments(descriptor, mesh_desc);
     Some(
         component
             .with_attachments(attachments)

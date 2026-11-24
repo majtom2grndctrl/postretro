@@ -108,6 +108,16 @@ pub fn check_weapon_mount_tables(descriptors: &[EntityTypeDescriptor], store: &H
                 );
             }
         }
+        // An NPC mounts every weapon its attacks name, whether or not it ever
+        // spawns, so each one the table lacks warns now. A pawn's missing entry
+        // shares the key, so the same text never doubles.
+        if let Some(behavior) = descriptor.behavior.as_ref() {
+            for weapon in behavior.attack_weapons() {
+                if mesh.mount(weapon).is_none() {
+                    warn_missing_weapon_mount_entry(store, character, weapon);
+                }
+            }
+        }
         // A loadout name that resolves to no weapon is never wielded; the
         // spawn-time loadout check already reports it.
         let loadout = descriptor

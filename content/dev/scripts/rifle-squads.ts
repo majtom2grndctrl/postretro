@@ -7,13 +7,15 @@
 // they inherit from the limitator, the directional walks included, bind from
 // `models/clip_libraries/mixamo_rifle/library.gltf` at load.
 //
-// Each carries its own AR_4 bake: a rigid mount is solved against one
-// character's `hand_r` frame, and these rigs differ from the limitator's.
+// Each carries its own AR_4 bake, mounted through `mesh.mounts` for both rifles
+// its attacks name: a rigid mount is solved against one character's `hand_r`
+// frame, and these rigs differ from the limitator's.
 //
 // Map-placeable via `"classname" "rifle_trooper"` / `"rifle_warrior"`.
 
 import { defineEntity } from "postretro";
 import type { EntityTypeDescriptor } from "postretro";
+import { enemyRifleBurstEntity, enemyRifleLongEntity } from "./enemy-rifle";
 import { limitatorEntity } from "./limitator";
 
 export const RIFLE_TROOPERS_FACTION = "rifle.troopers";
@@ -56,7 +58,10 @@ function rifleEnemy(
       mesh: {
         ...limitatorMesh,
         model,
-        attachments: { hand_r: rifle },
+        mounts: [
+          { item: enemyRifleBurstEntity, attachments: { hand_r: rifle } },
+          { item: enemyRifleLongEntity, attachments: { hand_r: rifle } },
+        ],
       },
     },
   });

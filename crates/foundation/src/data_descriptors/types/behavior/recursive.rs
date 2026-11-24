@@ -200,6 +200,23 @@ pub struct BehaviorGraphDescriptor {
     pub ai: BehaviorAiTuning,
 }
 
+impl BehaviorGraphDescriptor {
+    /// The canonical weapon names this graph's attacks name: sorted and
+    /// deduplicated, so every caller sees one deterministic order. Contact
+    /// attacks name none. Attacks live in the root `attacks` map, which nested
+    /// layers resolve against, so one pass over it covers the whole graph.
+    pub fn attack_weapons(&self) -> Vec<&str> {
+        let mut weapons: Vec<&str> = self
+            .attacks
+            .values()
+            .filter_map(|attack| attack.weapon.as_deref())
+            .collect();
+        weapons.sort_unstable();
+        weapons.dedup();
+        weapons
+    }
+}
+
 /// Behavior-root fields the AI tick scheduler reads, on the wire beside the
 /// other root fields. Each serializes only when authored off its default, so
 /// a graph that sets none keeps its bytes.

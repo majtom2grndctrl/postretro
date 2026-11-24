@@ -5176,3 +5176,7 @@ proptest! {
 // same way this file's own tests do — see the `pub(crate) mod determinism_tests`
 // doc comment in `sim/mod.rs`.
 mod e18_task7_tick_ordering;
+
+// E10 npc-weapon-mounts S4: an NPC shot's launch point under frame splits and
+// animation time scales.
+mod npc_muzzle_frame_split;

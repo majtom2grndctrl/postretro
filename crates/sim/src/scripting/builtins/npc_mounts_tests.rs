@@ -388,3 +388,128 @@ fn the_post_sweep_check_is_silent_without_a_table_for_an_unloaded_body_and_for_u
 
     logs.assert_nothing_above(Level::Info);
 }
+
+// S7: a mounted bake takes no hit and blocks nothing. The limitator's body with
+// its AR_4 bake composed onto `hand_r` from the table, and the same NPC with no
+// table: a sweep of shots across its body and its gun, at a shot's radius and
+// at none, strikes the same entity at the same point and zone either way.
+#[test]
+fn hits_on_an_npc_are_identical_with_and_without_its_mount_table() {
+    use postretro_entities::components::health::{HealthComponent, Hitbox};
+    use postretro_entities::components::mesh::{AnimationState, InterruptPolicy};
+    use postretro_entities::{EntityRegistry, Transform};
+
+    use crate::scripting_systems::hit_zones::{ModelLoadWarningOwner, nearest_entity_hit};
+
+    const LIMITATOR: &str = "models/limitator/model.gltf";
+    const LIMITATOR_BAKE: &str = "models/ar_4/limitator.gltf";
+    let content = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../content/dev");
+    let mut store = HitZoneStore::new();
+    for model in [LIMITATOR, LIMITATOR_BAKE] {
+        store.insert_from_load(model, &content, ModelLoadWarningOwner::GameSide);
+        assert!(store.get_by_name(model).is_some(), "{model} loads");
+    }
+    let aiming = store
+        .get_by_name(LIMITATOR)
+        .unwrap()
+        .clips
+        .iter()
+        .position(|clip| clip.name == "idle_aiming");
+    assert!(aiming.is_some(), "fixture: the limitator's aim clip");
+
+    let mut runs = Vec::new();
+    for table in [
+        Some(vec![entry("rifle", &[("hand_r", LIMITATOR_BAKE)])]),
+        None,
+    ] {
+        let mut descriptor = npc(table);
+        let mesh = descriptor.mesh.as_mut().unwrap();
+        mesh.model = LIMITATOR.to_string();
+        mesh.attachments.clear();
+        mesh.animations = HashMap::from([(
+            "idle".to_string(),
+            AnimationState {
+                clip: "idle_aiming".to_string(),
+                looping: true,
+                crossfade_ms: 0.0,
+                interrupt: InterruptPolicy::Smooth,
+                travel_speed: None,
+                max_playback_rate: None,
+                scale_with_speed: true,
+                playback_rate: None,
+                clip_index: aiming,
+            },
+        )]);
+        mesh.default_state = Some("idle".to_string());
+        let component = crate::scripting::builtins::data_archetype::descriptor_mesh_component(
+            &descriptor,
+            None,
+        )
+        .expect("the NPC builds a mesh");
+        let mounted: Vec<(String, String)> = component
+            .attachments
+            .iter()
+            .map(|attachment| (attachment.socket.clone(), attachment.model.clone()))
+            .collect();
+
+        let mut registry = EntityRegistry::new();
+        let npc = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                npc,
+                HealthComponent {
+                    max: 100.0,
+                    current: 100.0,
+                    hitbox: Some(Hitbox {
+                        half_extents: glam::Vec3::new(0.27, 0.91, 0.27),
+                        offset: glam::Vec3::new(0.0, 0.91, 0.0),
+                    }),
+                    death_handled: false,
+                    pending_kill_credit: None,
+                    zone_multipliers: HashMap::new(),
+                    contributor_ledger: Default::default(),
+                },
+            )
+            .unwrap();
+        registry.set_component(npc, component).unwrap();
+
+        // Shots along +X and +Z across the body's height and breadth, where
+        // the bake draws included.
+        let mut hits = Vec::new();
+        for step_y in 0..20 {
+            for step_side in -6..=6 {
+                let y = 0.1 * step_y as f32;
+                let side = 0.1 * step_side as f32;
+                for (origin, direction) in [
+                    (glam::Vec3::new(-3.0, y, side), glam::Vec3::X),
+                    (glam::Vec3::new(side, y, -3.0), glam::Vec3::Z),
+                ] {
+                    for radius in [0.0, 0.15] {
+                        hits.push(nearest_entity_hit(
+                            &registry, &store, 0.5, origin, direction, 6.0, radius,
+                        ));
+                    }
+                }
+            }
+        }
+        runs.push((mounted, hits));
+    }
+    let (with_table, without_table) = (&runs[0], &runs[1]);
+    assert_eq!(
+        with_table.0,
+        vec![("hand_r".to_string(), LIMITATOR_BAKE.to_string())],
+        "fixture: the table mounts the bake"
+    );
+    assert!(
+        without_table.0.is_empty(),
+        "fixture: no table mounts nothing"
+    );
+    assert!(
+        with_table.1.iter().filter(|hit| hit.is_some()).count() > 50,
+        "fixture: the sweep strikes the body"
+    );
+    assert_eq!(
+        with_table.1, without_table.1,
+        "a mounted bake takes no hit and blocks nothing"
+    );
+}

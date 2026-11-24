@@ -1,7 +1,7 @@
 # E10--npc-weapon-mounts — plan of record
 
 mode: resumable
-status: approved
+status: approved (built; results below)
 read at: 0773e4bdb
 
 Source unchanged in `crates/`, `sdk/` since the brief's `dcd60bfb3`; only `content/dev/models/mutant_arm_cannon/` was added. Every symbol cited by Decisions and Path was re-read at `0773e4bdb`.
@@ -27,63 +27,78 @@ Source unchanged in `crates/`, `sdk/` since the brief's `dcd60bfb3`; only `conte
 
 Proof names are the tests the task adds; "both runtimes" means a JS and a Luau case.
 
-| AC | Proof | Status |
-|---|---|---|
-| R1 `weaponMounts` rejects as unknown `mesh` key, entry `weapon` rejects, `mounts`/`item` load | `scripting-core` data-descriptor tests, both runtimes (`mounts_*` in `tests/weapon_mounts.rs` renamed) | achievable as stated |
-| R2 pawn mounts from `mounts` as from `weaponMounts` | existing E21 suites renamed (`netcode` `weapon_mounts_*_tests`, `sim` `weapon_mounts_tests`, `postretro` `weapon_mount_content_tests`) pass unchanged in meaning | achievable as stated |
-| R3 grep gate on `weaponMounts` / `WeaponMountDescriptor` | source-scanning test (`/`-joined paths) over `content/`, `sdk/`, `docs/`, `context/lib/`, `crates/` with the rejection-test allowlist | achievable as stated |
-| M1 limitator and squads mount own AR_4 once on `hand_r`, host and client; no content NPC base-attaches an `ar_4` bake | `postretro` content test over loaded dev descriptors + `netcode` replication harness client case | achievable as stated |
-| M2 NPC mounts attack weapons' entries over base, later wins; unused entry mounts nothing, logs nothing | `sim` composition unit tests + log capture | achievable as stated |
-| M3 different models on one socket reject, naming archetype and socket; same model or different sockets load | descriptor validation tests, both runtimes | achievable as stated |
-| M4 missing entry warns once per level load at install, mounts nothing, eye launch; no table → silent | `sim` install-check test with log capture (exactly-once, placed and unplaced) + AI launch test | achievable as stated |
-| M5 entry socket missing from rig or model unloaded warns as a pawn's, eye launch (NM-3) | `sim` install + launch test, log capture | achievable as stated |
-| M6 no wire field; client mounts match host's from own descriptors | `git diff main -- crates/net crates/netcode/src/**/wire*` empty at preflight + `netcode` replication harness test | achievable as stated |
-| S1 shot from posed bake `muzzle`, moves with pose; limitator and squads below head top; sight reads eye | T1 pose test on real dev models + AI launch test; perception tests unchanged | achievable as stated |
-| S2 burst and long rifles launch from the one shared bake's `muzzle` | AI launch test on the limitator descriptor | achievable as stated |
-| S3 `muzzleSocket` entry loads both runtimes, mounts nothing, launches from body socket and moves with pose | descriptor tests both runtimes + pose test on `mutant_arm_cannon` | achievable as stated |
-| S4 launch point a function of the fire tick across frame splits and time scales; matches bake `muzzle` at clip time | `sim` tick-harness test running one fire tick under two frame splits and dev time scales | achievable as stated |
-| S5 turn + new clip on fire tick: one point for tests and launch (NM-1) | AI ordering test | achievable as stated |
-| S6 pawn fire origin unchanged with/without `mounts`; obstructed pawn muzzle still eye | existing `sim/src/weapon` muzzle tests + one with-table case | achievable as stated |
-| S7 hit tests identical with/without `mounts` | `sim` hit-zone test comparing hits on one NPC with and without its table | achievable as stated |
-| N1 lip within radius of the line whiffs; raised line launches | near-path gate tests on built collision worlds | achievable as stated |
-| N2 tip through wall or closed door whiffs; moved back or door open launches | near-path tests, world and mover cases | achievable as stated |
-| N3 obstacle just inside 2 m whiffs, just past launches and strikes; near target tests whole path | near-path gate tests | achievable as stated |
-| N4 column past near distance mid-burst: later shots launch and strike, none skipped, through eye-grace loss | AI burst test | achievable as stated |
-| N5 no-clip-moment attack held then fires on first clear tick | AI test | achievable as stated |
-| N6 blocked burst shot skipped, spends one shot, re-tests; clear bursts fire every shot | AI burst test reading weapon resources | achievable as stated |
-| N7 skipped last shot restarts cooldown, adds nothing to fired count (NM-11) | AI burst timing test | achievable as stated |
-| N8 low-cover test keeps contact proof, gains meshed projectile twin | `enemy_eye_height_clears_low_cover_but_full_cover_blocks_fire` kept + twin in the new AI test file | achievable as stated |
-| B1 near cover holds every shot: `targetVisible` true, fired 0 | AI test | achievable as stated |
-| B2 held count per whiff and per skipped shot, next-tick visible, scope-relative reset | AI + `brain_scope` tests | achievable as stated |
-| B3 held span counts once; re-count rules; tick-rate independent (NM-7, NM-29) | AI tests at two AI tick rates | achievable as stated |
-| B4 eye failure, missing muzzle, far obstacle, not aiming, flinch leave held unchanged (NM-5, NM-8) | AI tests | achievable as stated |
-| B5 burst outlasting activity counts skipped shot in activity entered (NM-9) | AI test | achievable as stated |
-| B6 dev behavior row on fired-or-held leaves after held and after fired | AI test on a dev-shaped graph | achievable as stated |
-| B7 `targetVisible` doc and `attacksHeldInActivity` typed and documented both runtimes | typedef fixture (`expected.d.ts`, `.d.luau`) + drift guard | achievable as stated |
-| X1 bake without `muzzle` or missing body socket launches from eye; warns once after sweep, loaded models only (NM-4) | `postretro` install test with log capture + AI launch test | achievable as stated |
-| X2 unresolved clip or no-animation activity launches from eye, no warning | AI test with log capture | achievable as stated |
-| X3 low cover that whiffs a muzzle shot: same NPC without bake `muzzle` fires from eye | AI test (twin of N8) | achievable as stated |
-| A1 reaction, no flinch route, attack ready: no launch while drawn; own draw fires from muzzle (NM-2, NM-5, NM-16); flinch route as today (NM-8) | AI tests | achievable as stated |
-| A2 dropped enemy before redraw: nothing launches, held unchanged, even on default state (NM-25) | AI test | achievable as stated |
-| A3 dropped enemy given reaction before redraw (NM-31) | AI test | achievable as stated |
-| A4 earlier NPC's contact-hit reaction after fire decision: not aiming, skip and spend (NM-6) | AI multi-NPC apply test | achievable as stated |
-| A5 same, on a tick own draw lands: aiming; flinch-route stride change: not aiming (NM-28) | AI multi-NPC apply tests | achievable as stated |
-| A6 burst decision before an earlier reaction does not start; fires whole burst later (NM-13) | AI multi-NPC apply test | achievable as stated |
-| A7 reaction drawn on a tick own draw lands: aiming, clip moment on entry fires (NM-16) | AI test | achievable as stated |
-| A8 entry onto shared state under reaction poses at the switch's start time (NM-26) | AI pose-time test | achievable as stated |
-| A9 airborne clip: not aiming, skip and spend; fires after landing (NM-17) | AI knockback test | achievable as stated |
-| A10 airborne before fall delay or no `jump_loop`: aiming on tracked state (NM-30) | AI knockback test | achievable as stated |
-| A11 own switch fails unknown state: no pose, eye, no extra warning | AI test with log capture | achievable as stated |
-| A12 own switch fails under reaction: not aiming until a later own draw (NM-32) | AI test | achievable as stated |
-| A13 interim record clears only on own draw; survives save/restore; no reaction → bursts unchanged | AI test + `ClipClock` serde round trip (`PartialEq` includes the field) | achievable as stated |
-| A14 strafing stride/variant change on due shot fires from newly tracked state (NM-10) | AI test | achievable as stated |
-| L1 entry with both or neither of `attachments`/`muzzleSocket` rejects both runtimes; one loads | descriptor tests both runtimes | achievable as stated |
-| L2 each AR_4 bake carries rigid `muzzle`; `solve-weapon-mount --check` still VERIFIED | `postretro` content test reading each bake's sockets + executor runs `cargo run -p postretro-tool -- solve-weapon-mount … --check` per rig, output recorded here | achievable as stated |
-| U1 Scripting surface example runs as `content/dev` fixture both runtimes, same descriptor | `scripting-core`/`postretro` fixture test loading the TS and Luau files and comparing descriptors | achievable as stated |
-| G1 limitator and troopers' shots leave the barrel through every clip | owner, in-engine | manual |
-| G2 trooper behind chest-high cover never fires into lip or from above head | owner, in-engine | manual |
-| G3 co-op 150 ms RTT: client sees each rifle seated in hand | owner, two-client run | manual |
-| G4 same session: client shots appear to leave drawn barrel; record largest offset | owner, two-client run | manual |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| R1 `weaponMounts` rejects as unknown `mesh` key, entry `weapon` rejects, `mounts`/`item` load | `scripting-core` data-descriptor tests, both runtimes (`mounts_*` in `tests/weapon_mounts.rs` renamed) | achievable as stated | pass — `retired_mount_table_keys_reject_while_the_renamed_table_loads_in_both_runtimes` |
+| R2 pawn mounts from `mounts` as from `weaponMounts` | existing E21 suites renamed (`netcode` `weapon_mounts_*_tests`, `sim` `weapon_mounts_tests`, `postretro` `weapon_mount_content_tests`) pass unchanged in meaning | achievable as stated | pass — E21 suites renamed and green (netcode `weapon_mount` 27) |
+| R3 grep gate on `weaponMounts` / `WeaponMountDescriptor` | source-scanning test (`/`-joined paths) over `content/`, `sdk/`, `docs/`, `context/lib/`, `crates/` with the rejection-test allowlist | achievable as stated | pass — `retired_mount_names_appear_only_in_the_rejection_proof` |
+| M1 limitator and squads mount own AR_4 once on `hand_r`, host and client; no content NPC base-attaches an `ar_4` bake | `postretro` content test over loaded dev descriptors + `netcode` replication harness client case | achievable as stated | pass — `dev_npcs_compose_one_hand_attachment_naming_their_own_rig_ar_4_bake`, `a_remote_npc_composes_the_same_mounted_attachments_as_the_host` |
+| M2 NPC mounts attack weapons' entries over base, later wins; unused entry mounts nothing, logs nothing | `sim` composition unit tests + log capture | achievable as stated | pass — `npc_mounts_tests.rs` composition cases |
+| M3 different models on one socket reject, naming archetype and socket; same model or different sockets load | descriptor validation tests, both runtimes | achievable as stated | pass — `attack_weapons_may_share_a_socket_only_with_one_model_in_both_runtimes` |
+| M4 missing entry warns once per level load at install, mounts nothing, eye launch; no table → silent | `sim` install-check test with log capture (exactly-once, placed and unplaced) + AI launch test | achievable as stated | pass — `npc_mounts_tests.rs` missing-entry cases; launch half `a_weapon_with_no_usable_mount_launches_from_the_eye_without_a_warning` |
+| M5 entry socket missing from rig or model unloaded warns as a pawn's, eye launch (NM-3) | `sim` install + launch test, log capture | achievable as stated | pass — socket-missing and unloaded-bake warnings in `npc_mounts_tests.rs` (no extra muzzle warning asserted); eye launch in the same AI test |
+| M6 no wire field; client mounts match host's from own descriptors | `git diff main -- crates/net crates/netcode/src/**/wire*` empty at preflight + `netcode` replication harness test | achievable as stated | pass — `git diff 0773e4bdb HEAD -- crates/net` empty, no netcode wire record touched; client composition as M1 |
+| S1 shot from posed bake `muzzle`, moves with pose; limitator and squads below head top; sight reads eye | T1 pose test on real dev models + AI launch test; perception tests unchanged | achievable as stated | pass — `a_gunners_clear_burst_leaves_the_posed_bake_muzzle_below_its_head_on_every_shot`, `shipped_rifle_enemies_fire_both_rifles_from_their_one_bakes_muzzle_below_the_head`, `a_soffit_over_a_clear_gun_hides_the_target_and_holds_fire_uncounted` |
+| S2 burst and long rifles launch from the one shared bake's `muzzle` | AI launch test on the limitator descriptor | achievable as stated | pass — `shipped_rifle_enemies_fire_both_rifles_from_their_one_bakes_muzzle_below_the_head` |
+| S3 `muzzleSocket` entry loads both runtimes, mounts nothing, launches from body socket and moves with pose | descriptor tests both runtimes + pose test on `mutant_arm_cannon` | achievable as stated | pass — load: `an_entry_takes_exactly_one_of_attachments_and_muzzle_socket_in_both_runtimes`, `cannon_brute_mounts_no_attachment_and_resolves_its_muzzle_to_the_body_socket`; launch: `a_built_in_cannons_shots_leave_its_posed_body_socket_and_move_with_the_clip` |
+| S4 launch point a function of the fire tick across frame splits and time scales; matches bake `muzzle` at clip time | `sim` tick-harness test running one fire tick under two frame splits and dev time scales | achievable as stated | pass — `npc_shots_launch_from_the_same_posed_muzzle_at_any_frame_split_and_animation_time_scale` |
+| S5 turn + new clip on fire tick: one point for tests and launch (NM-1) | AI ordering test | achievable as stated | pass — `a_gunner_turning_into_a_new_clip_on_its_fire_tick_launches_from_that_ticks_pose`; the near-path half shares the launch's one decision by construction, not a separate assertion |
+| S6 pawn fire origin unchanged with/without `mounts`; obstructed pawn muzzle still eye | existing `sim/src/weapon` muzzle tests + one with-table case | achievable as stated | pass — `fire_origin_and_hits_are_identical_with_and_without_a_weapon_mount_table` |
+| S7 hit tests identical with/without `mounts` | `sim` hit-zone test comparing hits on one NPC with and without its table | achievable as stated | pass — `hits_on_an_npc_are_identical_with_and_without_its_mount_table` |
+| N1 lip within radius of the line whiffs; raised line launches | near-path gate tests on built collision worlds | achievable as stated | pass — `a_lip_within_the_shots_radius_of_its_line_holds_it` |
+| N2 tip through wall or closed door whiffs; moved back or door open launches | near-path tests, world and mover cases | achievable as stated | pass — `a_barrel_tip_through_a_wall_holds_the_shot_until_it_clears`, `a_closed_door_at_the_gun_holds_the_shot_counting_once_until_it_opens` |
+| N3 obstacle just inside 2 m whiffs, just past launches and strikes; near target tests whole path | near-path gate tests | achievable as stated | pass, pending owner ruling — `only_cover_inside_the_near_distance_holds_the_shot`; the leg toward a nearer aim point stops one radius short (`a_surface_beside_a_point_blank_aim_point_does_not_hold_the_shot`), see Owner ruling needed |
+| N4 column past near distance mid-burst: later shots launch and strike, none skipped, through eye-grace loss | AI burst test | achievable as stated | pass — `a_column_past_the_near_distance_takes_the_bursts_later_shots` |
+| N5 no-clip-moment attack held then fires on first clear tick | AI test | achievable as stated | pass — `a_closed_door_at_the_gun_holds_the_shot_counting_once_until_it_opens` |
+| N6 blocked burst shot skipped, spends one shot, re-tests; clear bursts fire every shot | AI burst test reading weapon resources | achievable as stated | pass — `a_burst_skips_each_blocked_shot_spends_it_and_fires_the_clear_ones` |
+| N7 skipped last shot restarts cooldown, adds nothing to fired count (NM-11) | AI burst timing test | achievable as stated | pass — `a_burst_whose_last_shots_are_skipped_starts_the_next_on_the_unobstructed_tick` |
+| N8 low-cover test keeps contact proof, gains meshed projectile twin | `enemy_eye_height_clears_low_cover_but_full_cover_blocks_fire` kept + twin in the new AI test file | achievable as stated | pass — `a_meshed_gunner_behind_low_cover_whiffs_while_lower_walls_take_the_muzzle_shot`; the original eye test kept |
+| B1 near cover holds every shot: `targetVisible` true, fired 0 | AI test | achievable as stated | pass — `a_meshed_gunner_behind_low_cover_whiffs_while_lower_walls_take_the_muzzle_shot` |
+| B2 held count per whiff and per skipped shot, next-tick visible, scope-relative reset | AI + `brain_scope` tests | achievable as stated | pass — `a_burst_skips_each_blocked_shot_spends_it_and_fires_the_clear_ones`, `held_shots_follow_active_scopes_and_reset_on_entry` |
+| B3 held span counts once; re-count rules; tick-rate independent (NM-7, NM-29) | AI tests at two AI tick rates | achievable as stated | pass — `a_closed_door_at_the_gun_holds_the_shot_counting_once_until_it_opens` (60 and 30 Hz), `a_hold_counts_again_per_entered_leaf_while_its_parent_counts_it_once`, `a_selector_offenses_hold_ends_on_its_shot_and_its_next_hold_counts`, `an_enclosing_activity_counts_each_attacks_hold_across_sibling_leaves`, `each_attacks_hold_counts_once_and_ends_only_on_its_own_shot` |
+| B4 eye failure, missing muzzle, far obstacle, not aiming, flinch leave held unchanged (NM-5, NM-8) | AI tests | achievable as stated | pass — `a_soffit_over_a_clear_gun_hides_the_target_and_holds_fire_uncounted`, `a_flinch_behind_blocking_cover_cancels_unspent_and_counts_nothing_held`, `a_column_past_the_near_distance_takes_the_bursts_later_shots`, `a_reaction_without_a_flinch_route_silences_the_gunner_until_its_own_draw` |
+| B5 burst outlasting activity counts skipped shot in activity entered (NM-9) | AI test | achievable as stated | pass — `a_burst_outlasting_its_activity_counts_its_skipped_shot_in_the_activity_entered` |
+| B6 dev behavior row on fired-or-held leaves after held and after fired | AI test on a dev-shaped graph | achievable as stated | pass — `a_fired_or_held_row_leaves_after_a_held_shot_and_after_a_fired_one` |
+| B7 `targetVisible` doc and `attacksHeldInActivity` typed and documented both runtimes | typedef fixture (`expected.d.ts`, `.d.luau`) + drift guard | achievable as stated | pass — typedef fixtures and drift guard (`postretro-sim` typedef 59, surface 38) |
+| X1 bake without `muzzle` or missing body socket launches from eye; warns once after sweep, loaded models only (NM-4) | `postretro` install test with log capture + AI launch test | achievable as stated | pass — `npc_mounts_tests.rs` muzzle warnings (once per level load, loaded models only) |
+| X2 unresolved clip or no-animation activity launches from eye, no warning | AI test with log capture | achievable as stated | pass — `a_gunner_with_no_pose_to_read_fires_from_the_eye_without_a_new_warning` |
+| X3 low cover that whiffs a muzzle shot: same NPC without bake `muzzle` fires from eye | AI test (twin of N8) | achievable as stated | pass — `a_meshed_gunner_behind_low_cover_whiffs_while_lower_walls_take_the_muzzle_shot` |
+| A1 reaction, no flinch route, attack ready: no launch while drawn; own draw fires from muzzle (NM-2, NM-5, NM-16); flinch route as today (NM-8) | AI tests | achievable as stated | pass — `a_reaction_without_a_flinch_route_silences_the_gunner_until_its_own_draw`, `a_reaction_under_a_flinch_route_staggers_as_today` |
+| A2 dropped enemy before redraw: nothing launches, held unchanged, even on default state (NM-25) | AI test | achievable as stated | pass — `a_dropped_gunner_fires_only_once_redrawn_or_after_a_reactions_own_draw`, `a_dropped_gunner_with_a_failed_switch_record_fires_nothing_until_redrawn` |
+| A3 dropped enemy given reaction before redraw (NM-31) | AI test | achievable as stated | pass — `a_dropped_gunner_fires_only_once_redrawn_or_after_a_reactions_own_draw` |
+| A4 earlier NPC's contact-hit reaction after fire decision: not aiming, skip and spend (NM-6) | AI multi-NPC apply test | achievable as stated | pass — `an_earlier_npcs_contact_reaction_mid_burst_skips_unless_an_own_draw_lands` |
+| A5 same, on a tick own draw lands: aiming; flinch-route stride change: not aiming (NM-28) | AI multi-NPC apply tests | achievable as stated | pass — same, and `a_reaction_on_an_entry_tick_is_drawn_over_and_the_entry_fires` |
+| A6 burst decision before an earlier reaction does not start; fires whole burst later (NM-13) | AI multi-NPC apply test | achievable as stated | pass — `a_reaction_without_a_flinch_route_silences_the_gunner_until_its_own_draw`; the turn-grant release is the unchanged `grant_started` path, not separately asserted |
+| A7 reaction drawn on a tick own draw lands: aiming, clip moment on entry fires (NM-16) | AI test | achievable as stated | pass — `a_reaction_on_an_entry_tick_is_drawn_over_and_the_entry_fires` |
+| A8 entry onto shared state under reaction poses at the switch's start time (NM-26) | AI pose-time test | achievable as stated | pass — `a_reaction_without_a_flinch_route_silences_the_gunner_until_its_own_draw`, `an_entry_on_a_pending_redraw_poses_the_shot_at_the_clips_start` |
+| A9 airborne clip: not aiming, skip and spend; fires after landing (NM-17) | AI knockback test | achievable as stated | pass — `a_knocked_back_gunner_fires_until_its_airborne_clip_shows_and_after_landing` |
+| A10 airborne before fall delay or no `jump_loop`: aiming on tracked state (NM-30) | AI knockback test | achievable as stated | pass — same |
+| A11 own switch fails unknown state: no pose, eye, no extra warning | AI test with log capture | achievable as stated | pass — `a_gunner_with_no_pose_to_read_fires_from_the_eye_without_a_new_warning`, `the_tick_an_own_switch_fails_fires_from_the_eye_or_not_at_all_under_a_reaction` |
+| A12 own switch fails under reaction: not aiming until a later own draw (NM-32) | AI test | achievable as stated | pass — `a_failed_own_switch_under_a_reaction_stays_silent_until_an_own_draw` |
+| A13 interim record clears only on own draw; survives save/restore; no reaction → bursts unchanged | AI test + `ClipClock` serde round trip (`PartialEq` includes the field) | achievable as stated | pass — `a_reaction_without_a_flinch_route_silences_the_gunner_until_its_own_draw` (save and restore), `clip_clock_serializes_its_clock_latch_gate_and_switch_count_but_not_its_clip_cache` |
+| A14 strafing stride/variant change on due shot fires from newly tracked state (NM-10) | AI test | achievable as stated | pass — `a_strafing_gunners_own_switch_on_a_due_shot_fires_from_the_new_state` |
+| L1 entry with both or neither of `attachments`/`muzzleSocket` rejects both runtimes; one loads | descriptor tests both runtimes | achievable as stated | pass — `an_entry_takes_exactly_one_of_attachments_and_muzzle_socket_in_both_runtimes` |
+| L2 each AR_4 bake carries rigid `muzzle`; `solve-weapon-mount --check` still VERIFIED | `postretro` content test reading each bake's sockets + executor runs `cargo run -p postretro-tool -- solve-weapon-mount … --check` per rig, output recorded here | achievable as stated | pass as clarified — `every_ar_4_bake_loads_with_a_rigid_muzzle_socket`; `--check`: trooper and warrior VERIFIED, limitator its prior UNVERIFIED (Corrections) |
+| U1 Scripting surface example runs as `content/dev` fixture both runtimes, same descriptor | `scripting-core`/`postretro` fixture test loading the TS and Luau files and comparing descriptors | achievable as stated | pass — `the_mounts_surface_example_lowers_identically_in_both_authorings` |
+| G1 limitator and troopers' shots leave the barrel through every clip | owner, in-engine | manual | outstanding — owner, in-engine |
+| G2 trooper behind chest-high cover never fires into lip or from above head | owner, in-engine | manual | outstanding — owner, in-engine |
+| G3 co-op 150 ms RTT: client sees each rifle seated in hand | owner, two-client run | manual | outstanding — owner, two-client run |
+| G4 same session: client shots appear to leave drawn barrel; record largest offset | owner, two-client run | manual | outstanding — owner, two-client run |
+
+## Owner ruling needed
+- Near-path leg toward a nearer aim point (Decision "Only cover near the gun holds a shot", Acceptance N3). The Decision reads "With the target's aim point nearer, the whole path is tested." Review round 1 found that a surface within the projectile's radius of a point-blank aim point (a lintel just over a player's eye) held every shot while sight saw the target. The build stops that leg one projectile radius short of the aim point, as sight forgives a hit at its aim point (`npc_launch::near_path_blocked`). Round 2 traced it: every obstacle on the line between muzzle and aim point is still caught; only the off-axis band within the last radius, inside the target's own hitbox, is skipped. Proposed wording: "With the target's aim point nearer, the path is tested to one shot radius short of it." Alternative: revert to the full path and accept point-blank holds under low surfaces.
+
+## Review loop
+- Round 1 (8 reviewers): 9 code fixes (charged first shot, burst lost to a withheld switch, point-blank leg, redraw over a failed switch, redraw-tick pose time, failed-switch tick, contact strike ending a hold, several-muzzles warning, long-loop precision) and 11 doc fixes (SDK `mounts` doc, scripting reference NPC section, `targetVisible` docs, reader errors, stale brief pointers). Each code fix has a regression test.
+- Round 2 (2 reviewers): first shot decided on a dry run at its scaled radius, a burst no longer ending another attack's hold, no extra muzzle warning; doc consistency.
+- Rounds 3 and 4 (1 reviewer each): near-path holds keyed by attack (selector-form offense, enclosing depths, two withholds per tick, selector flips).
+- Round 5: no defects; three write-on-change nits taken. Loop ended.
+- Left, with reason: a reaction carried into an activity that draws no animation keeps the enemy silent (interim rule taken literally; the pose brief owns it); NM-24's record re-set after an already-drawn own draw (pose brief); a request naming a weapon that refuses to start still cancels the burst in flight (pre-existing); dev-only hot reload changing both `mesh.mounts` and attacks; pawn and NPC warning prefixes differ (`[Weapon mounts]` vs `[Model]`).
+
+## Final gate (at 05fe343d0)
+- `cargo fmt --check`, `cargo clippy --all-targets -D warnings` (own target dir), `cargo check --release`, `crate-graph --check`, both reducer unittests: pass.
+- `cargo test --workspace --no-fail-fast`: 17971 passed, 161 ignored, 3 failed, none in code this branch touches: `xtask` `mover_shot_gates::static_only_worlds_stay_in_sites_that_never_fire` and `static_line_of_sight_remains_only_in_host_hit_validation` (Windows backslash paths against `/`-joined allowlists, files unchanged here) and `postretro-renderer` `smooth_specular_matches_the_frozen_pre_change_function` (a few float ULPs on the GTX 1660 Super; no renderer change). Not rerun on `main` to confirm.
+- GPU-gated and dev-tools-feature tests were not part of this run; the branch touches no feature-gated code.
 
 ## Tasks
 

@@ -116,7 +116,8 @@ From a project root:\n\
 {BIN_DIR}/{tool} dist\n\
 ```\n\
 \n\
-It bakes every level the mod's entry script names in its `maps` catalog,\n\
+It bakes every level the mod's entry script names in its `maps` catalog —\n\
+there must be at least one, so the empty starter cannot ship as it is —\n\
 assembles a payload under `dist/<name>/`, and writes a launcher beside the\n\
 release engine. No cargo, no repository, no toolchain — the tool runs the\n\
 binaries already in `{BIN_DIR}/`. See `docs/distribution.md`.\n\

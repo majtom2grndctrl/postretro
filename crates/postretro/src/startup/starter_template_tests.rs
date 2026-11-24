@@ -2,8 +2,8 @@
 // `sdk-dist` compiles and publishes at `content/base`. It is the only mod a
 // bundle ships, and `postretro-tool run` from the bundle root boots it, so it
 // must bundle and initialize as a mod manifest exactly as boot runs it —
-// durable-identity enforcement included, since a bundle carries no ledger for
-// it.
+// durable-identity enforcement included, since the starter ships no
+// `identity.json`.
 // See: context/lib/build_pipeline.md §Distribution packaging (§SDK bundle)
 
 use std::path::Path;

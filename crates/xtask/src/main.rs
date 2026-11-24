@@ -410,7 +410,7 @@ fn print_help() {
                                 authoring engine (debug + dev-tools), the release engine,\n\
                                 the compilers, postretro-tool itself, sdk/docs/tools/core,\n\
                                 and an empty starter mod. It ships no game content;\n\
-                                content/dev never leaves the repository\n\n\
+                                content/dev ships in no bundle\n\n\
          CONTENT TOOLING:\n\
            Authoring runs, asset bakes, and the weapon-mount solver live in\n\
            `postretro-tool`, which needs no cargo and ships inside the SDK bundle:\n\

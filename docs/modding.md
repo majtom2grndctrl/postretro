@@ -205,6 +205,9 @@ bin/postretro-tool dist
 That is the whole command. No repository, no toolchain — the tool runs the
 binaries already sitting in the bundle's `bin/`.
 
+It ships the levels your mod's `maps` catalog names, so a mod with none — the
+starter as it arrives — is refused.
+
 **Name the package first.** A project's `[package].name` is where its players'
 settings and saves live. If you built from the starter, change `postretro-sdk` in
 `postretro.toml` to your game's own name before your first release: renaming it

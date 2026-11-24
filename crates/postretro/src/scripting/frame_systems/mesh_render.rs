@@ -14,7 +14,7 @@ use postretro_model::sample_params::MeshSampleParams;
 use postretro_render_cpu::mesh_instances::{
     MeshInstanceInput, MeshPaletteCacheKey, MeshPresentation, MirrorReach,
 };
-use postretro_render_cpu::mesh_pass::mesh_visible_in_cell;
+use postretro_render_cpu::mesh_pass::{mesh_cull_point, mesh_visible_in_cell};
 use postretro_render_data::cone_frustum::Aabb;
 use postretro_render_data::influence::LightInfluence;
 use postretro_visibility::VisibleCells;
@@ -140,7 +140,7 @@ struct CullViews<'a> {
 
 impl CullViews<'_> {
     /// Whether the main view's cells, and the mirror's when `with_mirror`,
-    /// hold `position`. One cell-locator descent serves both views, and none
+    /// hold `position`, a model's `mesh_pass::mesh_cull_point`. One cell-locator descent serves both views, and none
     /// runs when neither tested view culls by cell.
     fn reach(&self, world: &LevelWorld, position: glam::Vec3, with_mirror: bool) -> (bool, bool) {
         let mirror = self.mirror.filter(|_| with_mirror);
@@ -188,7 +188,8 @@ impl MeshRenderCollector {
     /// entity: read-borrows its `MeshComponent` (the model handle + optional
     /// animation state) and its `Transform`. The cull tests the entity's
     /// **current-tick** rendered model origin (`Transform.position +
-    /// MeshComponent.origin_offset`) via the pure `mesh_pass` cell cull;
+    /// MeshComponent.origin_offset`), lifted off the floor its feet stand on
+    /// (`mesh_pass::mesh_cull_point`), via the pure `mesh_pass` cell cull;
     /// survivors emit their **interpolated** transform (the registry's
     /// interpolated-transform accessor at the frame `alpha`, the same alpha the
     /// player camera reads from `frame_timing`) plus that same origin offset so
@@ -342,18 +343,19 @@ impl MeshRenderCollector {
                 continue;
             };
             let current_model_position = current.position + mesh.origin_offset;
-            // A shadow-only body never draws in the main view's colour, but the
-            // planar mirror reflects it like any world mesh.
-            let (portal_visible, mirror_visible) = views.reach(world, current_model_position, true);
-            let forward_visible = portal_visible && !mesh.shadow_only;
-            let dynamic_shadow_visible = portal_visible || mesh.shadow_only;
-            let handle = ModelHandle::from(mesh.model.clone());
             let current_presentation_rotation = mesh.presentation_rotation(current.rotation);
             let current_model_transform = glam::Mat4::from_scale_rotation_translation(
                 current.scale,
                 current_presentation_rotation,
                 current_model_position,
             );
+            // A shadow-only body never draws in the main view's colour, but the
+            // planar mirror reflects it like any world mesh.
+            let (portal_visible, mirror_visible) =
+                views.reach(world, mesh_cull_point(&current_model_transform), true);
+            let forward_visible = portal_visible && !mesh.shadow_only;
+            let dynamic_shadow_visible = portal_visible || mesh.shadow_only;
+            let handle = ModelHandle::from(mesh.model.clone());
             let current_model_bounds = tables
                 .model_bounds(&handle)
                 .transformed(&current_model_transform);
@@ -1027,8 +1029,9 @@ mod tests {
     fn crouched_player_mesh_stays_in_the_visible_cell_above_its_floor() {
         // Regression: crouch shrinks a player's capsule with the feet planted,
         // lowering the centre its transform tracks. With the standing
-        // centre-to-feet offset the model origin, which is also the cull point,
-        // sank below the floor into the cell beneath, so the pawn vanished. The
+        // centre-to-feet offset the model origin, which the cull point rides
+        // just above, sank below the floor into the cell beneath, so the pawn
+        // vanished. The
         // live-capsule offset keeps it on the floor of its visible room.
         use postretro_entities::components::mesh::player_capsule_feet_origin_offset;
         let (radius, standing, crouched) = (0.2, 0.8, 0.4);
@@ -1075,6 +1078,51 @@ mod tests {
         assert!(
             feet.abs() < 1e-5,
             "crouched model origin sits on the floor, got {feet}"
+        );
+    }
+
+    #[test]
+    fn prop_with_origin_on_a_downward_facing_floor_plane_draws_in_the_room_above() {
+        // Regression: a model authored feet-at-origin and placed on a floor has
+        // its origin exactly on the floor plane. prl-build often splits there on
+        // a wall brush's bottom face, whose normal points down, and the locator
+        // sends an on-plane point to the front child: the solid beneath. Culled
+        // at its bare origin, every prop standing on such a floor vanished.
+        use postretro_render_cpu::mesh_pass::MESH_CULL_LIFT;
+        let mut world = two_cell_world_split_at_x_zero();
+        // Cell 1 is the room above the floor at y = 0; cell 0, the front of the
+        // downward-facing splitter, is the solid beneath it.
+        world.cell_locator_nodes[0].plane_normal = Vec3::NEG_Y;
+        world.cells[0].is_solid = true;
+        let room = VisibleCells::Culled(vec![1]);
+        assert_eq!(
+            world.locate_cell(Vec3::ZERO),
+            0,
+            "the tie lands in the solid"
+        );
+        let drawn = |origin: Vec3| {
+            let mut registry = EntityRegistry::new();
+            let mut collector = MeshRenderCollector::new();
+            spawn_mesh(&mut registry, "prop", origin);
+            collector.collect(
+                &registry,
+                &world,
+                &room,
+                1.0,
+                0.0,
+                &MeshClipTables::new(),
+                Vec3::ZERO,
+            );
+            collector
+                .instances()
+                .iter()
+                .any(|instance| instance.forward_visible)
+        };
+
+        assert!(drawn(Vec3::ZERO), "a prop standing on the floor draws");
+        assert!(
+            !drawn(Vec3::new(0.0, -2.0 * MESH_CULL_LIFT, 0.0)),
+            "a prop sunk past the lift stays culled in the solid beneath",
         );
     }
 

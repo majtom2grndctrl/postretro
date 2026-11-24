@@ -19,7 +19,7 @@ use postretro_render_cpu::ghost_transparency::GhostTransparency;
 use postretro_render_cpu::mesh_instances::{
     MeshInstanceInput, MeshPaletteCacheKey, MeshPresentation, MirrorReach,
 };
-use postretro_render_cpu::mesh_pass::mesh_visible;
+use postretro_render_cpu::mesh_pass::{mesh_cull_point, mesh_visible};
 use postretro_visibility::VisibleCells;
 
 use super::attachments::{self, SocketPoseResolver};
@@ -73,8 +73,9 @@ pub(crate) fn presented_body_look(
 #[derive(Debug, Default)]
 struct GhostGroup {
     instances: Vec<MeshInstanceInput>,
-    /// The holder's mapped model origin: where the ghost culls.
-    mapped_origin: Vec3,
+    /// The holder's mapped model cull point (`mesh_pass::mesh_cull_point`):
+    /// where the ghost culls.
+    mapped_cull_point: Vec3,
     /// Still a ghost this frame; groups of departed ghosts are dropped.
     seen: bool,
 }
@@ -169,7 +170,7 @@ impl GhostRenderCollector {
             // limiter judges the source's presented value, not its framing.
             let ghost_look = presented_look(&mut self.clamp, member);
             if ghost_look.opacity <= 0.0
-                || !mesh_visible(frame.world, frame.visible, group.mapped_origin)
+                || !mesh_visible(frame.world, frame.visible, group.mapped_cull_point)
             {
                 continue;
             }
@@ -290,7 +291,7 @@ impl GhostRenderCollector {
             instance.transform = mapping * instance.transform;
             instance.palette_cache_key = instance.palette_cache_key.ghost_through(member.link);
         }
-        group.mapped_origin = group.instances[0].transform.w_axis.truncate();
+        group.mapped_cull_point = mesh_cull_point(&group.instances[0].transform);
 
         // The real draw's time-slicing policy, by the ghost's own distance.
         let force = state_changed
@@ -298,7 +299,11 @@ impl GhostRenderCollector {
             || capture.is_some()
             || has_skinned_attachment
             || (frame.force_resample_model)(&handle);
-        let distance = group.mapped_origin.distance(frame.camera_pos);
+        let distance = group.instances[0]
+            .transform
+            .w_axis
+            .truncate()
+            .distance(frame.camera_pos);
         group.instances[0].resample = should_resample(distance, *frame_index, seed, force);
     }
 }

@@ -253,6 +253,45 @@ fn ghost_draws_when_its_mapped_cell_is_visible_whatever_the_real_cell() {
     }
 }
 
+/// A ghost standing on the mapped copy's floor culls above it, as the real
+/// draw does: its mapped origin lies on the floor plane, which a downward-facing
+/// splitter would hand to the solid beneath (here, the real copy's cell).
+#[test]
+fn ghost_on_a_downward_facing_floor_plane_draws_in_the_mapped_room() {
+    let mut registry = EntityRegistry::new();
+    let pawn = spawn_pawn(&mut registry, SOURCE);
+    let mut fixture = Fixture::new();
+    fixture.world.cell_locator_nodes[0] = CellLocatorNodeData {
+        plane_normal: Vec3::NEG_Y,
+        plane_distance: 0.0,
+        front: CellLocatorChild::Cell(REAL_CELL),
+        back: CellLocatorChild::Cell(MAPPED_CELL),
+    };
+    let members = [member(pawn, 1.0, false)];
+    assert_eq!(
+        members[0].mapped.position.y, 0.0,
+        "fixture: feet on the floor"
+    );
+    assert_eq!(
+        fixture.world.locate_cell(members[0].mapped.position),
+        REAL_CELL,
+        "fixture: the bare origin ties into the cell beneath"
+    );
+
+    fixture.collect_with(
+        &registry,
+        &members,
+        &VisibleCells::Culled(vec![MAPPED_CELL as u32]),
+        |_| STYLE,
+        None,
+    );
+    assert_eq!(
+        fixture.collector.instances().len(),
+        2,
+        "holder and weapon draw"
+    );
+}
+
 #[test]
 fn pawn_ghost_group_carries_its_weapon_attachment_at_the_mapped_transform() {
     let mut registry = EntityRegistry::new();

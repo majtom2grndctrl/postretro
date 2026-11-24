@@ -50,7 +50,7 @@ fn is_build_output(path: &Path) -> bool {
     path.extension().is_some_and(|ext| ext == "js") && path.with_extension("ts").is_file()
 }
 
-fn collect(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
+fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -61,7 +61,7 @@ fn collect(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
             if name == "target" || name == "node_modules" || name == ".git" {
                 continue;
             }
-            collect(root, &path, out);
+            collect(&path, out);
         } else if path
             .extension()
             .and_then(|ext| ext.to_str())
@@ -79,7 +79,7 @@ fn retired_mount_names_appear_only_in_the_rejection_proof() {
     let (key, type_name) = (retired_key(), retired_type());
     let mut files = Vec::new();
     for tree in ROOTS {
-        collect(&root, &root.join(tree), &mut files);
+        collect(&root.join(tree), &mut files);
     }
     assert!(
         files.len() > 100,

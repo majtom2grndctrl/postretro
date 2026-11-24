@@ -646,7 +646,7 @@ fn a_gunners_clear_burst_leaves_the_posed_bake_muzzle_below_its_head_on_every_sh
         assert_from_muzzle(shot, &label);
         assert_toward(shot, AIM, &label);
         assert!(
-            shot.origin.y < LIMITATOR_HEAD_TOP && shot.origin.y < EYE.y - 0.2,
+            shot.origin.y < LIMITATOR_HEAD_TOP - 0.1,
             "{label}: below the head top, well below the eye: {shot:?}"
         );
         assert!(

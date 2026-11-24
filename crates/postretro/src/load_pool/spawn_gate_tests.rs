@@ -16,6 +16,7 @@ const LOAD_STAGE_MODULES: &[&str] = &[
     "level_load/model_key.rs",
     "level_load/model_prediction.rs",
     "level_load/model_tests.rs",
+    "level_load/mount_rename_gate_tests.rs",
     "level_load/oracle_tests.rs",
     "level_load/products.rs",
     "level_load/sound_tests.rs",

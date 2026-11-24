@@ -433,15 +433,15 @@ fn every_mover_pipeline_selection_reads_the_per_frame_specular_style_snapshot() 
         callers,
         [
             "render/planar_reflection/record.rs",
-            "render/renderer_render_frame.rs"
+            "render/renderer_dynamic_frame.rs"
         ],
         "every mover beauty record is pinned below"
     );
     let squashed = |text: &str| -> String { text.split_whitespace().collect() };
     for (file, source, receiver, snapshot) in [
         (
-            "renderer_render_frame.rs",
-            include_str!("renderer_render_frame.rs"),
+            "renderer_dynamic_frame.rs",
+            include_str!("renderer_dynamic_frame.rs"),
             "self.full().kinematic_brush.record_draws(",
             "self.full().frame_specular_style,",
         ),

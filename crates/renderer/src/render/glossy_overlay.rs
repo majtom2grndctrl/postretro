@@ -24,7 +24,7 @@ use postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle;
 use postretro_render_cpu::frame_uniforms::LightTermMask;
 
 use super::kinematic_brush::KinematicBrushPass;
-use super::renderer_init_pipelines::ForwardStaticDiffusePipelines;
+use super::forward_pipelines::ForwardStaticDiffusePipelines;
 use crate::compute_cull::{ComputeCullPipeline, SetTextureFn};
 use pipeline::overlay_pipeline;
 

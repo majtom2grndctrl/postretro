@@ -21,6 +21,7 @@ mod fluid_reflection_probes;
 mod fluid_scene_inputs;
 mod fluid_surface;
 mod fog_pass;
+mod forward_pipelines;
 mod frame_timing;
 mod ghost_depth;
 mod ghost_order;
@@ -189,6 +190,7 @@ mod pipeline_layout;
 mod renderer_capture;
 mod renderer_debug_ui;
 mod renderer_diagnostics;
+mod renderer_dynamic_frame;
 mod renderer_dynamic_shadow_passes;
 mod renderer_extent;
 mod renderer_fluid_frame;
@@ -403,6 +405,7 @@ pub use sh_volume::DeltaVolumeMeta;
 
 // Internal init/render helpers used by the `impl Renderer` files via `use super::*`.
 use renderer_full_init::*;
+use forward_pipelines::*;
 use renderer_init_pipelines::*;
 use renderer_init_resources::*;
 

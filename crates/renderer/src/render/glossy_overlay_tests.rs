@@ -457,7 +457,7 @@ fn forward_entries_share_shading_and_only_the_static_diffuse_entry_writes_it() {
 // cannot undershoot (`static_diffuse_format`).
 #[test]
 fn static_diffuse_takes_the_scene_colours_format() {
-    use crate::render::renderer_init_pipelines::static_diffuse_format;
+    use crate::render::forward_pipelines::static_diffuse_format;
     assert_eq!(static_diffuse_format(), SCENE_COLOR_FORMAT);
     assert_eq!(static_diffuse_format(), wgpu::TextureFormat::Rgba16Float);
     assert_eq!(
@@ -502,7 +502,7 @@ fn overlay_records_after_the_skinned_mesh_pass_and_before_the_ghost_pass() {
     let order = [
         at("self.record_reflection_probe_sums("),
         at("self.record_world_forward_pass("),
-        at("label:Some(\"SkinnedMeshPass\")"),
+        at("self.record_skinned_mesh_pass("),
         at("self.record_glossy_overlay_pass("),
         at("label:Some(\"GhostPass\")"),
         at("self.record_planar_reflection_pass("),
@@ -512,7 +512,7 @@ fn overlay_records_after_the_skinned_mesh_pass_and_before_the_ghost_pass() {
         at("label:Some(\"FogCompositePass\")"),
     ];
     assert!(order.is_sorted(), "{order:?}");
-    assert!(at("label:Some(\"KinematicBrushPass\")") < at("self.record_glossy_overlay_pass("));
+    assert!(at("self.record_mover_pass(") < at("self.record_skinned_mesh_pass("));
     assert_eq!(frame.matches("self.record_glossy_overlay_pass(").count(), 1);
     let glossy = squashed(include_str!("renderer_glossy_frame.rs"));
     let guard = glossy

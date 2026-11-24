@@ -1043,7 +1043,10 @@ fn each_beauty_pipeline_builds_its_styles_entry_and_reports_the_style_it_selecte
         );
     }
     let squashed = |text: &str| -> String { text.split_whitespace().collect() };
-    let pass = squashed(include_str!("kinematic_brush.rs"));
+    let pass = squashed(concat!(
+        include_str!("kinematic_brush.rs"),
+        include_str!("kinematic_brush/beauty.rs")
+    ));
     for pin in [
         // Creation: each style's pipeline takes that style's entry.
         "pixel:build(SpecularStyle::Pixel),smooth:build(SpecularStyle::Smooth),",
@@ -1056,7 +1059,7 @@ fn each_beauty_pipeline_builds_its_styles_entry_and_reports_the_style_it_selecte
         assert_eq!(
             pass.matches(pin).count(),
             1,
-            "kinematic_brush.rs pins {pin}"
+            "kinematic_brush.rs and beauty.rs pin {pin}"
         );
     }
     let record = pass

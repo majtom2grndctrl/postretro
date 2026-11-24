@@ -9,6 +9,8 @@ use postretro_render_cpu::planar_reflection::aabb_in_planes;
 use postretro_render_data::cone_frustum::Aabb;
 
 use super::*;
+pub(crate) use beauty::beauty_fragment_entry;
+use beauty::{MoverBeautyPipelines, beauty_pipeline};
 
 const INSTANCE_ENTRY_SIZE: usize = 64;
 const KINEMATIC_LIGHT_PARAMS_SIZE: usize = 32;
@@ -98,32 +100,6 @@ pub(crate) struct KinematicBrushPass {
     /// tests read to prove which pipeline drew.
     #[cfg(test)]
     bound_styles: std::sync::Mutex<Vec<(MoverViewKind, SpecularStyle)>>,
-}
-
-/// The mover beauty pipelines, one per specular style.
-struct MoverBeautyPipelines {
-    pixel: wgpu::RenderPipeline,
-    smooth: wgpu::RenderPipeline,
-}
-
-impl MoverBeautyPipelines {
-    fn for_style(&self, style: SpecularStyle) -> &wgpu::RenderPipeline {
-        match style {
-            SpecularStyle::Pixel => &self.pixel,
-            SpecularStyle::Smooth => &self.smooth,
-        }
-    }
-}
-
-/// The fragment entry each style's beauty pipeline is built with. Both share
-/// one module, its vertex entry and its bindings; each compiles only its own
-/// style's light loop, which keeps each under the register cliff
-/// (rendering_pipeline.md §7.3, Mover register cliff).
-pub(crate) const fn beauty_fragment_entry(style: SpecularStyle) -> &'static str {
-    match style {
-        SpecularStyle::Pixel => "fs_pixel",
-        SpecularStyle::Smooth => "fs_smooth",
-    }
 }
 
 /// One level's mover geometry, its lookups, and the group-2 light bind
@@ -1079,53 +1055,6 @@ impl KinematicBrushPass {
     }
 }
 
-/// `style`'s beauty pipeline. Colour draws test `Equal` against the depth
-/// `vs_depth` wrote in the depth pre-pass and write none, so each mover pixel
-/// shades once.
-fn beauty_pipeline(
-    device: &wgpu::Device,
-    layout: &wgpu::PipelineLayout,
-    shader: &wgpu::ShaderModule,
-    depth_format: wgpu::TextureFormat,
-    style: SpecularStyle,
-) -> wgpu::RenderPipeline {
-    let label = match style {
-        SpecularStyle::Pixel => "Kinematic Brush Pipeline (pixel)",
-        SpecularStyle::Smooth => "Kinematic Brush Pipeline (smooth)",
-    };
-    device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some(label),
-        layout: Some(layout),
-        vertex: wgpu::VertexState {
-            module: shader,
-            entry_point: Some("vs_main"),
-            buffers: &[Some(mover_vertex_layout())],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        },
-        primitive: mover_primitive_state(),
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: depth_format,
-            depth_write_enabled: Some(false),
-            depth_compare: Some(wgpu::CompareFunction::Equal),
-            stencil: wgpu::StencilState::default(),
-            bias: wgpu::DepthBiasState::default(),
-        }),
-        multisample: wgpu::MultisampleState::default(),
-        fragment: Some(wgpu::FragmentState {
-            module: shader,
-            entry_point: Some(beauty_fragment_entry(style)),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: SCENE_COLOR_FORMAT,
-                blend: None,
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        }),
-        multiview_mask: None,
-        cache: None,
-    })
-}
-
 #[cfg(test)]
 impl MoverView {
     fn kind(self) -> MoverViewKind {
@@ -1162,6 +1091,7 @@ fn mover_reaches_mirror(
     aabb_in_planes(world.min, world.max, cull_planes) && normal.dot(top) + clip_plane.w >= 0.0
 }
 
+mod beauty;
 mod coverage;
 
 #[cfg(test)]

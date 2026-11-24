@@ -745,8 +745,10 @@ fn renderer_threads_frame_indirect_scale_into_dynamic_receiver_uploads() {
         .find("indirect_scale: full.frame_indirect_scale,")
         .expect("world/fluid group 0 must use that frame snapshot");
     assert!(snapshot < upload, "capture scale before uploading group 0");
-    let source = include_str!("../renderer_render_frame.rs");
-    for receiver in ["mesh_pass", "kinematic_brush"] {
+    for (receiver, source) in [
+        ("mesh_pass", include_str!("../renderer_render_frame.rs")),
+        ("kinematic_brush", include_str!("../renderer_dynamic_frame.rs")),
+    ] {
         let anchor = format!("{receiver}.write_light_params(");
         let args = source
             .split(&anchor)

@@ -5686,7 +5686,7 @@ fn the_sums_pass_records_after_the_flush_and_before_the_fluid_pass() {
         .find("self.record_world_forward_pass(")
         .expect("world forward");
     let skinned = scene
-        .find("label:Some(\"SkinnedMeshPass\")")
+        .find("self.record_skinned_mesh_pass(")
         .expect("skinned-mesh pass");
     let fluid = scene
         .find("label:Some(\"FluidSurfacePass\")")

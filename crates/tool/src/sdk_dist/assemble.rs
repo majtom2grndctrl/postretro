@@ -134,8 +134,8 @@ fn install_binaries(bundle_root: &Path, binaries: &BundleBinaries) -> Result<(),
     )?;
     // The debug engine's TS auto-compile and hot reload shell out to
     // `scripts-build`, which it looks for beside its own executable or on PATH
-    // (`crates/scripting-core/src/watcher.rs`) — not under `bin/`. Flow B of the
-    // README promises that loop, so the compiler ships at the root too. `bin/`
+    // (`crates/scripting-core/src/watcher.rs`) — not under `bin/`. The README's
+    // authoring steps promise that loop, so the compiler ships at the root too. `bin/`
     // keeps its copy: that is the path the docs give for a manual compile, and
     // the one the tool's own sibling search finds.
     copy_binary(
@@ -262,8 +262,8 @@ fn copy_bundle_tree_inner(
 ///
 /// Always drops build caches, `maps/autosave/`, any `.git*` entry, `.DS_Store`,
 /// and compiler scratch a killed bake left behind. When `skip_stale_outputs` is
-/// set, also drops committed generated `.prl`/`.js` (fresh ones are produced
-/// during the run).
+/// set (the starter tree), also drops committed generated `.prl`/`.js`: stage 2
+/// supplies the fresh `.js`, and the bundle ships no `.prl`.
 fn should_skip_bundle_entry(
     name: &str,
     parent_name: Option<&str>,
@@ -552,9 +552,8 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// The bundle ships no game content. A second mod or a baked tree is the
-    /// shape the previous, content-complete bundle had, so either one means a
-    /// change reintroduced it.
+    /// The bundle ships no game content, so a second mod or a baked tree means
+    /// content reached it.
     #[test]
     fn sweep_refuses_game_content_beside_the_starter() {
         let root = unique_temp_dir();

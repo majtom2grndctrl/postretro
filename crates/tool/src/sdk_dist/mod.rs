@@ -9,7 +9,7 @@
 //! workspace's `content/dev` is an engine-developer fixture and never enters a
 //! bundle.
 //!
-//! The bundle root is still a project, so the tool works on arrival: it
+//! The bundle root is a project, so the tool works on arrival: it
 //! carries a generated `postretro.toml` and an empty starter mod at
 //! `content/base`, copied from `sdk/templates/starter/` with its entry script
 //! compiled beside it. The starter declares no levels, so the bundle bakes

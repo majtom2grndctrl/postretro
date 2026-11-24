@@ -333,6 +333,9 @@ def run_one(label, arm, round_i, args, trace_dir, flags):
             x = subprocess.Popen(cmd, cwd=ROOT, env=engine_env(), stdout=sf, stderr=subprocess.STDOUT)
             report_seen = interrupted = None
             timeout = float(os.environ.get("RECORD_TIMEOUT", "1200"))
+            # Seconds xctrace may keep saving after the engine's report appears
+            # (XCTRACE_GRACE, default 180) before it is interrupted.
+            grace = float(os.environ.get("XCTRACE_GRACE", "180"))
             # Watchdog: xctrace record can hang after the target exits and stall
             # a batch (rendering_pipeline.md section 12).
             while x.poll() is None:
@@ -340,8 +343,8 @@ def run_one(label, arm, round_i, args, trace_dir, flags):
                 if report_seen is None and report.exists():
                     report_seen = now
                     sampling.clear()  # the timed span is over; setup and finalize are not clock-relevant
-                if report_seen and interrupted is None and now - report_seen > 180:
-                    record["problems"].append("xctrace still running 180 s after the engine finished; interrupted")
+                if report_seen and interrupted is None and now - report_seen > grace:
+                    record["problems"].append(f"xctrace still running {grace:.0f} s after the engine finished; interrupted")
                     x.send_signal(signal.SIGINT)
                     interrupted = now
                 if interrupted and now - interrupted > 180:

@@ -631,9 +631,10 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// The starter is what lets `bin/postretro-tool run` boot on arrival: the
-    /// engine loads the emitted `.js`, and the author edits the `.ts` against
-    /// the `tsconfig.json`.
+    /// The starter is what lets `bin/postretro-tool run` boot on arrival. The
+    /// author edits the `.ts` against the `tsconfig.json`; the shipped `.js` is
+    /// what `bin/postretro-release` loads, since a release engine compiles no
+    /// TypeScript.
     #[test]
     fn sweep_requires_the_whole_starter_mod() {
         for name in ["start-script.ts", "start-script.js", "tsconfig.json"] {

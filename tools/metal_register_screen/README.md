@@ -94,3 +94,36 @@ mover's stream when present.
 | live lighting from per-probe sums | `fs_main_reflecting` | 72 | 98 |
 | same source, per-fragment ratio (the per-fragment oracle) | `fs_main_reflecting_per_fragment` | 72 | 102 |
 | same | `fs_main` | 55 | 100 |
+
+## Glossy overlay entries
+
+```bash
+tools/metal_register_screen/screen_glossy.sh <out dir> [fragment entry...]
+```
+
+Screens the glossy world overlay's fragment entries, `fs_pixel` and
+`fs_smooth` by default; the march-free `fs_pixel_flat` and `fs_smooth_flat`
+are named explicitly. The capture test
+`glossy_overlay_msl_capture_for_the_register_screen` builds every fragment
+entry of the overlay's source over the production layout entries and
+pipeline constructor, and writes `vertex_layout`, the overlay's world vertex
+and probe streams. With `POSTRETRO_REGISTER_SCREEN_SOURCE` set to a WGSL file,
+it screens that source instead, with no rebuild: an older overlay composed
+from `git show <rev>:<shader>` in the order `GLOSSY_OVERLAY_SHADER_SOURCE`
+names, or an ablation. Under wave32 the VGPR granule is 8 of 1024, so 64 or
+fewer hold 16 waves per SIMD, 72 hold 14, 88 hold 11 and 96 hold 10.
+
+| Build | Entry | VGPRs | SGPRs |
+|---|---|---|---|
+| 25a74b0d1, before Task 10: one `fs_main` | `fs_main` | 48 | 64 |
+| 41ba36d8c, Task 10: the march, normal map, hemisphere axis, guard, texel point | `fs_pixel` | 96 | 80 |
+| same | `fs_smooth` | 83 | 78 |
+| per-form pipelines: `fs_pixel` / `fs_smooth` march and sample the normal map (materials that can march) | `fs_pixel` | 95 | 80 |
+| same | `fs_smooth` | 84 | 78 |
+| same, march-free (materials that never march, own normal map) | `fs_pixel_flat` | 62 | 64 |
+| same | `fs_smooth_flat` | 61 | 64 |
+| same, march-free with the neutral normal placeholder's one texel loaded | `fs_pixel_plain` | 63 | 64 |
+| same | `fs_smooth_plain` | 61 | 64 |
+
+The march-free entries fell from 71 / 67 to 62 / 61 when the mover guard's
+mark moved from an early second `D_static` load to the composite's one load.

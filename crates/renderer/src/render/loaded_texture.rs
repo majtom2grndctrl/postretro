@@ -62,6 +62,10 @@ pub struct LoadedTexture {
     /// specular slot's uploaded mip 0, the bytes the compiler judged
     /// (`specular_slot_reflects`). Its bucket is then a glossy bucket.
     pub reflects: bool,
+    /// Whether the normal slot holds the material's own normal map rather
+    /// than the 1×1 neutral placeholder: the glossy overlay reads a
+    /// placeholder's one texel instead of sampling it.
+    pub normal_mapped: bool,
 }
 
 /// Where [`load_textures`] spent its time, for the install's own log line.
@@ -188,6 +192,7 @@ pub(super) fn upload_prepared_texture(
         // A model plan never consumes specular, so models stay flat.
         surface_relief: specular_surface_relief(&slots[1], plan.consume[1]),
         reflects: specular_slot_reflects_in(&slots[1], plan.consume[1]),
+        normal_mapped: plan.consume[2] && slots[2].is_ok(),
     }
 }
 

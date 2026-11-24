@@ -38,8 +38,10 @@ let layoutPath = "\(dir)/vertex_layout"
 if let layout = try? String(contentsOfFile: layoutPath, encoding: .utf8) {
     // A capture's own vertex streams, one line each:
     //   layout <buffer> <stride>
-    //   attribute <location> <float2|float3|uint> <offset> <buffer>
-    let formats: [String: MTLVertexFormat] = ["float2": .float2, "float3": .float3, "uint": .uint]
+    //   attribute <location> <float2|float3|uint|ushort2> <offset> <buffer>
+    let formats: [String: MTLVertexFormat] = [
+        "float2": .float2, "float3": .float3, "uint": .uint, "ushort2": .ushort2,
+    ]
     for line in layout.split(separator: "\n") {
         let field = line.split(separator: " ").map(String.init)
         if field.first == "layout", field.count == 3 {

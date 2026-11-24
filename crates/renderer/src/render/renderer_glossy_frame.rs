@@ -113,6 +113,7 @@ impl Renderer {
             &level.index_buffer,
             cull,
             &|bucket| level.bucket_is_glossy(bucket),
+            &|bucket| level.glossy_overlay_form(bucket),
             &bind_material,
         );
     }

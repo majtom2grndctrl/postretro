@@ -81,28 +81,90 @@ pub(crate) fn glossy_overlay_draws(
         && glossy_range_drawn
 }
 
-/// The overlay's pipelines, one per `render.reflections.style`, both built at
-/// full init so a style change compiles nothing.
-pub(crate) struct GlossyOverlayPipelines {
-    pixel: wgpu::RenderPipeline,
-    smooth: wgpu::RenderPipeline,
+/// Which overlay shading a glossy bucket's material draws through. Each form
+/// draws exactly what the full one would for the materials it takes, with
+/// less work: the march-free forms skip registers and instructions the march
+/// holds, and the plain form reads the neutral normal placeholder's one texel
+/// where the others filter it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GlossyOverlayForm {
+    /// The material can march at some Surface Depth state
+    /// (`MaterialUniformPlan::can_march`): forward's march and normal map.
+    March,
+    /// It never marches, and samples its own normal map.
+    NormalMapped,
+    /// It never marches, and binds the neutral normal placeholder.
+    Plain,
 }
 
-impl GlossyOverlayPipelines {
-    fn for_style(&self, style: FluidReflectionStyle) -> &wgpu::RenderPipeline {
-        match style {
-            FluidReflectionStyle::Pixel => &self.pixel,
-            FluidReflectionStyle::Smooth => &self.smooth,
+impl GlossyOverlayForm {
+    /// Every form, in the order the overlay draws them.
+    pub(crate) const ALL: [Self; 3] = [Self::Plain, Self::NormalMapped, Self::March];
+
+    /// The form of a material that can march (`can_march`) and binds its
+    /// own normal map (`normal_mapped`).
+    pub(crate) fn of(can_march: bool, normal_mapped: bool) -> Self {
+        match (can_march, normal_mapped) {
+            (true, _) => Self::March,
+            (false, true) => Self::NormalMapped,
+            (false, false) => Self::Plain,
         }
     }
 
-    /// `pipeline` in both styles' places: a test-only variant.
+    /// The fragment entry drawing this form in `style`.
+    fn entry(self, style: FluidReflectionStyle) -> &'static str {
+        match (style, self) {
+            (FluidReflectionStyle::Pixel, Self::March) => "fs_pixel",
+            (FluidReflectionStyle::Smooth, Self::March) => "fs_smooth",
+            (FluidReflectionStyle::Pixel, Self::NormalMapped) => "fs_pixel_flat",
+            (FluidReflectionStyle::Smooth, Self::NormalMapped) => "fs_smooth_flat",
+            (FluidReflectionStyle::Pixel, Self::Plain) => "fs_pixel_plain",
+            (FluidReflectionStyle::Smooth, Self::Plain) => "fs_smooth_plain",
+        }
+    }
+}
+
+/// The overlay's pipelines, one per `render.reflections.style` and
+/// [`GlossyOverlayForm`], all built at full init so a style change compiles
+/// nothing.
+pub(crate) struct GlossyOverlayPipelines {
+    /// Indexed `[style][form]`, styles pixel then smooth, forms as
+    /// [`GlossyOverlayForm::ALL`].
+    pipelines: [[wgpu::RenderPipeline; 3]; 2],
+}
+
+impl GlossyOverlayPipelines {
+    const STYLES: [FluidReflectionStyle; 2] =
+        [FluidReflectionStyle::Pixel, FluidReflectionStyle::Smooth];
+
+    fn new(build: impl Fn(&str) -> wgpu::RenderPipeline) -> Self {
+        Self {
+            pipelines: Self::STYLES
+                .map(|style| GlossyOverlayForm::ALL.map(|form| build(form.entry(style)))),
+        }
+    }
+
+    fn for_style(
+        &self,
+        style: FluidReflectionStyle,
+        form: GlossyOverlayForm,
+    ) -> &wgpu::RenderPipeline {
+        let style = match style {
+            FluidReflectionStyle::Pixel => 0,
+            FluidReflectionStyle::Smooth => 1,
+        };
+        let form = match form {
+            GlossyOverlayForm::Plain => 0,
+            GlossyOverlayForm::NormalMapped => 1,
+            GlossyOverlayForm::March => 2,
+        };
+        &self.pipelines[style][form]
+    }
+
+    /// `pipeline` in every style's and form's place: a test-only variant.
     #[cfg(test)]
     pub(crate) fn both(pipeline: wgpu::RenderPipeline) -> Self {
-        Self {
-            pixel: pipeline.clone(),
-            smooth: pipeline,
-        }
+        Self::new(|_| pipeline.clone())
     }
 }
 
@@ -158,18 +220,14 @@ impl GlossyOverlayPass {
             ],
             immediate_size: 0,
         });
-        let style = |entry| {
+        let pipelines = GlossyOverlayPipelines::new(|entry| {
             overlay_pipeline(
                 device,
                 &pipeline_layout,
                 GLOSSY_OVERLAY_SHADER_SOURCE,
                 entry,
             )
-        };
-        let pipelines = GlossyOverlayPipelines {
-            pixel: style("fs_pixel"),
-            smooth: style("fs_smooth"),
-        };
+        });
         let guard = GlossyMoverGuard::new(device, movers, forward.format);
         let level_layout = GlossyLevelLayout {
             probe_layout,
@@ -208,8 +266,9 @@ impl GlossyOverlayPass {
     /// Record the overlay's draws over the frame's glossy camera ranges in
     /// `style`, the renderer's committed reflection style this frame. The
     /// caller opens the pass (scene colour loaded, depth read-only) and binds
-    /// group 0; `glossy` names the glossy buckets and `bind_material` binds a
-    /// bucket's world material at [`GLOSSY_OVERLAY_MATERIAL_GROUP`].
+    /// group 0; `glossy` names the glossy buckets, `form` each bucket's
+    /// [`GlossyOverlayForm`], which picks its pipeline, and `bind_material`
+    /// binds a bucket's world material at [`GLOSSY_OVERLAY_MATERIAL_GROUP`].
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn record<'a>(
         &'a self,
@@ -220,6 +279,7 @@ impl GlossyOverlayPass {
         index_buffer: &'a wgpu::Buffer,
         cull: &'a ComputeCullPipeline,
         glossy: &dyn Fn(u32) -> bool,
+        form: &dyn Fn(u32) -> GlossyOverlayForm,
         bind_material: &SetTextureFn<'a>,
     ) {
         let (Some(probe_group), Some(inputs_group)) = (state.probe_group(), state.inputs_group())
@@ -228,13 +288,22 @@ impl GlossyOverlayPass {
         };
         #[cfg(test)]
         self.recorded.set(self.recorded.get() + 1);
-        pass.set_pipeline(self.pipelines.for_style(style));
         pass.set_bind_group(GLOSSY_OVERLAY_PROBE_GROUP, probe_group, &[]);
         pass.set_bind_group(GLOSSY_OVERLAY_INPUTS_GROUP, inputs_group, &[]);
         pass.set_vertex_buffer(0, vertex_buffer.slice(..));
         pass.set_vertex_buffer(1, state.world_probes().slice(..));
         pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        cull.draw_indirect_subset(pass, Some(bind_material), glossy);
+        // One sweep per form. The blend is additive and a pixel takes one
+        // glossy face's fragment, so the split changes no sum: only the order
+        // two overlapping coplanar faces of different materials add in.
+        for drawn in GlossyOverlayForm::ALL {
+            let keep = |bucket: u32| glossy(bucket) && form(bucket) == drawn;
+            if !cull.draws_bucket(keep) {
+                continue;
+            }
+            pass.set_pipeline(self.pipelines.for_style(style, drawn));
+            cull.draw_indirect_subset(pass, Some(bind_material), &keep);
+        }
     }
 
     /// Overlay passes recorded so far.
@@ -278,3 +347,7 @@ mod mip_tests;
 #[cfg(test)]
 #[path = "glossy_overlay_gate_tests.rs"]
 mod gate_tests;
+
+#[cfg(test)]
+#[path = "glossy_overlay_register_screen_test.rs"]
+mod register_screen_test;

@@ -1,0 +1,984 @@
+{
+  "schema": "postretro.capture.measurement.v3",
+  "revision": "41ba36d8c45d739085867daf84d94add86b5750d",
+  "map": {
+    "path": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/7dacbf8e-a146-48c6-bc94-d7f57e2739b7/scratchpad/task10meas/mf10a/content/dev/maps/glossy-reflections-test.prl",
+    "bytes": 1025772
+  },
+  "capture": {
+    "output": "/Users/dhiester/Projects/Personal/postretro/measurements/fluid-base-pass-cost/metal/runs/glossy-across-1440-cutA-m17f-high.png",
+    "resolution": [
+      2560,
+      1440
+    ],
+    "camera": {
+      "position": [
+        -1.6256,
+        1.6,
+        -1.6256
+      ],
+      "yaw_deg": 45.0,
+      "pitch_deg": -15.0,
+      "fov_deg": 100.0
+    },
+    "force_full_resident_sh_compose": false,
+    "animation_time_seconds": 10.0
+  },
+  "workload": {
+    "warmup_frames": 300,
+    "sample_frames": 300
+  },
+  "adapter": {
+    "name": "AMD Radeon Pro 5300M",
+    "backend": "Metal",
+    "device_type": "DiscreteGpu"
+  },
+  "renderer_accounted_sh": {
+    "rows": [
+      {
+        "name": "mover_channel_table",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 44,
+        "state": "dummy",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 44
+        }
+      },
+      {
+        "name": "mover_bounce_table",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 36,
+        "state": "dummy",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 36
+        }
+      },
+      {
+        "name": "depth_tiles",
+        "sources": [
+          {
+            "kind": "section",
+            "id": 59
+          }
+        ],
+        "bytes": 32000,
+        "state": "data",
+        "shape": {
+          "kind": "texture",
+          "format": "Rg16Float",
+          "dimension": "D2",
+          "extent": [
+            160,
+            50,
+            1
+          ]
+        }
+      },
+      {
+        "name": "indirect_base_atlas",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 8,
+        "state": "dummy",
+        "shape": {
+          "kind": "texture",
+          "format": "Rgba16Float",
+          "dimension": "D2",
+          "extent": [
+            1,
+            1,
+            1
+          ]
+        }
+      },
+      {
+        "name": "indirect_total_atlas",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 8,
+        "state": "dummy",
+        "shape": {
+          "kind": "texture",
+          "format": "Rgba16Float",
+          "dimension": "D2",
+          "extent": [
+            1,
+            1,
+            1
+          ]
+        }
+      },
+      {
+        "name": "depth_moments",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 8,
+        "state": "dummy",
+        "shape": {
+          "kind": "texture",
+          "format": "Rgba16Uint",
+          "dimension": "D3",
+          "extent": [
+            1,
+            1,
+            1
+          ]
+        }
+      },
+      {
+        "name": "animated_light_descriptors",
+        "sources": [
+          {
+            "kind": "section",
+            "id": 34
+          },
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 48,
+        "state": "data",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 48
+        }
+      },
+      {
+        "name": "animated_light_samples",
+        "sources": [
+          {
+            "kind": "section",
+            "id": 34
+          },
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 264240,
+        "state": "data",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 264240
+        }
+      },
+      {
+        "name": "scripted_light_descriptors",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 12384,
+        "state": "data",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 12384
+        }
+      },
+      {
+        "name": "grid_info",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 96,
+        "state": "dummy",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 96
+        }
+      },
+      {
+        "name": "direct_base_atlas",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 16,
+        "state": "dummy",
+        "shape": {
+          "kind": "texture",
+          "format": "Bc6hRgbUfloat",
+          "dimension": "D2",
+          "extent": [
+            4,
+            4,
+            1
+          ]
+        }
+      },
+      {
+        "name": "direct_dynamic_params",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 16,
+        "state": "data",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 16
+        }
+      },
+      {
+        "name": "billboard_direct_scatter_base_volume",
+        "sources": [
+          {
+            "kind": "section",
+            "id": 47
+          }
+        ],
+        "bytes": 14400,
+        "state": "data",
+        "shape": {
+          "kind": "texture",
+          "format": "Rgba16Float",
+          "dimension": "D3",
+          "extent": [
+            15,
+            8,
+            15
+          ]
+        }
+      },
+      {
+        "name": "indirect_compose_delta_subblocks",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 4,
+        "state": "dummy",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 4
+        }
+      },
+      {
+        "name": "indirect_compose_compaction_metadata",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 12,
+        "state": "dummy",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 12
+        }
+      },
+      {
+        "name": "indirect_compose_affinity_offsets",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 8,
+        "state": "dummy",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 8
+        }
+      },
+      {
+        "name": "indirect_compose_affinity_lights",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 4,
+        "state": "dummy",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 4
+        }
+      },
+      {
+        "name": "indirect_compose_probe_indirection",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 4,
+        "state": "dummy",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 4
+        }
+      },
+      {
+        "name": "indirect_compose_grid",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 65536,
+        "state": "dummy",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 65536
+        }
+      },
+      {
+        "name": "indirect_compose_origin",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 32,
+        "state": "dummy",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 32
+        }
+      }
+    ],
+    "total_bytes": 2932000,
+    "streaming": {
+      "fixed_metadata_bytes": 161340,
+      "whole_resident_scatter_bytes": 14400,
+      "active_capacity_bytes": 2381756,
+      "logical_occupancy_bytes": 455344,
+      "retiring_capacity_bytes": 0,
+      "replacement_peak_bytes": 2381756
+    },
+    "streaming_lifecycle": {
+      "encoded_current_bytes": 0,
+      "encoded_high_water_upper_bound_bytes": 180414,
+      "decoding_current_bytes": 0,
+      "decoding_high_water_upper_bound_bytes": 477208,
+      "ready_current_bytes": 0,
+      "ready_high_water_upper_bound_bytes": 477208,
+      "permits_in_use": 0,
+      "target_clusters": 1,
+      "absent_clusters": 28,
+      "queued_clusters": 0,
+      "ready_clusters": 0,
+      "installed_uncomposed_clusters": 0,
+      "sampleable_clusters": 1,
+      "failed_clusters": 0,
+      "misses": 0,
+      "miss_unit": "episodes",
+      "miss_outside_reach": 0,
+      "miss_trimmed_by_pressure": 0,
+      "miss_read_in_flight": 0,
+      "miss_held_by_drain_budget": 0,
+      "miss_awaiting_compose": 0,
+      "miss_device_limited": 0,
+      "miss_at_whole_map_cap": 0,
+      "miss_failed": 0,
+      "rereads": 0,
+      "installs": 1,
+      "evictions": 0,
+      "retries": 0,
+      "lead_clusters": 0,
+      "cancelled_requests": 0,
+      "discarded_reads": 0,
+      "discarded_read_bytes": 0,
+      "decoded_bytes_installed": 477208,
+      "last_drain_decoded_bytes": 477208,
+      "max_drain_decoded_bytes": 477208,
+      "budget_limited_drains": 0,
+      "reads_issued": 1,
+      "coalesced_reads": 0,
+      "read_bytes": 180414,
+      "gap_bytes": 0,
+      "read_latency_p50_ms": 1.116,
+      "read_latency_p95_ms": 1.116,
+      "read_latency_max_ms": 1.116,
+      "decode_latency_max_ms": 0.0,
+      "install_cpu_total_micros": 6937,
+      "install_cpu_max_drain_micros": 6937,
+      "install_cpu_last_drain_micros": 6937,
+      "install_cpu_max_steady_drain_micros": 6937,
+      "pool_growth_events": 0,
+      "pool_growth_bytes": 0,
+      "pool_growth_cpu_micros": 0,
+      "indirect_compose": {
+        "rows_composed": 0,
+        "entry_rows_composed": 0,
+        "dispatches": 0,
+        "lagged_rows_composed": 0,
+        "resident_rows_still_lagging": 0
+      },
+      "static_direct_compose": {
+        "rows_composed": 0,
+        "entry_rows_composed": 0,
+        "dispatches": 0,
+        "lagged_rows_composed": 0,
+        "resident_rows_still_lagging": 0
+      },
+      "animated_direct_compose": {
+        "rows_composed": 0,
+        "entry_rows_composed": 0,
+        "dispatches": 0,
+        "lagged_rows_composed": 0,
+        "resident_rows_still_lagging": 0
+      },
+      "compose_planning_cpu_micros": 4
+    }
+  },
+  "renderer_accounted_lightmap": {
+    "rows": [
+      {
+        "name": "static_irradiance",
+        "sources": [
+          {
+            "kind": "section",
+            "id": 22
+          }
+        ],
+        "bytes": 4194304,
+        "state": "data",
+        "shape": {
+          "kind": "texture",
+          "format": "Bc6hRgbUfloat",
+          "dimension": "D2",
+          "extent": [
+            2048,
+            2048,
+            1
+          ]
+        }
+      },
+      {
+        "name": "static_direction",
+        "sources": [
+          {
+            "kind": "section",
+            "id": 22
+          }
+        ],
+        "bytes": 2097152,
+        "state": "data",
+        "shape": {
+          "kind": "texture",
+          "format": "Rg8Unorm",
+          "dimension": "D2",
+          "extent": [
+            1024,
+            1024,
+            1
+          ]
+        }
+      },
+      {
+        "name": "shadowmask",
+        "sources": [
+          {
+            "kind": "section",
+            "id": 42
+          }
+        ],
+        "bytes": 4194304,
+        "state": "data",
+        "shape": {
+          "kind": "texture",
+          "format": "Bc5RgUnorm",
+          "dimension": "D2",
+          "extent": [
+            2048,
+            2048,
+            1
+          ]
+        }
+      },
+      {
+        "name": "animated_irradiance",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 8,
+        "state": "dummy",
+        "shape": {
+          "kind": "texture",
+          "format": "Rgba16Float",
+          "dimension": "D2",
+          "extent": [
+            1,
+            1,
+            1
+          ]
+        }
+      },
+      {
+        "name": "animated_direction",
+        "sources": [
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 4,
+        "state": "dummy",
+        "shape": {
+          "kind": "texture",
+          "format": "Rgba8Unorm",
+          "dimension": "D2",
+          "extent": [
+            1,
+            1,
+            1
+          ]
+        }
+      }
+    ],
+    "total_bytes": 10485772
+  },
+  "renderer_accounted_reflection_probes": {
+    "rows": [
+      {
+        "name": "probe_colour",
+        "sources": [
+          {
+            "kind": "section",
+            "id": 54
+          }
+        ],
+        "bytes": 43680,
+        "state": "data",
+        "shape": {
+          "kind": "texture",
+          "format": "Bc6hRgbUfloat",
+          "dimension": "D2",
+          "extent": [
+            128,
+            128,
+            2
+          ]
+        }
+      },
+      {
+        "name": "probe_distance",
+        "sources": [
+          {
+            "kind": "section",
+            "id": 54
+          }
+        ],
+        "bytes": 65536,
+        "state": "data",
+        "shape": {
+          "kind": "texture",
+          "format": "R16Float",
+          "dimension": "D2",
+          "extent": [
+            128,
+            128,
+            2
+          ]
+        }
+      },
+      {
+        "name": "probe_share_table",
+        "sources": [
+          {
+            "kind": "section",
+            "id": 54
+          }
+        ],
+        "bytes": 61456,
+        "state": "data",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 61456
+        }
+      },
+      {
+        "name": "probe_sums",
+        "sources": [
+          {
+            "kind": "section",
+            "id": 54
+          },
+          {
+            "kind": "derived"
+          }
+        ],
+        "bytes": 24576,
+        "state": "data",
+        "shape": {
+          "kind": "buffer",
+          "binding_bytes": 24576
+        }
+      },
+      {
+        "name": "glossy_static_diffuse",
+        "sources": [
+          {
+            "kind": "section",
+            "id": 54
+          }
+        ],
+        "bytes": 29491200,
+        "state": "data",
+        "shape": {
+          "kind": "texture",
+          "format": "Rgba16Float",
+          "dimension": "D2",
+          "extent": [
+            2560,
+            1440,
+            1
+          ]
+        }
+      }
+    ],
+    "total_bytes": 29686448
+  },
+  "lightmap_streaming": {
+    "mode": "all-resident",
+    "block_count": 1,
+    "resident_blocks": 1,
+    "forced_missing_blocks": 0,
+    "pool_layers": null,
+    "mask_pool_layers": null
+  },
+  "cpu_completion": {
+    "unit": "milliseconds",
+    "strategy": "device-poll-wait-after-submit",
+    "cadence": "once-per-sample-frame",
+    "samples_ms": [
+      16.495169,
+      16.638085,
+      16.615322,
+      16.609406,
+      16.637121,
+      16.804793,
+      16.436200000000003,
+      16.534117000000002,
+      16.509245,
+      16.619604,
+      16.400634,
+      16.627657,
+      16.626046,
+      16.74184,
+      16.917606000000003,
+      17.161949999999997,
+      18.508957,
+      17.269795000000002,
+      17.943385,
+      17.2427,
+      19.194812,
+      16.760166,
+      18.045399,
+      17.659622,
+      17.782336,
+      17.102639,
+      17.179607,
+      17.059182,
+      16.635645,
+      16.983999,
+      16.99361,
+      16.350361,
+      17.038001,
+      16.864409000000002,
+      18.208664,
+      17.477909999999998,
+      17.331268,
+      17.730956,
+      16.958101,
+      16.509767,
+      16.916888,
+      17.297673,
+      16.798137,
+      17.309663999999998,
+      17.573504,
+      17.458985,
+      17.524966,
+      17.914336,
+      17.811397,
+      17.660368,
+      18.353486,
+      17.450987,
+      17.461925,
+      16.718846,
+      16.956946000000002,
+      16.932779,
+      16.374893,
+      16.556541,
+      16.75189,
+      16.543587,
+      16.811548,
+      16.581099,
+      16.711803,
+      16.766203,
+      17.140415,
+      16.913204,
+      16.677661,
+      16.592599999999997,
+      16.746374000000003,
+      16.62771,
+      16.243128,
+      16.854593,
+      16.236489,
+      16.444084,
+      17.526574,
+      17.824572,
+      16.973505,
+      16.929006,
+      16.666817,
+      16.862933,
+      16.603623000000002,
+      16.880111,
+      16.418678999999997,
+      18.79212,
+      17.358165,
+      16.793408,
+      17.278762999999998,
+      16.530803,
+      17.308872,
+      16.625822,
+      17.247121,
+      19.107653,
+      17.479523,
+      18.809788,
+      17.746866999999998,
+      17.694875,
+      17.059267,
+      17.376306,
+      17.290783,
+      16.652877,
+      16.385039,
+      16.549103,
+      17.029624000000002,
+      16.87108,
+      16.768436,
+      16.732037000000002,
+      16.638081,
+      16.823175,
+      16.8733,
+      18.173902,
+      16.487064999999998,
+      17.491588,
+      16.578366,
+      16.702041,
+      16.641981,
+      16.608725,
+      16.736257000000002,
+      16.632026,
+      16.677508,
+      16.794553,
+      16.689597,
+      16.708617,
+      16.482325,
+      16.869646,
+      16.530313,
+      16.549483,
+      16.527159,
+      16.684093,
+      16.642593,
+      16.792399,
+      16.787872999999998,
+      16.628688,
+      16.520066,
+      18.014,
+      20.766851,
+      17.145613,
+      17.113173,
+      16.76122,
+      17.081817,
+      16.561606,
+      16.776937,
+      16.557425000000002,
+      16.722758000000002,
+      16.841014,
+      16.841254,
+      18.017614000000002,
+      17.529063,
+      17.301625,
+      16.96269,
+      16.951661,
+      17.221521,
+      16.481873,
+      16.906527,
+      16.480253,
+      16.580364,
+      16.552047,
+      16.345631,
+      16.964821,
+      16.4226,
+      16.518692,
+      16.708322000000003,
+      16.411886,
+      16.499325,
+      16.540036,
+      16.690153,
+      16.998131,
+      17.300622,
+      17.128166,
+      18.467198,
+      17.615851,
+      17.43618,
+      16.835339,
+      16.849007999999998,
+      16.623364000000002,
+      16.617449999999998,
+      16.761205,
+      16.428478,
+      16.228625,
+      16.812104,
+      16.988323,
+      16.623119,
+      16.568718,
+      16.720647000000003,
+      16.8497,
+      16.496841000000003,
+      16.877102,
+      16.982253,
+      16.810029,
+      16.771632,
+      16.837228999999997,
+      16.710754,
+      16.915509,
+      17.715144,
+      17.751322,
+      17.249019,
+      17.17681,
+      17.336074,
+      17.119334,
+      17.345296,
+      17.209737999999998,
+      16.812068,
+      17.829725,
+      17.516519000000002,
+      19.459937,
+      17.150267,
+      17.462118,
+      18.025856,
+      16.759982,
+      16.723785000000003,
+      16.40184,
+      16.599367,
+      16.786096,
+      16.600844,
+      16.278635,
+      17.219958000000002,
+      17.469164999999997,
+      16.979319,
+      17.172208,
+      16.837722,
+      16.696591,
+      16.679019,
+      16.923694,
+      16.733022000000002,
+      17.025097,
+      16.813826,
+      16.538474,
+      16.871402,
+      16.796421,
+      16.683476,
+      16.655111,
+      16.548364,
+      16.636120000000002,
+      16.675826,
+      16.715287999999997,
+      16.457461,
+      16.427409,
+      16.583744,
+      16.849659,
+      16.694093,
+      18.182088,
+      17.1929,
+      16.707342,
+      16.723328,
+      16.369634,
+      16.760458999999997,
+      16.710308,
+      16.593263,
+      16.655831,
+      16.762282,
+      16.981709000000002,
+      16.450149,
+      21.503224000000003,
+      17.55721,
+      18.255706,
+      17.535597,
+      17.949287,
+      17.919597,
+      17.571426000000002,
+      17.389868,
+      17.383236999999998,
+      18.102127,
+      16.813273,
+      16.997112,
+      17.605115,
+      16.820353,
+      16.615420999999998,
+      16.938445,
+      16.841193,
+      19.722163000000002,
+      16.614002,
+      16.689505,
+      16.911969,
+      16.655219,
+      16.408573999999998,
+      16.521806,
+      16.554101000000003,
+      16.736409000000002,
+      16.729239,
+      16.470843,
+      16.777665,
+      16.504867,
+      16.615439,
+      16.577676999999998,
+      16.848064,
+      16.490061999999998,
+      16.707107,
+      19.64026,
+      17.65446,
+      17.722441,
+      17.613588,
+      17.751736,
+      17.461176,
+      17.277932999999997,
+      17.654907,
+      17.406934,
+      17.221782,
+      17.295979,
+      16.922276,
+      16.614966,
+      16.782872
+    ],
+    "median_ms": 16.8170895,
+    "p95_ms": 18.1743113
+  },
+  "gpu_timing": {
+    "availability": "not-requested",
+    "reason": "env-disabled"
+  },
+  "cpu_stages": {
+    "availability": "not-requested",
+    "reason": "env-disabled"
+  }
+}

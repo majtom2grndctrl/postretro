@@ -15,10 +15,11 @@ use postretro_render_data::material::Material;
 
 use super::Renderer;
 use super::fluid_reflection_frame_test_fixtures::{View, centre};
+use super::glossy_overlay::GlossyOverlayForm;
 use super::glossy_overlay_frame_test_fixtures::{GlossyFrame, half_step, renderer, with_variant};
 use super::glossy_overlay_room_frame_test_fixtures::{
     Face, Room, RoomMaterial, RoomReference, face_pixels, ray_through, room_frame, room_view,
-    with_room_variant,
+    set_room_material, with_room_variant,
 };
 
 const MARGIN: f32 = 0.08;
@@ -192,7 +193,7 @@ fn fs_test_march_albedo(in: GlossyVertexOutput) -> @location(0) vec4<f32> {
 fn fs_test_march_side(in: GlossyVertexOutput) -> @location(0) vec4<f32> {
     let d = glossy_overlay_derivatives(in);
     let depth = glossy_overlay_march(in, d);
-    let surface = glossy_overlay_surface(in, d, depth, false);
+    let surface = glossy_overlay_surface(in, d, depth, false, true);
     return vec4<f32>(select(0.0, 1.0, dot(surface.normal, surface.outward) < 0.7071), 0.0, 0.0,
         0.0);
 }
@@ -342,6 +343,77 @@ fn surface_depth_marches_the_overlay_as_forward_and_a_toggle_takes_the_same_fram
                     );
                 }
             }
+        }
+    }
+}
+
+/// One frame with the overlay's production fragment `entry` in every
+/// pipeline's place.
+fn entry_frame(renderer: &mut Renderer, view: View, entry: &str) -> GlossyFrame {
+    with_room_variant(renderer, "", entry, |renderer| {
+        room_frame(renderer, view, 0.0)
+    })
+}
+
+// The overlay's forms change no frame. A material that never marches and
+// binds the neutral normal placeholder draws through the plain pipelines,
+// and its frame is the full (marching, normal-sampling) pipelines' and the
+// march-free ones' bit for bit, in both styles. A carved material draws
+// through the full pipeline (the march-free one draws it otherwise at On),
+// and at Off the march-free and plain pipelines draw its frame bit for bit.
+#[test]
+fn every_overlay_form_draws_the_full_pipelines_frame_for_the_materials_it_takes() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let room = Room::new([gradient, gradient, gradient]);
+    room.install(&mut renderer, &MIRROR_8);
+    assert_eq!(
+        renderer.level().glossy_overlay_form(0),
+        GlossyOverlayForm::Plain
+    );
+    let view = room_view();
+    let forward = with_variant(&mut renderer, "fs_test_zero", |renderer| {
+        room_frame(renderer, view, 0.0)
+    });
+    for (style, entries) in [
+        (FluidReflectionStyle::Pixel, ["fs_pixel", "fs_pixel_flat"]),
+        (
+            FluidReflectionStyle::Smooth,
+            ["fs_smooth", "fs_smooth_flat"],
+        ),
+    ] {
+        renderer.set_fluid_reflection_style(style);
+        let production = room_frame(&mut renderer, view, 0.0);
+        assert_ne!(
+            production.scene.colour, forward.scene.colour,
+            "{style:?}: the overlay adds its term"
+        );
+        for entry in entries {
+            let full = entry_frame(&mut renderer, view, entry);
+            assert!(
+                production.scene.colour == full.scene.colour,
+                "{style:?}: the plain frame is {entry}'s"
+            );
+        }
+    }
+
+    set_room_material(&mut renderer, &CARVED);
+    assert_eq!(
+        renderer.level().glossy_overlay_form(0),
+        GlossyOverlayForm::March
+    );
+    renderer.set_fluid_reflection_style(FluidReflectionStyle::Smooth);
+    for quality in [SurfaceDepthQuality::On, SurfaceDepthQuality::Off] {
+        renderer.set_surface_depth_quality(quality);
+        let production = room_frame(&mut renderer, view, 0.0);
+        for entry in ["fs_smooth_flat", "fs_smooth_plain"] {
+            let flat = entry_frame(&mut renderer, view, entry);
+            assert_eq!(
+                production.scene.colour == flat.scene.colour,
+                quality == SurfaceDepthQuality::Off,
+                "{quality:?}: the carved material marches through its own pipeline ({entry})"
+            );
         }
     }
 }

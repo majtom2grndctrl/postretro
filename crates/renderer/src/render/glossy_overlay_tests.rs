@@ -44,7 +44,18 @@ fn glossy_overlay_shader_validates_with_its_composed_modules() {
         .iter()
         .map(|entry| entry.name.as_str())
         .collect();
-    assert_eq!(entries, ["vs_main", "fs_pixel", "fs_smooth"]);
+    assert_eq!(
+        entries,
+        [
+            "vs_main",
+            "fs_pixel",
+            "fs_smooth",
+            "fs_pixel_flat",
+            "fs_smooth_flat",
+            "fs_pixel_plain",
+            "fs_smooth_plain"
+        ]
+    );
 }
 
 // The overlay lands on exactly the pixels forward shaded only while both
@@ -263,29 +274,37 @@ fn overlay_reads_its_probe_from_the_binding_and_lights_through_the_sums() {
 // pixel, W the texel's Fresnel × `_s` × sharpness fade times the
 // capture-shadow weight, R coloured as the highlight; additive over the scene
 // colour. A texel whose weight is 0 adds nothing and reads no normal map and
-// runs no probe search; nor does a pixel this frame's mover guard marked,
-// which reads the mark only after the weight (pins P15, P23). One entry per
-// reflection style over one shading.
+// runs no probe search; a pixel this frame's mover guard marked adds
+// nothing, its mark read after the weight with D_static, in the one load
+// (pins P15, P23). One entry per reflection style and material form over one
+// shading.
 #[test]
 fn overlay_adds_the_weighted_reflection_minus_static_diffuse() {
-    for (entry, pixel) in [("fs_pixel", "true"), ("fs_smooth", "false")] {
+    for (entry, pixel, march, normal_map) in [
+        ("fs_pixel", "true", "true", "true"),
+        ("fs_smooth", "false", "true", "true"),
+        ("fs_pixel_flat", "true", "false", "true"),
+        ("fs_smooth_flat", "false", "false", "true"),
+        ("fs_pixel_plain", "true", "false", "false"),
+        ("fs_smooth_plain", "false", "false", "false"),
+    ] {
         assert_eq!(
             squashed(wgsl_function(OVERLAY_WGSL, entry)),
             format!(
                 "fn{entry}(in:GlossyVertexOutput)->@location(0)vec4<f32>{{\
-                 returnvec4<f32>(glossy_overlay_shade(in,{pixel}),0.0);}}"
+                 returnvec4<f32>(glossy_overlay_shade(in,{pixel},{march},{normal_map}),0.0);}}"
             )
         );
     }
     assert_eq!(
         squashed(wgsl_function(OVERLAY_WGSL, "glossy_overlay_shade")),
-        "fnglossy_overlay_shade(in:GlossyVertexOutput,pixel:bool)->vec3<f32>{\
+        "fnglossy_overlay_shade(in:GlossyVertexOutput,pixel:bool,march:bool,\
+         normal_map:bool)->vec3<f32>{\
          letderivatives=glossy_overlay_derivatives(in);\
-         letdepth=glossy_overlay_march(in,derivatives);\
+         letdepth=glossy_overlay_depth(in,derivatives,march);\
          lettexel=glossy_overlay_texel(depth.uv,derivatives.ddx,derivatives.ddy);\
-         iftexel.mask<=0.0||glossy_overlay_mover_covered(in.clip_position.xy){\
-         returnvec3<f32>(0.0);}\
-         letsurface=glossy_overlay_surface(in,derivatives,depth,pixel);\
+         iftexel.mask<=0.0{returnvec3<f32>(0.0);}\
+         letsurface=glossy_overlay_surface(in,derivatives,depth,pixel,normal_map);\
          returnglossy_overlay_delta(in,texel,surface);}"
     );
     assert_eq!(
@@ -295,8 +314,14 @@ fn overlay_adds_the_weighted_reflection_minus_static_diffuse() {
          letfresnel=glossy_fresnel(texel,dot(surface.view,surface.outward));\
          letprobe=glossy_overlay_probe(in,surface,texel.exponent);\
          letd_static=glossy_overlay_static_diffuse(in.clip_position.xy);\
-         returnglossy_composite(d_static,probe.capture,probe.weight,vec4<f32>(0.0),fresnel,\
-         texel.colour);}"
+         ifglossy_overlay_mover_covered(d_static){returnvec3<f32>(0.0);}\
+         returnglossy_composite(d_static.rgb,probe.capture,probe.weight,vec4<f32>(0.0),\
+         fresnel,texel.colour);}"
+    );
+    assert_eq!(
+        squashed(wgsl_function(OVERLAY_WGSL, "glossy_overlay_static_diffuse")),
+        "fnglossy_overlay_static_diffuse(frag_xy:vec2<f32>)->vec4<f32>{\
+         returntextureLoad(static_diffuse,vec2<u32>(frag_xy),0);}"
     );
     let blend = glossy_overlay_blend_state();
     assert_eq!(blend.color.src_factor, wgpu::BlendFactor::One);
@@ -604,9 +629,9 @@ fn overlay_shades_from_forwards_march_normal_and_texel_point() {
     assert_eq!(
         squashed(wgsl_function(SHADING_WGSL, "glossy_overlay_surface")),
         "fnglossy_overlay_surface(in:GlossyVertexOutput,d:GlossyDerivatives,\
-         depth:SurfaceDepthResult,pixel:bool)->GlossySurface{\
+         depth:SurfaceDepthResult,pixel:bool,normal_map:bool)->GlossySurface{\
          letmesh_n=normalize(in.world_normal);\
-         letn_ts=sample_normal(t_normal,depth.uv,d.ddx,d.ddy);\
+         letn_ts=glossy_overlay_tangent_normal(depth.uv,d,normal_map);\
          letn_bump=reconstruct_tbn_normal(mesh_n,in.world_tangent,in.bitangent_sign,n_ts);\
          letnormal=select(depth.normal,n_bump,depth.hit_top);\
          letview=normalize(uniforms.camera_position-in.world_position);\
@@ -614,6 +639,66 @@ fn overlay_shades_from_forwards_march_normal_and_texel_point() {
          depth.uv,in.world_position,uniforms.camera_position,\
          vec2<f32>(textureDimensions(base_texture,0)),d.ddx,d.ddy,d.ddx_world,d.ddy_world);\
          returnGlossySurface(point.position,point.view,normal,mesh_n);}"
+    );
+    // The march-free pipelines' depth is the march's own first early-out
+    // over the same inputs: `surface_depth_flat` of the fragment's UV,
+    // position and normalized normal, returned before any march when the
+    // material has no map. Only materials that can never march draw through
+    // them (`MaterialUniformPlan::can_march`, the overlay's record).
+    assert_eq!(
+        squashed(wgsl_function(SHADING_WGSL, "glossy_overlay_depth")),
+        "fnglossy_overlay_depth(in:GlossyVertexOutput,d:GlossyDerivatives,\
+         march:bool)->SurfaceDepthResult{\
+         ifmarch{returnglossy_overlay_march(in,d);}\
+         returnsurface_depth_flat(in.uv,in.world_position,normalize(in.world_normal));}"
+    );
+    let resolve = squashed(wgsl_function(
+        include_str!("../shaders/surface_depth.wgsl"),
+        "surface_depth_resolve",
+    ));
+    assert!(resolve.contains(
+        "{letflat_result=surface_depth_flat(uv,world_position,geo_normal);\
+         if!surface_depth_has_map(){returnflat_result;}"
+    ));
+    let overlay = squashed(include_str!("glossy_overlay.rs"));
+    assert!(overlay.contains("letkeep=|bucket:u32|glossy(bucket)&&form(bucket)==drawn;"));
+    assert!(overlay.contains("pass.set_pipeline(self.pipelines.for_style(style,drawn));"));
+    assert!(squashed(include_str!("level_resource_set.rs")).contains(
+        "GlossyOverlayForm::of(material.uniform_plan.can_march(),texture.normal_mapped)"
+    ));
+    // The plain form reads the neutral placeholder's one texel and decodes
+    // it as forward's `sample_normal` decodes a sample; a material binds the
+    // placeholder exactly when its normal slot was not consumed or did not
+    // read.
+    let sample_normal = squashed(wgsl_function(
+        include_str!("../shaders/material_shading.wgsl"),
+        "sample_normal",
+    ));
+    for statement in [
+        "letz=sqrt(max(0.0,1.0-dot(rg,rg)));",
+        "returnnormalize(vec3<f32>(rg,z));",
+        ".rg*2.0-1.0;",
+    ] {
+        assert!(
+            sample_normal.contains(statement),
+            "sample_normal: {statement}"
+        );
+    }
+    assert_eq!(
+        squashed(wgsl_function(SHADING_WGSL, "glossy_overlay_tangent_normal")),
+        "fnglossy_overlay_tangent_normal(uv:vec2<f32>,d:GlossyDerivatives,\
+         normal_map:bool)->vec3<f32>{\
+         ifnormal_map{returnsample_normal(t_normal,uv,d.ddx,d.ddy);}\
+         letrg=textureLoad(t_normal,vec2<i32>(0),0).rg*2.0-1.0;\
+         letz=sqrt(max(0.0,1.0-dot(rg,rg)));\
+         returnnormalize(vec3<f32>(rg,z));}"
+    );
+    assert!(
+        squashed(include_str!("loaded_texture.rs"))
+            .contains("normal_mapped:plan.consume[2]&&slots[2].is_ok(),")
+    );
+    assert!(
+        squashed(include_str!("loaded_texture/placeholders.rs")).contains("normal_mapped:false,")
     );
     // The march is forward's one snippet, composed whole, never a copy.
     assert!(GLOSSY_OVERLAY_SHADER_SOURCE.contains(include_str!("../shaders/surface_depth.wgsl")));
@@ -657,5 +742,22 @@ fn overlay_probe_term_mirrors_the_cpu_reference() {
     assert!(
         squashed(wgsl_function(OVERLAY_WGSL, "glossy_overlay_probe"))
             .contains("fluid_reflection_hemisphere_axis(surface.outward)")
+    );
+}
+
+// The form a bucket draws through: any material that can march takes the
+// full shading; one that never marches takes the march-free shading, and
+// the plain form when it binds the neutral normal placeholder.
+#[test]
+fn a_bucket_draws_through_the_form_its_material_needs() {
+    assert_eq!(GlossyOverlayForm::of(true, true), GlossyOverlayForm::March);
+    assert_eq!(GlossyOverlayForm::of(true, false), GlossyOverlayForm::March);
+    assert_eq!(
+        GlossyOverlayForm::of(false, true),
+        GlossyOverlayForm::NormalMapped
+    );
+    assert_eq!(
+        GlossyOverlayForm::of(false, false),
+        GlossyOverlayForm::Plain
     );
 }

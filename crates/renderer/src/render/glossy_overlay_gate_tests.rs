@@ -180,8 +180,7 @@ fn the_mover_guard_marks_this_frames_movers_through_their_own_clip_path() {
     assert!(forward_frame.contains("load:wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),"));
     assert_eq!(
         overlay_fn("glossy_overlay_mover_covered"),
-        "fnglossy_overlay_mover_covered(frag_xy:vec2<f32>)->bool{\
-         returntextureLoad(static_diffuse,vec2<u32>(frag_xy),0).a>0.5;}"
+        "fnglossy_overlay_mover_covered(d_static:vec4<f32>)->bool{returnd_static.a>0.5;}"
     );
     for name in ["fluid_probe", "probe_sums", "reflection"] {
         assert!(
@@ -230,9 +229,8 @@ fn no_planar_layer_reaches_the_overlay() {
             );
         }
     }
-    assert!(
-        overlay_fn("glossy_overlay_delta")
-            .contains("returnglossy_composite(d_static,probe.capture,probe.weight,vec4<f32>(0.0),")
-    );
+    assert!(overlay_fn("glossy_overlay_delta").contains(
+        "returnglossy_composite(d_static.rgb,probe.capture,probe.weight,vec4<f32>(0.0),"
+    ));
     assert!(names_planar("planar_layer") && !names_planar("coplanar mover"));
 }

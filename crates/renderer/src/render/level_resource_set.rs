@@ -3,6 +3,7 @@
 // See: context/plans/done/level-load-pipeline/index.md · context/lib/rendering_pipeline.md §4
 
 use super::dynamic_depth_cache::DynamicCacheTextures;
+use super::glossy_overlay::GlossyOverlayForm;
 use super::promoted_depth_cache::PromotedDepthTextures;
 use super::renderer_types::{PromotedBakedLightRecord, PromotedBakedLightState};
 use super::shadow_tier::ShadowTier;
@@ -367,6 +368,23 @@ impl LevelResourceSet {
         self.loaded_textures
             .get(bucket as usize)
             .is_some_and(|texture| texture.reflects)
+    }
+
+    /// The glossy overlay form of material bucket `bucket`'s world
+    /// material, the one [`Self::material_bind_group`] binds: whether it can
+    /// march at any Surface Depth state, and whether it binds its own normal
+    /// map.
+    pub(in crate::render) fn glossy_overlay_form(&self, bucket: u32) -> GlossyOverlayForm {
+        let index = bucket as usize;
+        let material = self
+            .gpu_textures
+            .get(index)
+            .unwrap_or(&self.gpu_textures[0]);
+        let texture = self
+            .loaded_textures
+            .get(index)
+            .unwrap_or(&self.loaded_textures[0]);
+        GlossyOverlayForm::of(material.uniform_plan.can_march(), texture.normal_mapped)
     }
 
     /// The world materials this set holds, taken out for a geometry

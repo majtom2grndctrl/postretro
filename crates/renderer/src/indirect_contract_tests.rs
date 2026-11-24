@@ -93,7 +93,7 @@ fn rust_violations(sources: &[Source]) -> Vec<String> {
                     "GlossyOverlayPass",
                     "record",
                 ) && site.pipeline.as_deref()
-                    == Some("self.pipelines.for_style(style)");
+                    == Some("self.pipelines.for_style(style,drawn)");
                 whole && (forward || overlay)
             }
             ("method", "indirect_buffer") => {

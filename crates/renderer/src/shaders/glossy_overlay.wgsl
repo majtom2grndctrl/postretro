@@ -316,56 +316,87 @@ fn glossy_overlay_probe_mip(direction: vec3<f32>, layer: u32, mip: u32) -> vec3<
     return textureSampleLevel(fluid_probe_array, sh_atlas_sampler, uv, layer, f32(mip)).rgb;
 }
 
-// Forward's D_static at this fragment's own pixel.
-fn glossy_overlay_static_diffuse(frag_xy: vec2<f32>) -> vec3<f32> {
-    return textureLoad(static_diffuse, vec2<u32>(frag_xy), 0).rgb;
+// Forward's D_static at this fragment's own pixel, and in its alpha the
+// coplanar-mover guard's mark, in one load.
+fn glossy_overlay_static_diffuse(frag_xy: vec2<f32>) -> vec4<f32> {
+    return textureLoad(static_diffuse, vec2<u32>(frag_xy), 0);
 }
 
 // Whether this frame's mover guard marked this fragment's own pixel: a mover
 // shaded it, so the mover pass's output stands there. Only a mover face
 // coplanar with the glossy face reaches here; one in front fails Equal.
-fn glossy_overlay_mover_covered(frag_xy: vec2<f32>) -> bool {
-    return textureLoad(static_diffuse, vec2<u32>(frag_xy), 0).a > 0.5;
+fn glossy_overlay_mover_covered(d_static: vec4<f32>) -> bool {
+    return d_static.a > 0.5;
 }
 
 // The overlay's addition at this fragment for a texel of nonzero weight:
 // Fresnel from the surface's view against the flat face normal, as water's,
-// so a pixel-style texel is one uniform block.
+// so a pixel-style texel is one uniform block. A pixel this frame's movers
+// cover adds nothing; its mark is read with D_static, in the same load, after
+// the search, which holds fewer registers than an early read on the RDNA Mac
+// target and adds only work no pixel keeps (a covered pixel is rare: a mover
+// face coplanar with the glossy face).
 fn glossy_overlay_delta(in: GlossyVertexOutput, texel: GlossyTexel,
                         surface: GlossySurface) -> vec3<f32> {
     let fresnel = glossy_fresnel(texel, dot(surface.view, surface.outward));
     let probe = glossy_overlay_probe(in, surface, texel.exponent);
     let d_static = glossy_overlay_static_diffuse(in.clip_position.xy);
-    return glossy_composite(d_static, probe.capture, probe.weight, vec4<f32>(0.0), fresnel,
+    if glossy_overlay_mover_covered(d_static) {
+        return vec3<f32>(0.0);
+    }
+    return glossy_composite(d_static.rgb, probe.capture, probe.weight, vec4<f32>(0.0), fresnel,
         texel.colour);
 }
 
-// One style's overlay addition: forward's march picks the texel, a texel of
-// zero weight (no `_s`, at or below the sharpness floor) adds nothing and
-// reads nothing more, a pixel this frame's movers cover adds nothing, and the
-// style picks where the reflection starts.
-fn glossy_overlay_shade(in: GlossyVertexOutput, pixel: bool) -> vec3<f32> {
+// One style's overlay addition: forward's march picks the texel (in the
+// pipeline built with it), a texel of zero weight (no `_s`, at or below the
+// sharpness floor) adds nothing and reads nothing more, and the style picks
+// where the reflection starts.
+fn glossy_overlay_shade(in: GlossyVertexOutput, pixel: bool, march: bool,
+                        normal_map: bool) -> vec3<f32> {
     let derivatives = glossy_overlay_derivatives(in);
-    let depth = glossy_overlay_march(in, derivatives);
+    let depth = glossy_overlay_depth(in, derivatives, march);
     let texel = glossy_overlay_texel(depth.uv, derivatives.ddx, derivatives.ddy);
-    if texel.mask <= 0.0 || glossy_overlay_mover_covered(in.clip_position.xy) {
+    if texel.mask <= 0.0 {
         return vec3<f32>(0.0);
     }
-    let surface = glossy_overlay_surface(in, derivatives, depth, pixel);
+    let surface = glossy_overlay_surface(in, derivatives, depth, pixel, normal_map);
     return glossy_overlay_delta(in, texel, surface);
 }
 
 // Added over forward's colour (src x 1 + dst x 1): forward + W x (R - D_static),
 // so dynamic light, highlights and emissive never dim, and W = 0 adds zero.
-// One entry per `render.reflections.style`, both built at full init: pixel
-// reflects once per albedo texel, from its texel-centre point; smooth per
-// fragment.
+// One entry per `render.reflections.style` and material form, all built at
+// full init: pixel reflects once per albedo texel, from its texel-centre
+// point; smooth per fragment. `fs_pixel` and `fs_smooth` march and sample the
+// normal map; the `_flat` entries draw materials that never march, the
+// `_plain` entries those that also bind the neutral normal placeholder.
 @fragment
 fn fs_pixel(in: GlossyVertexOutput) -> @location(0) vec4<f32> {
-    return vec4<f32>(glossy_overlay_shade(in, true), 0.0);
+    return vec4<f32>(glossy_overlay_shade(in, true, true, true), 0.0);
 }
 
 @fragment
 fn fs_smooth(in: GlossyVertexOutput) -> @location(0) vec4<f32> {
-    return vec4<f32>(glossy_overlay_shade(in, false), 0.0);
+    return vec4<f32>(glossy_overlay_shade(in, false, true, true), 0.0);
+}
+
+@fragment
+fn fs_pixel_flat(in: GlossyVertexOutput) -> @location(0) vec4<f32> {
+    return vec4<f32>(glossy_overlay_shade(in, true, false, true), 0.0);
+}
+
+@fragment
+fn fs_smooth_flat(in: GlossyVertexOutput) -> @location(0) vec4<f32> {
+    return vec4<f32>(glossy_overlay_shade(in, false, false, true), 0.0);
+}
+
+@fragment
+fn fs_pixel_plain(in: GlossyVertexOutput) -> @location(0) vec4<f32> {
+    return vec4<f32>(glossy_overlay_shade(in, true, false, false), 0.0);
+}
+
+@fragment
+fn fs_smooth_plain(in: GlossyVertexOutput) -> @location(0) vec4<f32> {
+    return vec4<f32>(glossy_overlay_shade(in, false, false, false), 0.0);
 }

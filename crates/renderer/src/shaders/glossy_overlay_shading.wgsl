@@ -36,6 +36,36 @@ fn glossy_overlay_march(in: GlossyVertexOutput, d: GlossyDerivatives) -> Surface
         length(view_vector), d.ddx, d.ddy, d.ddx_world, d.ddy_world);
 }
 
+// The fragment's Surface Depth result in a pipeline built with or without the
+// march. A material that cannot march at any switch state (render-cpu
+// `MaterialUniformPlan::can_march`) draws through the march-free pipeline:
+// the march's own first early-out returns this same flat result for it, so
+// the output is identical while that pipeline carries none of the march's
+// registers.
+fn glossy_overlay_depth(in: GlossyVertexOutput, d: GlossyDerivatives,
+                        march: bool) -> SurfaceDepthResult {
+    if march {
+        return glossy_overlay_march(in, d);
+    }
+    return surface_depth_flat(in.uv, in.world_position, normalize(in.world_normal));
+}
+
+// The tangent-space normal the overlay bends by: the material's normal map,
+// sampled as forward samples it, or, for a material that binds the 1x1 neutral
+// placeholder (render-side `LoadedTexture::normal_mapped` false), that one
+// texel read without a filter and decoded as `sample_normal` decodes it. Every
+// sample of a one-texel map returns its texel, so both read one value; the
+// load spares the filtered sample's cost.
+fn glossy_overlay_tangent_normal(uv: vec2<f32>, d: GlossyDerivatives,
+                                 normal_map: bool) -> vec3<f32> {
+    if normal_map {
+        return sample_normal(t_normal, uv, d.ddx, d.ddy);
+    }
+    let rg = textureLoad(t_normal, vec2<i32>(0), 0).rg * 2.0 - 1.0;
+    let z = sqrt(max(0.0, 1.0 - dot(rg, rg)));
+    return normalize(vec3<f32>(rg, z));
+}
+
 // Where the reflection starts and how it turns. `origin` is the search's
 // start, on the true plane; `view` the unit vector from it to the eye;
 // `normal` the normal the view mirrors about; `outward` the flat face normal,
@@ -54,9 +84,10 @@ struct GlossySurface {
 // fragment's UV->world Jacobian as forward's highlight is, so the texel reads
 // one search, one sample and one weight; smooth starts at the fragment.
 fn glossy_overlay_surface(in: GlossyVertexOutput, d: GlossyDerivatives,
-                          depth: SurfaceDepthResult, pixel: bool) -> GlossySurface {
+                          depth: SurfaceDepthResult, pixel: bool,
+                          normal_map: bool) -> GlossySurface {
     let mesh_n = normalize(in.world_normal);
-    let n_ts = sample_normal(t_normal, depth.uv, d.ddx, d.ddy);
+    let n_ts = glossy_overlay_tangent_normal(depth.uv, d, normal_map);
     let n_bump = reconstruct_tbn_normal(mesh_n, in.world_tangent, in.bitangent_sign, n_ts);
     let normal = select(depth.normal, n_bump, depth.hit_top);
     let view = normalize(uniforms.camera_position - in.world_position);

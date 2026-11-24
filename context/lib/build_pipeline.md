@@ -1052,7 +1052,7 @@ The package name is a game's player-data identity. Every launch that knows its p
 
 **One resolution, one chokepoint.** Config and data directories resolve together, once, in one engine module — the only `ProjectDirs::from` call in the workspace, held there by a source-scan test. Saves live in the data directory, and an implicit character's id is `settings.toml`'s `player_id` (`player_options.md` §2), so split resolutions would orphan every save. `postretro-sim` receives the data directory and resolves none of its own.
 
-**The tool refuses what the engine refuses.** `dist`, `sdk-dist`, and `run` reject at manifest read a package name the engine's `--app-name` rule rejects, so no launcher ships that fails at boot. One shared case table holds both checks to the same verdict per name. The SDK bundle's marker declares the fixed package `postretro-sdk` (§SDK bundle), so its runs share no settings or saves with a shipped game or a bare `postretro` launch. From a game's first release, renaming `[package].name` strands its players' settings, `player_id` and saves.
+**The tool refuses what the engine refuses.** `dist` and `run` reject at manifest read a package name the engine's `--app-name` rule rejects, so no launcher ships that fails at boot. `sdk-dist` reads the same manifest and refuses it too. One shared case table holds both checks to the same verdict per name. The SDK bundle's marker declares the fixed package `postretro-sdk` (§SDK bundle), so its runs share no settings or saves with a shipped game or a bare `postretro` launch. From a game's first release, renaming `[package].name` strands its players' settings, `player_id` and saves.
 
 ### Output-root containment
 
@@ -1113,7 +1113,7 @@ The starter declares no levels, so the bundle runs no bake stage. The sweep refu
 
 **The bundle root is a starter project, so the tool works on arrival.** `bin/postretro-tool run` from the root boots the starter to the engine's fallback menu, which is the install check. The starter's source is `sdk/templates/starter/` — engine-owned, so it also ships under the bundle's `sdk/` for a developer starting a project in their own repository (`docs/external-projects.md`). The starter ships with its entry script already compiled: `bin/postretro-release` compiles no TypeScript, and the compile proves the starter builds before a bundle ships.
 
-**The bundle's name is fixed, not derived.** Its root under `dist/`, and the package its marker declares, are both `postretro-sdk`, whatever project runs the command. The project supplies only the output root that §Output-root containment anchors on. A developer renames the package before releasing anything built from the starter.
+**The bundle's name is fixed, not derived.** Its root under `dist/`, and the package its marker declares, are both `postretro-sdk`, whatever project runs the command. The project supplies no name and no content — only the output root that §Output-root containment anchors on. A developer renames the package before releasing anything built from the starter.
 
 `sdk-dist` reuses the player payload's containment and completion-gate machinery (§Output-root containment, §Completion gate). The same host-builds-for-host native-toolchain constraint applies: a bundle's binaries are as host-specific as the player payload's.
 

@@ -517,7 +517,7 @@ Solver uses a rigid, proper socket frame at its reference pose. Invalid, sheared
 - **Clip use.** Shipped characters play each clip as what it shows: walk for walking, run for running. Use the clips a character has, and never stand one in for another when the right one exists.
 - **Failure.** A character stuck in rest pose is the worse outcome, so these fail the load: an unreadable library, a mesh root absent from it, no selected locomotion root, root rest heights with no finite positive ratio, and a library with no clips on a model with none of its own. A malformed reference (backslashes and non-UTF-8 escapes included) warns and reads as absent; a static model ignores its reference. Binding warns once per model on parent mismatches, unbound non-leaf joints and repeated library node names. `dist` stage 4 refuses a skinned model under `models/` whose library is missing or outside the mod root.
 
-**Mixamo licence.** Mixamo assets may live in a project's repo and ship in its game. They may not be offered as downloads for other creators. The SDK bundle ships no game content (`build_pipeline.md` §SDK bundle), so it carries none; anything that publishes a mod tree for others to build on carries every Mixamo asset in it.
+**Mixamo licence.** Mixamo assets may live in a project's repo and ship in its game. They may not be offered as downloads for other creators. The SDK bundle ships no game content (`build_pipeline.md` §SDK bundle), so it carries no Mixamo assets.
 
 ---
 

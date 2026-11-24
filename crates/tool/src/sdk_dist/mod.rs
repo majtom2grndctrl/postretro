@@ -160,8 +160,9 @@ mod tests {
     }
 
     /// The tool's default helper search walks from its own directory, so the
-    /// bundle's layout is what makes `./bin/postretro-tool dist` work with no
-    /// flags at all: every binary it needs is either beside it or one level up.
+    /// bundle's layout lets `bin/postretro-tool run` and `dist` find every
+    /// helper with no flags: each binary is either beside the tool or one level
+    /// up.
     #[test]
     fn bundle_layout_puts_every_helper_where_the_default_search_looks() {
         let bundle = PathBuf::from("/bundle");

@@ -21,8 +21,8 @@ use super::{
 pub(super) struct BundleBinaries {
     /// Debug, `--features dev-tools`: the engine every authoring run launches.
     pub(super) authoring_engine: PathBuf,
-    /// Optimized, default features: what a player payload built from this
-    /// bundle must carry, and what the bundle's own `dist` copies.
+    /// Optimized, default features: the engine `bin/postretro-tool dist` copies
+    /// into every player payload built with this bundle.
     pub(super) release_engine: PathBuf,
     pub(super) prl_build: PathBuf,
     pub(super) scripts_build: PathBuf,

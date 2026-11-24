@@ -56,9 +56,14 @@ fn end_held_hold(
     actor: postretro_entities::EntityId,
     attack: &str,
 ) {
-    let Ok(mut brain) = registry.get_component::<BrainComponent>(actor).cloned() else {
+    // Writes only when the attack holds: most shots end nothing.
+    let Ok(brain) = registry.get_component::<BrainComponent>(actor) else {
         return;
     };
+    if !brain.holds(attack) {
+        return;
+    }
+    let mut brain = brain.clone();
     brain.end_held_hold(attack);
     let _ = registry.set_component(actor, brain);
 }
@@ -94,9 +99,14 @@ fn commit_withheld_start(
     if !withheld.held {
         return;
     }
-    let Ok(mut brain) = registry.get_component::<BrainComponent>(actor).cloned() else {
+    let Ok(brain) = registry.get_component::<BrainComponent>(actor) else {
         return;
     };
+    // A hold already counted at every depth changes nothing on later ticks.
+    if !withheld.clip_moment && brain.held_hold_counted(&withheld.attack_name) {
+        return;
+    }
+    let mut brain = brain.clone();
     if withheld.clip_moment {
         brain.record_held_shot();
     } else {

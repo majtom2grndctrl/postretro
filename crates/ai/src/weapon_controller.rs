@@ -349,7 +349,6 @@ impl AiWeaponControllers {
                     lane: ActivationLane::Primary,
                 });
                 weapon.attack_name = Some(request.attack_name.clone());
-                weapon.clip_moment = request.clip_moment;
             }
             // AI has no physical release channel. Its controller explicitly
             // releases at authored full charge; the shared executor retains
@@ -387,6 +386,7 @@ impl AiWeaponControllers {
             if advanced.initiated.is_some() {
                 actor_weapons.active = Some(canonical.clone());
                 weapon.first_shot_due = true;
+                weapon.clip_moment = starts.is_some_and(|request| request.clip_moment);
             }
             if let Some(attempt) = advanced.shot {
                 let shot = freeze_weapon_shot(&weapon.component, attempt);

@@ -404,7 +404,9 @@ pub struct BrainComponent {
     /// counts once at each depth. An attack's own launched shot ends its hold;
     /// a depth's entry and exit clear that depth for every hold. Another
     /// attack's shot, or another attack becoming held, leaves a hold running.
-    /// A held attack is one the graph names, so the list stays that short.
+    /// A held attack is one the graph names, so the list stays that short; an
+    /// entry may outlive its attack's last proposal, and one counted nowhere
+    /// acts as no entry.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub held_holds: Vec<HeldHold>,
     /// Scope-relative `@brain.activityRoll` for the matching active activity:
@@ -922,6 +924,21 @@ impl BrainComponent {
                     self.attacks_held_in_activity[depth].saturating_add(1);
             }
         }
+    }
+
+    /// Whether recording a hold of `attack` would count nothing: every active
+    /// depth has already counted it. Lets a caller skip the write.
+    pub fn held_hold_counted(&self, attack: &str) -> bool {
+        let active_depth = self.active_depth();
+        self.held_holds
+            .iter()
+            .find(|hold| hold.attack == attack)
+            .is_some_and(|hold| hold.counted[..active_depth].iter().all(|counted| *counted))
+    }
+
+    /// Whether `attack` has a hold running.
+    pub fn holds(&self, attack: &str) -> bool {
+        self.held_holds.iter().any(|hold| hold.attack == attack)
     }
 
     /// A projectile shot of `attack` launched: its hold ends, so its next hold

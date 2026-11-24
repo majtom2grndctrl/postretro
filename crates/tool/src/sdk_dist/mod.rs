@@ -15,8 +15,9 @@
 //! compiled beside it. The starter declares no levels, so the bundle bakes
 //! nothing and carries no `baked/` tree.
 //!
-//! The bundle is named [`SDK_BUNDLE_NAME`] whatever project runs the command —
-//! the project supplies only the output root its containment guard anchors on.
+//! The bundle is named [`SDK_BUNDLE_NAME`] whatever project runs the command.
+//! The project supplies no name and no content, only the output root and
+//! scratch tree the run writes under; its manifest is still validated.
 //! It reuses the player payload's containment and completion-gate machinery.
 //!
 //! See: context/lib/build_pipeline.md §Distribution packaging (§SDK bundle)

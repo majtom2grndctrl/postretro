@@ -309,8 +309,8 @@ pub(super) fn sweep_sdk_bundle(bundle_root: &Path) -> Result<(), String> {
         bin_dir.join(binary_name("scripts-build")),
         bin_dir.join(binary_name("mint-identity")),
         bin_dir.join(binary_name("postretro-tool")),
-        // The engine loads the emitted `.js`; the `.ts` is what the author edits
-        // and what the debug engine's startup pass recompiles it from.
+        // The author edits the `.ts`; the `.js` is the output of the compile
+        // check that ran before the bundle shipped.
         mod_dir.join("start-script.ts"),
         mod_dir.join("start-script.js"),
         mod_dir.join("tsconfig.json"),

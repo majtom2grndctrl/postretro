@@ -89,7 +89,8 @@ pub struct ClipClock {
     /// The interim record of a drawn state the brain does not own, read at an
     /// NPC's launch: until the brain's next own draw, a living enemy is not
     /// aiming under a switch it did not make, and has no pose after its own
-    /// switch failed. The pose-and-stagger brief replaces it.
+    /// switch failed. Interim until the pose and stagger rules land
+    /// (`entity_model.md` §7c).
     #[serde(default)]
     pub interruption: Interruption,
     /// The tracked state's resolved clip, cached on first use. `None` when not

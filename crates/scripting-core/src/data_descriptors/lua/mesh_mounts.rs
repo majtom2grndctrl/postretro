@@ -73,7 +73,7 @@ pub(super) fn string_map_from_lua(
     Ok(out)
 }
 
-/// Read `components.mesh.mounts`: a sequence of `{ item, attachments }`
+/// Read `components.mesh.mounts`: a sequence of `{ item, attachments }` or `{ item, muzzleSocket }`
 /// entries whose `item` the SDK has lowered to a canonical name. Shape
 /// errors name the character; the shared rules run in `MeshDescriptor::build`.
 pub(super) fn mounts_from_lua(
@@ -83,7 +83,7 @@ pub(super) fn mounts_from_lua(
     let not_a_list = || {
         mount_shape_error(
             owner,
-            "`components.mesh.mounts` must be an array of `{ item, attachments }` entries",
+            "`components.mesh.mounts` must be an array of `{ item, attachments }` or `{ item, muzzleSocket }` entries",
         )
     };
     let LuaValue::Table(list) = raw else {
@@ -110,7 +110,9 @@ pub(super) fn mounts_from_lua(
         let LuaValue::Table(entry) = value else {
             return Err(mount_shape_error(
                 owner,
-                format_args!("`{path}` must be an object `{{ item, attachments }}`"),
+                format_args!(
+                    "`{path}` must be an object `{{ item, attachments }}` or `{{ item, muzzleSocket }}`"
+                ),
             ));
         };
         for key in sorted_keys(&entry)? {

@@ -7,9 +7,9 @@ use postretro_entities::EntityTypeDescriptor;
 use super::hit_zones::HitZoneStore;
 
 /// Warn once per level load that `character` declares a weapon-mount table
-/// without an entry for `weapon`. The install-time loadout check and the
-/// writer's first wield share this key, so a loadout weapon warns at load and
-/// not again when wielded.
+/// without an entry for `weapon`. The install-time loadout check, the NPC
+/// attack-weapon check and the writer's first wield share this key, so a
+/// weapon warns at load and not again when wielded or spawned.
 pub fn warn_missing_weapon_mount_entry(store: &HitZoneStore, character: &str, weapon: &str) {
     if store.mark_attachment_resolution_warning(format!("weapon-mount-entry:{character}:{weapon}"))
     {
@@ -75,7 +75,8 @@ pub fn warn_weapon_mount_model_missing(
 }
 
 /// Level-install check of every declared weapon-mount table against the
-/// descriptor set: a loadout weapon the table lacks warns now, and an entry
+/// descriptor set: a loadout weapon the table lacks warns now, as does a
+/// weapon an NPC's attacks name (whether or not it spawns), and an entry
 /// naming no weapon descriptor warns that it never mounts. Runs after the
 /// per-level warn-once set clears, so each warning repeats at most once per
 /// level load. A character without `mesh.mounts` logs nothing.

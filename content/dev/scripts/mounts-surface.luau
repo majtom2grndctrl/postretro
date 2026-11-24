@@ -31,6 +31,11 @@ local longshot = defineAttack("longshot", {
   release = { animation = "shoot", at = false },
 })
 
+-- Guard receivers named once: Luau's method-call sugar would otherwise build
+-- each twice.
+local targetVisible = brain.targetVisible
+local fired = brain.attacksFiredInActivity:ge(1)
+
 M.surfaceLimitatorEntity = defineEntity({
   canonicalName = "surface_limitator",
   components = {
@@ -54,12 +59,12 @@ M.surfaceLimitatorEntity = defineEntity({
         close = { animation = "idle", motion = "chaseTarget" },
       },
       transitions = {
-        close = { { to = aim, when = brain.targetVisible["and"](brain.targetVisible, attackTurnFree(burst)) } },
+        close = { { to = aim, when = targetVisible["and"](targetVisible, attackTurnFree(burst)) } },
         aim = { { to = burst }, { to = longshot, when = brain.targetDistance:gt(8) } },
         settle = {
           {
             to = "close",
-            when = brain.attacksFiredInActivity:ge(1)["or"](brain.attacksFiredInActivity:ge(1), brain.attacksHeldInActivity:ge(1)),
+            when = fired["or"](fired, brain.attacksHeldInActivity:ge(1)),
           },
         },
       },

@@ -2,7 +2,7 @@
 // vocabulary both descriptor readers enforce.
 // See: context/lib/entity_model.md §2 (MeshComponent, Weapon vocabulary)
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::data_descriptors::{DescriptorError, is_portable_content_relative_asset_path};
 
@@ -25,8 +25,11 @@ pub const MESH_DESCRIPTOR_KEYS: &[&str] = &[
 /// Every key one `components.mesh.mounts` entry accepts.
 pub const MOUNT_KEYS: &[&str] = &["item", "attachments", "muzzleSocket"];
 
-/// One entry of a character's weapon-mount table: the props this character
-/// mounts while it wields `item`, each baked for its own rig.
+/// One entry of a character's mount table, for one weapon `item`: either the
+/// props this character mounts for it, each baked for its own rig (a player
+/// mounts its active weapon's entry; an NPC mounts the entry of every weapon its
+/// attacks name), or the body socket the weapon's shots leave from, for a weapon
+/// built into the body. Exactly one of `attachments` and `muzzle_socket` is set.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MountDescriptor {
     /// Canonical name of the weapon descriptor. The SDK builders lower the
@@ -108,9 +111,11 @@ pub fn mount_shape_error(owner: &str, detail: impl std::fmt::Display) -> Descrip
 }
 
 /// The load rules both readers share once they have gathered a table: each
-/// weapon has a non-empty name and appears once, each entry mounts at least
-/// one socket, socket names are non-empty, and each model path follows the
-/// content-relative rule weapon models follow (`components.weapon.viewmodel`).
+/// weapon has a non-empty name and appears once; each entry names exactly one
+/// of `attachments` and `muzzleSocket`; an `attachments` entry mounts at least
+/// one socket; socket names (the muzzle socket included) are non-empty; and each
+/// model path follows the content-relative rule weapon models follow
+/// (`components.weapon.viewmodel`).
 pub fn validate_mounts(owner: &str, entries: &[MountDescriptor]) -> Result<(), DescriptorError> {
     let mut seen = HashSet::with_capacity(entries.len());
     for (index, entry) in entries.iter().enumerate() {
@@ -200,8 +205,7 @@ pub fn validate_shared_attack_sockets(
     attack_weapons: &[&str],
 ) -> Result<(), DescriptorError> {
     // socket -> (weapon, model) of the first entry that claimed it.
-    let mut claimed: std::collections::BTreeMap<&str, (&str, &str)> =
-        std::collections::BTreeMap::new();
+    let mut claimed: BTreeMap<&str, (&str, &str)> = BTreeMap::new();
     for weapon in attack_weapons {
         let Some(attachments) = mesh
             .mount(weapon)

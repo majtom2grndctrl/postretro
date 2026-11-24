@@ -1524,7 +1524,7 @@
     readonly targetReachable: RuntimeGuardNode;
     /** Successful attack fires since the currently-evaluated activity was entered. It is scope-relative and a fire becomes visible on the next tick's guard refresh (number). */
     readonly attacksFiredInActivity: RuntimeGuardNode;
-    /** `true` when the selected target is clear on the enemy's shared, debounced sightline, which static geometry and movers at their current pose block (a closed door hides the target); false with no target. This is the eye's line-of-sight verdict, which perception and the engine fire gate share, before the fire gate's range, cooldown, and facing requirements. The fire gate also tests the gun's near path, so `targetVisible` can read true while every shot is held (see `attacksHeldInActivity`) (boolean). */
+    /** `true` when the selected target is clear on the enemy's shared, debounced sightline, which static geometry and movers at their current pose block (a closed door hides the target); false with no target. This is the eye's line-of-sight verdict, which perception and the engine fire gate share, before the gate's range, cooldown, and facing requirements. The fire gate also tests the gun's near path, so `targetVisible` can read true while every shot is held (see `attacksHeldInActivity`) (boolean). */
     readonly targetVisible: RuntimeGuardNode;
     /** Milliseconds since this enemy last took damage. A fresh never-hit brain reads `1e9`; a landed hit resets it to zero and later AI ticks monotonically age it back to that sentinel (number). */
     readonly timeSinceDamageMs: RuntimeGuardNode;

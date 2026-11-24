@@ -190,13 +190,13 @@ fn weapon_mount_load_rules_reject_identically_naming_the_character() {
             "table not a list",
             r#"mounts: { reference_rifle: { hand_r: "models/rifle/exo_red.gltf" } }"#,
             r#"mounts = { reference_rifle = { hand_r = "models/rifle/exo_red.gltf" } }"#,
-            "entity `player`: `components.mesh.mounts` must be an array of `{ item, attachments }` entries".to_string(),
+            "entity `player`: `components.mesh.mounts` must be an array of `{ item, attachments }` or `{ item, muzzleSocket }` entries".to_string(),
         ),
         (
             "entry not an object",
             r#"mounts: ["reference_rifle"]"#,
             r#"mounts = { "reference_rifle" }"#,
-            "entity `player`: `components.mesh.mounts[0]` must be an object `{ item, attachments }`".to_string(),
+            "entity `player`: `components.mesh.mounts[0]` must be an object `{ item, attachments }` or `{ item, muzzleSocket }`".to_string(),
         ),
     ];
     for (label, js_fields, lua_fields, expected) in cases {

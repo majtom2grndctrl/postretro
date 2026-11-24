@@ -274,3 +274,33 @@ fn a_bake_without_a_muzzle_socket_has_no_muzzle() {
 fn mesh_with_unknown_clip() -> MeshComponent {
     mesh(BODY, &[("shoot", "no_such_clip", true)])
 }
+
+// Regression: a long-held loop's unwrapped clip time lost its phase in the
+// sampler's f32, so the muzzle drifted off the drawn gun.
+#[test]
+fn a_loop_held_a_million_passes_poses_the_muzzle_where_its_first_pass_does() {
+    let store = store_with(&[BODY, BAKE]);
+    let mesh = limitator_mesh();
+    let duration = store
+        .get_by_name(BODY)
+        .unwrap()
+        .state_clip(None, "firing_rifle")
+        .expect("firing_rifle resolves")
+        .duration as f64;
+    for time in [0.03, duration * 0.6] {
+        let first = muzzle(&store, &mesh, Mat4::IDENTITY, "shoot", time, MOUNTED).unwrap();
+        let held = muzzle(
+            &store,
+            &mesh,
+            Mat4::IDENTITY,
+            "shoot",
+            1.0e6 * duration + time,
+            MOUNTED,
+        )
+        .unwrap();
+        assert!(
+            first.distance(held) < 1.0e-3,
+            "at {time} s into the pass: {first} vs {held}"
+        );
+    }
+}

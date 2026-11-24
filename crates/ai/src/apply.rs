@@ -45,9 +45,20 @@ fn commit_attack_fire(
         .attack_cooldown_remaining_ms
         .insert(attack_name, cooldown_ms);
     brain.record_successful_attack_fire();
-    // A fired shot ends a near-path hold: a later hold counts again.
-    brain.end_held_hold();
     registry.set_component(actor, brain).is_ok()
+}
+
+/// A launched projectile shot ends a near-path hold, so a later hold counts
+/// again. A contact strike leaves it: it never tested a near path.
+fn end_held_hold(
+    registry: &mut postretro_entities::EntityRegistry,
+    actor: postretro_entities::EntityId,
+) {
+    let Ok(mut brain) = registry.get_component::<BrainComponent>(actor).cloned() else {
+        return;
+    };
+    brain.end_held_hold();
+    let _ = registry.set_component(actor, brain);
 }
 
 /// A skipped burst shot restarts its attack's cooldown as a fired one does,
@@ -485,25 +496,28 @@ where
         if mesh_switches(registry, outcome.id) != outcome.brain.clip_clock.mesh_switches {
             interruption = Interruption::Foreign;
         }
-        let shooter = weapon_aim.map(|eye_aim| {
+        // Only an NPC with a shot to start or a burst in flight poses a
+        // muzzle: the rest of the tick's aiming NPCs pay nothing here.
+        let active_weapon = weapons.active_weapon(outcome.id);
+        let shooting = active_weapon.is_some() || weapon_request.is_some();
+        let shooter = weapon_aim.filter(|_| shooting).map(|eye_aim| {
             let mesh = registry.get_component::<MeshComponent>(outcome.id).ok();
             let aim = npc_launch::classify(
                 mesh,
                 &outcome.brain.clip_clock,
                 interruption,
                 outcome.brain.launch.airborne_presented,
-                draw.aiming_draw(),
+                draw.own_draw,
                 clip_clock::start_time(&outcome.brain.clip_clock, outcome.id),
             );
             let muzzles = match aim {
                 npc_launch::Aim::Aiming { time } => {
-                    let mut candidates: Vec<&str> = Vec::with_capacity(2);
-                    candidates.extend(weapons.active_weapon(outcome.id));
-                    if let Some(request) = weapon_request.as_ref()
-                        && !candidates.contains(&request.canonical_weapon.as_str())
-                    {
-                        candidates.push(&request.canonical_weapon);
-                    }
+                    let requested = weapon_request
+                        .as_ref()
+                        .map(|request| request.canonical_weapon.as_str())
+                        .filter(|requested| active_weapon != Some(*requested));
+                    let candidates: Vec<&str> =
+                        active_weapon.into_iter().chain(requested).collect();
                     npc_launch::pose_muzzles(
                         registry,
                         outcome.id,
@@ -521,6 +535,8 @@ where
                 aim,
                 eye_aim,
                 eye: eye_aim.origin,
+                // Compute sets both from one target perception; the eye
+                // ray's point keeps a launch well-formed if they ever part.
                 target_aim: outcome
                     .target_aim
                     .unwrap_or(eye_aim.origin + eye_aim.direction),
@@ -561,6 +577,7 @@ where
                 fire.recovery_ms,
             )
         {
+            end_held_hold(registry, outcome.id);
             projectile_spawns.push(EnemyProjectilePresentationSpawn {
                 projectile: fire.projectile,
                 descriptor_class: fire.canonical_weapon,
@@ -710,19 +727,10 @@ struct OwnDrawPlan<'a> {
     redraw: bool,
     /// The brain switches the mesh this apply.
     switch_due: bool,
-    /// The switch is an activity entry, or a stride or travel-variant change,
-    /// onto a state the mesh can draw: the launch reads the enemy as aiming.
-    aiming_draw: bool,
-}
-
-impl OwnDrawPlan<'_> {
-    fn aiming_draw(&self) -> npc_launch::OwnDraw {
-        if self.aiming_draw {
-            npc_launch::OwnDraw::Aiming
-        } else {
-            npc_launch::OwnDraw::None
-        }
-    }
+    /// What the launch reads of the switch: an activity entry, or a stride or
+    /// travel-variant change, onto a state the mesh can draw makes the enemy
+    /// aiming; one onto a state it cannot draw fails and leaves no pose.
+    own_draw: npc_launch::OwnDraw,
 }
 
 /// Plan the brain's own draw: on a state change, a stride stopping or
@@ -774,24 +782,34 @@ fn plan_own_draw<'a>(
             || variant_changed
             || redraw);
     // Only an entry or a stride or variant change makes the launch tick
-    // aiming; a redraw tick and the airborne clip's edges do not.
-    let aiming_draw = switch_due
-        && airborne_clip.is_none()
-        && (stride_or_entry || variant_changed)
-        && drawable_name(animation_name, travel_variant).is_some_and(|name| {
-            registry
+    // aiming; a redraw tick and the airborne clip's edges do not. A redraw
+    // whose clip is still filling waits rather than failing.
+    let own_draw = match drawable_name(animation_name, travel_variant) {
+        Some(name)
+            if switch_due && airborne_clip.is_none() && (stride_or_entry || variant_changed) =>
+        {
+            let usable = registry
                 .get_component::<MeshComponent>(outcome.id)
                 .ok()
                 .and_then(|mesh| mesh.animation.as_ref())
-                .is_some_and(|animation| animation.is_state_usable(&name))
-        });
+                .is_some_and(|animation| animation.is_state_usable(&name));
+            if usable {
+                npc_launch::OwnDraw::Aiming
+            } else if redraw {
+                npc_launch::OwnDraw::None
+            } else {
+                npc_launch::OwnDraw::Fails
+            }
+        }
+        _ => npc_launch::OwnDraw::None,
+    };
     OwnDrawPlan {
         airborne_clip,
         animation_name,
         travel_variant,
         redraw,
         switch_due,
-        aiming_draw,
+        own_draw,
     }
 }
 

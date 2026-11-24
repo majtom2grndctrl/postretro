@@ -59,7 +59,7 @@ export type MeshDescriptor = {
   model: string,
   --- Optional socket-name → content-relative prop-model map. Both socket names and model paths must be non-empty. Attachments are presentation-only and follow their holder's authored socket.
   attachments: { [string]: string }?,
-  --- Optional per-weapon mounts fitted to this model's rig: for each weapon the character may wield, the props it holds while that weapon is active. While a weapon is active its entry's sockets replace `attachments` on the same sockets; when the weapon leaves, those sockets return to `attachments`. A weapon with no entry mounts nothing. Omit the table for a character whose weapon is part of its model: it mounts no weapon and logs nothing. Declaring it, even empty, warns about each wielded weapon it lacks. Each weapon appears at most once. Presentation only: fire origin and hit tests ignore it. A hot-reload edit applies at the next level load.
+  --- Optional per-weapon table fitted to this model's rig, one entry per weapon: `{ item, attachments }` (props mounted on sockets) or `{ item, muzzleSocket }` (exactly one). A player mounts its active weapon's entry; its sockets replace `attachments` on the same sockets, and return to `attachments` when the weapon leaves. An NPC mounts the entry of every weapon its attacks name, entries winning over `attachments`; two attack weapons may share a socket only with one model, or the load fails. Mounts draw on every peer, composed from the descriptors. On the host an NPC's shots start at the fired weapon's mounted bake `muzzle` socket, or at the entry's `muzzleSocket`, and the gun's near path from that point gates the shot; a player's fire origin ignores mounts, and hit tests ignore them. A weapon built into the body uses `{ item, muzzleSocket }`. Declaring the table makes a missing entry (a loadout weapon, or an attack weapon) warn at load; omit it for a character with no mounted weapon. Each weapon appears at most once. A hot-reload edit applies at the next level load.
   mounts: {MountDescriptor}?,
   --- Per-model skinned pool-shadow receiver-bias multiplier. Defaults to 1.0; must be finite and in 0.0..=4.0. Set 0.0 to disable the receiver offset for this model.
   shadowBiasScale: number?,
@@ -73,11 +73,11 @@ export type MeshDescriptor = {
   locomotion: LocomotionDescriptor?,
 }
 
---- One entry of `MeshDescriptor.mounts`: either the props a character mounts while it wields one weapon, each baked for this character's rig (`postretro-tool solve-weapon-mount`), or the body socket a built-in weapon's shots leave from. Unknown keys are rejected.
+--- One entry of `MeshDescriptor.mounts`: either the props a character mounts for one weapon, each baked for this character's rig (`postretro-tool solve-weapon-mount`), or the body socket a built-in weapon's NPC shots leave from. Unknown keys are rejected.
 export type MountDescriptor = {
   --- The weapon this entry mounts for: the value `defineEntity` returned for a descriptor declaring a weapon block, as in `components.inventory.loadout`. The SDK lowers it to the weapon's canonical name.
   item: WeaponEntityDescriptor,
-  --- Socket-name → content-relative prop-model map, mounted while this weapon is active. Must be non-empty; each model path uses forward slashes and stays inside the content root. Exactly one of `attachments` and `muzzleSocket` is required; naming both or neither rejects load.
+  --- Socket-name → content-relative prop-model map, mounted while a player wields this weapon, or always on an NPC whose attacks name it. Must be non-empty; each model path uses forward slashes and stays inside the content root. Exactly one of `attachments` and `muzzleSocket` is required; naming both or neither rejects load.
   attachments: { [string]: string }?,
   --- A socket on the character's own body model that this weapon's shots leave from, for a weapon built into the body. The entry mounts nothing. Must be a non-empty socket name. Exactly one of `attachments` and `muzzleSocket` is required; naming both or neither rejects load.
   muzzleSocket: string?,
@@ -4094,7 +4094,7 @@ export type BrainInputs = {
   targetReachable: RuntimeGuardNode,
   --- Successful attack fires since the currently-evaluated activity was entered. It is scope-relative and a fire becomes visible on the next tick's guard refresh (number).
   attacksFiredInActivity: RuntimeGuardNode,
-  --- `true` when the selected target is clear on the enemy's shared, debounced sightline, which static geometry and movers at their current pose block (a closed door hides the target); false with no target. This is the eye's line-of-sight verdict, which perception and the engine fire gate share, before the fire gate's range, cooldown, and facing requirements. The fire gate also tests the gun's near path, so `targetVisible` can read true while every shot is held (see `attacksHeldInActivity`) (boolean).
+  --- `true` when the selected target is clear on the enemy's shared, debounced sightline, which static geometry and movers at their current pose block (a closed door hides the target); false with no target. This is the eye's line-of-sight verdict, which perception and the engine fire gate share, before the gate's range, cooldown, and facing requirements. The fire gate also tests the gun's near path, so `targetVisible` can read true while every shot is held (see `attacksHeldInActivity`) (boolean).
   targetVisible: RuntimeGuardNode,
   --- Milliseconds since this enemy last took damage. A fresh never-hit brain reads `1e9`; a landed hit resets it to zero and later AI ticks monotonically age it back to that sentinel (number).
   timeSinceDamageMs: RuntimeGuardNode,

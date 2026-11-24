@@ -39,9 +39,10 @@ local BrainSdk = {}
 --- the pathfinder's cached verdict rather than ground-truth reachability), and
 --- `attacksFiredInActivity` (number; successful fires since the current
 --- activity entered, visible to guards on the next refresh), and
---- `targetVisible` (boolean; the shared debounced sightline verdict, which
---- static geometry and movers at their current pose block, false with no
---- target), and `timeSinceDamageMs` (number; `1e9`
+--- `targetVisible` (boolean; the eye's debounced line-of-sight verdict, shared
+--- by perception and the engine fire gate, which static geometry and movers at
+--- their current pose block, false with no target; the fire gate also tests the
+--- gun's near path, so it can read true while every shot is held), and `timeSinceDamageMs` (number; `1e9`
 --- before the first hit, then zero at a landed hit and monotonically aged back
 --- to that sentinel by AI ticks), and `timeSinceTargetVisible` (number; `1e9`
 --- before the first sighting, then zero while a selected target is visible and

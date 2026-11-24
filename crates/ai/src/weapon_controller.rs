@@ -24,6 +24,8 @@ use crate::weapon::execution::{
 };
 use crate::weapon::{FireButtonState, ProjectileLaunch, freeze_weapon_shot};
 
+/// Where a shot starts and which way it flies. Compute's is the eye's; the
+/// launch may replace it with the fired weapon's muzzle aim.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct WeaponAim {
     pub origin: Vec3,
@@ -74,6 +76,10 @@ struct AiWeapon {
     descriptor: Arc<WeaponDescriptor>,
     component: WeaponComponent,
     attack_name: Option<String>,
+    /// The running activation has yet to reach its first shot: one that
+    /// cannot launch then leaves the attack unstarted, however many charge
+    /// ticks came first.
+    first_shot_due: bool,
 }
 
 #[derive(Default)]
@@ -162,6 +168,7 @@ impl AiWeaponControllers {
                                     Some(canonical),
                                 ),
                                 attack_name: None,
+                                first_shot_due: false,
                             },
                         );
                     }
@@ -253,7 +260,29 @@ impl AiWeaponControllers {
         if aim.is_none() {
             actor_weapons.cancel_all();
         }
-        let request = request.filter(|_| aim.is_some());
+        let mut request = request.filter(|_| aim.is_some());
+        // A request for another weapon cancels the burst in flight, so its
+        // first shot is decided before that cancel: one that cannot launch
+        // leaves the attack unstarted and the running burst untouched.
+        if let Some(requested) = request.as_ref()
+            && actor_weapons
+                .active
+                .as_ref()
+                .is_some_and(|active| active != &requested.canonical_weapon)
+            && let Some(radius) = actor_weapons
+                .weapons
+                .get(&requested.canonical_weapon)
+                .and_then(|weapon| weapon.component.projectile.as_ref())
+                .map(|projectile| projectile.radius)
+        {
+            let decision = launch(&requested.canonical_weapon, radius);
+            if !matches!(decision, ShotLaunch::Launch(_)) {
+                outcome.withheld = Some(WithheldStart {
+                    held: decision == ShotLaunch::Held,
+                });
+                request = None;
+            }
+        }
         if let Some(request) = request.as_ref()
             && actor_weapons
                 .active
@@ -323,6 +352,7 @@ impl AiWeaponControllers {
             );
             if advanced.initiated.is_some() {
                 actor_weapons.active = Some(canonical.clone());
+                weapon.first_shot_due = true;
             }
             if let Some(attempt) = advanced.shot {
                 let shot = freeze_weapon_shot(&weapon.component, attempt);
@@ -335,14 +365,17 @@ impl AiWeaponControllers {
                     .attack_name
                     .clone()
                     .expect("AI execution retains its initiating attack");
-                let aim = match launch(canonical, projectile.radius) {
+                let first_shot = std::mem::take(&mut weapon.first_shot_due);
+                let shot_aim = match launch(canonical, projectile.radius) {
                     ShotLaunch::Launch(aim) => aim,
                     decision => {
                         let held = decision == ShotLaunch::Held;
-                        if advanced.initiated.is_some() {
+                        if first_shot {
                             // The first shot could not launch: the attack does
-                            // not start, so nothing is spent.
+                            // not start, so nothing is spent, and a charge
+                            // that led up to it ends with it.
                             checkpoint.restore(&mut weapon.component);
+                            weapon.component.cancel_activation();
                             outcome.withheld = Some(WithheldStart { held });
                         } else {
                             outcome.skipped = Some(SkippedShot {
@@ -360,10 +393,10 @@ impl AiWeaponControllers {
                         continue;
                     }
                 };
-                let launch = ProjectileLaunch {
+                let projectile_launch = ProjectileLaunch {
                     sounds: Some(shot.sounds.clone()),
-                    origin: aim.origin,
-                    direction: aim.direction,
+                    origin: shot_aim.origin,
+                    direction: shot_aim.direction,
                     speed: projectile.speed,
                     radius: projectile.radius,
                     range: shot.activation.values.range,
@@ -373,7 +406,7 @@ impl AiWeaponControllers {
                         postretro_foundation::knockback_impulse(
                             push.speed,
                             push.upward_bias,
-                            aim.direction,
+                            shot_aim.direction,
                         )
                     }),
                     credit_source: shot.credit_source.clone(),
@@ -390,7 +423,7 @@ impl AiWeaponControllers {
                     attackerless: false,
                 };
                 if let Some(projectile) =
-                    host.spawn_projectile(registry, actor, actor, launch, source)
+                    host.spawn_projectile(registry, actor, actor, projectile_launch, source)
                 {
                     outcome.fired = Some(CommittedWeaponFire {
                         sounds: shot.sounds.clone(),

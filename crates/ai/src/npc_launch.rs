@@ -26,8 +26,9 @@ pub(crate) const NEAR_PATH_DISTANCE_M: f32 = 2.0;
 /// Below this a path leg has no length to test.
 const DEGENERATE_LEG_M: f32 = 1e-4;
 
-/// What an enemy's pose allows at its launch. The pose-and-stagger brief
-/// replaces this interim classification; this one reads explicit state only.
+/// What an enemy's pose allows at its launch: the interim classification,
+/// read from explicit state only, until the pose and stagger rules land
+/// (`entity_model.md` §7c).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Aim {
     /// The shot leaves the muzzle posed on the tracked state at `time`.
@@ -47,6 +48,9 @@ pub(crate) enum OwnDraw {
     /// An activity entry, or a stride or travel-variant change, whose state
     /// the mesh can draw: the enemy is aiming on this tick.
     Aiming,
+    /// Such a draw onto a state the mesh cannot draw: the switch fails and
+    /// the mesh keeps what it shows, so there is no pose to read.
+    Fails,
 }
 
 /// The interim aiming rule at the launch (`entity_model.md` §7c):
@@ -54,8 +58,10 @@ pub(crate) enum OwnDraw {
 /// - the airborne clip drawn at the launch: not aiming, through the landing tick;
 /// - the brain's own draw landing this tick (an entry, a stride or
 ///   travel-variant change): aiming, posed where that draw starts the clip;
-/// - a switch the brain did not make still drawn, or a pending redraw: not aiming;
-/// - a failed own switch, or a tracked state of none: no pose;
+/// - a switch the brain did not make still drawn, or a pending redraw: not
+///   aiming, even when this tick's own switch fails;
+/// - a failed own switch, this tick or earlier, or a tracked state of none:
+///   no pose;
 /// - otherwise aiming on the tracked state at the clock's time.
 pub(crate) fn classify(
     mesh: Option<&MeshComponent>,
@@ -72,26 +78,26 @@ pub(crate) fn classify(
         return Aim::NotAiming;
     }
     if own_draw == OwnDraw::Aiming {
-        // The draw restarts the clip on the tracked state when the mesh shows
-        // another (a reaction over a shared state, pin NM-26): pose where it
-        // starts, so the shot leaves the drawn gun.
-        let restarts = clock
-            .state
-            .as_deref()
-            .is_some_and(|state| animation.current_state != state);
+        // The draw starts the tracked state's clip over when the mesh shows
+        // another state (a reaction over a state the entry shares) or a fresh
+        // mesh awaits its redraw: pose where it starts, so the shot leaves the
+        // drawn gun, not the time the clock kept meanwhile.
+        let restarts = clock.redraw
+            || clock
+                .state
+                .as_deref()
+                .is_some_and(|state| animation.current_state != state);
         return match clock.state {
             None => Aim::NoPose,
             Some(_) if restarts => Aim::Aiming { time: start_time },
             Some(_) => Aim::Aiming { time: clock.time },
         };
     }
-    match interruption {
-        Interruption::Foreign => return Aim::NotAiming,
-        Interruption::FailedOwnSwitch => return Aim::NoPose,
-        Interruption::None => {}
-    }
-    if clock.redraw {
+    if interruption == Interruption::Foreign || clock.redraw {
         return Aim::NotAiming;
+    }
+    if own_draw == OwnDraw::Fails || interruption == Interruption::FailedOwnSwitch {
+        return Aim::NoPose;
     }
     match clock.state {
         None => Aim::NoPose,
@@ -175,7 +181,10 @@ impl NpcShooter<'_> {
 /// The two near paths at the projectile's radius, world and movers at this
 /// tick's pose: body (eye) to muzzle, then muzzle toward the target's aim
 /// point out to [`NEAR_PATH_DISTANCE_M`], or the whole way to a nearer aim
-/// point. Past the near distance the shot flies as fired.
+/// point, stopping one radius short of it: a surface the shot would only
+/// graze beside the aim point does not stand between the gun and a target
+/// at point blank, as sight forgives a hit at its aim point. Past the near
+/// distance the shot flies as fired.
 pub(crate) fn near_path_blocked(
     world: &CombinedCollisionWorld<'_>,
     eye: Vec3,
@@ -187,7 +196,7 @@ pub(crate) fn near_path_blocked(
         return true;
     }
     let toward = target_aim - muzzle;
-    let reach = toward.length().min(NEAR_PATH_DISTANCE_M);
+    let reach = (toward.length() - radius.max(0.0)).min(NEAR_PATH_DISTANCE_M);
     match toward.try_normalize() {
         Some(direction) => leg_blocked(world, muzzle, muzzle + direction * reach, radius),
         None => false,

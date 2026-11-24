@@ -77,7 +77,7 @@ pub(super) fn mounts_from_js(
     let Some(array) = raw.as_array() else {
         return Err(mount_shape_error(
             owner,
-            "`components.mesh.mounts` must be an array of `{ item, attachments }` entries",
+            "`components.mesh.mounts` must be an array of `{ item, attachments }` or `{ item, muzzleSocket }` entries",
         ));
     };
     let mut entries = Vec::with_capacity(array.len());
@@ -87,7 +87,9 @@ pub(super) fn mounts_from_js(
         if value.type_of() != rquickjs::Type::Object {
             return Err(mount_shape_error(
                 owner,
-                format_args!("`{path}` must be an object `{{ item, attachments }}`"),
+                format_args!(
+                    "`{path}` must be an object `{{ item, attachments }}` or `{{ item, muzzleSocket }}`"
+                ),
             ));
         }
         let entry = Object::from_value(value).map_err(js_err)?;

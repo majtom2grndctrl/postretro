@@ -58,11 +58,9 @@ pub fn compose_attachments(
         .iter()
         .map(|(socket, model)| (socket.as_str(), model.as_str()))
         .collect();
-    if mesh.mounts.is_some() {
-        for weapon in attack_weapons(descriptor) {
-            for (socket, model) in sorted_attachments(mesh, weapon) {
-                mounted.insert(socket, model);
-            }
+    for weapon in attack_weapons(descriptor) {
+        for (socket, model) in sorted_attachments(mesh, weapon) {
+            mounted.insert(socket, model);
         }
     }
     mounted
@@ -165,7 +163,10 @@ fn check_attachment_entry(
         let bake_model = store.get_by_name(bake);
         if bake_model.is_some() {
             loaded_bakes += 1;
-            if has_rigid_muzzle(bake_model) && !muzzle_bakes.contains(&bake) {
+            // Only a bake on a socket the body has can fire: the one the
+            // warning names below must be the one `npc_muzzle_mount` picks.
+            let mountable = body.is_none_or(|body| body.has_socket(socket));
+            if mountable && has_rigid_muzzle(bake_model) && !muzzle_bakes.contains(&bake) {
                 muzzle_bakes.push(bake);
             }
         }

@@ -46,8 +46,8 @@ const AIM: Vec3 = Vec3::new(6.0, 1.5, -0.3);
 /// Cover in the plane x = 1, 0.7 m ahead of the gun (inside the 2 m near
 /// distance). The gun's line crosses it at about 1.47 m, the eye's at 1.77 m.
 const COVER_X: f32 = 1.0;
-/// Above the gun's line but within the shot's 0.15 m radius of it, below the
-/// eye's line and the hitbox top: holds the muzzle shot, not the eye's view.
+/// Above the gun's line, below the eye's line and the hitbox top: holds the
+/// muzzle shot, not the eye's view.
 const LOW_LIP: f32 = 1.55;
 /// Below both lines by more than the radius.
 const UNDER_LIP: f32 = 1.2;
@@ -2280,5 +2280,417 @@ fn a_weapon_with_no_usable_mount_launches_from_the_eye_without_a_warning() {
             warned.is_empty(),
             "{label}: the launch warns nothing: {warned:#?}"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Regressions from review
+// ---------------------------------------------------------------------------
+
+/// `descriptor` renamed `name`, its projectile sweeping at `radius`.
+fn renamed(mut descriptor: EntityTypeDescriptor, name: &str, radius: f32) -> EntityTypeDescriptor {
+    descriptor.canonical_name = Some(name.to_string());
+    descriptor
+        .weapon
+        .as_mut()
+        .unwrap()
+        .projectile
+        .as_mut()
+        .unwrap()
+        .radius = radius;
+    descriptor
+}
+
+fn attack_on(weapon: &str) -> AttackParams {
+    AttackParams {
+        weapon: Some(weapon.to_string()),
+        ..rifle_attack()
+    }
+}
+
+fn volley_cooldown(scene: &Scene, enemy: EntityId) -> f32 {
+    scene
+        .brain(enemy)
+        .attack_cooldown_remaining_ms
+        .get(VOLLEY)
+        .copied()
+        .unwrap_or(0.0)
+}
+
+fn seed_interruption(scene: &mut Scene, enemy: EntityId, record: Interruption) {
+    let mut brain = scene.brain(enemy);
+    brain.clip_clock.interruption = record;
+    scene.reg.set_component(enemy, brain).unwrap();
+}
+
+// Regression: a charged weapon's first shot, reached on its release tick after
+// the charge began, was skipped as a later burst shot when near cover held it
+// or the enemy was not aiming: it spent, restarted the attack's cooldown and
+// counted per skip instead of once per hold.
+#[test]
+fn a_charged_first_shot_that_cannot_launch_leaves_the_attack_unstarted() {
+    let charged = || {
+        let mut descriptor = rifle(1, 0.0, 300.0, 30);
+        descriptor.weapon.as_mut().unwrap().primary = serde_json::from_value(serde_json::json!({
+            "trigger": "press", "recoveryMs": 300,
+            "charge": {"minMs": 0, "fullMs": 50},
+            "steps": [{"kind": "shot"}],
+        }))
+        .expect("a valid charged action");
+        descriptor
+    };
+    let graph = volley_graph("fire", vec![("fire", firing("shoot"))], vec![]);
+    let low = cover(LOW_LIP);
+    let open = CollisionWorld::new();
+    for (label, reaction) in [("near cover", false), ("not aiming", true)] {
+        let mut scene = gunner_scene(charged());
+        let enemy = spawn_gunner(&mut scene, 0, &graph, "fire");
+        let mut cooldowns = Vec::new();
+        let shots = run(&mut scene, enemy, 60, |scene, tick| {
+            if reaction && tick == 1 {
+                scene.switch(enemy, "hit_reaction");
+            }
+            cooldowns.push(volley_cooldown(scene, enemy));
+            if reaction { &open } else { &low }
+        });
+        assert!(shots.is_empty(), "{label}: nothing launches: {shots:?}");
+        assert_eq!(magazine(&scene, enemy), 30, "{label}: nothing spent");
+        assert!(
+            cooldowns.iter().all(|&cooldown| cooldown <= 0.0),
+            "{label}: the attack's cooldown never restarts: {cooldowns:?}"
+        );
+        assert_eq!(
+            held(&scene, enemy, 0),
+            u32::from(!reaction),
+            "{label}: a hold counts once, not aiming counts nothing"
+        );
+        if !reaction {
+            // It proposes again: once the path clears, the charge fires.
+            let shots = run(&mut scene, enemy, 15, |_, _| &open);
+            let [shot] = shots.as_slice() else {
+                panic!("{label}: the cleared charge fires once: {shots:?}");
+            };
+            assert_from_muzzle(shot, label);
+            assert_eq!(magazine(&scene, enemy), 29);
+        }
+    }
+}
+
+// Regression: a request for another weapon cancelled the burst in flight even
+// when the new weapon's first shot could not launch, silencing both.
+#[test]
+fn a_held_request_for_another_weapon_leaves_the_burst_in_flight_firing() {
+    use postretro_foundation::attack_budget::{AttackBudgetVocabulary, TokenDraw};
+    const LONG: &str = "npc.long";
+    const SNIPE: &str = "snipe";
+    let drawing = |weapon: &str, token: &str| AttackParams {
+        draws: Some(vec![TokenDraw(serde_json::json!({
+            "kind": "attackToken", "name": token
+        }))]),
+        ..attack_on(weapon)
+    };
+    // Each attack draws its own token, so the long shot's turn is granted
+    // while the burst's runs on.
+    let graph = clip_graph(
+        "spray",
+        vec![
+            ("spray", firing("shoot")),
+            ("far", act("shoot", Some(untimed(SNIPE)))),
+        ],
+        vec![(
+            "spray",
+            vec![edge(
+                "far",
+                at_least(BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT, 1.0),
+            )],
+        )],
+        vec![
+            (VOLLEY, drawing(RIFLE, "burst")),
+            (SNIPE, drawing(LONG, "long")),
+        ],
+    );
+    // A lip 0.15 m under the gun's line: clear of the burst rifle's 0.05 m
+    // shot, inside the long rifle's 0.3 m one.
+    let lip = cover(1.33);
+    let open = CollisionWorld::new();
+    let run_with = |world: &CollisionWorld| {
+        let mut scene = gunner_scene(renamed(burst_rifle(), RIFLE, 0.05));
+        scene
+            .descriptors
+            .insert(1, renamed(rifle(1, 0.0, 1000.0, 30), LONG, 0.3));
+        let mut mount = rifle_mount();
+        mount.item = LONG.to_string();
+        scene.descriptors[2] = archetype(BODY, Some(vec![rifle_mount(), mount]));
+        let vocabulary = AttackBudgetVocabulary::from_manifest(
+            Some(&serde_json::json!([
+                { "kind": "attackToken", "name": "burst", "budget": { "limit": 1 } },
+                { "kind": "attackToken", "name": "long", "budget": { "limit": 1 } },
+            ])),
+            None,
+        )
+        .expect("a valid token registration");
+        scene.reg.set_attack_budgets(Arc::new(vocabulary));
+        let enemy = spawn_gunner(&mut scene, 0, &graph, "spray");
+        let mut shots = Vec::new();
+        for tick in 0..40 {
+            let result = tick_in(&mut scene, world);
+            shots.extend(
+                result
+                    .projectile_spawns
+                    .iter()
+                    .map(|spawn| (tick, spawn.descriptor_class.clone())),
+            );
+        }
+        let magazines = (
+            magazine(&scene, enemy),
+            scene.runtime.weapons.weapon(enemy, LONG).unwrap().magazine,
+        );
+        (shots, magazines, scene.state(enemy), held(&scene, enemy, 0))
+    };
+    let ticks = burst_ticks();
+    let (shots, magazines, path, held_far) = run_with(&lip);
+    assert_eq!(path, "far", "fixture: the burst outlasts `spray`");
+    assert_eq!(
+        shots,
+        ticks
+            .iter()
+            .map(|&tick| (tick, RIFLE.to_string()))
+            .collect::<Vec<_>>(),
+        "the held long shot leaves the burst firing"
+    );
+    assert_eq!(magazines, (27, 30), "the long rifle's attack never started");
+    assert!(held_far >= 1, "the long shot was held: {held_far}");
+
+    let (shots, magazines, _, _) = run_with(&open);
+    assert_eq!(
+        shots,
+        vec![
+            (ticks[0], RIFLE.to_string()),
+            (ticks[0] + 1, LONG.to_string())
+        ],
+        "a long shot that launches starts and cancels the burst, as today"
+    );
+    assert_eq!(magazines, (29, 29));
+}
+
+// Regression: a held enemy dropped while carrying a failed own switch's
+// record fired from the eye before its fresh mesh was redrawn.
+#[test]
+fn a_dropped_gunner_with_a_failed_switch_record_fires_nothing_until_redrawn() {
+    const DROP: usize = 6;
+    let graph = volley_graph("fire", vec![("fire", firing("idle"))], vec![]);
+    let mut scene = gunner_scene(single_rifle());
+    let enemy = spawn_gunner(&mut scene, 0, &graph, "fire");
+    // Out of range until the drop.
+    let pawn = scene.pawn;
+    set_enemy_position(&mut scene.reg, pawn, Vec3::new(20.0, 1.0, PLAYER.z));
+    let open = CollisionWorld::new();
+    let mut holder = None;
+    let shots = run(&mut scene, enemy, 20, |scene, tick| {
+        match tick {
+            2 => seed_interruption(scene, enemy, Interruption::FailedOwnSwitch),
+            3 => holder = Some(pick_up(scene, enemy)),
+            DROP => {
+                assert_eq!(
+                    interruption(scene, enemy),
+                    Interruption::FailedOwnSwitch,
+                    "fixture: the record rides out the hold"
+                );
+                drop_from(scene, enemy, holder.take().unwrap());
+                set_enemy_position(&mut scene.reg, pawn, PLAYER);
+            }
+            _ if tick == DROP + 1 => resolve_dropped(scene, enemy),
+            _ => {}
+        }
+        &open
+    });
+    assert_eq!(
+        ticks_of(&shots).first().copied(),
+        Some(DROP + 2),
+        "nothing launches on the drop or the redraw tick: {shots:?}"
+    );
+    assert_from_muzzle(&shots[0], "after the redraw");
+}
+
+// Regression: an entry landing on the tick a dropped gunner's redraw was
+// pending, its fresh mesh already showing the tracked state's name, posed the
+// shot at the clock's held time rather than where the redraw starts the clip.
+#[test]
+fn an_entry_on_a_pending_redraw_poses_the_shot_at_the_clips_start() {
+    const DROP: usize = 10;
+    let graph = volley_graph(
+        "fire",
+        vec![("fire", firing("shoot")), ("again", firing("shoot"))],
+        vec![],
+    );
+    let mut scene = gunner_scene(single_rifle());
+    // The rifle loop is the mesh's default, so the fresh mesh shows it.
+    let states = scene.mesh.animation.as_ref().unwrap().states.clone();
+    scene.mesh =
+        MeshComponent::animated(BODY.to_string(), MeshAnimation::new(states, "shoot".into()));
+    let enemy = spawn_gunner(&mut scene, 0, &graph, "fire");
+    let pawn = scene.pawn;
+    set_enemy_position(&mut scene.reg, pawn, Vec3::new(20.0, 1.0, PLAYER.z));
+    let open = CollisionWorld::new();
+    let mut holder = None;
+    let mut expected = None;
+    let shots = run(&mut scene, enemy, DROP + 4, |scene, tick| {
+        match tick {
+            5 => holder = Some(pick_up(scene, enemy)),
+            DROP => {
+                drop_from(scene, enemy, holder.take().unwrap());
+                set_enemy_position(&mut scene.reg, pawn, PLAYER);
+            }
+            _ if tick == DROP + 1 => {
+                resolve_dropped(scene, enemy);
+                scene.enter(enemy, "again");
+                assert_eq!(mesh_state(scene, enemy), "shoot", "fixture");
+                let clock = scene.brain(enemy).clip_clock.clone();
+                assert!(clock.redraw, "fixture: the redraw is pending");
+                let start = crate::clip_clock::start_time(&clock, enemy);
+                expected = Some((
+                    posed(scene, enemy, "shoot", start, gunner_mount()).unwrap(),
+                    posed(scene, enemy, "shoot", clock.time, gunner_mount()).unwrap(),
+                ));
+            }
+            _ => {}
+        }
+        &open
+    });
+    let [shot] = shots.as_slice() else {
+        panic!("one shot, on the entry tick: {shots:?}");
+    };
+    assert_eq!(shot.tick, DROP + 1, "the entry's own draw makes it aiming");
+    let (start, held_time) = expected.unwrap();
+    assert!(
+        start.distance(held_time) > 1.0e-3,
+        "fixture: the clip's start and the held time pose apart"
+    );
+    assert!(
+        shot.origin.distance(start) < 1.0e-4,
+        "posed at the clip's start, {start}, not the held time, {held_time}: {shot:?}"
+    );
+}
+
+// Regression: a contact strike ended a near-path hold, so a projectile attack
+// still held after it counted again in the enclosing activity.
+#[test]
+fn a_contact_strike_leaves_a_hold_running_and_a_launched_shot_ends_it() {
+    let offense = BehaviorLayerDescriptor::Graph(BehaviorGraphEnvelope {
+        initial: "shoot".to_string(),
+        activities: BTreeMap::from([
+            ("shoot".to_string(), firing("shoot")),
+            ("melee".to_string(), act("aim", Some(untimed(JAB)))),
+        ]),
+        transitions: BTreeMap::from([
+            ("shoot".to_string(), vec![edge("melee", after_ms(100.0))]),
+            ("melee".to_string(), vec![edge("shoot", after_ms(100.0))]),
+        ]),
+    });
+    let mut engage = resting();
+    engage.layers = BTreeMap::from([("offense".to_string(), offense)]);
+    let graph = clip_graph(
+        "engage",
+        vec![("engage", engage)],
+        vec![],
+        vec![(VOLLEY, rifle_attack()), (JAB, contact_attack(0.0))],
+    );
+    let mut scene = gunner_scene(single_rifle());
+    // Within the jab's reach; the low door still sits between gun and aim.
+    let pawn = scene.pawn;
+    set_enemy_position(&mut scene.reg, pawn, Vec3::new(1.5, 1.0, PLAYER.z));
+    let enemy = spawn_gunner(&mut scene, 0, &graph, "engage");
+    let world = CollisionWorld::new();
+    let movers = low_door();
+    let (mut visits, mut since_entry, mut last_leaf) = (0, 0, String::new());
+    // The enclosing count as each visit to `shoot` after the first begins.
+    let mut held_at_visit = Vec::new();
+    let mut shots = Vec::new();
+    let mut struck = 0;
+    for tick in 0..120 {
+        // The door opens for one tick, three ticks into the second visit.
+        let open = visits == 2 && since_entry == 3;
+        let poses = if open { open_door() } else { closed_door() };
+        let hp = player_hp(&scene.reg, pawn);
+        let result = tick_full(&mut scene, &world, &movers, &poses, DT, |_| {});
+        if player_hp(&scene.reg, pawn) < hp {
+            struck += 1;
+        }
+        shots.extend(record(&scene, enemy, tick, &result));
+        let leaf = scene.state(enemy);
+        if leaf != last_leaf && leaf.ends_with("/shoot") {
+            visits += 1;
+            since_entry = 0;
+            held_at_visit.push(held(&scene, enemy, 0));
+        } else {
+            since_entry += 1;
+        }
+        last_leaf = leaf;
+        if visits == 3 && since_entry == 2 {
+            break;
+        }
+    }
+    assert!(
+        struck >= 2,
+        "fixture: the melee leaf's jab lands each visit"
+    );
+    assert_eq!(
+        ticks_of(&shots).len(),
+        1,
+        "fixture: one shot, through the opened door: {shots:?}"
+    );
+    assert_eq!(
+        held_at_visit,
+        vec![1, 1, 2],
+        "a jab between holds adds nothing; the launched shot ends the hold, so \
+         the next counts again"
+    );
+}
+
+// Regression: on the tick an own switch failed with no record yet, the launch
+// read the failing state's pose and fired from a muzzle the mesh did not draw.
+#[test]
+fn the_tick_an_own_switch_fails_fires_from_the_eye_or_not_at_all_under_a_reaction() {
+    let graph = volley_graph(
+        "rest",
+        vec![("rest", resting()), ("fire", firing("pending"))],
+        vec![("rest", vec![edge("fire", after_ms(100.0))])],
+    );
+    for reaction in [false, true] {
+        let mut scene = gunner_scene(single_rifle());
+        // Declared on a clip the model carries but unresolved on the mesh, so
+        // the switch fails while the clip would still pose by name.
+        scene.mesh.animation.as_mut().unwrap().states.insert(
+            "pending".to_string(),
+            animation_state("firing_rifle", true, None),
+        );
+        let enemy = spawn_gunner(&mut scene, 0, &graph, "rest");
+        let open = CollisionWorld::new();
+        let mut paths = Vec::new();
+        let mut records = Vec::new();
+        let shots = run(&mut scene, enemy, 20, |scene, tick| {
+            if reaction && tick == 2 {
+                scene.switch(enemy, "hit_reaction");
+            }
+            paths.push(scene.state(enemy));
+            records.push(interruption(scene, enemy));
+            &open
+        });
+        // `paths[t]` is the path before tick t: the tick that entered is one less.
+        let entry = first(&paths, "fire") - 1;
+        if reaction {
+            assert!(
+                shots.is_empty(),
+                "under a reaction nothing launches: {shots:?}"
+            );
+            assert_eq!(records[entry + 1], Interruption::Foreign);
+        } else {
+            let [shot] = shots.as_slice() else {
+                panic!("one shot on the failing tick: {shots:?}");
+            };
+            assert_eq!(shot.tick, entry, "the failing switch's own tick");
+            assert_from_eye(shot, "a failed own switch");
+            assert_eq!(records[entry + 1], Interruption::FailedOwnSwitch);
+        }
     }
 }

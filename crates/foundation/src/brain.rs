@@ -89,10 +89,13 @@ pub const BRAIN_TARGET_REACHABLE_INPUT: &str = "@brain.targetReachable";
 /// A fire on the current tick becomes observable only after the next refresh.
 pub const BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT: &str = "@brain.attacksFiredInActivity";
 /// Whether the selected target is visible along the enemy's debounced
-/// static-world eye-to-target sightline. `false` with no selected target.
+/// eye-to-target sightline, through world geometry and movers at their current
+/// pose. `false` with no selected target.
 ///
-/// This is the exact shared verdict the engine-floor fire gate reads; it is
-/// independent of the additional range, cooldown, and facing gates.
+/// This is the eye's line-of-sight verdict that perception and the engine-floor
+/// fire gate share; it is independent of the additional range, cooldown, and
+/// facing gates. The fire gate also tests the gun's near path, so this can read
+/// `true` while every shot is held ([`BRAIN_ATTACKS_HELD_IN_ACTIVITY_INPUT`]).
 pub const BRAIN_TARGET_VISIBLE_INPUT: &str = "@brain.targetVisible";
 /// Milliseconds since this enemy last took damage. A fresh brain that has
 /// never been damaged reads [`BRAIN_NO_TARGET_DISTANCE`], then a landed hit
@@ -152,7 +155,8 @@ pub const BRAIN_DAMAGE_IN_ACTIVITY_INPUT: &str = "@brain.damageInActivity";
 pub const BRAIN_AWARENESS_INPUT: &str = "@brain.awareness";
 /// Shots the gun's near-path test held since the currently-evaluated activity
 /// was entered: a clip moment that whiffed on a blocked near path, a burst
-/// shot skipped on one, or an attack with no clip moment when it becomes held.
+/// shot skipped on one, or an attack with no clip moment when it becomes held
+/// (counted once per hold, and again at each activity entry while still held).
 /// An eye-sight failure, a missing muzzle, a shot withheld while the enemy is
 /// not aiming and an obstacle past the near distance count nothing.
 ///

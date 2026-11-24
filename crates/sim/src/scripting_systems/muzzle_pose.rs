@@ -91,6 +91,13 @@ fn pose_at_clip_time(
     let animation = mesh.animation.as_ref()?;
     let state = animation.states.get(pose.state)?;
     let clip = holder.state_clip(state.clip_index, &state.clip)?;
+    // Clip time never wraps on the clock; wrap a loop's in f64 before the
+    // sampler's f32, so a long-held loop keeps its precision.
+    let time = if state.looping && clip.duration > 0.0 {
+        pose.time.rem_euclid(f64::from(clip.duration))
+    } else {
+        pose.time
+    };
     let loop_policy = if state.looping {
         Loop::Wrap
     } else {
@@ -100,7 +107,7 @@ fn pose_at_clip_time(
     sample_clip_looped_world(
         clip,
         holder.skeleton.as_ref(),
-        pose.time as f32,
+        time as f32,
         loop_policy,
         out,
     );

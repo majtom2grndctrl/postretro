@@ -400,8 +400,9 @@ pub struct BrainComponent {
     #[serde(default = "default_activity_attack_counts")]
     pub attacks_held_in_activity: [u32; MAX_BEHAVIOR_NESTING_DEPTH],
     /// Whether the hold of an attack with no clip moment has already counted
-    /// at each depth, so a hold lasting many ticks counts once. Cleared when the
-    /// attack fires or its near path clears, and for a depth when it is entered.
+    /// at each depth, so a hold lasting many ticks counts once. The edge is per
+    /// nesting depth and attack-agnostic. It clears when a projectile shot
+    /// launches, and at a depth's entry and exit.
     #[serde(default = "default_held_hold_edges")]
     pub held_hold_edge: [bool; MAX_BEHAVIOR_NESTING_DEPTH],
     /// Scope-relative `@brain.activityRoll` for the matching active activity:
@@ -906,7 +907,8 @@ impl BrainComponent {
         }
     }
 
-    /// The attack fired or its near path cleared: the next hold counts afresh.
+    /// A projectile shot launched: every depth's edge clears, so the next hold
+    /// counts afresh. (An entry or exit clears that depth's edge on its own.)
     pub fn end_held_hold(&mut self) {
         self.held_hold_edge.fill(false);
     }

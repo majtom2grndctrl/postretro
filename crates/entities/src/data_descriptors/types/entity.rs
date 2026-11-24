@@ -66,10 +66,13 @@ pub struct MeshDescriptor {
     /// the `speed_scale = true` default. Threaded onto the runtime
     /// [`crate::components::mesh::MeshAnimation`] at spawn.
     pub locomotion: Option<LocomotionDescriptor>,
-    /// The character's weapon-mount table (`mounts` on the wire): for
-    /// each weapon it may wield, the props fitted to this model's rig. `None`
-    /// when the table is absent, which opts the character out of mounted
-    /// weapons silently; `Some` (even empty) declares the table. Part of the
+    /// The character's mount table (`mounts` on the wire), one entry per
+    /// weapon: the props fitted to this model's rig (`{ item, attachments }`),
+    /// or the body socket a built-in weapon's shots leave from
+    /// (`{ item, muzzleSocket }`). A player mounts its active weapon's entry; an
+    /// NPC mounts the entry of every weapon its attacks name. `None` when the
+    /// table is absent, which opts the character out of mounted weapons
+    /// silently; `Some` (even empty) declares the table. Part of the
     /// mesh, so the hot-reload mesh deferral covers it.
     pub mounts: Option<Vec<MountDescriptor>>,
 }
@@ -433,11 +436,11 @@ impl EntityTypeDescriptor {
     /// The checks only the mesh and the behavior together can make, run by
     /// both entity readers once each has parsed its own block: a stance
     /// release that repeats (`passes`) plays a looping state, in its own
-    /// state and every travel variant the mesh declares; and the weapons its
-    /// attacks name may share a mount socket only with one model. A client replays each
+    /// state and every travel variant the mesh declares. A client replays each
     /// pass from the replicated state name alone, which a one-shot cannot do.
     /// A state the mesh does not declare is left to spawn validation's
-    /// warning.
+    /// warning. The weapons its attacks name may also share a mount socket only
+    /// with one model ([`super::mounts::validate_shared_attack_sockets`]).
     pub fn validate_across_components(&self) -> Result<(), DescriptorError> {
         let (Some(mesh), Some(behavior)) = (self.mesh.as_ref(), self.behavior.as_ref()) else {
             return Ok(());

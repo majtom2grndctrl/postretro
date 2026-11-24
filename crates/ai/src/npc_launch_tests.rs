@@ -332,3 +332,32 @@ fn a_clear_muzzle_launches_toward_the_target_aim_point() {
         })
     );
 }
+
+// Regression: at point blank the muzzle-to-target leg swept its full radius
+// onto the aim point, so a lintel just above a target's eye, which the shot
+// would only graze there, held the shot.
+#[test]
+fn a_surface_beside_a_point_blank_aim_point_does_not_hold_the_shot() {
+    let eye = Vec3::new(0.0, 1.8, 0.0);
+    let muzzle = Vec3::new(0.5, 1.2, 0.0);
+    // The target's eye 1 m from the muzzle, inside the near distance.
+    let target = Vec3::new(1.5, 1.2, 0.0);
+    // A lintel 0.1 m above the aim point, within the shot's radius of it,
+    // reaching back only to just short of it.
+    let lintel = CollisionWorld::from_triangles_for_test(
+        vec![
+            Vec3::new(1.48, 1.3, -1.0),
+            Vec3::new(3.0, 1.3, -1.0),
+            Vec3::new(3.0, 1.3, 1.0),
+            Vec3::new(1.48, 1.3, 1.0),
+        ],
+        vec![[0u32, 1, 2], [0, 2, 3]],
+    );
+    assert!(
+        !blocked(&lintel, eye, muzzle, target),
+        "a surface the shot only grazes at its aim point leaves the gun clear"
+    );
+    // An obstacle squarely between the muzzle and the near target still holds.
+    let between = wall_world(1.0, -1.0, 3.0);
+    assert!(blocked(&between, eye, muzzle, target));
+}

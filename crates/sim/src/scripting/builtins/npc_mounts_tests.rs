@@ -513,3 +513,41 @@ fn hits_on_an_npc_are_identical_with_and_without_its_mount_table() {
         "a mounted bake takes no hit and blocks nothing"
     );
 }
+
+// Regression: the several-muzzles warning named the first bake in socket
+// order even when it sat on a socket the body lacks, not the bake the shots
+// actually leave.
+#[test]
+fn the_several_muzzles_warning_names_the_bake_the_resolver_launches_from() {
+    const BAKE_C: &str = "models/ar_4/third.gltf";
+    let logs = LogCapture::start();
+    let store = store_with(&[
+        (BODY, &["hand_r", "hip"]),
+        (BAKE, &["muzzle"]),
+        (BAKE_B, &["muzzle"]),
+        (BAKE_C, &["muzzle"]),
+    ]);
+    // `a_socket` sorts first, but the body lacks it.
+    let descriptor = npc(Some(vec![entry(
+        "rifle",
+        &[("a_socket", BAKE), ("hand_r", BAKE_B), ("hip", BAKE_C)],
+    )]));
+    assert_eq!(
+        npc_muzzle_mount(&descriptor, "rifle", &store),
+        Some(MuzzleMount::Mounted {
+            holder_socket: "hand_r",
+            bake: BAKE_B,
+        }),
+        "fixture: the resolver skips the socket the body lacks"
+    );
+
+    check_npc_mount_models(std::slice::from_ref(&descriptor), &store);
+
+    logs.assert_logged_once(
+        Level::Warn,
+        &format!(
+            "archetype `trooper` weapon `rifle`: 2 mounted bakes carry a `muzzle` socket; its shots launch from `{BAKE_B}`"
+        ),
+    );
+    assert_eq!(warns(&logs, &format!("launch from `{BAKE}`")), 0);
+}

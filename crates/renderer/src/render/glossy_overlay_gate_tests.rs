@@ -47,9 +47,11 @@ fn names_planar(text: &str) -> bool {
 // scan (`fluid_probe_layer_derives_from_the_face_binding_alone`) pins them.
 #[test]
 fn the_overlay_probe_layer_derives_from_the_face_binding_alone() {
+    let surface = squashed(include_str!("../shaders/glossy_surface.wgsl"));
+    assert!(surface.contains("@location(3)probe:u32,"), "the vertex stream");
+    assert!(surface.contains("@location(2)@interpolate(flat)probe:u32,"));
+    assert_eq!(surface.matches("probe").count(), 2, "declared, never read");
     let code = squashed(OVERLAY_WGSL);
-    assert!(code.contains("@location(3)probe:u32,"), "the vertex stream");
-    assert!(code.contains("@location(2)@interpolate(flat)probe:u32,"));
     assert!(overlay_fn("vs_main").contains("out.probe=in.probe;"));
     assert_eq!(
         code.matches("in.probe").count(),

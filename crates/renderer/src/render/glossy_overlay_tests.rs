@@ -7,6 +7,7 @@ use crate::render::SCENE_COLOR_FORMAT;
 use crate::render::gpu_test_harness::wgsl_function;
 
 const OVERLAY_WGSL: &str = include_str!("../shaders/glossy_overlay.wgsl");
+const SURFACE_WGSL: &str = include_str!("../shaders/glossy_surface.wgsl");
 const SHADING_WGSL: &str = include_str!("../shaders/glossy_overlay_shading.wgsl");
 const FORWARD_WGSL: &str = include_str!("../shaders/forward.wgsl");
 
@@ -66,7 +67,7 @@ fn overlay_vertex_stage_repeats_forwards_invariant_clip_position() {
     let clip = "out.clip_position=uniforms.view_proj*vec4<f32>(in.position,1.0);";
     assert!(squashed(wgsl_function(FORWARD_WGSL, "vs_main")).contains(clip));
     assert!(squashed(wgsl_function(OVERLAY_WGSL, "vs_main")).contains(clip));
-    for (name, source) in [("forward", FORWARD_WGSL), ("overlay", OVERLAY_WGSL)] {
+    for (name, source) in [("forward", FORWARD_WGSL), ("overlay", SURFACE_WGSL)] {
         assert!(
             squashed(source).contains("@invariant@builtin(position)clip_position:vec4<f32>"),
             "{name} declares its clip position invariant"
@@ -75,11 +76,11 @@ fn overlay_vertex_stage_repeats_forwards_invariant_clip_position() {
     // The same uniform, member for member: forward's is commented, the
     // overlay's (as the sums pass's) is not.
     assert_eq!(
-        wgsl_struct(OVERLAY_WGSL, "Uniforms"),
+        wgsl_struct(SURFACE_WGSL, "Uniforms"),
         wgsl_struct(FORWARD_WGSL, "Uniforms")
     );
     assert_eq!(
-        squashed(wgsl_function(OVERLAY_WGSL, "oct_decode")),
+        squashed(wgsl_function(SURFACE_WGSL, "oct_decode")),
         squashed(wgsl_function(FORWARD_WGSL, "oct_decode"))
     );
     assert_eq!(
@@ -122,11 +123,11 @@ fn overlay_layout_binds_only_its_probe_records_and_static_diffuse() {
         ),
         (1, 2, 3)
     );
-    let groups = squashed(OVERLAY_WGSL);
+    let groups = squashed(&format!("{OVERLAY_WGSL}{SURFACE_WGSL}"));
     // The material group declares albedo, the specular slot, the material
     // uniform (Surface Depth's march words), the normal map and the sampler,
     // forward's bindings by name: never the glow.
-    let material: Vec<_> = OVERLAY_WGSL
+    let material: Vec<_> = SURFACE_WGSL
         .lines()
         .filter(|line| line.starts_with("@group(1)"))
         .collect();
@@ -144,7 +145,7 @@ fn overlay_layout_binds_only_its_probe_records_and_static_diffuse() {
         assert!(FORWARD_WGSL.contains(line), "forward declares `{line}`");
     }
     assert_eq!(
-        wgsl_struct(OVERLAY_WGSL, "MaterialUniform"),
+        wgsl_struct(SURFACE_WGSL, "MaterialUniform"),
         wgsl_struct(FORWARD_WGSL, "MaterialUniform"),
         "the material uniform is forward's, member for member"
     );
@@ -401,7 +402,7 @@ fn overlay_weight_and_colour_mirror_the_cpu_reference() {
     // The texel forward's highlight reads: forward's reconstruction, and the
     // tint rule composed from the one module both read.
     assert_eq!(
-        squashed(wgsl_function(OVERLAY_WGSL, "sample_post_retro")),
+        squashed(wgsl_function(SURFACE_WGSL, "sample_post_retro")),
         squashed(wgsl_function(FORWARD_WGSL, "sample_post_retro"))
     );
     assert!(
@@ -595,7 +596,7 @@ fn overlay_shades_from_forwards_march_normal_and_texel_point() {
         assert!(forward_vertex.contains(statement), "forward: {statement}");
         assert!(vertex.contains(statement), "overlay: {statement}");
     }
-    let output = wgsl_struct(OVERLAY_WGSL, "GlossyVertexOutput");
+    let output = wgsl_struct(SURFACE_WGSL, "GlossyVertexOutput");
     for interpolated in [
         "@location(0)world_position:vec3<f32>",
         "@location(1)world_normal:vec3<f32>",

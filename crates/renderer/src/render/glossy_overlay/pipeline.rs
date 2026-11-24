@@ -18,6 +18,67 @@ const WORLD_PROBE_SHADER_LOCATION: u32 = 3;
 /// stream's location.
 const TANGENT_SHADER_LOCATION: u32 = 4;
 
+/// The world vertex's attributes the glossy redraw reads: position, UV and
+/// normal at forward's offsets and locations, and the tangent at forward's
+/// offset, after the probe stream's location.
+const WORLD_VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 4] = [
+    wgpu::VertexAttribute {
+        offset: 0,
+        shader_location: 0,
+        format: wgpu::VertexFormat::Float32x3,
+    },
+    wgpu::VertexAttribute {
+        offset: 12,
+        shader_location: 1,
+        format: wgpu::VertexFormat::Float32x2,
+    },
+    wgpu::VertexAttribute {
+        offset: 20,
+        shader_location: 2,
+        format: wgpu::VertexFormat::Uint16x2,
+    },
+    wgpu::VertexAttribute {
+        offset: 24,
+        shader_location: TANGENT_SHADER_LOCATION,
+        format: wgpu::VertexFormat::Uint16x2,
+    },
+];
+
+const WORLD_PROBE_ATTRIBUTES: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
+    offset: 0,
+    shader_location: WORLD_PROBE_SHADER_LOCATION,
+    format: wgpu::VertexFormat::Uint32,
+}];
+
+/// A glossy redraw's vertex streams: slot 0 the world vertex buffer, slot 1
+/// the level's world probe stream.
+pub(crate) fn glossy_vertex_buffers() -> [Option<wgpu::VertexBufferLayout<'static>>; 2] {
+    [
+        Some(wgpu::VertexBufferLayout {
+            array_stride: postretro_render_data::geometry::WorldVertex::STRIDE
+                as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &WORLD_VERTEX_ATTRIBUTES,
+        }),
+        Some(wgpu::VertexBufferLayout {
+            array_stride: WORLD_PROBE_STRIDE,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &WORLD_PROBE_ATTRIBUTES,
+        }),
+    ]
+}
+
+/// Forward's rasterization, so a glossy redraw covers the fragments forward
+/// shaded.
+pub(crate) fn glossy_primitive_state() -> wgpu::PrimitiveState {
+    wgpu::PrimitiveState {
+        topology: wgpu::PrimitiveTopology::TriangleList,
+        front_face: wgpu::FrontFace::Ccw,
+        cull_mode: Some(wgpu::Face::Back),
+        ..Default::default()
+    }
+}
+
 /// The level probe group's entries: the colour array, share table, distance
 /// array and sums, each read by the fragment stage alone.
 pub(crate) fn glossy_overlay_probe_layout_entries() -> [wgpu::BindGroupLayoutEntry; 4] {
@@ -105,57 +166,10 @@ pub(super) fn overlay_pipeline(
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: Some("vs_main"),
-            buffers: &[
-                // Slot 0: the world vertex buffer: position, UV and normal
-                // at forward's offsets and locations, and the tangent at
-                // forward's offset.
-                Some(wgpu::VertexBufferLayout {
-                    array_stride: postretro_render_data::geometry::WorldVertex::STRIDE
-                        as wgpu::BufferAddress,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttribute {
-                            offset: 0,
-                            shader_location: 0,
-                            format: wgpu::VertexFormat::Float32x3,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 12,
-                            shader_location: 1,
-                            format: wgpu::VertexFormat::Float32x2,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 20,
-                            shader_location: 2,
-                            format: wgpu::VertexFormat::Uint16x2,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 24,
-                            shader_location: TANGENT_SHADER_LOCATION,
-                            format: wgpu::VertexFormat::Uint16x2,
-                        },
-                    ],
-                }),
-                // Slot 1: the level's world probe stream.
-                Some(wgpu::VertexBufferLayout {
-                    array_stride: WORLD_PROBE_STRIDE,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[wgpu::VertexAttribute {
-                        offset: 0,
-                        shader_location: WORLD_PROBE_SHADER_LOCATION,
-                        format: wgpu::VertexFormat::Uint32,
-                    }],
-                }),
-            ],
+            buffers: &glossy_vertex_buffers(),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
-        // Forward's rasterization, so the redraw covers the same fragments.
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: Some(wgpu::Face::Back),
-            ..Default::default()
-        },
+        primitive: glossy_primitive_state(),
         // Equal against the pre-pass depth, as forward tests it; a mover or
         // character drawn over the face since fails it.
         depth_stencil: Some(wgpu::DepthStencilState {

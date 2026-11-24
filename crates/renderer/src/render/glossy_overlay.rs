@@ -29,13 +29,16 @@ use super::kinematic_brush::KinematicBrushPass;
 use crate::compute_cull::{ComputeCullPipeline, SetTextureFn};
 use pipeline::overlay_pipeline;
 
-/// The overlay's shader: its own bindings and entries, its shading inputs
-/// (the style's point, forward's march and normal map), the tint rule
+/// The overlay's shader: its own bindings and entries, the glossy surface
+/// (the camera and world-material groups and the world vertex), its shading
+/// inputs (the style's point, forward's march and normal map), the tint rule
 /// forward's highlight reads, forward's Surface Depth march, the exponent →
 /// mip function, then the probe term, hemisphere and Fresnel it reuses from
 /// the fluid shader's modules, by name.
 pub(crate) const GLOSSY_OVERLAY_SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/glossy_overlay.wgsl"),
+    "\n",
+    include_str!("../shaders/glossy_surface.wgsl"),
     "\n",
     include_str!("../shaders/glossy_overlay_shading.wgsl"),
     "\n",

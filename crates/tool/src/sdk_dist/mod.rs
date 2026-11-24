@@ -1,42 +1,36 @@
-//! Modder SDK bundle assembly — a *content-complete* kit.
+//! SDK bundle assembly — the engine install a game developer builds against.
 //!
-//! Unlike `dist` (the lean *player* payload: baked levels, source-excluded
-//! content, a release engine), `sdk-dist` produces a bundle that is playable on
-//! arrival AND fully editable. It runs the same content bakes as the player
-//! payload — model textures, per-level `prl-build --release`, materials copy —
-//! so the baked `maps/<name>.prl` and `baked/materials/` ship ready to play, and
-//! it *additionally* ships what authoring needs: a DEBUG engine built with
-//! `--features dev-tools` (TS auto-compile + hot reload require debug
-//! assertions; the inspector requires the feature), the compilers, the tool
-//! itself, a release engine, the `sdk/`, `docs/`, and `tools/` trees, the
-//! engine-owned `core/` tree, and the mod tree WHOLE — its `.map`/`.ts` sources
-//! beside the freshly baked `.prl` and the emitted entry `.js`, never run
-//! through the player payload's source-excluding filter.
+//! The bundle ships no game content. It carries the engine and the content
+//! tooling: a DEBUG engine built with `--features dev-tools` (TS auto-compile
+//! and hot reload require debug assertions; the inspector requires the
+//! feature), the compilers, the tool itself, a release engine for the player
+//! payloads the recipient builds, and the engine-owned `sdk/`, `docs/`,
+//! `tools/` and `core/` trees. Game developers bring their own content: the
+//! workspace's `content/dev` is an engine-developer fixture and never enters a
+//! bundle.
 //!
-//! The bundle is a project in its own right: it carries a `postretro.toml`, so
-//! its recipient can produce a player payload from it with no repository, no
-//! Rust toolchain, and no cargo — which is the whole point of shipping the tool.
-//! That marker names the package `<package>-sdk`, so every launch from the
-//! bundle keeps its player data apart from the installed game's.
+//! The bundle root is still a project, so the tool works on arrival: it
+//! carries a generated `postretro.toml` and an empty starter mod at
+//! `content/base`, copied from `sdk/templates/starter/` with its entry script
+//! compiled beside it. The starter declares no levels, so the bundle bakes
+//! nothing and carries no `baked/` tree.
 //!
-//! It reuses the player payload's stages and its containment and
-//! completion-gate machinery. The one invariant separating the two outputs is
-//! subtraction, not baking: the player payload carries only released runtime
-//! artifacts, while the SDK bundle is a superset that also carries the sources
-//! and tools. The SDK sweep is therefore lighter — it confirms the required
-//! entries exist rather than forbidding sources.
+//! The bundle is named [`SDK_BUNDLE_NAME`] whatever project runs the command —
+//! the project supplies only the output root its containment guard anchors on.
+//! It reuses the player payload's containment and completion-gate machinery.
 //!
 //! See: context/lib/build_pipeline.md §Distribution packaging (§SDK bundle)
 
 use std::ffi::OsString;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
-use crate::binaries::Helper;
+use crate::binaries::{Helper, run_checked};
 use crate::dist::parse_args;
 use crate::dist::payload::{MARKER_NAME, count_payload};
 use crate::dist::resolve::guard_payload_root;
-use crate::dist::stages::{self, BakeTarget};
+use crate::project::Project;
 
 mod assemble;
 mod readme;
@@ -48,14 +42,7 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
     let project = cli.project()?;
     let install_root = cli.install_root()?;
     let output_root = cli.output_root(&project);
-    let bundle_name = sdk_bundle_root_name(&project.manifest().package.name);
-    let bundle_root = output_root.join(&bundle_name);
-
-    // Render the bundle's marker before anything is assembled. It refuses a
-    // recipe source that lives outside the shipped mod tree — a bundle the
-    // recipient's own `dist` could not build from — so that failure lands here,
-    // on the author's machine, rather than after a broken tree has been written.
-    let bundle_manifest = readme::render_bundle_manifest(project.manifest(), &bundle_name)?;
+    let bundle_root = output_root.join(SDK_BUNDLE_NAME);
 
     guard_payload_root(&bundle_root, project.root())
         .map_err(|error| format!("sdk-dist: {error}"))?;
@@ -69,50 +56,22 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
         tool: cli.binaries.resolve(Helper::Tool)?,
     };
 
-    let (entry_ext, entry_script) = stages::emit_entry_script(&project, &binaries.scripts_build)?;
-    let resolved = stages::resolve_levels(&entry_script, &project)?;
-    stages::bake_model_textures(&project)?;
+    // Compiled into scratch before stage 5 deletes the previous bundle, so a
+    // starter that fails to compile costs nothing already built.
+    let starter_script = emit_starter_script(&project, &install_root, &binaries.scripts_build)?;
 
     assemble::assemble_bundle(
-        &project,
         &assemble::BundleTarget {
+            project_root: project.root(),
             output_root: &output_root,
             bundle_root: &bundle_root,
-            bundle_name: &bundle_name,
             install_root: &install_root,
         },
         &binaries,
-        entry_ext,
-        &entry_script,
-        &resolved,
-        &bundle_manifest,
+        &starter_script,
     )?;
 
-    // The bundle's marker namespace is the `-sdk` bundle name, so its temp files
-    // never collide with a concurrent player payload run.
-    stages::bake_levels(
-        &project,
-        &BakeTarget {
-            output_root: &output_root,
-            payload_root: &bundle_root,
-            marker_name: &bundle_name,
-            payload_mod_root: project.mod_root_rel(),
-        },
-        &binaries.prl_build,
-        &resolved,
-    )?;
-    stages::copy_materials(&project, &bundle_root)?;
-    let locks = crate::dist::payload::remove_pack_locks(&bundle_root)?;
-    if locks > 0 {
-        println!("  removed {locks} publication locks left by the level bakes");
-    }
-
-    sweep_sdk_bundle(
-        &bundle_root,
-        Path::new(project.mod_root_rel()),
-        entry_ext,
-        &resolved,
-    )?;
+    sweep_sdk_bundle(&bundle_root)?;
     fs::remove_file(bundle_root.join(MARKER_NAME)).map_err(|error| {
         format!(
             "sdk-dist: remove completion marker {}: {error}",
@@ -128,14 +87,53 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
     Ok(0)
 }
 
-/// The SDK bundle's name: its root under `dist/`, its launcher, and the package
-/// its own marker declares — one helper, so the three cannot drift. The `-sdk`
-/// suffix keeps the bundle from colliding with the player payload under the
-/// same output directory and, as the app name, with the installed game's
-/// settings and saves.
-fn sdk_bundle_root_name(package_name: &str) -> String {
-    format!("{package_name}-sdk")
+/// Compile the starter's `start-script.ts` into the project's scratch tree.
+///
+/// The debug authoring engine recompiles `start-script.ts` at every mod init,
+/// so this is not what makes the starter boot there. It proves the starter
+/// compiles before a bundle ships, and the emitted `.js` is what the release
+/// engine in `bin/` loads, since a release engine compiles no TypeScript.
+fn emit_starter_script(
+    project: &Project,
+    install_root: &Path,
+    scripts_build: &Path,
+) -> Result<PathBuf, String> {
+    println!("Stage 2: compile the starter mod's entry script");
+    let starter = crate::engine_trees::resolve(install_root, STARTER_TEMPLATE)?;
+    let source = starter.join(STARTER_ENTRY_SOURCE);
+    let scratch = project.scratch_root().join(SDK_BUNDLE_NAME);
+    if scratch.exists() {
+        fs::remove_dir_all(&scratch)
+            .map_err(|error| format!("stage 2: clear scratch {}: {error}", scratch.display()))?;
+    }
+    fs::create_dir_all(&scratch)
+        .map_err(|error| format!("stage 2: create scratch {}: {error}", scratch.display()))?;
+    let output = scratch.join(STARTER_ENTRY_EMITTED);
+    let mut command = Command::new(scripts_build);
+    command.arg("--in").arg(&source).arg("--out").arg(&output);
+    run_checked(&mut command, "stage 2 bundle the starter start-script.ts")?;
+    Ok(output)
 }
+
+/// The SDK bundle's name: its root under `dist/` and the package its own
+/// marker declares — one constant, so the two cannot drift. As the app name it
+/// keeps authoring runs from the bundle apart from any installed game's
+/// settings and saves, and from a bare `postretro` launch's.
+pub(crate) const SDK_BUNDLE_NAME: &str = "postretro-sdk";
+
+/// The mod the bundle's own marker declares, published at `content/base`.
+pub(crate) const STARTER_MOD: &str = "base";
+
+/// The starter mod's source tree, relative to the install root. It ships in
+/// the bundle's `sdk/` too, so a developer starting a project in their own
+/// repository copies it from there.
+pub(crate) const STARTER_TEMPLATE: &str = "sdk/templates/starter";
+
+/// The engine-owned editor config the starter mod root receives a copy of.
+pub(crate) const TSCONFIG_TEMPLATE: &str = "sdk/templates/tsconfig.json";
+
+const STARTER_ENTRY_SOURCE: &str = "start-script.ts";
+const STARTER_ENTRY_EMITTED: &str = "start-script.js";
 
 /// Where the SDK bundle's own binaries land, relative to the bundle root.
 pub(crate) const BIN_DIR: &str = "bin";
@@ -148,49 +146,16 @@ pub(crate) const RELEASE_ENGINE_STEM: &str = "postretro-release";
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
+    /// The bundle's marker names the bundle, so a run from it keeps its player
+    /// data under the bundle's own name — never an installed game's.
     #[test]
-    fn sdk_bundle_root_name_appends_sdk_suffix() {
-        assert_eq!(sdk_bundle_root_name("postretro-dev"), "postretro-dev-sdk");
-        assert_eq!(sdk_bundle_root_name("dev"), "dev-sdk");
-    }
-
-    /// The bundle's launcher and its marker name the same app, so a bundle
-    /// launch and the bundle's own `run` keep one set of settings and saves —
-    /// never the installed game's.
-    #[test]
-    fn bundle_launcher_and_marker_both_name_the_sdk_package() {
-        let manifest = crate::manifest::Manifest::parse(
-            "[package]\nname = \"postretro-dev\"\nmod = \"dev\"\n",
-        )
-        .expect("manifest parses");
-        let bundle_name = sdk_bundle_root_name(&manifest.package.name);
-        let marker = readme::render_bundle_manifest(&manifest, &bundle_name)
-            .expect("the bundle marker renders");
-        let bundle_package = crate::manifest::Manifest::parse(&marker)
-            .expect("the bundle marker parses")
-            .package
-            .name;
-        assert_eq!(bundle_package, "postretro-dev-sdk");
-
-        let bundle_root =
-            std::env::temp_dir().join(format!("postretro-sdk-launcher-{}", std::process::id()));
-        fs::create_dir_all(&bundle_root).expect("temporary bundle root created");
-        crate::dist::launcher::emit_launcher(&bundle_root, &bundle_name, "dev")
-            .expect("the bundle launcher is written");
-        let launcher = fs::read_to_string(
-            bundle_root.join(crate::dist::launcher::launcher_file_name(&bundle_name)),
-        )
-        .expect("the launcher is named after the bundle");
-        let _ = fs::remove_dir_all(&bundle_root);
-
-        let expected = if cfg!(windows) {
-            format!("--app-name \"{bundle_package}\"")
-        } else {
-            format!("--app-name '{bundle_package}'")
-        };
-        assert!(launcher.contains(&expected), "{launcher}");
+    fn bundle_marker_names_the_bundle_and_its_starter_mod() {
+        let marker = readme::render_bundle_manifest().expect("the bundle marker renders");
+        let parsed = crate::manifest::Manifest::parse(&marker).expect("the bundle marker parses");
+        assert_eq!(parsed.package.name, SDK_BUNDLE_NAME);
+        assert_eq!(parsed.package.mod_name, STARTER_MOD);
+        assert!(parsed.recipes.is_empty(), "{marker}");
     }
 
     /// The tool's default helper search walks from its own directory, so the

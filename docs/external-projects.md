@@ -90,6 +90,13 @@ from your PNG sources, and its files are content-addressed blobs that churn on
 every texture edit. `.build-caches/` is disposable at any time. `dist/` holds
 build products.
 
+## Starting the mod
+
+Copy `sdk/templates/starter/` from your install to `content/base/`. It is the
+smallest entry script the engine accepts — a name, an id and a version — and
+boots to the engine's fallback menu until you add levels. Change those three
+fields to your game's own.
+
 ## Editor setup for TypeScript
 
 Copy `sdk/templates/tsconfig.json` from your install into `content/base/`. It
@@ -108,8 +115,8 @@ changing the file.
 Your repository holds your game and nothing else. `core/` — the built-in UI
 descriptors, the boot splash, the font licences — belongs to the engine, and the
 tool takes it from your install every time: `postretro-tool run` passes the
-engine `--core-root <install>/core`, and `dist` and `sdk-dist` copy that same
-tree into what they build. Nothing is ever read from a `core/` in your project,
+engine `--core-root <install>/core`, and `dist` copies that same tree into
+the payload it builds. Nothing is ever read from a `core/` in your project,
 so upgrading the install upgrades those assets with no step on your side.
 
 If you launch the engine by hand rather than through the tool, pass
@@ -149,7 +156,7 @@ prl-build content/base/maps/arena.map \
 
 This is the one command in the loop where you type those two paths yourself,
 because the tool has no single-level build of its own — it compiles levels only
-as part of `dist` and `sdk-dist`, where it supplies both flags. Wrap it in a
+as part of `dist`, where it supplies both flags. Wrap it in a
 shell script or a task runner in your repository and you will never type them
 twice.
 
@@ -177,9 +184,9 @@ This is the whole reason the tooling exists in the shape it does:
 
 - `postretro-tool run` passes the engine its `--baked-root` for you, so the
   engine reads your project's `baked/`.
-- `dist` and `sdk-dist` pass the compiler `--baked-root` and `--cache-dir`, then
-  copy the finished materials tree into the payload, where the engine's own
-  derivation lands on it. They also refuse a `[[recipes]]` entry in
+- `dist` passes the compiler `--baked-root` and `--cache-dir`, then copies the
+  finished materials tree into the payload, where the engine's own derivation
+  lands on it. It also refuses a `[[recipes]]` entry in
   `postretro.toml` that names either flag — the compiler honours the last
   occurrence, so a recipe naming one would quietly override the tool's and
   reintroduce the same failure.
@@ -234,11 +241,10 @@ postretro-tool dist
 ```
 
 The payload lands at `dist/<name>/`, carrying your content published at
-`content/base` and the install's release engine. `postretro-tool sdk-dist`
-produces a content-complete bundle beside it at `dist/<name>-sdk/`.
+`content/base` and the install's release engine.
 
-Both refuse to write outside your project's own `dist/`, and both refuse to
-delete a non-empty directory there that no distribution run produced. See
+It refuses to write outside your project's own `dist/`, and refuses to delete a
+non-empty directory there that no distribution run produced. See
 [docs/distribution.md](distribution.md) for the full rules, the level-selection
 mechanism, and what to send a recipient.
 

@@ -939,9 +939,9 @@ export const lava = defineFluid({
 export const cure = defineReaction("statuses.cure", players().clearStatus(corroding));
 ```
 
-The dev mod carries this example, an incendiary rifle, a lava pool and a burn
-trap: see `content/dev/scripts/statuses.ts` and `status-hazards.ts`, and the
-lava and trap rows in `content/dev/maps/e24-environment-test.README.md`.
+The engine's source repository carries this example, an incendiary rifle, a lava pool and a burn
+trap, in `content/dev/scripts/statuses.ts` and `status-hazards.ts`, and the
+lava and trap rows in `content/dev/maps/e24-environment-test.README.md`. It is not part of the SDK bundle.
 
 ### Showing a status
 
@@ -1317,7 +1317,7 @@ Heat and cell weapons have no reserve and never reload. The reload button does n
 - `regenPerSecond: 0` makes a battery that never refills.
 - `capacity` must be greater than `0`. `costPerShot` must be greater than `0` and no more than `capacity`.
 
-Heat and charge use whatever scale you choose. Rates are per second, and delays are in milliseconds. A weapon in the inventory keeps cooling or refilling while it is holstered, so a player can swap away to let a gun cool down. The dev mod's `reference_plasma_bolt` is a worked cell weapon.
+Heat and charge use whatever scale you choose. Rates are per second, and delays are in milliseconds. A weapon in the inventory keeps cooling or refilling while it is holstered, so a player can swap away to let a gun cool down. The engine source repository's dev mod (not in the SDK bundle) has a worked cell weapon, `reference_plasma_bolt`.
 
 ### Held ownership and retained state
 
@@ -4307,8 +4307,9 @@ app-side path on the same fire. A `progress` reaction behaves differently:
 naming one from a trigger does **not** fire its target — progress is tracked
 independently, and its target fires only when the kill threshold is reached,
 however many ticks later that is. The canonical progress use is a threshold that
-fires an event of the same name — see
-[the combat-demo walkthrough](../content/dev/maps/combat-demo.README.md).
+fires an event of the same name. The engine source repository's
+`content/dev/maps/combat-demo.README.md` walks through one; it is not part of
+the SDK bundle.
 
 ### `grantHealth` and `grantAmmo`
 
@@ -5325,8 +5326,8 @@ waiting for the host, then follows host samples; success consequences appear onl
 once the host confirms. Conditions, crossings and store reads see host values only.
 
 **Recipe: Borderlands.** A teammate can revive, and a kill made while down is a
-second wind. This is the dev mod's policy (`scripts/player-death.ts` and
-`.luau`, with the bars in `scripts/hud.ts`), on top of the down and bleed-out
+second wind. This is the policy of the engine source repository's dev mod (`content/dev/scripts/player-death.ts` and
+`.luau`, with the bars in `hud.ts`; not in the SDK bundle), on top of the down and bleed-out
 reactions in *Death-policy recipes* below.
 
 ```typescript
@@ -5395,8 +5396,8 @@ ordinary `addSlot` reaction.
   without restarting the level.
 - **Borderlands-lite:** declare the `down` crawl profile above, then register
   the following host decisions. Use local crossings for a downed vignette,
-  and bind the bleed-out bar to the reads above. The dev mod's
-  `scripts/player-death.ts` and `.luau` are complete twins of this policy,
+  and bind the bleed-out bar to the reads above. The source repository's
+  `content/dev/scripts/player-death.ts` and `.luau` (not in the SDK bundle) are complete twins of this policy,
   extended with revive and second wind in *Assisting a teammate* above.
 
 ```typescript
@@ -6356,7 +6357,7 @@ held key does. A reskinned keyboard keeps those three key ids. On a keyboard,
 keys type their characters while text entry is open, even keys bound to nav
 commands.
 
-> **Keyboard asset is layout-only.** `core/ui/keyboard.json` ships the key grid but no reactions — it is inert until a mod declares the matching named `appendText` / `backspaceText` reactions each key's `onPress` references (see `content/dev/scripts/arena-lights.ts` for the registration loop). It lives under `core/` rather than in a content tree because it belongs to the engine: mounting a game never replaces it.
+> **Keyboard asset is layout-only.** `core/ui/keyboard.json` ships the key grid but no reactions — it is inert until a mod declares the matching named `appendText` / `backspaceText` reactions each key's `onPress` references (the engine source repository's `content/dev/scripts/arena-lights.ts` has a registration loop; it is not in the SDK bundle). It lives under `core/` rather than in a content tree because it belongs to the engine: mounting a game never replaces it.
 
 ### Pause menu
 
@@ -7172,8 +7173,8 @@ Keys expand in **lexicographically-sorted order** so the emitted array is
 byte-identical between TypeScript and Luau (Luau table iteration order is
 undefined, so the sort is load-bearing for cross-runtime wire identity). A subtree
 that already carries a `visibleWhen` is rejected — `Switch` owns that field. The
-canonical end-to-end example is the campaign-test tabs demo
-(`content/dev/scripts/tabs-demo.ts`).
+canonical end-to-end example is the tabs demo in the engine's source
+repository (`content/dev/scripts/tabs-demo.ts`, not in the SDK bundle).
 
 ### Accessible name, role, and `disabled`
 
@@ -7253,7 +7254,7 @@ There is no `tsc` CI; per-kind narrowing is proven two ways, both committed:
   interactive widgets carry the `label` xor `labelledBy` union, `Image` narrows
   to `label` xor `decorative`, local-cell `.is(v)` is typed to the cell value
   type, and `stateEquals(ref, v)` is typed to the state-ref value type.
-- **`@ts-expect-error` fixtures** (`content/dev/scripts/reactive-ui-fixture.ts`)
+- **`@ts-expect-error` fixtures** (the engine source repository's `content/dev/scripts/reactive-ui-fixture.ts`, not in the SDK bundle)
   are a documented review gate: each marked line MUST be a type error in an IDE;
   if a future change makes one compile cleanly, `tsc --noEmit` flags the now-unused
   directive and the gate fails.

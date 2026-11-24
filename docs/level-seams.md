@@ -179,5 +179,6 @@ can `arm` and `disarm`). A brush `on_arrive` and a script binding both run.
 Arming and disarming take effect at the start of the next game tick, as they do
 for teleporters.
 
-The dev mod's `seam-pair-a` and `seam-pair-b` maps are a working pair: each
+The engine source repository's dev mod (not in the SDK bundle) has a working pair,
+`seam-pair-a` and `seam-pair-b`: each
 seam disarms behind an arriving player, and a button in each room arms it again.

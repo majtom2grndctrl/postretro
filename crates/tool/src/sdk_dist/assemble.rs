@@ -7,20 +7,19 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::binaries::binary_name;
-use crate::dist::launcher::emit_launcher;
 use crate::dist::payload::replace_payload_root;
-use crate::dist::resolve::{
-    EntryExt, Resolved, bake_order, guard_payload_root, outstanding_outputs,
-};
-use crate::project::{MARKER_FILE, Project};
+use crate::dist::resolve::guard_payload_root;
+use crate::project::MARKER_FILE;
 
-use super::readme::render_readme;
-use super::{BIN_DIR, RELEASE_ENGINE_STEM};
+use super::readme::{render_bundle_manifest, render_readme};
+use super::{
+    BIN_DIR, RELEASE_ENGINE_STEM, SDK_BUNDLE_NAME, STARTER_MOD, STARTER_TEMPLATE,
+    TSCONFIG_TEMPLATE,
+};
 
 /// The binaries a bundle ships. Each is built elsewhere and named by a flag.
 pub(super) struct BundleBinaries {
-    /// Debug, `--features dev-tools`: the one engine that both plays the baked
-    /// maps and serves the edit-and-reload loop.
+    /// Debug, `--features dev-tools`: the engine every authoring run launches.
     pub(super) authoring_engine: PathBuf,
     /// Optimized, default features: what a player payload built from this
     /// bundle must carry, and what the bundle's own `dist` copies.
@@ -32,45 +31,50 @@ pub(super) struct BundleBinaries {
 }
 
 pub(super) struct BundleTarget<'a> {
+    /// The project whose `dist/` the bundle is written under. It supplies the
+    /// containment anchor and nothing else: no project content enters a bundle.
+    pub(super) project_root: &'a Path,
     pub(super) output_root: &'a Path,
     pub(super) bundle_root: &'a Path,
-    pub(super) bundle_name: &'a str,
-    /// Where the engine-owned trees come from — never the project.
+    /// Where the engine-owned trees and the starter come from — never the
+    /// project.
     pub(super) install_root: &'a Path,
 }
 
+/// The starter mod's root inside the bundle: `content/<STARTER_MOD>`.
+fn starter_mod_root(bundle_root: &Path) -> PathBuf {
+    bundle_root.join("content").join(STARTER_MOD)
+}
+
 pub(super) fn assemble_bundle(
-    project: &Project,
     target: &BundleTarget<'_>,
     binaries: &BundleBinaries,
-    entry_ext: EntryExt,
-    entry_script: &Path,
-    resolved: &[Resolved],
-    bundle_manifest: &str,
+    starter_script: &Path,
 ) -> Result<(), String> {
-    println!("Stage 5: assemble content-complete bundle tree");
-    guard_payload_root(target.bundle_root, project.root())
+    println!("Stage 5: assemble the SDK bundle tree");
+    guard_payload_root(target.bundle_root, target.project_root)
         .map_err(|error| format!("sdk-dist stage 5: {error}"))?;
-    // Resolved before the delete below. Each is one `is_dir` check, and a wrong
-    // or missing install root would otherwise cost the previous good bundle
-    // before anything diagnosed it.
+    // Resolved before the delete below. Each is one filesystem check, and a
+    // wrong or missing install root would otherwise cost the previous good
+    // bundle before anything diagnosed it.
     let trees: Vec<(&str, PathBuf)> = crate::engine_trees::BUNDLE_TREES
         .iter()
         .map(|name| {
             crate::engine_trees::resolve(target.install_root, name).map(|tree| (*name, tree))
         })
         .collect::<Result<_, _>>()?;
+    let starter = crate::engine_trees::resolve(target.install_root, STARTER_TEMPLATE)?;
+    let tsconfig = target.install_root.join(TSCONFIG_TEMPLATE);
+    if !tsconfig.is_file() {
+        return Err(format!(
+            "sdk-dist stage 5: engine-owned template {} not found",
+            tsconfig.display()
+        ));
+    }
 
-    // The completion gate tracks the outstanding level bakes exactly as the
-    // player payload does: the marker carries the full resolved set at assembly,
-    // and stage 6 rewrites it after each bake.
-    let ordered = bake_order(resolved);
-    replace_payload_root(
-        target.output_root,
-        target.bundle_root,
-        target.bundle_name,
-        &outstanding_outputs(&ordered, 0),
-    )?;
+    // The bundle bakes no levels, so the completion marker lists none: its
+    // status line alone records that assembly has not finished.
+    replace_payload_root(target.output_root, target.bundle_root, SDK_BUNDLE_NAME, &[])?;
 
     install_binaries(target.bundle_root, binaries)?;
 
@@ -84,42 +88,39 @@ pub(super) fn assemble_bundle(
         println!("  copied {copied} files from {name}/ ({})", tree.display());
     }
 
-    // The mod tree ships WITH its .map/.ts sources, but committed stale generated
-    // .prl/.js are dropped: fresh .prl come from stage 6's level bake and the
-    // fresh entry .js is installed just below. It publishes under the project's
-    // own declared mod — the same path the bundle's own `dist` re-publishes,
-    // since the `postretro.toml` written below names the same mod.
-    let mod_root_rel = project.mod_root_rel();
-    let bundle_mod_root = target.bundle_root.join(mod_root_rel);
-    let mod_copied = copy_bundle_tree(&project.mod_root(), &bundle_mod_root, true)?;
-    println!("  copied {mod_copied} files from the mod tree (with sources) into {mod_root_rel}");
-
-    // Install the emitted entry .js beside its .ts source (a TS mod). A Luau mod
-    // already shipped its `start-script.luau` source via the tree copy and needs
-    // no emitted sibling.
-    if entry_ext == EntryExt::Js {
-        let installed = bundle_mod_root.join(EntryExt::Js.file_name());
-        fs::copy(entry_script, &installed).map_err(|error| {
+    // The starter mod: the template's sources, the engine's editor config, the
+    // freshly emitted entry script, and an empty `maps/` for the first level.
+    // A stale `.js` committed beside the template is dropped in favour of the
+    // one stage 2 just compiled.
+    let mod_root = starter_mod_root(target.bundle_root);
+    let copied = copy_bundle_tree(&starter, &mod_root, true)?;
+    println!(
+        "  copied {copied} starter files into content/{STARTER_MOD} ({})",
+        starter.display()
+    );
+    for (source, name) in [
+        (tsconfig.as_path(), "tsconfig.json"),
+        (starter_script, "start-script.js"),
+    ] {
+        let destination = mod_root.join(name);
+        fs::copy(source, &destination).map_err(|error| {
             format!(
-                "sdk-dist stage 5: install emitted entry script {}: {error}",
-                installed.display()
+                "sdk-dist stage 5: install {} as {}: {error}",
+                source.display(),
+                destination.display()
             )
         })?;
     }
+    let maps = mod_root.join("maps");
+    fs::create_dir_all(&maps).map_err(|error| {
+        format!(
+            "sdk-dist stage 5: create starter maps directory {}: {error}",
+            maps.display()
+        )
+    })?;
 
-    // Already rendered and validated up front (`sdk_dist::run`), so a recipe
-    // source outside the shipped mod tree failed before this tree was written.
-    write_bundle_file(target.bundle_root, MARKER_FILE, bundle_manifest)?;
-    emit_launcher(target.bundle_root, target.bundle_name, project.mod_name())?;
-    write_bundle_file(
-        target.bundle_root,
-        "README.md",
-        &render_readme(
-            &project.manifest().package.name,
-            target.bundle_name,
-            mod_root_rel,
-        ),
-    )?;
+    write_bundle_file(target.bundle_root, MARKER_FILE, &render_bundle_manifest()?)?;
+    write_bundle_file(target.bundle_root, "README.md", &render_readme())?;
     Ok(())
 }
 
@@ -179,7 +180,7 @@ fn write_bundle_file(bundle_root: &Path, name: &str, contents: &str) -> Result<(
 }
 
 /// Copy a directory tree into the bundle, skipping build caches, autosaves, VCS
-/// metadata, and OS junk. When `skip_stale_outputs` is set (the mod tree), stale
+/// metadata, and OS junk. When `skip_stale_outputs` is set (the starter tree), stale
 /// committed generated `.prl`/`.js` build outputs are also dropped.
 fn copy_bundle_tree(
     source: &Path,
@@ -289,34 +290,16 @@ fn should_skip_bundle_entry(
     false
 }
 
-/// The mod-root-relative source entry-script filename for a resolved choice.
-///
-/// The SDK bundle ships the authoring *source*: a TypeScript mod's source is
-/// `start-script.ts` (the emitted `.js` ships beside it), a Luau mod's source is
-/// `start-script.luau`.
-fn sdk_entry_source_name(choice: EntryExt) -> &'static str {
-    match choice {
-        EntryExt::Js => "start-script.ts",
-        EntryExt::Luau => "start-script.luau",
-    }
-}
-
-/// Light completion check for the content-complete bundle. Unlike the player
-/// sweep, sources (`.map`/`.ts`/`.md`) are allowed and expected; this instead
-/// confirms the required entries are present: the engines, the compilers, the
-/// tool, the project marker, every engine-owned tree (`sdk/`, `docs/`, `tools/`,
-/// and each `core/` subtree in its own right), the mod entry SOURCE, every
-/// resolved baked `maps/<name>.prl`, and the baked `baked/materials/` tree.
-pub(super) fn sweep_sdk_bundle(
-    bundle_root: &Path,
-    mod_root: &Path,
-    entry_ext: EntryExt,
-    resolved: &[Resolved],
-) -> Result<(), String> {
-    let mod_dir = bundle_root.join(mod_root);
+/// Completion check for the bundle. It confirms the required entries exist —
+/// the engines, the compilers, the tool, the project marker, every engine-owned
+/// tree (`sdk/`, `docs/`, `tools/`, and each `core/` subtree in its own right),
+/// and the starter mod — and refuses the two ways game content could reach a
+/// bundle: a mod under `content/` other than the starter, and a `baked/` tree.
+pub(super) fn sweep_sdk_bundle(bundle_root: &Path) -> Result<(), String> {
+    let mod_dir = starter_mod_root(bundle_root);
     let bin_dir = bundle_root.join(BIN_DIR);
 
-    let mut required_files = vec![
+    let required_files = [
         bundle_root.join(binary_name("postretro")),
         // Beside the engine, where its own hot-reload discovery looks.
         bundle_root.join(binary_name("scripts-build")),
@@ -326,12 +309,12 @@ pub(super) fn sweep_sdk_bundle(
         bin_dir.join(binary_name("scripts-build")),
         bin_dir.join(binary_name("mint-identity")),
         bin_dir.join(binary_name("postretro-tool")),
-        mod_dir.join(sdk_entry_source_name(entry_ext)),
+        // The engine loads the emitted `.js`; the `.ts` is what the author edits
+        // and what the debug engine's startup pass recompiles it from.
+        mod_dir.join("start-script.ts"),
+        mod_dir.join("start-script.js"),
+        mod_dir.join("tsconfig.json"),
     ];
-    // Every resolved level must have baked into the bundle's maps/ tree.
-    for resolved in resolved {
-        required_files.push(mod_dir.join(&resolved.output));
-    }
     for file in &required_files {
         if !file.is_file() {
             return Err(format!(
@@ -356,7 +339,7 @@ pub(super) fn sweep_sdk_bundle(
         core.join("ui"),
         core.join("textures"),
         core.join("licenses"),
-        bundle_root.join("baked").join("materials"),
+        mod_dir.join("maps"),
     ] {
         if !dir.is_dir() {
             return Err(format!(
@@ -366,11 +349,36 @@ pub(super) fn sweep_sdk_bundle(
         }
     }
 
-    // The bundle is a superset, so its sweep forbids almost nothing — but
-    // publication locks and compiler scratch are build scaffolding rather than
-    // content, and refusing them here is what keeps a later change from quietly
-    // shipping them again.
+    refuse_game_content(bundle_root)?;
+    // Publication locks and compiler scratch are build scaffolding rather than
+    // content; refusing them keeps a later change from quietly shipping them.
     refuse_build_scaffolding(bundle_root)
+}
+
+/// The bundle ships no game content: `content/` holds the starter alone, and
+/// nothing baked travels with it.
+fn refuse_game_content(bundle_root: &Path) -> Result<(), String> {
+    let content = bundle_root.join("content");
+    for entry in fs::read_dir(&content)
+        .map_err(|error| format!("sdk-dist sweep: read {}: {error}", content.display()))?
+    {
+        let entry = entry.map_err(|error| format!("sdk-dist sweep: read entry: {error}"))?;
+        if entry.file_name() != OsStr::new(STARTER_MOD) {
+            return Err(format!(
+                "sdk-dist sweep: the bundle ships no game content, but {} is beside the \
+                 starter mod",
+                entry.path().display()
+            ));
+        }
+    }
+    let baked = bundle_root.join("baked");
+    if baked.exists() {
+        return Err(format!(
+            "sdk-dist sweep: the bundle ships no game content, but it carries {}",
+            baked.display()
+        ));
+    }
+    Ok(())
 }
 
 fn refuse_build_scaffolding(directory: &Path) -> Result<(), String> {
@@ -404,11 +412,6 @@ fn refuse_build_scaffolding(directory: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The published mod root these bundle-sweep tests build under. The bundle
-    /// now honors the project's declared mod root; the sweep only requires a
-    /// two-component path, so this stands in for whatever a project names.
-    const PAYLOAD_MOD_ROOT: &str = "content/base";
 
     #[test]
     fn skip_predicate_drops_caches_vcs_and_os_junk_in_both_modes() {
@@ -444,13 +447,11 @@ mod tests {
     fn skip_predicate_keeps_sources_and_assets_in_both_modes() {
         for skip_stale in [false, true] {
             for name in [
-                "campaign-test.map",
                 "start-script.ts",
                 "start-script.luau",
-                "anim-demo.README.md",
+                "README.md",
                 "texture.png",
                 "scene.gltf",
-                "audio.wav",
                 "data.json",
             ] {
                 assert!(
@@ -462,38 +463,42 @@ mod tests {
     }
 
     #[test]
-    fn skip_predicate_drops_stale_build_outputs_only_for_the_mod_tree() {
-        for name in ["campaign-test.prl", "start-script.js"] {
+    fn skip_predicate_drops_stale_build_outputs_only_for_the_starter_tree() {
+        for name in ["arena.prl", "start-script.js"] {
             assert!(
                 should_skip_bundle_entry(name, Some("maps"), true),
-                "{name} dropped for mod tree"
+                "{name} dropped for the starter tree"
             );
             assert!(
                 !should_skip_bundle_entry(name, Some("maps"), false),
-                "{name} kept for verbatim tree"
+                "{name} kept for a verbatim tree"
             );
         }
     }
 
+    /// Compiler scratch a killed bake left behind is not a source, in either
+    /// copy mode.
     #[test]
-    fn entry_source_name_ships_the_authoring_source_not_the_emitted_script() {
-        assert_eq!(sdk_entry_source_name(EntryExt::Js), "start-script.ts");
-        assert_eq!(sdk_entry_source_name(EntryExt::Luau), "start-script.luau");
-    }
-
-    fn resolved(output: &str) -> Resolved {
-        Resolved {
-            output: output.to_string(),
-            source: PathBuf::from("unused.map"),
-            args: Vec::new(),
-            lightmap_density: 0.04,
+    fn skip_predicate_drops_build_scratch_in_both_modes() {
+        for skip_stale in [false, true] {
+            for name in [
+                ".arena.prl.pack-a1B2c3.tmp",
+                ".arena.prl.cluster-sh-XyZ09.spool",
+                "wall_n.prm.tmp.4812",
+            ] {
+                assert!(
+                    should_skip_bundle_entry(name, Some("maps"), skip_stale),
+                    "{name} (skip_stale={skip_stale})"
+                );
+            }
         }
     }
 
-    /// Build a minimal complete bundle tree the sweep should accept, then let a
-    /// caller knock one required entry out to prove the sweep rejects it.
-    fn assemble_swept_bundle(root: &Path, mod_root: &Path, resolved: &[Resolved]) {
-        let mod_dir = root.join(mod_root);
+    /// Build a minimal complete bundle tree the sweep should accept, so a test
+    /// can knock one entry out, or add a forbidden one, and prove the sweep
+    /// notices.
+    fn assemble_swept_bundle(root: &Path) {
+        let mod_dir = starter_mod_root(root);
         fs::create_dir_all(mod_dir.join("maps")).unwrap();
         fs::create_dir_all(root.join(BIN_DIR)).unwrap();
         for tree in crate::engine_trees::BUNDLE_TREES {
@@ -503,7 +508,6 @@ mod tests {
         for subtree in ["ui", "textures", "licenses"] {
             fs::create_dir_all(core.join(subtree)).unwrap();
         }
-        fs::create_dir_all(root.join("baked").join("materials")).unwrap();
         fs::write(root.join(binary_name("postretro")), "engine").unwrap();
         fs::write(root.join(binary_name("scripts-build")), "scripts").unwrap();
         fs::write(root.join(MARKER_FILE), "[package]\n").unwrap();
@@ -516,9 +520,8 @@ mod tests {
         ] {
             fs::write(root.join(BIN_DIR).join(binary_name(stem)), stem).unwrap();
         }
-        fs::write(mod_dir.join("start-script.ts"), "source").unwrap();
-        for level in resolved {
-            fs::write(mod_dir.join(&level.output), "baked").unwrap();
+        for name in ["start-script.ts", "start-script.js", "tsconfig.json"] {
+            fs::write(mod_dir.join(name), name).unwrap();
         }
     }
 
@@ -542,98 +545,62 @@ mod tests {
     }
 
     #[test]
-    fn sweep_accepts_a_content_complete_bundle_with_baked_levels_and_sources() {
+    fn sweep_accepts_an_install_with_only_the_starter_mod() {
         let root = unique_temp_dir();
-        let mod_root = Path::new(PAYLOAD_MOD_ROOT);
-        let levels = [
-            resolved("maps/campaign-test.prl"),
-            resolved("maps/arena.prl"),
-        ];
-        assemble_swept_bundle(&root, mod_root, &levels);
-
-        assert!(sweep_sdk_bundle(&root, mod_root, EntryExt::Js, &levels).is_ok());
-
+        assemble_swept_bundle(&root);
+        assert!(sweep_sdk_bundle(&root).is_ok());
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// The bundle ships no game content. A second mod or a baked tree is the
+    /// shape the previous, content-complete bundle had, so either one means a
+    /// change reintroduced it.
     #[test]
-    fn sweep_requires_each_resolved_baked_prl() {
+    fn sweep_refuses_game_content_beside_the_starter() {
         let root = unique_temp_dir();
-        let mod_root = Path::new(PAYLOAD_MOD_ROOT);
-        let levels = [resolved("maps/campaign-test.prl")];
-        assemble_swept_bundle(&root, mod_root, &levels);
-        fs::remove_file(root.join(mod_root).join("maps/campaign-test.prl")).unwrap();
+        assemble_swept_bundle(&root);
+        fs::create_dir_all(root.join("content").join("dev")).unwrap();
+        let error = sweep_sdk_bundle(&root).expect_err("a second mod is refused");
+        assert!(error.contains("no game content"), "{error}");
+        fs::remove_dir_all(root.join("content").join("dev")).unwrap();
 
-        let error = sweep_sdk_bundle(&root, mod_root, EntryExt::Js, &levels)
-            .expect_err("missing baked .prl is rejected");
-        assert!(error.contains("campaign-test.prl"), "{error}");
+        fs::create_dir_all(root.join("baked").join("materials")).unwrap();
+        let error = sweep_sdk_bundle(&root).expect_err("a baked tree is refused");
+        assert!(error.contains("baked"), "{error}");
 
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// The bundle's sweep forbids almost nothing, which is exactly why the one
-    /// thing it does forbid has to be pinned.
     #[test]
     fn sweep_refuses_a_bundle_that_still_carries_a_publication_lock() {
         let root = unique_temp_dir();
-        let mod_root = Path::new(PAYLOAD_MOD_ROOT);
-        let levels = [resolved("maps/campaign-test.prl")];
-        assemble_swept_bundle(&root, mod_root, &levels);
-        assert!(
-            sweep_sdk_bundle(&root, mod_root, EntryExt::Js, &levels).is_ok(),
-            "the clean bundle is the control"
-        );
-
+        assemble_swept_bundle(&root);
         fs::write(
-            root.join(mod_root)
+            starter_mod_root(&root)
                 .join("maps")
-                .join(".campaign-test.prl.pack.lock"),
+                .join(".arena.prl.pack.lock"),
             "lock",
         )
         .unwrap();
-        let error = sweep_sdk_bundle(&root, mod_root, EntryExt::Js, &levels)
-            .expect_err("a lock in the bundle is refused");
-        assert!(error.contains("campaign-test.prl.pack.lock"), "{error}");
-
+        let error = sweep_sdk_bundle(&root).expect_err("a lock in the bundle is refused");
+        assert!(error.contains("arena.prl.pack.lock"), "{error}");
         let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
     fn sweep_refuses_a_bundle_that_still_carries_build_scratch() {
         let root = unique_temp_dir();
-        let mod_root = Path::new(PAYLOAD_MOD_ROOT);
-        let levels = [resolved("maps/campaign-test.prl")];
-        assemble_swept_bundle(&root, mod_root, &levels);
+        assemble_swept_bundle(&root);
         fs::write(
-            root.join(mod_root)
+            starter_mod_root(&root)
                 .join("maps")
-                .join(".campaign-test.prl.pack-a1B2c3.tmp"),
+                .join(".arena.prl.pack-a1B2c3.tmp"),
             "scratch",
         )
         .unwrap();
-        let error = sweep_sdk_bundle(&root, mod_root, EntryExt::Js, &levels)
-            .expect_err("scratch in the bundle is refused");
+        let error = sweep_sdk_bundle(&root).expect_err("scratch in the bundle is refused");
         assert!(error.contains("compiler scratch"), "{error}");
-
         let _ = fs::remove_dir_all(&root);
-    }
-
-    /// The bundle copy keeps sources, but compiler scratch a killed bake left in
-    /// the author's tree is not a source, in either copy mode.
-    #[test]
-    fn skip_predicate_drops_build_scratch_in_both_modes() {
-        for skip_stale in [false, true] {
-            for name in [
-                ".campaign-test.prl.pack-a1B2c3.tmp",
-                ".campaign-test.prl.cluster-sh-XyZ09.spool",
-                "wall_n.prm.tmp.4812",
-            ] {
-                assert!(
-                    should_skip_bundle_entry(name, Some("maps"), skip_stale),
-                    "{name} (skip_stale={skip_stale})"
-                );
-            }
-        }
     }
 
     /// `core/ui` holds the pause menu, frontend menu and keyboard. A bundle
@@ -642,19 +609,13 @@ mod tests {
     #[test]
     fn sweep_requires_every_engine_owned_tree_and_core_subtree() {
         let root = unique_temp_dir();
-        let mod_root = Path::new(PAYLOAD_MOD_ROOT);
-        let levels = [resolved("maps/campaign-test.prl")];
-        assemble_swept_bundle(&root, mod_root, &levels);
+        assemble_swept_bundle(&root);
 
-        // Each engine-owned subtree separately. A sweep over bare `core/` would
-        // pass a half-copied tree, and every one of those absences is a runtime
-        // warning rather than a failure: the built-in screens, the boot splash,
-        // and the OFL text the embedded typefaces oblige the bundle to carry.
         let core = root.join(crate::engine_trees::CORE_TREE);
         for subtree in ["ui", "textures", "licenses"] {
             let path = core.join(subtree);
             fs::remove_dir_all(&path).unwrap();
-            let error = sweep_sdk_bundle(&root, mod_root, EntryExt::Js, &levels)
+            let error = sweep_sdk_bundle(&root)
                 .expect_err("a bundle missing an engine-owned subtree is rejected");
             assert!(error.contains(subtree), "{error}");
             fs::create_dir_all(&path).unwrap();
@@ -662,7 +623,7 @@ mod tests {
 
         for tree in ["sdk", "docs", "tools"] {
             fs::remove_dir_all(root.join(tree)).unwrap();
-            let error = sweep_sdk_bundle(&root, mod_root, EntryExt::Js, &levels)
+            let error = sweep_sdk_bundle(&root)
                 .expect_err("a bundle missing an engine-owned tree is rejected");
             assert!(error.contains(tree), "{error}");
             fs::create_dir_all(root.join(tree)).unwrap();
@@ -671,43 +632,26 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// The starter is what lets `bin/postretro-tool run` boot on arrival: the
+    /// engine loads the emitted `.js`, and the author edits the `.ts` against
+    /// the `tsconfig.json`.
     #[test]
-    fn sweep_requires_the_baked_materials_directory() {
-        let root = unique_temp_dir();
-        let mod_root = Path::new(PAYLOAD_MOD_ROOT);
-        let levels = [resolved("maps/campaign-test.prl")];
-        assemble_swept_bundle(&root, mod_root, &levels);
-        fs::remove_dir_all(root.join("baked").join("materials")).unwrap();
-
-        let error = sweep_sdk_bundle(&root, mod_root, EntryExt::Js, &levels)
-            .expect_err("missing baked materials is rejected");
-        assert!(error.contains("materials"), "{error}");
-
-        let _ = fs::remove_dir_all(&root);
+    fn sweep_requires_the_whole_starter_mod() {
+        for name in ["start-script.ts", "start-script.js", "tsconfig.json"] {
+            let root = unique_temp_dir();
+            assemble_swept_bundle(&root);
+            fs::remove_file(starter_mod_root(&root).join(name)).unwrap();
+            let error = sweep_sdk_bundle(&root).expect_err("a partial starter is rejected");
+            assert!(error.contains(name), "{error}");
+            let _ = fs::remove_dir_all(&root);
+        }
     }
 
+    /// The bundle's recipient runs the tool against their own project. That
+    /// needs the tool, the binaries the tool drives, and — for the starter —
+    /// the project marker that tells the tool where it is.
     #[test]
-    fn sweep_requires_the_mod_entry_source() {
-        let root = unique_temp_dir();
-        let mod_root = Path::new(PAYLOAD_MOD_ROOT);
-        let levels = [resolved("maps/campaign-test.prl")];
-        assemble_swept_bundle(&root, mod_root, &levels);
-        fs::remove_file(root.join(mod_root).join("start-script.ts")).unwrap();
-
-        let error = sweep_sdk_bundle(&root, mod_root, EntryExt::Js, &levels)
-            .expect_err("missing entry source is rejected");
-        assert!(error.contains("start-script.ts"), "{error}");
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    /// The bundle's reason for existing is that its recipient can run `dist`
-    /// from it. That needs the tool, the binaries the tool drives, and the
-    /// project marker that tells the tool where it is.
-    #[test]
-    fn sweep_requires_everything_the_bundles_own_dist_run_needs() {
-        let mod_root = Path::new(PAYLOAD_MOD_ROOT);
-        let levels = [resolved("maps/campaign-test.prl")];
+    fn sweep_requires_everything_the_bundles_own_tool_runs_need() {
         for required in [
             PathBuf::from(MARKER_FILE),
             PathBuf::from(BIN_DIR).join(binary_name("postretro-tool")),
@@ -717,12 +661,13 @@ mod tests {
             PathBuf::from(BIN_DIR).join(binary_name("mint-identity")),
         ] {
             let root = unique_temp_dir();
-            assemble_swept_bundle(&root, mod_root, &levels);
+            assemble_swept_bundle(&root);
             fs::remove_file(root.join(&required)).unwrap();
 
-            let error = sweep_sdk_bundle(&root, mod_root, EntryExt::Js, &levels).expect_err(
-                &format!("a bundle missing {} cannot run dist", required.display()),
-            );
+            let error = sweep_sdk_bundle(&root).expect_err(&format!(
+                "a bundle missing {} cannot run the tool",
+                required.display()
+            ));
             assert!(
                 error.contains(&required.file_name().unwrap().to_string_lossy().to_string()),
                 "{error}"

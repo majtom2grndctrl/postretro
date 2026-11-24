@@ -58,7 +58,7 @@ The destination's origin is where the middle of the player's body arrives, not
 their feet. The player arrives exactly there; the engine does not nudge them to
 the floor or out of a wall. Set the origin at least the player's capsule
 `halfHeight` plus `radius` above the floor, plus about one unit of margin. The
-dev mod's player (`halfHeight` 0.8 m, `radius` 0.2 m) needs 1 m, so about 41
+default player (`halfHeight` 0.8 m, `radius` 0.2 m) needs 1 m, so about 41
 units. A destination set lower than that puts the player inside the floor, and
 the arrival is [refused](#arrival). Up to about two units of margin still lands
 them standing on the floor; set higher, the player arrives in the air and falls.
@@ -320,8 +320,8 @@ with a warning; only its yaw is used.
 
 ## Trying it
 
-Compile and run a map with teleporters as any other. From your project root, with `<mod-root>` the mod's folder (`content/dev` in the
-SDK bundle):
+Compile and run a map with teleporters as any other. From your project root, with `<mod-root>` the mod's folder (`content/base` in the
+SDK bundle's starter mod):
 
 ```bash
 bin/prl-build <mod-root>/maps/<name>.map \

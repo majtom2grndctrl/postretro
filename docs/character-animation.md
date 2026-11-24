@@ -193,6 +193,5 @@ bake a changed clip affects. See `docs/weapon-mounts.md`.
 ## Licence
 
 Mixamo characters and animations may live in your project and ship in your game.
-They may not be offered as downloads for other creators, and an SDK bundle copies
-the mod tree whole. Keep Mixamo assets out of any bundle you publish for others to
-build on.
+They may not be offered as downloads for other creators, so keep them out of any
+source tree or template you publish for others to build on.

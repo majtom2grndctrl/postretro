@@ -402,13 +402,15 @@ fn print_help() {
                                 --write the committed snapshot, --check its freshness,\n\
                                 --mermaid the diagram, or query --rdeps / --deps of a crate\n\
            dist                 Build the release binaries, then assemble a host-native\n\
-                                standalone distribution payload through postretro-tool\n\
-           sdk-dist             Build the authoring and release binaries, then assemble a\n\
-                                host-native content-complete modder SDK bundle through\n\
-                                postretro-tool: baked maps + materials (playable out of the\n\
-                                box) plus the authoring engine (debug + dev-tools), the\n\
-                                compilers, postretro-tool itself, sdk/docs/tools, and the\n\
-                                mod tree with sources (edit and reload)\n\n\
+                                standalone distribution payload through postretro-tool;\n\
+                                from this workspace it packages content/dev as a test of\n\
+                                the packaging pipeline, not a release\n\
+           sdk-dist             Build the authoring and release binaries, then assemble the\n\
+                                host-native SDK bundle through postretro-tool: the\n\
+                                authoring engine (debug + dev-tools), the release engine,\n\
+                                the compilers, postretro-tool itself, sdk/docs/tools/core,\n\
+                                and an empty starter mod. It ships no game content;\n\
+                                content/dev never leaves the repository\n\n\
          CONTENT TOOLING:\n\
            Authoring runs, asset bakes, and the weapon-mount solver live in\n\
            `postretro-tool`, which needs no cargo and ships inside the SDK bundle:\n\

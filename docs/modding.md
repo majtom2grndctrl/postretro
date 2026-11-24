@@ -1,142 +1,89 @@
 # Modding with the Postretro SDK
 
-The **SDK bundle** is a self-contained, content-complete modding kit:
-everything you need to **play** a Postretro game *and* keep editing it, without
-cloning a repository or installing Rust. The maps ship baked, so it runs on
-arrival; the sources and compilers ship too, so you can change anything and
-rebake.
+The **SDK bundle** is the Postretro engine and everything you need to build a
+game with it, without cloning a repository or installing Rust: the level and
+script compilers, the content tool, the SDK definitions, these docs, and a
+debug engine that hot-reloads your scripts.
 
-The bundle is also a Postretro **project** in its own right — it carries a
-`postretro.toml` at its root — so the tool it ships can build a player payload
-from it with no toolchain of any kind.
+**It ships no game content.** You bring your own maps, textures, models and
+scripts. The bundle carries one empty starter mod so the tools have something
+to run against on arrival.
 
 ## SDK bundle vs. player payload
 
-`dist` and `sdk-dist` both assemble a self-contained folder, but for different
-audiences:
-
-| | `dist` (player payload) | `sdk-dist` (SDK bundle) |
+| | SDK bundle | `dist` (player payload) |
 |---|---|---|
-| Audience | Someone who plays the game | Someone who plays **and** authors it |
-| Playable on arrival | Yes | Yes (maps ship baked) |
-| Engine build | Release | **Debug**, built with `--features dev-tools` |
-| Levels | Baked `.prl` only | Baked `.prl` **and** source `.map` + the compiler |
-| Scripts | Baked `.js`/`.luau` only | Baked **and** source `.ts`/`.luau` + the compiler |
-| FGD, TS typings, docs, tools, `postretro-tool` | Not included | Included |
-| Folder name | `<package name>` | `<package name>-sdk` |
-| Size | Lean | Larger (debug engine + sources + tools) |
+| Audience | You, building a game | Someone who plays your game |
+| Game content | None — an empty starter mod | Your game, baked |
+| Engine build | **Debug**, built with `--features dev-tools`, plus an optimized `bin/postretro-release` | Release |
+| Compilers, FGD, TS typings, docs, tools, `postretro-tool` | Included | Not included |
+| Folder name | `postretro-sdk` | your package name |
 
-Both are playable folders. `dist` is the lean build to hand to players. Use
-`sdk-dist` when the recipient (including future-you) should also be able to keep
-editing — it is a superset, at the cost of size.
-
-## Producing a bundle
-
-From a project root:
-
-```bash
-bin/postretro-tool sdk-dist
-```
-
-It takes the same flags as `dist`, with the same resolution rules:
-
-```bash
-bin/postretro-tool sdk-dist --manifest path/to/postretro.toml
-bin/postretro-tool sdk-dist --out dist/nightly
-```
-
-`--manifest` names a project marker explicitly instead of searching upward for
-one. `--out` selects the parent directory the bundle folder is created in, and
-must still land strictly inside the project's own `dist/`. Both resolve a
-relative path from the directory you ran the command in. See
-[docs/distribution.md](distribution.md) for the containment rule in full.
-
-The bundle is written to `<out>/<package name>-sdk`.
+You build player payloads with the bundle's tool; see
+[docs/distribution.md](distribution.md).
 
 **The bundle is host-native.** Its binaries were compiled for one operating
-system — produce the bundle on the OS you want it to run on. See "Build on the
-operating system you will ship for" in [docs/distribution.md](distribution.md).
-
-**It bakes the levels *and* ships the sources.** `sdk-dist` runs the same level
-and material bakes as `dist`, so the bundle is playable the moment it is
-unpacked — but it does not run the player payload's source-exclusion filter over
-the content tree, so the `.map`/`.ts` sources ship beside the freshly baked
-`.prl`/`.js`, together with the compilers needed to rebake them. If a build stops
-partway through, the bundle root carries the same `.dist-incomplete` marker a
-player payload uses — see "If a build stops partway through" in
-[docs/distribution.md](distribution.md).
+system — use a bundle built for the OS you are on. See "Build on the operating
+system you will ship for" in [docs/distribution.md](distribution.md).
 
 ## Bundle layout
 
 ```
-<package name>-sdk/
+postretro-sdk/
   postretro[.exe]            authoring engine: debug build, --features dev-tools
   scripts-build[.exe]        beside the engine, where its hot reload looks for it
-  postretro.toml             the project marker: this bundle is a project
-  <package name>-sdk.{bat,sh}  launcher: pins the working directory, mounts the game
+  postretro.toml             the starter project's marker
   bin/
-    postretro-tool[.exe]     the content tool: run, dist, sdk-dist, asset bakes
+    postretro-tool[.exe]     the content tool: run, dist, asset bakes
     postretro-release[.exe]  optimized engine — what a player payload carries
     prl-build[.exe]          level compiler (release build)
     scripts-build[.exe]      TypeScript -> JS compiler (release build)
     mint-identity[.exe]      durable state-slot identity minting
   sdk/                       TrenchBroom FGD + GameConfig + models, lib/, types/,
-                             templates/, behaviors/, type-tests/
+                             templates/ (the starter mod and tsconfig.json),
+                             behaviors/, type-tests/
   docs/                      this documentation set
   tools/                     Python asset helpers (see tools/README.md)
   core/                      engine-owned assets: UI descriptors, splash, licences
-  content/<mod>/             the game's tree: SOURCE .map/.ts beside the freshly
-                             baked maps/*.prl and the emitted start-script.js
-  baked/materials/           .prm material sidecars (so the baked maps render)
+  content/base/              the empty starter mod: start-script.ts and its
+                             compiled start-script.js, tsconfig.json, maps/
   README.md                  generated quickstart for this bundle
 ```
 
-This bundle publishes its mod at `content/<mod>`, where `<mod>` is the name the
-`postretro.toml` at the bundle root declares (`mod = "base"` is `content/base`)
-— the generated `README.md` shows the exact path. Throughout this document
-`<mod-root>` stands for that path; substitute it in the commands below. `base`
-is the recommended convention for a game you start yourself, but a bundle keeps
-whatever mod its source project declared.
+`core/` is what the engine owns and a game never replaces. See "Payload layout"
+in [docs/distribution.md](distribution.md).
 
-`<mod-root>/` ships both halves: the baked outputs the engine loads to play
-(`maps/*.prl`, the emitted `start-script.js`) and the sources you keep editing
-(`maps/*.map`, `scripts/`, `start-script.ts` or `start-script.luau`, models,
-other assets). Only genuinely regenerable junk is dropped — `.build-caches`,
-`maps/autosave/`, `.git*` entries, and any *stale* committed `.prl`/`.js`, since
-the run produces fresh ones.
+## Check the install
 
-A distribution publishes a game under its declared mod, keeping that name,
-and `core/` is what the engine owns and a game never replaces. Neither is
-arbitrary; see "Payload layout" in [docs/distribution.md](distribution.md).
-
-## Play it first
-
-The maps are already baked, so before editing anything you can just run it. From
-the bundle root:
+From the bundle root:
 
 ```bash
 bin/postretro-tool run
 ```
 
-Or start the launcher (`<package name>-sdk.bat` on Windows). Either way the
-working directory ends up pinned to the bundle root, which is what makes the
-content paths resolve.
+The engine boots the starter mod to its fallback menu. There are no levels yet;
+that is expected.
 
-## Where the bundle keeps its data
+## Where your game lives
 
-The bundle is its own project: the `postretro.toml` at its root names the
-package `<package name>-sdk`, the bundle's folder name. Its launcher and
-`bin/postretro-tool run` keep settings and saved state under that name — see
-"Where player data lives" in [docs/distribution.md](distribution.md) for the
-directory on each platform. Your test runs therefore never touch the saves of
-the installed game, and the bundle does not start with that game's settings
-either.
+Keep your game in a version-controlled repository of your own, with the bundle
+installed beside it as the engine you build with. That is the recommended shape,
+and it is what `postretro.toml` exists for. Copy `sdk/templates/starter/` to
+start a new mod. See [docs/external-projects.md](external-projects.md).
+
+You can also experiment inside the bundle: the bundle root is a project whose
+mod is `content/base`. Throughout this document `<mod-root>` stands for your
+mod's folder — `content/base` in either case if you follow the convention.
+
+The starter project's package is `postretro-sdk`, so runs from it keep their
+settings and saved state under that name — see "Where player data lives" in
+[docs/distribution.md](distribution.md) for the directory on each platform.
 
 ## The authoring loop
 
 1. **Author a level in TrenchBroom.** Load `sdk/TrenchBroom/postretro.fgd` as
    the game definition and point the texture path at the `textures/` directory
-   inside `<mod-root>/`.
+   inside `<mod-root>/`. Save maps under `<mod-root>/maps/`.
    See `docs/level_design.md` for entity and lighting reference.
 
 2. **Recompile the level:**
@@ -155,8 +102,8 @@ either.
    cache out of your `maps/` directory.
 
    You should not have to type either one anywhere else. `bin/postretro-tool run`
-   gives the engine its matching `--baked-root`, and a `dist` or `sdk-dist` run
-   supplies both to the compiler itself.
+   gives the engine its matching `--baked-root`, and a `dist` run supplies both to
+   the compiler itself.
 
 3. **Author scripts in TypeScript** against `sdk/types/` and `sdk/lib/`.
 
@@ -246,22 +193,20 @@ If you want to type-check your scripts, run `tsc --noEmit` yourself;
   and without one you cannot build it; see `tools/texture-tool/README.md` and
   the toolchain note in `docs/level_design.md`.
 
-## Shipping a finished mod
+## Shipping a finished game
 
-The SDK bundle is playable, but it is heavy — a debug engine, sources, and
-developer tooling. Once your game is ready to hand to players, build the lean
-player payload instead:
+Once your game is ready to hand to players, build the lean player payload from
+your project root:
 
 ```bash
 bin/postretro-tool dist
 ```
 
 That is the whole command. No repository, no toolchain — the tool runs the
-binaries already sitting in `bin/`.
+binaries already sitting in the bundle's `bin/`.
 
-**Rename the package first if you are shipping your own game.** A payload built
-from the bundle as it arrives is named `<package name>-sdk`, and its players'
-settings and saves live under that name. Set `name` in the bundle's
+**Name the package first.** A project's `[package].name` is where its players'
+settings and saves live. If you built from the starter, change `postretro-sdk` in
 `postretro.toml` to your game's own name before your first release: renaming it
 afterwards strands every player's settings, `player_id` and saves under the old
 name. See [docs/distribution.md](distribution.md)

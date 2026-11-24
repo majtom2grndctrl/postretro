@@ -12,12 +12,12 @@ for the rig it fits:
 ```
 
 `<rig>` is the character model's folder name. exo_red's rifle bake is
-`content/dev/models/cyberpunk_weapons/rifle/exo_red.gltf`, beside the rifle's
+`content/base/models/rifle/exo_red.gltf`, beside the rifle's
 first-person viewmodel `model.gltf`. The bake has its own buffer and shares the
 folder's textures. Characters on one rig share one bake. A bake never replaces
 or edits the viewmodel, its buffer or its textures.
 
-The examples below fit the dev rifle to exo_red. The weapon's exported glTF
+The examples below fit a rifle to exo_red. The weapon's exported glTF
 serves as the raw source.
 
 ## 1. Bake grip and scale only, to a scratch folder
@@ -32,7 +32,7 @@ or mount axes at this stage.
 
 ```bash
 blender --background --python tools/prop_to_gltf.py -- \
-  --input content/dev/models/cyberpunk_weapons/rifle/model.gltf \
+  --input content/base/models/rifle/model.gltf \
   --output scratch/rifle/exo_red.gltf \
   --grip 0.025 -0.068 0.082 \
   --scale 0.62
@@ -50,12 +50,12 @@ They are directions in the **raw-source frame**, before the corrective rotation
 is baked. They are not axes copied from the grip/scale-only output.
 
 ```bash
-bin/postretro-tool solve-weapon-mount content/dev/models/exo_red/model.gltf \
+bin/postretro-tool solve-weapon-mount content/base/models/exo_red/model.gltf \
   --weapon scratch/rifle/exo_red.gltf \
   --mount-joint hand_r \
   --barrel 0 0 -1 \
   --up 0 1 0 \
-  --raw-source content/dev/models/cyberpunk_weapons/rifle/model.gltf \
+  --raw-source content/base/models/rifle/model.gltf \
   --out scratch/rifle/exo_red.gltf \
   --grip 0.025 -0.068 0.082 \
   --scale 0.62
@@ -92,7 +92,7 @@ Copy only the glTF and its buffer. Leave the scratch folder's textures behind.
 
 ```bash
 cp scratch/rifle/exo_red.gltf scratch/rifle/exo_red.bin \
-  content/dev/models/cyberpunk_weapons/rifle/
+  content/base/models/rifle/
 ```
 
 The bake's image references must name textures the weapon folder already holds.
@@ -102,8 +102,8 @@ The bake's image references must name textures the weapon folder already holds.
 Normally, verify the copied asset without re-supplying axes or Euler values:
 
 ```bash
-bin/postretro-tool solve-weapon-mount content/dev/models/exo_red/model.gltf \
-  --weapon content/dev/models/cyberpunk_weapons/rifle/exo_red.gltf \
+bin/postretro-tool solve-weapon-mount content/base/models/exo_red/model.gltf \
+  --weapon content/base/models/rifle/exo_red.gltf \
   --mount-joint hand_r \
   --check
 ```
@@ -171,7 +171,7 @@ paste-ready descriptor value:
 
 ```bash
 bin/postretro-tool solve-weapon-mount --read-muzzle-offset \
-  content/dev/models/cyberpunk_weapons/rifle/model.gltf
+  content/base/models/rifle/model.gltf
 ```
 
 The tool prints `muzzleOffset: [x, y, z]`. Copy the array into the weapon
@@ -195,11 +195,10 @@ single rigid bake.
 
 A rigid bake fits only rigs whose hand frames match its solve, so each rig gets
 its own bake of each weapon, named `<rig>.gltf` for the character model's folder
-name under `content/dev/models/`. The rifle the Limitator holds is
-`content/dev/models/ar_4/limitator.gltf`; the rifle squads' trooper and warrior
-each have their own bake in that folder, `rodin_sci-fi_trooper_m.gltf` and
-`cyberpunk_warrior_f.gltf`. A folder whose raw source lives outside your
-project, like `ar_4/`, holds bakes only.
+name under `content/base/models/`. A rifle held by two characters on different
+rigs has two bakes in its folder, such as `content/base/models/rifle/exo_red.gltf`
+and `content/base/models/rifle/trooper.gltf`. A folder whose raw source lives
+outside your project holds bakes only.
 
 ## NPCs carry weapons the same way
 
@@ -264,8 +263,9 @@ shot's start is a host decision.
   ```
 
   Its shots leave that posed socket, a skin joint you tag in the model like any
-  other socket, and the entry mounts nothing. `cannon_brute`
-  (`content/dev/scripts/arm-cannon.ts`) is the example.
+  other socket, and the entry mounts nothing. The engine's source repository has
+  an example, `cannon_brute`, in `content/dev/scripts/arm-cannon.ts`; it is not
+  part of the SDK bundle.
 - **Several `muzzle` sockets.** If one entry mounts several bakes and more than
   one carries a `muzzle`, the shot leaves the first in socket-name order and the
   load warns.

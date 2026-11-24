@@ -65,6 +65,7 @@ import {
   enemyRifleLongEntity,
 } from "./scripts/enemy-rifle";
 import { limitatorEntity } from "./scripts/limitator";
+import { armCannonBurstEntity, armCannonEntity, cannonBruteEntity } from "./scripts/arm-cannon";
 import { shadowHunterEntity } from "./scripts/shadow-hunter";
 import {
   RIFLE_TOLERANCE,
@@ -435,6 +436,10 @@ export default defineMod({
     enemyRifleLongEntity,
     enemyRifleBurstEntity,
     limitatorEntity,
+    // A mutant with a built-in cannon: `"classname" "cannon_brute"`.
+    armCannonEntity,
+    armCannonBurstEntity,
+    cannonBruteEntity,
     // Fast melee skirmisher: `"classname" "shadow_hunter"`.
     shadowHunterEntity,
     // Rifle squads: `"classname" "rifle_trooper"` / `"rifle_warrior"`.

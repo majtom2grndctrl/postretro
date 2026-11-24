@@ -1250,10 +1250,10 @@ declare function fire(reaction: Reaction<any> | string): {SequenceStep}
 --- matched against `ModMapEntry.tags`; omit scoping for every level.
 declare function scopeReactions<S>(tags: {string}, list: {Reaction<S>}): {Reaction<S>}
 
---- An entity descriptor returned by `defineEntity` that declares a weapon block and can be referenced from an inventory loadout or from `mesh.weaponMounts[].weapon`.
+--- An entity descriptor returned by `defineEntity` that declares a weapon block and can be referenced from an inventory loadout or from `mesh.mounts[].item`.
 export type WeaponEntityDescriptor = EntityTypeDescriptor & { components: EntityTypeComponents & { weapon: WeaponDescriptor } }
 --- Lowers `components.inventory.loadout` and
---- `components.mesh.weaponMounts[].weapon` weapon descriptor references to
+--- `components.mesh.mounts[].item` weapon descriptor references to
 --- their canonical names after validating each reference by value.
 declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- Pure identity builder for the mod manifest consumed from the chunk return.
@@ -2304,7 +2304,7 @@ export type BrainInputs = {
   targetReachable: RuntimeGuardNode,
   --- Successful attack fires since the currently-evaluated activity was entered. It is scope-relative and a fire becomes visible on the next tick's guard refresh (number).
   attacksFiredInActivity: RuntimeGuardNode,
-  --- `true` when the selected target is clear on the enemy's shared, debounced sightline, which static geometry and movers at their current pose block (a closed door hides the target); false with no target. This is the LOS verdict the engine fire gate also reads, before its range, cooldown, and facing requirements (boolean).
+  --- `true` when the selected target is clear on the enemy's shared, debounced sightline, which static geometry and movers at their current pose block (a closed door hides the target); false with no target. This is the eye's line-of-sight verdict, which perception and the engine fire gate share, before the gate's range, cooldown, and facing requirements. The fire gate also tests the gun's near path, so `targetVisible` can read true while every shot is held (see `attacksHeldInActivity`) (boolean).
   targetVisible: RuntimeGuardNode,
   --- Milliseconds since this enemy last took damage. A fresh never-hit brain reads `1e9`; a landed hit resets it to zero and later AI ticks monotonically age it back to that sentinel (number).
   timeSinceDamageMs: RuntimeGuardNode,
@@ -2328,6 +2328,8 @@ export type BrainInputs = {
   damageInActivity: RuntimeGuardNode,
   --- Highest awareness of any candidate, 0 to 1; 1 once it has a target. A guard on a decide reads the value that decide's acquisition check produced (number).
   awareness: RuntimeGuardNode,
+  --- Shots the gun's near-path test held since the currently-evaluated activity was entered: a clip moment that whiffed on a blocked near path, a burst shot skipped on one, or an attack with no clip moment when it becomes held (counted once per hold, and again at each activity entry while still held). Visible on the next tick's guard refresh. An eye-sight failure, a missing muzzle, a shot withheld while the enemy is not aiming, and an obstacle past the near distance count nothing. Host-only (number).
+  attacksHeldInActivity: RuntimeGuardNode,
 }
 
 --- Pre-wrapped guard input leaves for the fixed `@brain.*` namespace.

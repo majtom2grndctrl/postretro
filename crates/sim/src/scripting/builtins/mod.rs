@@ -17,6 +17,7 @@ pub(crate) mod entity_spawner;
 pub mod entity_spawner;
 pub mod host_replicated;
 pub mod net_descriptor;
+pub mod npc_mounts;
 pub mod player_spawn;
 pub(crate) mod projectile_trap;
 pub(crate) mod prop_mesh;

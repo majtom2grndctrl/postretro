@@ -2,9 +2,7 @@
 // See: context/lib/scripting.md
 
 use super::super::*;
-use super::mesh_weapon_mounts::{
-    reject_unknown_mesh_keys, string_map_from_js, weapon_mounts_from_js,
-};
+use super::mesh_mounts::{mounts_from_js, reject_unknown_mesh_keys, string_map_from_js};
 use postretro_entities::data_descriptors::mesh_owner_label;
 use rquickjs::object::Filter;
 
@@ -310,7 +308,7 @@ fn reject_object_where_move_selector_belongs(
 }
 
 /// Parse a `components.mesh` object (JS). Shape:
-/// `{ model: string, attachments?: { [socket]: string }, animations?: { [state]: { clip, loop?, crossfadeMs?, interrupt? } }, defaultState?: string, weaponMounts?: { weapon: string, attachments: { [socket]: string } }[] }`.
+/// `{ model: string, attachments?: { [socket]: string }, animations?: { [state]: { clip, loop?, crossfadeMs?, interrupt? } }, defaultState?: string, mounts?: ({ item: string, attachments: { [socket]: string } } | { item: string, muzzleSocket: string })[] }`.
 /// Any other own key rejects load. `owner` names the character in those
 /// errors and in the weapon-mount rules. Gathers raw fields and delegates
 /// validation to [`MeshDescriptor::build`] so both FFI paths share identical
@@ -329,12 +327,12 @@ pub fn mesh_descriptor_from_js<'js>(
             .map_err(|reason| DescriptorError::InvalidShape { reason })?;
     }
 
-    let weapon_mounts = if obj.contains_key("weaponMounts").map_err(js_err)? {
-        let raw: JsValue = obj.get("weaponMounts").map_err(js_err)?;
+    let mounts = if obj.contains_key("mounts").map_err(js_err)? {
+        let raw: JsValue = obj.get("mounts").map_err(js_err)?;
         if raw.is_null() || raw.is_undefined() {
             None
         } else {
-            Some(weapon_mounts_from_js(owner, raw)?)
+            Some(mounts_from_js(owner, raw)?)
         }
     } else {
         None
@@ -404,7 +402,7 @@ pub fn mesh_descriptor_from_js<'js>(
             locomotion,
             shadow_bias_scale,
             shadow_only,
-            weapon_mounts,
+            mounts,
         },
         owner,
     )

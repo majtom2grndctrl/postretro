@@ -1681,7 +1681,7 @@ fn a_repoint_remounts_a_single_player_pawn_and_leaves_a_client_own_pawn_mount_al
             animations: Default::default(),
             default_state: None,
             locomotion: None,
-            weapon_mounts: None,
+            mounts: None,
         }),
         health: None,
         behavior: None,

@@ -207,6 +207,70 @@ fn arena_registry() -> PrimitiveRegistry {
     registry
 }
 
+const HELD_GUARD_TS: &str = r#"
+import { brain, defineAttack, defineMod } from "postretro";
+
+const shoot = defineAttack({ weapon: "enemy_rifle_burst", standoffDistance: 6 });
+
+export default defineMod({
+  name: "Held", id: "e10.held", version: "1",
+  entities: [
+    { canonicalName: "gunner", components: { behavior: {
+      initial: "fire", moveSpeed: 3,
+      attacks: [shoot],
+      activities: {
+        fire: { animation: "walk", motion: "hold", action: { attack: shoot } },
+        move: { animation: "walk", motion: "chaseTarget" },
+      },
+      transitions: {
+        fire: [{ to: "move", when: brain.attacksFiredInActivity.ge(1).or(brain.attacksHeldInActivity.ge(1)) }],
+      },
+    } } },
+  ],
+});
+"#;
+
+const HELD_GUARD_LUAU: &str = r#"
+local shoot = defineAttack("shoot", { weapon = "enemy_rifle_burst", standoffDistance = 6 })
+
+return defineMod({
+  name = "Held", id = "e10.held", version = "1",
+  entities = {
+    { canonicalName = "gunner", components = { behavior = {
+      initial = "fire", moveSpeed = 3,
+      attacks = { shoot },
+      activities = {
+        fire = { animation = "walk", motion = "hold", action = { attack = shoot } },
+        move = { animation = "walk", motion = "chaseTarget" },
+      },
+      transitions = {
+        fire = { { to = "move", when = brain.attacksFiredInActivity:ge(1)["or"](brain.attacksFiredInActivity:ge(1), brain.attacksHeldInActivity:ge(1)) } },
+      },
+    } } },
+  },
+})
+"#;
+
+// A guard on `brain.attacksHeldInActivity` lowers to the same descriptor in
+// both runtimes, and reads the new `@brain.attacksHeldInActivity` input.
+#[test]
+fn a_guard_on_attacks_held_in_activity_lowers_identically_in_both_runtimes() {
+    let ts = built(
+        "held_ts",
+        &[(
+            "start-script.js",
+            &bundle_typescript("held", &[("start-script.ts", HELD_GUARD_TS)]),
+        )],
+    );
+    let luau = built("held_luau", &[("start-script.luau", HELD_GUARD_LUAU)]);
+    assert_eq!(ts.entities, luau.entities);
+    let debug = format!("{:?}", ts.entities);
+    assert!(
+        debug.contains(postretro_foundation::BRAIN_ATTACKS_HELD_IN_ACTIVITY_INPUT),
+        "the guard reads the held input: {debug}"
+    );
+}
+
 // S1: the Scripting surface example parses identically in TypeScript and
 // Luau: one registration of the three tokens and the `arena` profile, the same
 // reference enemy and rifle trooper descriptors, and an `arena.start` that

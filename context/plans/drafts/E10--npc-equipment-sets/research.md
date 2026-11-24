@@ -1,6 +1,6 @@
 # E10--npc-equipment-sets — research
 
-Read at e761fb13. Read at 07c46bddd: facts E21 changed. Read at bb7323fc5: source corrections throughout. Read at 73b072de3 (no source change since bb7323fc5): §Replication. Read at f29bc577d (no source change since 73b072de3): §Set names, §Gear, §Example weapons. Read at e57fcf5ea (no source change since f29bc577d): §Gear. Read at 55d245fd1 (no source change since e57fcf5ea): §Today's binding (cancellation, weapon references), §Spawn and composition (draw salts, spawner KVPs). Mount, shot-origin and NPC-materialize facts moved to `drafts/E10--npc-weapon-mounts/research.md` at the split. Findings that inform the brief; the brief carries the conclusions.
+Read at e761fb13. Read at 07c46bddd: facts E21 changed. Read at bb7323fc5: source corrections throughout. Read at 73b072de3 (no source change since bb7323fc5): §Replication. Read at f29bc577d (no source change since 73b072de3): §Set names, §Gear, §Example weapons. Read at e57fcf5ea (no source change since f29bc577d): §Gear. Read at 55d245fd1 (no source change since e57fcf5ea): §Today's binding (cancellation, weapon references), §Spawn and composition (draw salts, spawner KVPs). Mount, shot-origin and NPC-materialize facts moved to `done/E10--npc-weapon-mounts/research.md` at the split. Findings that inform the brief; the brief carries the conclusions.
 
 ## Today's binding
 - Attack rows name weapons statically: `AttackParams.weapon: Option<String>` (`crates/foundation/src/data_descriptors/types/behavior.rs`). The SDK passes the string through (`sdk/lib/data_script/attacks.ts`, `.luau`). `validate_attacks` checks shape only, not that the name exists. Stance lowering never reads `weapon`. Every `content/` call site that names a weapon string is in `content/dev/scripts/limitator.ts`. Identity-lowering precedent: `lowerWeaponMountReferences` (`sdk/lib/data_script.ts`, `.luau`).
@@ -36,10 +36,10 @@ Read at e761fb13. Read at 07c46bddd: facts E21 changed. Read at bb7323fc5: sourc
 - A capacity-0 layer is skipped by every hit: `drain_layers` skips a layer whose `value <= 0`.
 - Hot reload deferral: `defer_visual_asset_descriptor_refreshes` (`crates/scripting-core/src/runtime/core.rs`) defers `mesh` whole, `mesh.weaponMounts` included. It does not cover an `equipment` block, and it does not retain a removed descriptor's models.
 - `HealthComponent.max` is per entity and reset from the descriptor on reload.
-- Mount facts (entry shape, the E21 writer, the install check, the preload sweep, the AR_4 bakes): `drafts/E10--npc-weapon-mounts/research.md` §Mounts today. The preload sweep covers every table model, so gear entries need no new sweep.
+- Mount facts (entry shape, the E21 writer, the install check, the preload sweep, the AR_4 bakes): `done/E10--npc-weapon-mounts/research.md` §Mounts today. The preload sweep covers every table model, so gear entries need no new sweep.
 
 ## Replication
-- An NPC's per-instance payloads are `Transform`, `MeshAnimationState`, `StatusPresence` and `presentation_binding`. No KVPs, no tags. Its class and client materialize path: `drafts/E10--npc-weapon-mounts/research.md` §Mounts today. No client path updates an NPC's attachments after materialize.
+- An NPC's per-instance payloads are `Transform`, `MeshAnimationState`, `StatusPresence` and `presentation_binding`. No KVPs, no tags. Its class and client materialize path: `done/E10--npc-weapon-mounts/research.md` §Mounts today. No client path updates an NPC's attachments after materialize.
 - Pawn precedent: `active_weapon_archetype` (presence flag plus string on `RawEntityRecord`). It is filled by `replication.rs::active_weapon_archetype` and validated by `validate_active_weapon_metadata` (`crates/net/src/wire.rs`), which gates on the movement component, not the class. The net crate is registry-blind; class prefixes live in `crates/netcode/src/descriptor_class.rs`. A client applies it through `update_weapon_mount_attachments`, against the pawn's class and its own descriptors (`snapshot_apply.rs`). The host-side writers, `synchronize_weapon_owner_attachments` and `synchronize_weapon_attachment_for_pawn`, call the same function.
 - AI weapon cues carry resolved sound keys (`freeze_observer_weapon_cue`). Projectiles carry `projectile:<weapon>`. Clients need no NPC weapon name for either.
 - `WIRE_VERSION` (`crates/net/src/handshake.rs`, 43 at 73b072de3) and `SNAPSHOT_VERSION` (`crates/net/src/wire.rs`, 27) both bump for a new record field.
@@ -55,11 +55,11 @@ Read at e761fb13. Read at 07c46bddd: facts E21 changed. Read at bb7323fc5: sourc
 - The script compiler has no descriptor knowledge, so a map key's set name is checked at load, not at compile.
 
 ## Gear
-- No gear exists today. E21's `weaponMounts` entry is the per-rig precedent: `weapon` plus an `attachments` map baked for that character's rig, with an empty map rejected and paths checked (`validate_weapon_mounts`, `crates/entities/src/data_descriptors/types/weapon_mounts.rs`; `resource_management.md` §7). `drafts/E10--npc-weapon-mounts/` renames it `mesh.mounts`, keyed by `item`, so a gear item takes an entry the way a weapon does.
+- No gear exists today. E21's `weaponMounts` entry is the per-rig precedent: `weapon` plus an `attachments` map baked for that character's rig, with an empty map rejected and paths checked (`validate_weapon_mounts`, `crates/entities/src/data_descriptors/types/weapon_mounts.rs`; `resource_management.md` §7). `done/E10--npc-weapon-mounts/` renames it `mesh.mounts`, keyed by `item`, so a gear item takes an entry the way a weapon does.
 - A rig-independent identity keeps gear out of the set state problem. The superseded shape put gear on the archetype's set entry (`equipment: [{ set, weight, attachments }]`). A client could resolve that gear only through the entry's identity, so the host had to keep the worn set's name past spawn and the record had to carry it, against the first Decision. A gear item named on the record resolves through the client's own `mesh.mounts`, as a weapon does.
 - Names: TS handles of the `defineDefenseLayer` kind carry `{ kind, name }` (`sdk/lib/data_script.ts`); `defineDefenseLayer()` takes no argument in TS and the name in Luau (`content/dev/scripts/defenses.ts`, `.luau`). A gear item has no map reference, so it needs none of the set-name divergence.
 - `item` lowers to a name, as `weapon` does today. A weapon's canonical name and a gear name share that slot, so the brief rejects a collision at load rather than resolve by kind.
-- Gear on a socket where a set weapon mounts hides that gun. The owner rules that gear wins: the displaced weapon has no drawn muzzle and fires from the eye, as any missing muzzle does under `drafts/E10--npc-weapon-mounts/`, and load warns. Two weapons on one socket still reject there, since every carried weapon must draw.
+- Gear on a socket where a set weapon mounts hides that gun. The owner rules that gear wins: the displaced weapon has no drawn muzzle and fires from the eye, as any missing muzzle does under `done/E10--npc-weapon-mounts/`, and load warns. Two weapons on one socket still reject there, since every carried weapon must draw.
 
 ## Example weapons
 - Projectile weapons in `content/dev/scripts/`: the enemy rifles (`enemy-rifle.ts`), `reference_plasma_bolt` and `reference_rocket` (`reference-projectiles.ts`). The arc, acid and incendiary rifles spread the hitscan reference rifle.
@@ -79,7 +79,7 @@ Read at e761fb13. Read at 07c46bddd: facts E21 changed. Read at bb7323fc5: sourc
 - `drafts/E16--persistent-firing-modes/`: one modal weapon is one identity, so one `carries` guard and one set entry serve every mode. Sets choose weapons; attacks choose modes.
 - `drafts/descriptor-instance-overrides/`: delegates to whichever of it and this brief builds second the rule that a base weapon's mount entry serves the variants a set lists; `carries` keys on the variant.
 - `CarriedLoadoutWire` (`crates/net/src/wire/control.rs`): the player's carried loadout across level changes. An NPC's carried equipment is a different thing and never crosses a level.
-- `done/E21--character-weapon-mounts/`: its loud missing-entry rule for a declared table extends to set weapons and set gear through `drafts/E10--npc-weapon-mounts/`, which owns NPC mount consumption, the shot origin and the dev content move.
+- `done/E21--character-weapon-mounts/`: its loud missing-entry rule for a declared table extends to set weapons and set gear through `done/E10--npc-weapon-mounts/`, which owns NPC mount consumption, the shot origin and the dev content move.
 
 ## Ordering pins
 
@@ -101,17 +101,17 @@ The first `/validate-plan` returned Reshape: set identity as runtime state forec
 
 The third `/validate-plan` returned Reshape: weapon mounts in sets ignored per-rig bakes. The owner chose archetype-owned weapon mounts, noting that the player avatar mount did not seat weapons correctly then, so this is a new NPC path rather than a copy of it. The owner also allowed weight-0 sets, renamed the state "carried" with the guard `carries(weapon)`, and required weapons referenced by identity rather than by string (2026-11-22). The owner will personally review the API and the brief before promotion.
 
-Owner rulings of 2026-11-23 on shot origin, mount sharing and built-in muzzles now live in `drafts/E10--npc-weapon-mounts/research.md` §Validation history input.
+Owner rulings of 2026-11-23 on shot origin, mount sharing and built-in muzzles now live in `done/E10--npc-weapon-mounts/research.md` §Validation history input.
 
-A later `/validate-plan` returned Reshape (2026-11-23). The owner split the brief: `drafts/E10--npc-weapon-mounts/` first, this brief on top. Rulings for this brief: the wire carries carried weapon identities, not resolved `(socket, model)` mounts; an unused mount entry warns rather than rejects, and only on an archetype that declares `equipment`.
+A later `/validate-plan` returned Reshape (2026-11-23). The owner split the brief: `done/E10--npc-weapon-mounts/` first, this brief on top. Rulings for this brief: the wire carries carried weapon identities, not resolved `(socket, model)` mounts; an unused mount entry warns rather than rejects, and only on an archetype that declares `equipment`.
 
-A later `/validate-plan` returned Direction sound (2026-11-23). Owner rulings: gear is per rig on the archetype's set entry, and travels as identity; build order is `drafts/E10--npc-weapon-mounts/`, then `drafts/E16--persistent-firing-modes/`, then this brief, so sets choose weapons and attacks choose modes; set names stay binding-name sugar over an explicit name field; the `drafts/descriptor-instance-overrides/` reconciliation is acknowledged; give-and-take-first and gear-in-the-set join the rivals. The owner reviews the changed Scripting surface. Gear as identity keeps the worn set's name past spawn, which the first Decision says does not survive: an owner item.
+A later `/validate-plan` returned Direction sound (2026-11-23). Owner rulings: gear is per rig on the archetype's set entry, and travels as identity; build order is `done/E10--npc-weapon-mounts/`, then `drafts/E16--persistent-firing-modes/`, then this brief, so sets choose weapons and attacks choose modes; set names stay binding-name sugar over an explicit name field; the `drafts/descriptor-instance-overrides/` reconciliation is acknowledged; give-and-take-first and gear-in-the-set join the rivals. The owner reviews the changed Scripting surface. Gear as identity keeps the worn set's name past spawn, which the first Decision says does not survive: an owner item.
 
 Owner rulings of 2026-11-23 on that item, asked for the approach that sets PostRetro up best long term:
 - Gear is a first-class carried item, a `defineGear` handle named by binding (Luau passes the name). Sets list weapons and gear. An instance's state is its carried weapons and worn gear, never the set, and the wire carries both identities. This supersedes gear on the set entry, and set entries return to `{ set, weight }`. The owner's framing: a set's gear is a default loadout that can be overridden piece by piece later; gear give and take are additive, like weapons.
-- One `mesh.mounts` table keyed by `item`, owned and renamed by `drafts/E10--npc-weapon-mounts/`; this brief extends `item` to gear.
+- One `mesh.mounts` table keyed by `item`, owned and renamed by `done/E10--npc-weapon-mounts/`; this brief extends `item` to gear.
 - Gear wins its socket: base attachments, then carried weapons' mounts, then worn gear's. "A gear set is a default loadout but it can be overridden as needed." A gun displaced by gear fires from the eye, and load warns where a set's gear covers its own weapon's socket. This replaces the rejection of gear on a set weapon's socket.
-- A missing muzzle fires from the eye (`drafts/E10--npc-weapon-mounts/`).
+- A missing muzzle fires from the eye (`done/E10--npc-weapon-mounts/`).
 
 Owner rulings of 2026-11-23, after detail review:
 - The gate applies to the active path: an activity whose attack becomes unavailable reads as left on the next decide, through its first enabled row, else the graph's initial activity, and its turn ends, mark, hold or release included.

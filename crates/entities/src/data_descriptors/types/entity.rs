@@ -14,7 +14,7 @@ use crate::data_descriptors::{
 };
 use crate::provenance::DescriptorComponentKind;
 
-use super::weapon_mounts::{WeaponMountDescriptor, validate_weapon_mounts};
+use super::mounts::{MountDescriptor, validate_mounts};
 pub use postretro_foundation::data_descriptors::LightDescriptor;
 
 /// Authored mesh component preset attached to an [`EntityTypeDescriptor`].
@@ -35,9 +35,9 @@ pub use postretro_foundation::data_descriptors::LightDescriptor;
 /// `defaultState` without an `animations` block is also rejected. Clip resolution
 /// against the model's clip metadata is resolved at level load by
 /// `resolve_mesh_entity_clips`; `AnimationState::clip_index` stays `None` at parse.
-/// `weapon_mounts` follows the rules in
-/// [`super::weapon_mounts::validate_weapon_mounts`], and the readers reject any
-/// key outside [`super::weapon_mounts::MESH_DESCRIPTOR_KEYS`].
+/// `mounts` follows the rules in
+/// [`super::mounts::validate_mounts`], and the readers reject any
+/// key outside [`super::mounts::MESH_DESCRIPTOR_KEYS`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct MeshDescriptor {
     pub model: String,
@@ -66,12 +66,15 @@ pub struct MeshDescriptor {
     /// the `speed_scale = true` default. Threaded onto the runtime
     /// [`crate::components::mesh::MeshAnimation`] at spawn.
     pub locomotion: Option<LocomotionDescriptor>,
-    /// The character's weapon-mount table (`weaponMounts` on the wire): for
-    /// each weapon it may wield, the props fitted to this model's rig. `None`
-    /// when the table is absent, which opts the character out of mounted
-    /// weapons silently; `Some` (even empty) declares the table. Part of the
+    /// The character's mount table (`mounts` on the wire), one entry per
+    /// weapon: the props fitted to this model's rig (`{ item, attachments }`),
+    /// or the body socket a built-in weapon's shots leave from
+    /// (`{ item, muzzleSocket }`). A player mounts its active weapon's entry; an
+    /// NPC mounts the entry of every weapon its attacks name. `None` when the
+    /// table is absent, which opts the character out of mounted weapons
+    /// silently; `Some` (even empty) declares the table. Part of the
     /// mesh, so the hot-reload mesh deferral covers it.
-    pub weapon_mounts: Option<Vec<WeaponMountDescriptor>>,
+    pub mounts: Option<Vec<MountDescriptor>>,
 }
 
 /// Authored per-archetype locomotion calibration attached to
@@ -136,7 +139,7 @@ pub struct RawMeshDescriptor {
     pub locomotion: Option<LocomotionDescriptor>,
     pub shadow_bias_scale: Option<f32>,
     pub shadow_only: bool,
-    pub weapon_mounts: Option<Vec<WeaponMountDescriptor>>,
+    pub mounts: Option<Vec<MountDescriptor>>,
 }
 
 impl MeshDescriptor {
@@ -162,7 +165,7 @@ impl MeshDescriptor {
     /// remains shadow-only while peer viewers render the same avatar forward.
     /// `shadowBiasScale` is optional on the wire, defaults to 1.0, and must be
     /// finite in 0.0..=4.0. `owner` names the character in weapon-mount
-    /// errors ([`super::weapon_mounts::mesh_owner_label`]).
+    /// errors ([`super::mounts::mesh_owner_label`]).
     pub fn build(raw: RawMeshDescriptor, owner: &str) -> Result<Self, DescriptorError> {
         let RawMeshDescriptor {
             model,
@@ -173,7 +176,7 @@ impl MeshDescriptor {
             locomotion,
             shadow_bias_scale,
             shadow_only,
-            weapon_mounts,
+            mounts,
         } = raw;
         if model.is_empty() {
             return Err(DescriptorError::InvalidShape {
@@ -197,8 +200,8 @@ impl MeshDescriptor {
             }
         }
 
-        if let Some(entries) = weapon_mounts.as_deref() {
-            validate_weapon_mounts(owner, entries)?;
+        if let Some(entries) = mounts.as_deref() {
+            validate_mounts(owner, entries)?;
         }
 
         let shadow_bias_scale = shadow_bias_scale.unwrap_or(1.0);
@@ -377,7 +380,7 @@ impl MeshDescriptor {
             animations,
             default_state,
             locomotion,
-            weapon_mounts,
+            mounts,
         })
     }
 }
@@ -436,12 +439,15 @@ impl EntityTypeDescriptor {
     /// state and every travel variant the mesh declares. A client replays each
     /// pass from the replicated state name alone, which a one-shot cannot do.
     /// A state the mesh does not declare is left to spawn validation's
-    /// warning.
+    /// warning. The weapons its attacks name may also share a mount socket only
+    /// with one model ([`super::mounts::validate_shared_attack_sockets`]).
     pub fn validate_across_components(&self) -> Result<(), DescriptorError> {
         let (Some(mesh), Some(behavior)) = (self.mesh.as_ref(), self.behavior.as_ref()) else {
             return Ok(());
         };
-        repeating_releases_loop(&behavior.envelope, &mesh.animations)
+        repeating_releases_loop(&behavior.envelope, &mesh.animations)?;
+        let owner = super::mounts::mesh_owner_label(self.canonical_name.as_deref());
+        super::mounts::validate_shared_attack_sockets(&owner, mesh, &behavior.attack_weapons())
     }
 
     /// Whether this descriptor declares a component in the provenance vocabulary.
@@ -546,7 +552,7 @@ mod tests {
                 locomotion: None,
                 shadow_bias_scale: None,
                 shadow_only: false,
-                weapon_mounts: None,
+                mounts: None,
             },
             "entity `brute`",
         )

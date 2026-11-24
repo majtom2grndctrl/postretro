@@ -89,10 +89,13 @@ pub const BRAIN_TARGET_REACHABLE_INPUT: &str = "@brain.targetReachable";
 /// A fire on the current tick becomes observable only after the next refresh.
 pub const BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT: &str = "@brain.attacksFiredInActivity";
 /// Whether the selected target is visible along the enemy's debounced
-/// static-world eye-to-target sightline. `false` with no selected target.
+/// eye-to-target sightline, through world geometry and movers at their current
+/// pose. `false` with no selected target.
 ///
-/// This is the exact shared verdict the engine-floor fire gate reads; it is
-/// independent of the additional range, cooldown, and facing gates.
+/// This is the eye's line-of-sight verdict that perception and the engine-floor
+/// fire gate share; it is independent of the additional range, cooldown, and
+/// facing gates. The fire gate also tests the gun's near path, so this can read
+/// `true` while every shot is held ([`BRAIN_ATTACKS_HELD_IN_ACTIVITY_INPUT`]).
 pub const BRAIN_TARGET_VISIBLE_INPUT: &str = "@brain.targetVisible";
 /// Milliseconds since this enemy last took damage. A fresh brain that has
 /// never been damaged reads [`BRAIN_NO_TARGET_DISTANCE`], then a landed hit
@@ -150,6 +153,17 @@ pub const BRAIN_DAMAGE_IN_ACTIVITY_INPUT: &str = "@brain.damageInActivity";
 /// check on this decide left it; 1 while the enemy has a target. Guards on a
 /// decide read the value that decide's check produced.
 pub const BRAIN_AWARENESS_INPUT: &str = "@brain.awareness";
+/// Shots the gun's near-path test held since the currently-evaluated activity
+/// was entered: a clip moment that whiffed on a blocked near path, a burst
+/// shot skipped on one, or an attack with no clip moment when it becomes held
+/// (counted once per hold, and again at each activity entry while still held).
+/// An eye-sight failure, a missing muzzle, a shot withheld while the enemy is
+/// not aiming and an obstacle past the near distance count nothing.
+///
+/// Scope-relative like [`BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT`]: nested
+/// envelopes evaluate their own rows against their own count, and a hold on
+/// the current tick becomes observable only after the next refresh. Host-only.
+pub const BRAIN_ATTACKS_HELD_IN_ACTIVITY_INPUT: &str = "@brain.attacksHeldInActivity";
 
 /// Prefix of the named Bool read `attackTurnHeld(attack)`: a turn is held for
 /// that attack, as of the previous tick.
@@ -189,7 +203,7 @@ pub const BRAIN_NO_TARGET_DISTANCE: f32 = 1.0e9;
 /// it, so refresh must write the same slots in the same order. Names use the
 /// camelCase idiom of the script surface (scripting.md §4) inside the
 /// `@`-reserved ephemeral-dispatch-input namespace (scripting.md §5).
-pub const BRAIN_INPUTS: [(&str, IrType); 25] = [
+pub const BRAIN_INPUTS: [(&str, IrType); 26] = [
     (BRAIN_HAS_TARGET_INPUT, IrType::Bool),
     (BRAIN_TARGET_DISTANCE_INPUT, IrType::Number),
     (BRAIN_TIME_IN_ACTIVITY_MS_INPUT, IrType::Number),
@@ -215,6 +229,7 @@ pub const BRAIN_INPUTS: [(&str, IrType); 25] = [
     (BRAIN_ACTIVITY_ROLL_INPUT, IrType::Number),
     (BRAIN_DAMAGE_IN_ACTIVITY_INPUT, IrType::Number),
     (BRAIN_AWARENESS_INPUT, IrType::Number),
+    (BRAIN_ATTACKS_HELD_IN_ACTIVITY_INPUT, IrType::Number),
 ];
 
 /// What a brain input name resolves to, independent of where the values live.
@@ -504,6 +519,15 @@ mod tests {
         assert_eq!(
             BRAIN_INPUTS[24],
             (BRAIN_AWARENESS_INPUT, IrType::Number),
+            "new brain facts append; they never repoint existing guard handles"
+        );
+    }
+
+    #[test]
+    fn attacks_held_in_activity_appends_at_fixed_slot_twenty_five() {
+        assert_eq!(
+            BRAIN_INPUTS[25],
+            (BRAIN_ATTACKS_HELD_IN_ACTIVITY_INPUT, IrType::Number),
             "new brain facts append; they never repoint existing guard handles"
         );
     }

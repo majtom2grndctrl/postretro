@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use postretro_entities::components::brain::{
-    BrainComponent, ClipClock, ClipFacts, Stagger, TravelVariant,
+    BrainComponent, ClipClock, ClipFacts, Interruption, Stagger, TravelVariant,
 };
 use postretro_entities::components::mesh::MeshComponent;
 use postretro_entities::{EntityId, EntityRegistry};
@@ -104,6 +104,9 @@ pub(super) fn begin_tick(brain: &mut BrainComponent, source: &ClipSource<'_>, ti
         };
         if foreign {
             brain.clip_clock.moment_open = false;
+            // Until the brain's own next draw, the enemy is not aiming under
+            // the switch (`npc_launch::classify`).
+            brain.clip_clock.interruption = Interruption::Foreign;
             // A flinch on a dropped enemy's fresh mesh wins over its pending
             // redraw: apply leaves the flinch on screen. The brain's own
             // switch back onto the tracked state later still restarts the
@@ -572,21 +575,27 @@ fn sync_drawn_state(brain: &mut BrainComponent, source: &ClipSource<'_>, wanted:
     restart(clock, source.id, facts);
 }
 
-/// Start the tracked state's clip over: at 0 for a one-shot or a repeating
-/// release's loop, at the enemy's drawn phase on any other loop (the seed its
-/// renderer and hit zones use), the window
-/// opening just below the start so a moment exactly there is reached on the
-/// restart tick. A clip not yet resolved starts at 0 and owes its phase.
-fn restart(clock: &mut ClipClock, id: EntityId, facts: Option<ClipFacts>) {
-    let start = match facts {
+/// The clip time the tracked state's clip starts at when drawn afresh: the
+/// time [`restart`] sets.
+pub(super) fn start_time(clock: &ClipClock, id: EntityId) -> f64 {
+    match clock.clip {
         Some(ClipFacts {
             duration,
             looping: true,
             zero_phase: false,
         }) => f64::from(instance_phase(id.to_raw(), duration)),
         _ => 0.0,
-    };
+    }
+}
+
+/// Start the tracked state's clip over: at 0 for a one-shot or a repeating
+/// release's loop, at the enemy's drawn phase on any other loop (the seed its
+/// renderer and hit zones use), the window
+/// opening just below the start so a moment exactly there is reached on the
+/// restart tick. A clip not yet resolved starts at 0 and owes its phase.
+fn restart(clock: &mut ClipClock, id: EntityId, facts: Option<ClipFacts>) {
     clock.clip = facts;
+    let start = start_time(clock, id);
     clock.unphased = facts.is_none();
     clock.time = start;
     clock.previous_time = start - 2.0 * CLIP_TIME_SLACK;

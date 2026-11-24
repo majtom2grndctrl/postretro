@@ -514,6 +514,7 @@ pub(super) fn evaluate(
                     target_reachable,
                     target_visible,
                     attacks_fired_in_activity: brain.activity_attack_count(0).unwrap_or(0),
+                    attacks_held_in_activity: brain.activity_held_count(0).unwrap_or(0),
                     has_attack_turn,
                     animation_done,
                     // The value this decide's check produced.
@@ -812,6 +813,7 @@ pub(super) fn evaluate(
                                 request: WeaponAttackRequest {
                                     canonical_weapon: resolved.canonical_weapon_name().to_string(),
                                     attack_name: name.clone(),
+                                    clip_moment: moment == clip_clock::Moment::Reached,
                                 },
                             },
                         ))

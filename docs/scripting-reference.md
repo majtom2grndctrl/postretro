@@ -208,7 +208,7 @@ levels.
 | `canonicalName` | `string` (optional) | The `.map` classname this archetype matches. Omit it for descriptors that are not directly map-placeable. Built-in classnames (e.g. `billboard_emitter`) take precedence. |
 | `components.emitter` | `ComponentValue` (optional) | Emitter component attached at spawn. Use `smokeEmitter`, `sparkEmitter`, or `emitter()`. |
 | `components.light` | `{ color: [r, g, b], range: number, intensity: number, is_dynamic: boolean }` (optional) | Light component attached at spawn. Descriptor-spawned lights are always treated as dynamic regardless of `is_dynamic`. |
-| `components.mesh` | `MeshDescriptor` (optional) | The entity's model, plus optional socket `attachments`, per-weapon `weaponMounts` and animation states. Unknown keys fail the load. See [Character weapon mounts](#character-weapon-mounts) and [Player locomotion animation states](#player-locomotion-animation-states). |
+| `components.mesh` | `MeshDescriptor` (optional) | The entity's model, plus optional socket `attachments`, per-weapon `mounts` and animation states. Unknown keys fail the load. See [Character weapon mounts](#character-weapon-mounts) and [Player locomotion animation states](#player-locomotion-animation-states). |
 | `components.behavior` | `BehaviorGraphDescriptor` (optional) | Authored enemy behavior statechart — hierarchical activities, motion/action verbs, candidate eligibility, and ordered transition guards. It owns acquisition and stand-down policy. See [`components.behavior`](#componentsbehavior). |
 | `components.lifeStates` | life-state descriptor (optional) | Named player capability profiles, an `initial` state and optional `rejoin` map. Requires player movement. See [Player life states](#player-life-states). |
 
@@ -386,11 +386,14 @@ defineEntity({
 
 ### Character weapon mounts
 
-A character holds its active weapon through `components.mesh.weaponMounts`: one
-entry per weapon it may wield, naming the props it mounts while that weapon is
-active. Each prop is a bake fitted to this character's rig; see
-`docs/weapon-mounts.md` for making one. Weapons carry no third-person model of
-their own, only a first-person `viewmodel`.
+A character holds its weapons through `components.mesh.mounts`: one entry per
+weapon, naming the props it mounts for that weapon. A player mounts the entry of
+its active weapon. An NPC mounts the entry of every weapon its attacks name. Each
+prop is a bake fitted to this character's rig; see
+[`docs/weapon-mounts.md`](weapon-mounts.md) for making one and for how NPCs
+carry and fire them (`weapon-mounts.md#npcs-carry-weapons-the-same-way`).
+Weapons carry no third-person model of their own, only a first-person
+`viewmodel`.
 
 ```typescript
 import { referencePistolEntity as pistol } from "./reference-pistol";
@@ -401,9 +404,9 @@ defineEntity({
   components: {
     mesh: {
       model: "models/exo_red/model.gltf",
-      weaponMounts: [
-        { weapon: rifle, attachments: { hand_r: "models/cyberpunk_weapons/rifle/exo_red.gltf" } },
-        { weapon: pistol, attachments: { hand_r: "models/cyberpunk_weapons/pistol/exo_red.gltf" } },
+      mounts: [
+        { item: rifle, attachments: { hand_r: "models/cyberpunk_weapons/rifle/exo_red.gltf" } },
+        { item: pistol, attachments: { hand_r: "models/cyberpunk_weapons/pistol/exo_red.gltf" } },
       ],
     },
     inventory: { loadout: [rifle, pistol] },
@@ -413,19 +416,24 @@ defineEntity({
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `weapon` | weapon `defineEntity` value | The weapon this entry is for, as in `inventory.loadout`. Each weapon appears at most once. |
-| `attachments` | `{ [socket]: string }` | Socket name → content-relative model path, mounted while the weapon is active. Must be non-empty. Paths use forward slashes and stay inside the content root. |
+| `item` | weapon `defineEntity` value | The weapon this entry is for, as in `inventory.loadout`. Each weapon appears at most once. |
+| `attachments` | `{ [socket]: string }` | Socket name → content-relative model path, mounted while a player wields the weapon, or always on an NPC whose attacks name it. Must be non-empty. Paths use forward slashes and stay inside the content root. |
+| `muzzleSocket` | string | A socket on the character's own body model that an NPC's shots with this weapon leave from, for a weapon built into the body. The entry mounts nothing, and a player ignores it. Must be non-empty. |
 
-The mounted props are `mesh.attachments`, then the active weapon's entry; the
-entry wins on a socket both name. A weapon switch swaps one entry's sockets for
+An entry names exactly one of `attachments` and `muzzleSocket`.
+
+For a player, the mounted props are `mesh.attachments`, then the active
+weapon's entry; the entry wins on a socket both name. (An NPC mounts every
+attack weapon's entry at once; see `docs/weapon-mounts.md`.) A weapon switch swaps one entry's sockets for
 the other's in one step. When the weapon leaves, its sockets return to
 `mesh.attachments`, or empty. An entry may name any sockets the model has, not
 only `hand_r`.
 
-Leave `weaponMounts` out for a character whose weapon is part of its model, like
-a robot with a gun arm: it mounts no weapon and logs nothing. Declaring the
-table, even empty, turns missing data into warnings. None repeats within one
-level load:
+A weapon built into the body, like a robot's gun arm, takes
+`{ item, muzzleSocket: "<body socket>" }`: its shots leave from that posed
+socket and the entry mounts nothing. Leave `mounts` out for a character with no
+mounted weapon: it mounts none and logs nothing. Declaring the table, even
+empty, turns missing data into warnings. None repeats within one level load:
 
 - A loadout weapon with no entry warns at level load, once per character and
   weapon.
@@ -441,27 +449,39 @@ level load:
   model. Nothing from the entry mounts.
 - An entry whose weapon name matches no weapon warns once per character and
   name, and mounts nothing.
+- An NPC with a table that lacks an entry for a weapon its attacks name warns
+  at level load, once per character and weapon, whether or not it spawns. It
+  mounts nothing for that weapon and its shots leave from the eye.
+- An NPC's mounted bakes with no `muzzle` socket warn once per character and
+  weapon, and its shots leave from the eye. If several bakes carry a `muzzle`
+  socket, it warns once, naming the one used (the first in socket-name order).
+- A `muzzleSocket` the character's body model lacks warns once per character,
+  weapon and socket, and the weapon's shots leave from the eye.
 
 These fail the mod's load:
 
 - An unknown key inside `mesh`, such as a misspelled `weaponMount`. The error
   names the key and the character.
 - The same weapon in two entries.
+- Two weapons an NPC's attacks name that put different models on one socket. The
+  error names the character and the socket; the same model on a shared socket, or
+  different sockets, load.
 - An empty `attachments` map.
+- An entry naming both `attachments` and `muzzleSocket`, or neither, or an empty
+  `muzzleSocket`.
 - A model path that is absolute, uses backslashes or climbs out with `..`.
-- A `weapon` value that is not a weapon's `defineEntity` value.
+- An `item` value that is not a weapon's `defineEntity` value.
 - `thirdPersonModel` on a weapon descriptor, which is no longer a field.
 
 Every listed model loads with the level, so a switch never waits on a load. A
 hot-reload edit to the table logs a warning and applies at the next level load,
 like any other `mesh` edit. A local player's `shadowOnly` covers its mounts too,
-so you see the weapon in your body's shadow. Mounts are presentation only: shots
-still start from the first-person placement and `muzzleOffset`, and hit tests
-ignore them. In co-op each machine resolves the mount from the replicated active
+so you see the weapon in your body's shadow. A player's shots still start from the
+first-person placement and `muzzleOffset`, whatever its entry says (a pawn ignores
+`muzzleSocket`); an NPC's shots on the host leave its mounted muzzle. Hit tests
+ignore mounts. In co-op each machine resolves the mount from the replicated active
 weapon and its own copy of the descriptors. A connected player's own body does
 too, so its shadow shows a new weapon once the host confirms the switch.
-
-Weapons NPCs carry still mount through `mesh.attachments`.
 
 The same keys work in Luau tables.
 
@@ -2353,7 +2373,7 @@ exception is `brain.targetDistance`, which keeps its `1e9` sentinel.
 | `brain` property | `read` name | Type | Meaning |
 |------------------|-------------|------|---------|
 | `brain.hasTarget` | `@brain.hasTarget` | `boolean` | Whether the enemy has a selected target this tick. |
-| `brain.targetVisible` | `@brain.targetVisible` | `boolean` | Engine's shared, debounced line-of-sight verdict for the selected target. Level geometry and movers block it where they stand, so a closed door hides the target. `false` with no target; independent of range, cooldown, and facing. |
+| `brain.targetVisible` | `@brain.targetVisible` | `boolean` | Engine's shared, debounced line-of-sight verdict for the selected target. Level geometry and movers block it where they stand, so a closed door hides the target. `false` with no target; independent of range, cooldown, and facing. It is the eye's verdict, which perception and the engine fire gate share; the fire gate also tests the gun's near path, so it can read `true` while every shot is held (see `attacksHeldInActivity`). |
 | `brain.targetDistance` | `@brain.targetDistance` | `number` | Distance to the selected target in metres — or the `1e9` no-target sentinel. **Read the trap below before using it.** |
 | `brain.timeInActivityMs` | `@brain.timeInActivityMs` | `number` | Milliseconds since the activity whose transition rows are being evaluated was entered. Scope-relative in nested graphs; resets on entry. A stance's pose counts as one activity, so it keeps running from rest to hold and back. |
 | `brain.attackCooldownMs` | `@brain.attackCooldownMs` | `number` | Milliseconds left on the active named attack cooldown; `0` when no action is active or the entry has elapsed. |
@@ -2368,6 +2388,7 @@ exception is `brain.targetDistance`, which keeps its `1e9` sentinel.
 | `brain.targetHostile` | `@brain.targetHostile` | `boolean` | Whether the selected target is hostile; `false` with no target. Use this durable authored fact to stand down a retained target that turns friendly. |
 | `brain.targetReachable` | `@brain.targetReachable` | `boolean` | Cached verdict from the gated, ground-aware route query (`nav::find_path_from`) for the selected target; `false` with no target or on maps without a navmesh. It reports the pathfinder's current ability, not ground-truth reachability: freestanding-wall wraparounds have a known false-negative limitation. It reads door state: `false` while a door docked at a waypoint cuts the only route, `true` again once the door leaves. See [Doors and `targetReachable`](#doors-and-targetreachable). |
 | `brain.attacksFiredInActivity` | `@brain.attacksFiredInActivity` | `number` | Successful action fires since the activity whose rows are being evaluated was entered. Scope-relative. A fire becomes visible to guards on the next tick. |
+| `brain.attacksHeldInActivity` | `@brain.attacksHeldInActivity` | `number` | Shots the gun's near-path test held since the activity whose rows are being evaluated was entered: a clip moment that whiffed on a blocked near path, a burst shot skipped on one, or an attack with no clip moment when it becomes held (counted once per hold, and again at each activity entry while still held). Scope-relative; visible to guards on the next tick. An eye-sight failure, a missing muzzle, a shot withheld while the enemy is not aiming, and an obstacle past the near distance count nothing. Host-only. |
 | `brain.timeSinceDamageMs` | `@brain.timeSinceDamageMs` | `number` | Milliseconds since this enemy last took damage. A never-hit brain reads the `1e9` no-memory sentinel; a landed hit resets it to `0`, then later AI ticks age it back to that sentinel. |
 | `brain.timeSinceTargetVisible` | `@brain.timeSinceTargetVisible` | `number` | Milliseconds since the selected target was last visible. A never-seen brain reads the `1e9` no-memory sentinel; a visible target resets it to `0`, then later AI ticks age it back to that sentinel. |
 | `brain.distanceToLastKnown` | `@brain.distanceToLastKnown` | `number` | XZ distance in metres to the remembered last-known target position, or the `1e9` no-memory sentinel. A bare `gt`/`ge` is true with no memory, so pair an investigate-distance guard with recent sight, or with both recent damage and `damageSourceKnown`. |
@@ -4353,6 +4374,8 @@ matches is a no-op.
 `const reward = defineImpactEvent(filter, build)` declares what an in-tick hit means; its binding, `reward`, is its authored ID (see [Names from `const` bindings](#mod-entry-point)). Inside helpers and other expression positions, and in Luau, pass the ID first: `defineImpactEvent("reward", filter, build)`. The authored ID is one portable ASCII segment: 1–64 bytes using only letters, digits, `_`, `.`, or `-`. Do not include `:`: when the event is composed, the engine qualifies it as `<modId>:<authoredId>`. An override must add a `tag`; it can only narrow the base target set.
 
 Every fire evaluates gates and effect operands from one pre-effect snapshot, then applies the selected effects. `healthAfter` is the unfloored result and may be negative even though stored health floors at zero. Unset `target.state(name)` reads `0`. `playAnim(name)` requires that name in the target mesh's declared animation states. `despawn` and `setHealth` accept `{ afterMs }`; omitting it is immediate, while `{ afterMs: 0 }` still enters the deferred queue.
+
+A script reaction that switches a living ranged enemy's animation (`playAnim`, `setAnimationState`) makes the enemy withhold its launched shots until its behavior's own next animation draw, which is an activity entry or a stride or travel-variant change; withheld shots are not counted in `attacksHeldInActivity`. Under a flinch route (`staggerTo`) the stagger plays and the route's entry draws. The cost: in an activity with no flinch route and no own draw due (a planted shooter), the enemy stays silent until its activity changes, and its behavior sees no held shot, so only a timer row leaves.
 
 `setHealth` clamps its evaluated value to `[0, maxHealth]`. Only a finite positive stored result counts as recovery: it re-arms death detection and clears pending and live kill credit from the recovered down. A value stored as zero leaves the target down and preserves its one-shot latch and credit. Numeric literals must be finite. If IR arithmetic produces a non-finite result, the total evaluator converts it to zero before `setHealth` runs.
 

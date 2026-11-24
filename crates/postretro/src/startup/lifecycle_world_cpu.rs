@@ -633,6 +633,13 @@ pub(crate) fn install_world_cpu_with_models(
         hit_zone_store,
         timings,
     );
+    // Against the loaded models only: the sweep above is what says which NPC
+    // mount sockets, bakes and muzzles exist. Runs on a connected client too, so
+    // both roles warn alike.
+    postretro_sim::scripting::builtins::npc_mounts::check_npc_mount_models(
+        &descriptors,
+        hit_zone_store,
+    );
     crate::resolve_mesh_entity_bindings(
         &mut script_ctx.registry.borrow_mut(),
         mesh_clip_tables,

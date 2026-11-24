@@ -1756,3 +1756,7 @@ fn shipped_brute_combo_and_leap_land_within_one_decide_interval_at_every_phase()
         }
     }
 }
+
+// E10 npc-weapon-mounts: NPC shots from the posed muzzle, end to end.
+#[path = "npc_muzzle_tests.rs"]
+mod npc_muzzle;

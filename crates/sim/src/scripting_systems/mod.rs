@@ -11,6 +11,7 @@ mod group_command_tests;
 pub mod health;
 pub mod hit_zones;
 pub mod mesh_anim;
+pub mod muzzle_pose;
 pub mod particle_sim;
 pub mod reaction_scheduler;
 #[cfg(test)]

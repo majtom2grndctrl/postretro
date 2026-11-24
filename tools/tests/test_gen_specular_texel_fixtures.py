@@ -139,6 +139,26 @@ TILE_ROW_TILE = "GTTTTTTTGTTTTTTT"
 TILE_MAP = [TILE_ROW_GROUT if y % 8 == 0 else TILE_ROW_TILE for y in range(16)]
 
 
+# metal_mirror_tinted and metal_satin_tinted diffuse: the polished checker's
+# cells, neutral grey.
+MIRROR_MAP = POLISHED_MAP
+
+# concrete_signal_stripes: W white, K black, O orange, C cyan. Rows 0-3 a
+# 2-texel checker, then orange, cyan and white bands each closed by black.
+STRIPE_CHECKER_A = "WWKKWWKKWWKKWWKK"
+STRIPE_CHECKER_B = "KKWWKKWWKKWWKKWW"
+STRIPE_MAP = (
+    [STRIPE_CHECKER_A] * 2
+    + [STRIPE_CHECKER_B] * 2
+    + ["O" * 16] * 3
+    + ["K" * 16]
+    + ["C" * 16] * 3
+    + ["K" * 16]
+    + ["W" * 16] * 3
+    + ["K" * 16]
+)
+
+
 def from_map(region_map, values):
     return [[values[c] for c in row] for row in region_map]
 
@@ -212,6 +232,32 @@ EXPECTED = {
     "concrete_tile_grout_s.png": ("grey", from_map(TILE_MAP, {"G": 0, "T": 255})),
     "concrete_tile_grout_p.png": ("grey", uniform(200)),
     "concrete_tile_grout_t.png": ("grey", uniform(0)),
+    "metal_mirror_tinted.png": (
+        "rgb",
+        from_map(MIRROR_MAP, {"A": (70, 70, 70), "B": (96, 96, 96)}),
+    ),
+    "metal_mirror_tinted_s.png": ("grey", uniform(255)),
+    "metal_mirror_tinted_p.png": ("grey", uniform(200)),
+    "metal_mirror_tinted_t.png": ("grey", uniform(224)),
+    "metal_satin_tinted.png": (
+        "rgb",
+        from_map(MIRROR_MAP, {"A": (70, 70, 70), "B": (96, 96, 96)}),
+    ),
+    "metal_satin_tinted_s.png": ("grey", uniform(255)),
+    "metal_satin_tinted_p.png": ("grey", uniform(115)),
+    "metal_satin_tinted_t.png": ("grey", uniform(224)),
+    "concrete_signal_stripes.png": (
+        "rgb",
+        from_map(
+            STRIPE_MAP,
+            {
+                "W": (236, 232, 220),
+                "K": (18, 18, 22),
+                "O": (236, 112, 20),
+                "C": (24, 176, 216),
+            },
+        ),
+    ),
 }
 
 # The reflection floor and the end of its fade band, as exponents
@@ -319,6 +365,9 @@ class GenSpecularTexelFixturesTest(unittest.TestCase):
             "metal_polished",
             "metal_fade_band",
             "concrete_tile_grout",
+            "metal_mirror_tinted",
+            "metal_satin_tinted",
+            "concrete_signal_stripes",
         )
         present = sorted(
             p.name for p in COMMITTED.iterdir() if p.name.startswith(stems)
@@ -387,6 +436,31 @@ class GenSpecularTexelFixturesTest(unittest.TestCase):
         }
         self.assertEqual(pairs, {("G", 0, 200), ("T", 255, 200)})
         self.assertGreater(exponent(200), FULL_WEIGHT_EXPONENT)
+
+    def test_showcase_fixtures_reflect_strongly_at_two_sharpnesses(self):
+        exponent = lambda p: min(max(2 / (1 - p / 255) ** 4 - 2, 1.0), 8192.0)
+        # Both tinted floors sit past the fade band, so each reflects at full
+        # weight; the satin one is far rougher than the mirror one.
+        self.assertGreater(exponent(200), FULL_WEIGHT_EXPONENT)
+        self.assertGreater(exponent(115), FULL_WEIGHT_EXPONENT)
+        self.assertTrue(18.0 < exponent(115) < 22.0)
+        # They differ only in `_p`, and their tint is partial: reflectance
+        # 0.02 x (2 + 48 x t) lands between the untinted 0.04 and 1.
+        for suffix in (".png", "_s.png", "_t.png"):
+            self.assertEqual(
+                EXPECTED["metal_mirror_tinted" + suffix], EXPECTED["metal_satin_tinted" + suffix]
+            )
+        self.assertNotEqual(
+            EXPECTED["metal_mirror_tinted_p.png"], EXPECTED["metal_satin_tinted_p.png"]
+        )
+        self.assertTrue(0.85 < 0.02 * (2 + 48 * 224 / 255) < 0.9)
+        # The neutral albedo keeps the tinted reflection white.
+        _, rows = EXPECTED["metal_mirror_tinted.png"]
+        self.assertTrue(all(r == g == b for row in rows for (r, g, b) in row))
+        # The striped subject never reflects: no slot sibling at all.
+        self.assertFalse(
+            any(name.startswith("concrete_signal_stripes_") for name in EXPECTED)
+        )
 
 
 if __name__ == "__main__":

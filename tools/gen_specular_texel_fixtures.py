@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Generate the exact-value dev fixtures for per-texel specular sharpness and tint.
 
-Writes nine 16 x 16 materials into `content/dev/textures/test/` (or `--out`),
-each a diffuse plus its slot siblings. The first five cover per-texel
+Writes twelve 16 x 16 materials into `content/dev/textures/test/` (or `--out`),
+each a diffuse plus any slot siblings. The first five cover per-texel
 sharpness and tint; of them, the last two cover `_p` on a prefix with no
 Surface Depth tuning, and `_p`, `_t` and `_h` together. The map that shows
-them is `content/dev/maps/specular-texel-sharpness.map`. The last four
+them is `content/dev/maps/specular-texel-sharpness.map`. The next four
 art-direct glossy world reflections through `_p` and `_s` alone, in the
-side rooms of `content/dev/maps/glossy-reflections-test.map`. Exponents
+side rooms of `content/dev/maps/glossy-reflections-test.map`. The last three
+dress `content/dev/maps/glossy-reflections-showcase.map`: a sharp and a rough
+tinted floor that reflect strongly, and a matte striped subject. Exponents
 below are n = 2 / r^4 - 2 at r = 1 - p / 255; a texel reflects only where
 n > 8 and `_s` > 0, at a weight fading in over n 8-16 (bytes 85-107).
 
@@ -54,6 +56,18 @@ n > 8 and `_s` > 0, at a weight fading in over n 8-16 (bytes 85-107).
   44 60) with a one-texel pale grout line (sRGB 150 146 138) on its low edges
   (grout where x % 8 == 0 or y % 8 == 0). `_s` tiles 255, grout 0. `_p` 200
   and `_t` 0 everywhere, so only `_s` keeps the grout from reflecting.
+* `metal_mirror_tinted`: a neutral grey checker by 4-texel cell (sRGB 70
+  where x // 4 + y // 4 is even, 96 where odd). `_s` 255, `_p` 200 (about
+  exponent 922: full weight, minimum blur) and `_t` 224 everywhere. The tint
+  raises the head-on reflectance from 0.04 to about 0.88, and on a neutral
+  albedo it leaves the reflection's colour white.
+* `metal_satin_tinted`: `metal_mirror_tinted` with `_p` 115 everywhere (about
+  exponent 20: past the fade band, so full weight, but blurrier than the
+  minimum blur, about mip 3.4).
+* `concrete_signal_stripes`: a matte striped subject, diffuse only (no `_s`,
+  no `_p`, so it never reflects). Rows 0-3 a 2-texel white and black checker
+  (sRGB 236 232 220 and 18 18 22); rows 4-6 orange (236 112 20); rows 8-10
+  cyan (24 176 216); rows 12-14 white; rows 7, 11 and 15 black.
 
 Rows run top to bottom and columns left to right, as PNG stores them. Diffuse
 PNGs are 8-bit RGB; every sibling is 8-bit greyscale. No PNG carries an
@@ -137,6 +151,19 @@ TILE_SPECULAR = {"tile": 255, "grout": 0}
 TILE_SMOOTHNESS = 200
 TILE_TINT = 0
 
+# metal_mirror_tinted and metal_satin_tinted: one diffuse, two sharpnesses
+MIRROR_CHECKER = ((70, 70, 70), (96, 96, 96))  # even and odd (x // 4 + y // 4)
+MIRROR_SPECULAR = 255
+MIRROR_SMOOTHNESS = 200  # about exponent 922: full weight, minimum blur
+SATIN_TINTED_SMOOTHNESS = 115  # about exponent 20: full weight, about mip 3.4
+MIRROR_TINT = 224  # head-on reflectance about 0.88
+
+# concrete_signal_stripes
+STRIPE_WHITE = (236, 232, 220)
+STRIPE_BLACK = (18, 18, 22)
+STRIPE_ORANGE = (236, 112, 20)
+STRIPE_CYAN = (24, 176, 216)
+
 
 def ramp_smoothness(x):
     """`_p` byte of ramp column x: round(255 * x / 15). 255 / 15 is 17, so the
@@ -196,6 +223,21 @@ def tile_region(x, y):
     if x % TILE_CELL == 0 or y % TILE_CELL == 0:
         return "grout"
     return "tile"
+
+
+def mirror_rgb(x, y):
+    """The mirror and satin tinted diffuse: a neutral checker by 4-texel cell."""
+    return MIRROR_CHECKER[(x // 4 + y // 4) % 2]
+
+
+def stripe_rgb(x, y):
+    """The signal-stripes diffuse: a checker band, then orange, cyan and
+    white bands, each closed by a black row."""
+    if y < 4:
+        return STRIPE_WHITE if (x // 2 + y // 2) % 2 == 0 else STRIPE_BLACK
+    if y % 4 == 3:
+        return STRIPE_BLACK
+    return {1: STRIPE_ORANGE, 2: STRIPE_CYAN, 3: STRIPE_WHITE}[y // 4]
 
 
 def grid(texel):
@@ -303,6 +345,15 @@ def fixtures():
         ),
         "concrete_tile_grout_p.png": ("grey", grid(lambda x, y: TILE_SMOOTHNESS)),
         "concrete_tile_grout_t.png": ("grey", grid(lambda x, y: TILE_TINT)),
+        "metal_mirror_tinted.png": ("rgb", grid(mirror_rgb)),
+        "metal_mirror_tinted_s.png": ("grey", grid(lambda x, y: MIRROR_SPECULAR)),
+        "metal_mirror_tinted_p.png": ("grey", grid(lambda x, y: MIRROR_SMOOTHNESS)),
+        "metal_mirror_tinted_t.png": ("grey", grid(lambda x, y: MIRROR_TINT)),
+        "metal_satin_tinted.png": ("rgb", grid(mirror_rgb)),
+        "metal_satin_tinted_s.png": ("grey", grid(lambda x, y: MIRROR_SPECULAR)),
+        "metal_satin_tinted_p.png": ("grey", grid(lambda x, y: SATIN_TINTED_SMOOTHNESS)),
+        "metal_satin_tinted_t.png": ("grey", grid(lambda x, y: MIRROR_TINT)),
+        "concrete_signal_stripes.png": ("rgb", grid(stripe_rgb)),
     }
 
 

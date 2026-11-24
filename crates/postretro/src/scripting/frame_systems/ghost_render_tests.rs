@@ -308,6 +308,38 @@ fn ghost_on_a_downward_facing_floor_plane_draws_in_the_mapped_room() {
     );
 }
 
+/// A ghost of a prop hung upright from the mapped copy's ceiling, pivoted at
+/// its top, locates as the real draw does: its lift enters the solid above, so
+/// its pivot decides, and the pivot ties into the room below the ceiling.
+#[test]
+fn ghost_hung_from_a_ceiling_falls_back_to_its_mapped_pivot() {
+    let mut registry = EntityRegistry::new();
+    let pawn = spawn_pawn(&mut registry, SOURCE);
+    let mut fixture = Fixture::new();
+    // The ceiling brush's downward-facing bottom face at y = 0: the room below
+    // is the front, the solid above the back.
+    fixture.world.cell_locator_nodes[0] = CellLocatorNodeData {
+        plane_normal: Vec3::NEG_Y,
+        plane_distance: 0.0,
+        front: CellLocatorChild::Cell(MAPPED_CELL),
+        back: CellLocatorChild::Cell(REAL_CELL),
+    };
+    fixture.world.cells[REAL_CELL].is_solid = true;
+
+    fixture.collect_with(
+        &registry,
+        &[member(pawn, 1.0, false)],
+        &VisibleCells::Culled(vec![MAPPED_CELL as u32]),
+        |_| STYLE,
+        None,
+    );
+    assert_eq!(
+        fixture.collector.instances().len(),
+        2,
+        "holder and weapon draw"
+    );
+}
+
 #[test]
 fn pawn_ghost_group_carries_its_weapon_attachment_at_the_mapped_transform() {
     let mut registry = EntityRegistry::new();

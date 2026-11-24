@@ -1134,38 +1134,48 @@ mod tests {
         // A prop hung at y = 3, its origin on a ceiling-height splitter. Two
         // splitters: a wall brush's upward-facing top face, whose front (cell 0)
         // is the solid above, and the ceiling brush's downward-facing bottom
-        // face, whose front (cell 0) is the room below.
+        // face, whose front (cell 0) is the room below. Beyond the ceiling lies
+        // solid, or the exterior void past a roof thinner than the lift.
         const UP_FACING: (Vec3, f32, usize) = (Vec3::Y, 3.0, 1);
         const DOWN_FACING: (Vec3, f32, usize) = (Vec3::NEG_Y, -3.0, 0);
-        let drawn = |rotation: Quat, (plane_normal, plane_distance, room): (Vec3, f32, usize)| {
-            let mut world = two_cell_world_split_at_x_zero();
-            world.cell_locator_nodes[0].plane_normal = plane_normal;
-            world.cell_locator_nodes[0].plane_distance = plane_distance;
-            world.cells[1 - room].is_solid = true;
-            let mut registry = EntityRegistry::new();
-            let mut collector = MeshRenderCollector::new();
-            let id = registry.spawn(Transform {
-                position: Vec3::new(0.0, 3.0, 0.0),
-                rotation,
-                ..Transform::default()
-            });
-            registry
-                .set_component(id, MeshComponent::stateless("lamp".into()))
-                .unwrap();
-            collector.collect(
-                &registry,
-                &world,
-                &VisibleCells::Culled(vec![room as u32]),
-                1.0,
-                0.0,
-                &MeshClipTables::new(),
-                Vec3::ZERO,
-            );
-            collector
-                .instances()
-                .iter()
-                .any(|instance| instance.forward_visible)
-        };
+        let drawn_past =
+            |void: bool,
+             rotation: Quat,
+             (plane_normal, plane_distance, room): (Vec3, f32, usize)| {
+                let mut world = two_cell_world_split_at_x_zero();
+                world.cell_locator_nodes[0].plane_normal = plane_normal;
+                world.cell_locator_nodes[0].plane_distance = plane_distance;
+                let beyond = &mut world.cells[1 - room];
+                if void {
+                    beyond.is_exterior = true;
+                } else {
+                    beyond.is_solid = true;
+                }
+                let mut registry = EntityRegistry::new();
+                let mut collector = MeshRenderCollector::new();
+                let id = registry.spawn(Transform {
+                    position: Vec3::new(0.0, 3.0, 0.0),
+                    rotation,
+                    ..Transform::default()
+                });
+                registry
+                    .set_component(id, MeshComponent::stateless("lamp".into()))
+                    .unwrap();
+                collector.collect(
+                    &registry,
+                    &world,
+                    &VisibleCells::Culled(vec![room as u32]),
+                    1.0,
+                    0.0,
+                    &MeshClipTables::new(),
+                    Vec3::ZERO,
+                );
+                collector
+                    .instances()
+                    .iter()
+                    .any(|instance| instance.forward_visible)
+            };
+        let drawn = |rotation, splitter| drawn_past(false, rotation, splitter);
         let upside_down = Quat::from_rotation_z(std::f32::consts::PI);
 
         assert!(
@@ -1179,6 +1189,10 @@ mod tests {
         assert!(
             drawn(Quat::IDENTITY, DOWN_FACING),
             "a prop pivoted at its top and hung upright falls back to its pivot when its lift enters the ceiling",
+        );
+        assert!(
+            drawn_past(true, Quat::IDENTITY, DOWN_FACING),
+            "a lift through a thin roof into the void falls back to the pivot too",
         );
     }
 

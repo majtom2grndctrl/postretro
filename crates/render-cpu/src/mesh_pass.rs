@@ -33,15 +33,18 @@ pub fn mesh_cull_point(model: &glam::Mat4) -> glam::Vec3 {
 }
 
 /// The cell a model culls by: the cell holding its [`mesh_cull_point`], or,
-/// when that cell is solid, the cell holding its bare origin.
+/// when that cell is solid or exterior, the cell holding its bare origin.
 ///
-/// A body can never be seen from inside solid, so a solid lifted cell means the
-/// lift itself left the open space: a prop pivoted at its top and hung upright
-/// from a ceiling lifts into the ceiling. Its origin then decides, as it did
-/// before the lift, so the lift never culls a model its origin would draw.
+/// No view draws a solid or exterior cell, so a lift into one left the open
+/// space: a prop pivoted at its top and hung upright from a ceiling lifts into
+/// the ceiling, or through a roof thinner than the lift into the void. Its
+/// origin then decides, as it did before the lift. One case remains: a lift
+/// through a brush thinner than [`MESH_CULL_LIFT`] into another open cell culls
+/// by that cell.
 pub fn locate_mesh_cell(world: &LevelWorld, model: &glam::Mat4) -> u32 {
     let lifted = world.locate_cell(mesh_cull_point(model));
-    let cell = if world.cells.get(lifted).is_some_and(|cell| cell.is_solid) {
+    let closed = |cell: &postretro_level_loader::CellData| cell.is_solid || cell.is_exterior;
+    let cell = if world.cells.get(lifted).is_some_and(closed) {
         world.locate_cell(model.w_axis.truncate())
     } else {
         lifted
@@ -56,14 +59,13 @@ pub fn locate_mesh_cell(world: &LevelWorld, model: &glam::Mat4) -> u32 {
 /// [`locate_mesh_cell`] is a member of the visible cell set.
 ///
 /// The mesh ghost collector (`scripting/frame_systems/ghost_render.rs`) calls
-/// this, holding the `LevelWorld` and the frame's `VisibleCells`, before
-/// pushing an instance into the draw list, so the renderer's GPU pass never
-/// needs a world reference. The skinned-mesh collector
-/// (`scripting/frame_systems/mesh_render.rs`) tests the main view and the
-/// planar mirror's through [`mesh_visible_in_cell`] instead (`CullViews::reach`),
-/// locating the model once for both. The mesh cull tests the entity's
-/// CURRENT-TICK transform (stable per-tick visibility), not the sub-tick
-/// interpolated one.
+/// this at a ghost's mapped holder transform, holding the `LevelWorld` and the
+/// frame's `VisibleCells`, before pushing an instance into the draw list, so
+/// the renderer's GPU pass never needs a world reference. The skinned-mesh
+/// collector (`scripting/frame_systems/mesh_render.rs`) tests the main view
+/// and the planar mirror's through [`locate_mesh_cell`] and
+/// [`mesh_visible_in_cell`] instead (`CullViews::reach`), locating the model
+/// once for both at its CURRENT-TICK transform (stable per-tick visibility).
 pub fn mesh_model_visible(world: &LevelWorld, visible: &VisibleCells, model: &glam::Mat4) -> bool {
     // `DrawAll` short-circuits before the cell lookup: every instance draws, so
     // the locator descent is pure waste on that path.

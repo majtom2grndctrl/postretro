@@ -123,7 +123,7 @@ impl MeshPass {
     /// (camera) must be set by the caller; this sets the instance data and
     /// the material per submesh, which the shared layout needs bound for both
     /// steps. Every ghost is forward-visible by construction (the collector
-    /// culls at the mapped position). Projectile billboard ghosts are not
+    /// culls at the mapped holder transform). Projectile billboard ghosts are not
     /// here: they draw through the billboard ghost variant and always blend.
     pub(super) fn record_ghost_spans(
         &self,

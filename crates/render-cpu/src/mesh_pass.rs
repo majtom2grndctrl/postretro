@@ -13,17 +13,18 @@ use postretro_visibility::VisibleCells;
 /// splitting plane to the plane's front child, and a floor-height splitter is
 /// often a wall brush's downward-facing bottom face, whose front is the solid
 /// beneath the floor. The lift moves the point off that plane into the space
-/// the body occupies. 5 cm clears f32 rounding of plane distances and a
-/// grounded body's few-centimetre sink, and stays far below any body height.
-/// It matches `FLOOR_PROBE` in the lightmap walk measurement, which asks the
-/// locator for a floor's standing cell the same way.
+/// the body occupies. 5 cm clears f32 rounding of plane distances by orders of
+/// magnitude and stays far below any body height. The lightmap walk
+/// measurement probes a floor's standing cell at the same height
+/// (`FLOOR_PROBE`); the two are separate constants.
 pub const MESH_CULL_LIFT: f32 = 0.05;
 
-/// The point a model is located at for its cell cull: its origin raised
-/// [`MESH_CULL_LIFT`] along its own up axis, taken from `model`, the model's
-/// world transform. Following the model's up rather than world up keeps a
-/// prop mounted on a wall or hung from a ceiling, turned so its feet face the
-/// surface, lifted off that surface into the room.
+/// The lifted point a model is first located at for its cell cull: its origin
+/// raised [`MESH_CULL_LIFT`] along its own up axis, taken from `model`, the
+/// model's world transform. Following the model's up rather than world up
+/// keeps a prop mounted on a wall or hung from a ceiling, turned so its feet
+/// face the surface, lifted off that surface into the room. A degenerate axis
+/// (zero or non-finite scale) lifts along world up.
 pub fn mesh_cull_point(model: &glam::Mat4) -> glam::Vec3 {
     let up = model
         .transform_vector3(glam::Vec3::Y)
@@ -31,23 +32,53 @@ pub fn mesh_cull_point(model: &glam::Mat4) -> glam::Vec3 {
     model.w_axis.truncate() + up * MESH_CULL_LIFT
 }
 
-/// Pure cull decision for one skinned-mesh instance — GPU-free, unit-testable.
+/// The cell a model culls by: the cell holding its [`mesh_cull_point`], or,
+/// when that cell is solid, the cell holding its bare origin.
 ///
-/// An instance draws iff the visible set is `DrawAll`, or the cell `pos`
-/// lands in is a member of the visible cell set. Mesh callers pass the
-/// model's [`mesh_cull_point`], never its bare origin.
+/// A body can never be seen from inside solid, so a solid lifted cell means the
+/// lift itself left the open space: a prop pivoted at its top and hung upright
+/// from a ceiling lifts into the ceiling. Its origin then decides, as it did
+/// before the lift, so the lift never culls a model its origin would draw.
+pub fn locate_mesh_cell(world: &LevelWorld, model: &glam::Mat4) -> u32 {
+    let lifted = world.locate_cell(mesh_cull_point(model));
+    let cell = if world.cells.get(lifted).is_some_and(|cell| cell.is_solid) {
+        world.locate_cell(model.w_axis.truncate())
+    } else {
+        lifted
+    };
+    cell as u32
+}
+
+/// Pure cull decision for one skinned-mesh instance at world transform
+/// `model` — GPU-free, unit-testable.
 ///
-/// Render-frame collectors (the ghost collectors in `scripting/frame_systems/`)
-/// call this, holding the `LevelWorld` and the frame's `VisibleCells`, before
+/// The instance draws iff the visible set is `DrawAll`, or its
+/// [`locate_mesh_cell`] is a member of the visible cell set.
+///
+/// The mesh ghost collector (`scripting/frame_systems/ghost_render.rs`) calls
+/// this, holding the `LevelWorld` and the frame's `VisibleCells`, before
 /// pushing an instance into the draw list, so the renderer's GPU pass never
 /// needs a world reference. The skinned-mesh collector
 /// (`scripting/frame_systems/mesh_render.rs`) tests the main view and the
 /// planar mirror's through [`mesh_visible_in_cell`] instead (`CullViews::reach`),
-/// locating the position once for both. The mesh cull tests the entity's
+/// locating the model once for both. The mesh cull tests the entity's
 /// CURRENT-TICK transform (stable per-tick visibility), not the sub-tick
-/// interpolated position. The locator lookup and the membership decision are
-/// split so the decision is unit-testable without constructing a full
-/// `LevelWorld`.
+/// interpolated one.
+pub fn mesh_model_visible(world: &LevelWorld, visible: &VisibleCells, model: &glam::Mat4) -> bool {
+    // `DrawAll` short-circuits before the cell lookup: every instance draws, so
+    // the locator descent is pure waste on that path.
+    let VisibleCells::Culled(_) = visible else {
+        return true;
+    };
+    mesh_visible_in_cell(visible, locate_mesh_cell(world, model))
+}
+
+/// Pure cull decision for a point-located instance (a billboard ghost): it
+/// draws iff the visible set is `DrawAll`, or the cell `pos` lands in is a
+/// member of the visible cell set. Skinned meshes cull by
+/// [`mesh_model_visible`] instead. The locator lookup and the membership
+/// decision are split so the decision is unit-testable without constructing a
+/// full `LevelWorld`.
 pub fn mesh_visible(world: &LevelWorld, visible: &VisibleCells, pos: glam::Vec3) -> bool {
     // `DrawAll` short-circuits before the cell lookup: every instance draws, so
     // the locator descent is pure waste on that path.
@@ -102,6 +133,11 @@ mod tests {
         assert!(
             mesh_cull_point(&on_wall).abs_diff_eq(origin - Vec3::X * MESH_CULL_LIFT, 1e-6),
             "a turned model lifts along its own up",
+        );
+        let collapsed = Mat4::from_scale_rotation_translation(Vec3::ZERO, Quat::IDENTITY, origin);
+        assert!(
+            mesh_cull_point(&collapsed).abs_diff_eq(origin + Vec3::Y * MESH_CULL_LIFT, 1e-6),
+            "a zero-scale model, with no up axis, lifts along world up",
         );
     }
 

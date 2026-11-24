@@ -79,7 +79,7 @@ impl MeshPass {
     /// degrades to the fallback clip — a discontinuity no one saw because the
     /// entity was not drawn at the interrupt instant.
     ///
-    /// Cull is the caller's job — see [`postretro_render_cpu::mesh_pass::mesh_visible`];
+    /// Cull is the caller's job — see [`postretro_render_cpu::mesh_pass::mesh_model_visible`];
     /// the plan already holds only surviving, in-budget instances.
     pub fn plan_and_upload(
         &mut self,

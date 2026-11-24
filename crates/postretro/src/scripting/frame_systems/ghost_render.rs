@@ -19,7 +19,7 @@ use postretro_render_cpu::ghost_transparency::GhostTransparency;
 use postretro_render_cpu::mesh_instances::{
     MeshInstanceInput, MeshPaletteCacheKey, MeshPresentation, MirrorReach,
 };
-use postretro_render_cpu::mesh_pass::{mesh_cull_point, mesh_visible};
+use postretro_render_cpu::mesh_pass::mesh_model_visible;
 use postretro_visibility::VisibleCells;
 
 use super::attachments::{self, SocketPoseResolver};
@@ -73,9 +73,6 @@ pub(crate) fn presented_body_look(
 #[derive(Debug, Default)]
 struct GhostGroup {
     instances: Vec<MeshInstanceInput>,
-    /// The holder's mapped model cull point (`mesh_pass::mesh_cull_point`):
-    /// where the ghost culls.
-    mapped_cull_point: Vec3,
     /// Still a ghost this frame; groups of departed ghosts are dropped.
     seen: bool,
 }
@@ -108,7 +105,8 @@ pub(crate) struct GhostDrawFrame<'a> {
 /// emission as the real draw, under `mapping.matrix()`), or keep the cached
 /// group while it fades; limit its presented opacity and tint on the ghost's
 /// one flash window, which opacity, tint redness and drawn brightness share; then
-/// cull the group at its mapped origin against the viewer's visible cells,
+/// cull the group at its mapped holder transform, located as the real draw
+/// locates (`mesh_pass::locate_mesh_cell`), against the viewer's visible cells,
 /// whatever the real position's visibility.
 ///
 /// Palette caching: ghost instances take [`MeshPaletteCacheKey::Ghost`] keys,
@@ -170,7 +168,7 @@ impl GhostRenderCollector {
             // limiter judges the source's presented value, not its framing.
             let ghost_look = presented_look(&mut self.clamp, member);
             if ghost_look.opacity <= 0.0
-                || !mesh_visible(frame.world, frame.visible, group.mapped_cull_point)
+                || !mesh_model_visible(frame.world, frame.visible, &group.instances[0].transform)
             {
                 continue;
             }
@@ -291,7 +289,6 @@ impl GhostRenderCollector {
             instance.transform = mapping * instance.transform;
             instance.palette_cache_key = instance.palette_cache_key.ghost_through(member.link);
         }
-        group.mapped_cull_point = mesh_cull_point(&group.instances[0].transform);
 
         // The real draw's time-slicing policy, by the ghost's own distance.
         let force = state_changed

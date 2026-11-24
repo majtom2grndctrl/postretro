@@ -255,9 +255,11 @@ fn ghost_draws_when_its_mapped_cell_is_visible_whatever_the_real_cell() {
 
 /// A ghost standing on the mapped copy's floor culls above it, as the real
 /// draw does: its mapped origin lies on the floor plane, which a downward-facing
-/// splitter would hand to the solid beneath (here, the real copy's cell).
+/// splitter would hand to the cell beneath (here, the real copy's cell). One
+/// sunk past the lift still culls there.
 #[test]
 fn ghost_on_a_downward_facing_floor_plane_draws_in_the_mapped_room() {
+    use postretro_render_cpu::mesh_pass::MESH_CULL_LIFT;
     let mut registry = EntityRegistry::new();
     let pawn = spawn_pawn(&mut registry, SOURCE);
     let mut fixture = Fixture::new();
@@ -267,28 +269,42 @@ fn ghost_on_a_downward_facing_floor_plane_draws_in_the_mapped_room() {
         front: CellLocatorChild::Cell(REAL_CELL),
         back: CellLocatorChild::Cell(MAPPED_CELL),
     };
-    let members = [member(pawn, 1.0, false)];
-    assert_eq!(
-        members[0].mapped.position.y, 0.0,
-        "fixture: feet on the floor"
-    );
-    assert_eq!(
-        fixture.world.locate_cell(members[0].mapped.position),
-        REAL_CELL,
-        "fixture: the bare origin ties into the cell beneath"
-    );
+    let drawn = |fixture: &mut Fixture, feet_y: f32| {
+        let mut ghost = member(pawn, 1.0, false);
+        ghost.source.position.y = feet_y;
+        fixture.collect_with(
+            &registry,
+            &[ghost],
+            &VisibleCells::Culled(vec![MAPPED_CELL as u32]),
+            |_| STYLE,
+            None,
+        );
+        fixture
+            .collector
+            .instances()
+            .first()
+            .map(|holder| holder.transform.w_axis.truncate())
+    };
 
-    fixture.collect_with(
-        &registry,
-        &members,
-        &VisibleCells::Culled(vec![MAPPED_CELL as u32]),
-        |_| STYLE,
-        None,
+    let feet = drawn(&mut fixture, 0.0).expect("a ghost standing on the floor draws");
+    assert_eq!(
+        feet.y, 0.0,
+        "fixture: its mapped feet lie on the floor plane"
+    );
+    assert_eq!(
+        fixture.world.locate_cell(feet),
+        REAL_CELL,
+        "fixture: the bare mapped origin ties into the cell beneath"
     );
     assert_eq!(
         fixture.collector.instances().len(),
         2,
         "holder and weapon draw"
+    );
+    assert_eq!(
+        drawn(&mut fixture, -2.0 * MESH_CULL_LIFT),
+        None,
+        "a ghost sunk past the lift stays culled in the cell beneath",
     );
 }
 

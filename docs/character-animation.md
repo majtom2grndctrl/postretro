@@ -131,6 +131,15 @@ A clip library needs clips that store a change from rest. `mixamo_to_gltf.py`
 writes them that way. A clip that needs translation on a non-root joint, such as
 a skinned weapon part, must stay inside the character.
 
+## Attack clips for gun-wielding enemies
+
+An enemy's shot leaves its weapon's muzzle, posed on the clip it is playing at
+the game tick it fires, not at the render frame. Pick or cut an attack clip that
+holds the gun toward the target at the moment it fires: a clip that swings the
+gun through the aim fires wherever the gun is at that tick. A held windup like
+`smash_windup` cut with `--trim` is the simplest way to get a steady aim. Watch
+the shots in the level, and see [Weapon mounts](weapon-mounts.md) for the `muzzle` socket.
+
 ## Override a clip
 
 A character may keep clips of its own. They list first, and a clip with the same

@@ -14,7 +14,7 @@ use postretro_model::sample_params::MeshSampleParams;
 use postretro_render_cpu::mesh_instances::{
     MeshInstanceInput, MeshPaletteCacheKey, MeshPresentation, MirrorReach,
 };
-use postretro_render_cpu::mesh_pass::mesh_visible_in_cell;
+use postretro_render_cpu::mesh_pass::{locate_mesh_cell, mesh_visible_in_cell};
 use postretro_render_data::cone_frustum::Aabb;
 use postretro_render_data::influence::LightInfluence;
 use postretro_visibility::VisibleCells;
@@ -140,15 +140,16 @@ struct CullViews<'a> {
 
 impl CullViews<'_> {
     /// Whether the main view's cells, and the mirror's when `with_mirror`,
-    /// hold `position`. One cell-locator descent serves both views, and none
+    /// hold the model at world transform `model`, located by
+    /// `mesh_pass::locate_mesh_cell`. One location serves both views, and none
     /// runs when neither tested view culls by cell.
-    fn reach(&self, world: &LevelWorld, position: glam::Vec3, with_mirror: bool) -> (bool, bool) {
+    fn reach(&self, world: &LevelWorld, model: &glam::Mat4, with_mirror: bool) -> (bool, bool) {
         let mirror = self.mirror.filter(|_| with_mirror);
         let culls = |cells: &VisibleCells| matches!(cells, VisibleCells::Culled(_));
         if !culls(self.main) && !mirror.is_some_and(culls) {
             return (true, mirror.is_some());
         }
-        let cell = world.locate_cell(position) as u32;
+        let cell = locate_mesh_cell(world, model);
         (
             mesh_visible_in_cell(self.main, cell),
             mirror.is_some_and(|mirror| mesh_visible_in_cell(mirror, cell)),
@@ -188,7 +189,8 @@ impl MeshRenderCollector {
     /// entity: read-borrows its `MeshComponent` (the model handle + optional
     /// animation state) and its `Transform`. The cull tests the entity's
     /// **current-tick** rendered model origin (`Transform.position +
-    /// MeshComponent.origin_offset`) via the pure `mesh_pass` cell cull;
+    /// MeshComponent.origin_offset`), lifted off the floor its feet stand on
+    /// (`mesh_pass::locate_mesh_cell`), via the pure `mesh_pass` cell cull;
     /// survivors emit their **interpolated** transform (the registry's
     /// interpolated-transform accessor at the frame `alpha`, the same alpha the
     /// player camera reads from `frame_timing`) plus that same origin offset so
@@ -333,27 +335,29 @@ impl MeshRenderCollector {
             let ComponentValue::Mesh(mesh) = value else {
                 continue;
             };
-            // Cull on the CURRENT-TICK rendered model origin (stable per-tick
-            // visibility), not the sub-tick interpolated position. This must
+            // Cull on the CURRENT-TICK rendered model transform (stable per-tick
+            // visibility), not the sub-tick interpolated one, located just above
+            // its origin (`mesh_pass::locate_mesh_cell`). The transform must
             // include the same MeshComponent origin offset applied to the emitted
-            // instance transform so visibility classifies the position downstream
-            // forward/shadow consumers use.
+            // instance transform so visibility classifies the model downstream
+            // forward/shadow consumers draw.
             let Ok(current) = registry.get_component::<Transform>(id) else {
                 continue;
             };
             let current_model_position = current.position + mesh.origin_offset;
-            // A shadow-only body never draws in the main view's colour, but the
-            // planar mirror reflects it like any world mesh.
-            let (portal_visible, mirror_visible) = views.reach(world, current_model_position, true);
-            let forward_visible = portal_visible && !mesh.shadow_only;
-            let dynamic_shadow_visible = portal_visible || mesh.shadow_only;
-            let handle = ModelHandle::from(mesh.model.clone());
             let current_presentation_rotation = mesh.presentation_rotation(current.rotation);
             let current_model_transform = glam::Mat4::from_scale_rotation_translation(
                 current.scale,
                 current_presentation_rotation,
                 current_model_position,
             );
+            // A shadow-only body never draws in the main view's colour, but the
+            // planar mirror reflects it like any world mesh.
+            let (portal_visible, mirror_visible) =
+                views.reach(world, &current_model_transform, true);
+            let forward_visible = portal_visible && !mesh.shadow_only;
+            let dynamic_shadow_visible = portal_visible || mesh.shadow_only;
+            let handle = ModelHandle::from(mesh.model.clone());
             let current_model_bounds = tables
                 .model_bounds(&handle)
                 .transformed(&current_model_transform);
@@ -379,7 +383,7 @@ impl MeshRenderCollector {
                 resolve_sample(mesh.animation.as_ref(), &handle, tables, anim_time, seed);
 
             // Time-slicing decision. Distance from the CURRENT-TICK rendered
-            // model origin (the same stable per-tick value the cull used). For an
+            // model origin (stable per tick, like the cull). For an
             // ANIMATED entity a state change this frame (entered-stamp
             // fingerprint moved vs. last frame) OR an active crossfade forces a
             // resample so the transition is never frozen. A STATELESS entity has
@@ -1027,9 +1031,10 @@ mod tests {
     fn crouched_player_mesh_stays_in_the_visible_cell_above_its_floor() {
         // Regression: crouch shrinks a player's capsule with the feet planted,
         // lowering the centre its transform tracks. With the standing
-        // centre-to-feet offset the model origin, which is also the cull point,
-        // sank below the floor into the cell beneath, so the pawn vanished. The
-        // live-capsule offset keeps it on the floor of its visible room.
+        // centre-to-feet offset the model origin, which the cull point rides
+        // just above, sank below the floor into the cell beneath, so the pawn
+        // vanished. The live-capsule offset keeps it on the floor of its
+        // visible room.
         use postretro_entities::components::mesh::player_capsule_feet_origin_offset;
         let (radius, standing, crouched) = (0.2, 0.8, 0.4);
         let mut world = two_cell_world_split_at_x_zero();
@@ -1075,6 +1080,119 @@ mod tests {
         assert!(
             feet.abs() < 1e-5,
             "crouched model origin sits on the floor, got {feet}"
+        );
+    }
+
+    #[test]
+    fn prop_with_origin_on_a_downward_facing_floor_plane_draws_in_the_room_above() {
+        // Regression: a model authored feet-at-origin and placed on a floor has
+        // its origin exactly on the floor plane. prl-build often splits there on
+        // a wall brush's bottom face, whose normal points down, and the locator
+        // sends an on-plane point to the front child: the solid beneath. Culled
+        // at its bare origin, every prop standing on such a floor vanished.
+        use postretro_render_cpu::mesh_pass::MESH_CULL_LIFT;
+        let mut world = two_cell_world_split_at_x_zero();
+        // Cell 1 is the room above the floor at y = 0; cell 0, the front of the
+        // downward-facing splitter, is the solid beneath it.
+        world.cell_locator_nodes[0].plane_normal = Vec3::NEG_Y;
+        world.cells[0].is_solid = true;
+        let room = VisibleCells::Culled(vec![1]);
+        assert_eq!(
+            world.locate_cell(Vec3::ZERO),
+            0,
+            "the tie lands in the solid"
+        );
+        let drawn = |origin: Vec3| {
+            let mut registry = EntityRegistry::new();
+            let mut collector = MeshRenderCollector::new();
+            spawn_mesh(&mut registry, "prop", origin);
+            collector.collect(
+                &registry,
+                &world,
+                &room,
+                1.0,
+                0.0,
+                &MeshClipTables::new(),
+                Vec3::ZERO,
+            );
+            collector
+                .instances()
+                .iter()
+                .any(|instance| instance.forward_visible)
+        };
+
+        assert!(drawn(Vec3::ZERO), "a prop standing on the floor draws");
+        assert!(
+            !drawn(Vec3::new(0.0, -2.0 * MESH_CULL_LIFT, 0.0)),
+            "a prop sunk past the lift stays culled in the solid beneath",
+        );
+    }
+
+    #[test]
+    fn prop_hung_from_a_ceiling_draws_by_its_turned_lift_or_its_pivot() {
+        use glam::Quat;
+        // A prop hung at y = 3, its origin on a ceiling-height splitter. Two
+        // splitters: a wall brush's upward-facing top face, whose front (cell 0)
+        // is the solid above, and the ceiling brush's downward-facing bottom
+        // face, whose front (cell 0) is the room below. Beyond the ceiling lies
+        // solid, or the exterior void past a roof thinner than the lift.
+        const UP_FACING: (Vec3, f32, usize) = (Vec3::Y, 3.0, 1);
+        const DOWN_FACING: (Vec3, f32, usize) = (Vec3::NEG_Y, -3.0, 0);
+        let drawn_past =
+            |void: bool,
+             rotation: Quat,
+             (plane_normal, plane_distance, room): (Vec3, f32, usize)| {
+                let mut world = two_cell_world_split_at_x_zero();
+                world.cell_locator_nodes[0].plane_normal = plane_normal;
+                world.cell_locator_nodes[0].plane_distance = plane_distance;
+                let beyond = &mut world.cells[1 - room];
+                if void {
+                    beyond.is_exterior = true;
+                } else {
+                    beyond.is_solid = true;
+                }
+                let mut registry = EntityRegistry::new();
+                let mut collector = MeshRenderCollector::new();
+                let id = registry.spawn(Transform {
+                    position: Vec3::new(0.0, 3.0, 0.0),
+                    rotation,
+                    ..Transform::default()
+                });
+                registry
+                    .set_component(id, MeshComponent::stateless("lamp".into()))
+                    .unwrap();
+                collector.collect(
+                    &registry,
+                    &world,
+                    &VisibleCells::Culled(vec![room as u32]),
+                    1.0,
+                    0.0,
+                    &MeshClipTables::new(),
+                    Vec3::ZERO,
+                );
+                collector
+                    .instances()
+                    .iter()
+                    .any(|instance| instance.forward_visible)
+            };
+        let drawn = |rotation, splitter| drawn_past(false, rotation, splitter);
+        let upside_down = Quat::from_rotation_z(std::f32::consts::PI);
+
+        assert!(
+            drawn(upside_down, UP_FACING),
+            "a prop turned feet-up to the ceiling lifts down, along its own up, into the room",
+        );
+        assert!(
+            !drawn(Quat::IDENTITY, UP_FACING),
+            "an upright prop whose lift and pivot both land in the solid stays culled",
+        );
+        assert!(
+            drawn(Quat::IDENTITY, DOWN_FACING),
+            "a prop pivoted at its top and hung upright falls back to its pivot when its lift enters the ceiling",
+        );
+        assert!(
+            drawn_past(true, Quat::IDENTITY, DOWN_FACING),
+            "a lift through a thin roof into the void falls back to the pivot too",
         );
     }
 

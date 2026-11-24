@@ -626,8 +626,15 @@ the replicated active weapon and the pawn's class against its own descriptors, s
 mount data crosses the wire; peers with differing descriptors present differently. A
 connected client's own body mounts the same way, never from its predicted inventory, so
 the weapon on its shadow-only body follows a switch once the host confirms it. Gameplay
-never reads a mount: fire origin and hit tests ignore it. NPCs resolve no mount
-(`entity_model.md` §2, Weapon mounts).
+never reads a pawn's mount: its fire origin and hit tests ignore it. NPCs resolve no
+mount today (`entity_model.md` §2, Weapon mounts).
+
+Decided, not yet built: the table becomes `mesh.mounts`, and each peer composes an NPC's
+mounts from its own descriptors as it composes a pawn's, with no wire change. On the host
+only, an NPC's fire origin and near-path gate read its mount. No client reproduces an NPC
+shot, so peers need not agree on the pose for gameplay. Hit tests still ignore mounts. A
+client draws the host's launch point against its own pose of the gun, so a shot leaves
+the drawn barrel only as closely as the client's clip phase tracks the host's.
 
 **Fire origin composes on placement.** When a projectile weapon supplies a
 model-local `muzzleOffset`, its authoritative origin is the weapon's muzzle

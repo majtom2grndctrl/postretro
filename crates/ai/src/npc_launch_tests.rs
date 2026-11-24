@@ -39,13 +39,23 @@ fn a_lip_within_the_shots_radius_of_its_line_holds_it() {
     let target = Vec3::new(10.0, 1.2, 0.0);
     // The line runs level at 1.2 m; the lip tops out 0.1 m below it.
     let lip = wall_world(1.0, -1.0, 1.1);
-    assert!(blocked(&lip, eye, muzzle, target), "the lip is inside the shot's radius");
+    assert!(
+        blocked(&lip, eye, muzzle, target),
+        "the lip is inside the shot's radius"
+    );
     // A segment test alone would pass it.
-    assert!(line_of_sight_combined(muzzle, target, &CombinedCollisionWorld::static_only(&lip)));
+    assert!(line_of_sight_combined(
+        muzzle,
+        target,
+        &CombinedCollisionWorld::static_only(&lip)
+    ));
 
     let raised = Vec3::new(0.5, 1.1 + RADIUS + 0.05, 0.0);
     let raised_target = Vec3::new(10.0, raised.y, 0.0);
-    assert!(!blocked(&lip, eye, raised, raised_target), "a line clear of the lip by more than the radius");
+    assert!(
+        !blocked(&lip, eye, raised, raised_target),
+        "a line clear of the lip by more than the radius"
+    );
 }
 
 // N2: a barrel tip pushed through a wall the eye's path does not cross holds
@@ -56,15 +66,27 @@ fn a_barrel_tip_through_a_wall_holds_the_shot_until_it_clears() {
     let wall = wall_world(0.4, -1.0, 1.5);
     let eye = Vec3::new(0.0, 1.8, 0.0);
     let target = Vec3::new(10.0, 1.8, 0.0);
-    assert!(line_of_sight_combined(eye, target, &CombinedCollisionWorld::static_only(&wall)));
+    assert!(line_of_sight_combined(
+        eye,
+        target,
+        &CombinedCollisionWorld::static_only(&wall)
+    ));
 
     let through = Vec3::new(0.6, 1.2, 0.0);
-    assert!(blocked(&wall, eye, through, target), "the body-to-muzzle leg crosses the wall");
+    assert!(
+        blocked(&wall, eye, through, target),
+        "the body-to-muzzle leg crosses the wall"
+    );
 
     // Backed off so the gun sits behind the wall's face… and over it.
     let clear_eye = Vec3::new(0.0, 2.4, 0.0);
     let clear_muzzle = Vec3::new(0.3, 2.0, 0.0);
-    assert!(!blocked(&wall, clear_eye, clear_muzzle, Vec3::new(10.0, 2.0, 0.0)));
+    assert!(!blocked(
+        &wall,
+        clear_eye,
+        clear_muzzle,
+        Vec3::new(10.0, 2.0, 0.0)
+    ));
 }
 
 // N3: an obstacle just inside the near distance holds the shot; just past it,
@@ -77,7 +99,10 @@ fn only_cover_inside_the_near_distance_holds_the_shot() {
     let inside = wall_world(muzzle.x + NEAR_PATH_DISTANCE_M - 0.3, -1.0, 3.0);
     let past = wall_world(muzzle.x + NEAR_PATH_DISTANCE_M + RADIUS + 0.3, -1.0, 3.0);
     assert!(blocked(&inside, eye, muzzle, target));
-    assert!(!blocked(&past, eye, muzzle, target), "cover past the near distance takes the shot");
+    assert!(
+        !blocked(&past, eye, muzzle, target),
+        "cover past the near distance takes the shot"
+    );
 
     // The aim point nearer than the near distance: the obstacle before it holds.
     let near_target = Vec3::new(muzzle.x + 1.5, 1.2, 0.0);
@@ -105,7 +130,14 @@ fn an_uninterrupted_enemy_aims_on_its_tracked_state() {
     let mesh = animated("shoot");
     let clock = tracking("shoot", 0.4);
     assert_eq!(
-        classify(Some(&mesh), &clock, clock.interruption, false, OwnDraw::None, 0.0),
+        classify(
+            Some(&mesh),
+            &clock,
+            clock.interruption,
+            false,
+            OwnDraw::None,
+            0.0
+        ),
         Aim::Aiming { time: 0.4 }
     );
 }
@@ -119,11 +151,25 @@ fn a_mesh_without_animation_or_tracked_state_has_no_pose() {
     );
     let stateless = MeshComponent::stateless("body".to_string());
     assert_eq!(
-        classify(Some(&stateless), &clock, clock.interruption, false, OwnDraw::None, 0.0),
+        classify(
+            Some(&stateless),
+            &clock,
+            clock.interruption,
+            false,
+            OwnDraw::None,
+            0.0
+        ),
         Aim::NoPose
     );
     assert_eq!(
-        classify(Some(&animated("idle")), &ClipClock::default(), Interruption::None, false, OwnDraw::None, 0.0),
+        classify(
+            Some(&animated("idle")),
+            &ClipClock::default(),
+            Interruption::None,
+            false,
+            OwnDraw::None,
+            0.0
+        ),
         Aim::NoPose,
         "an activity that draws no animation tracks no state"
     );
@@ -135,13 +181,27 @@ fn a_foreign_switch_still_drawn_is_not_aiming_until_an_own_draw_lands() {
     let mut clock = tracking("shoot", 0.4);
     clock.interruption = Interruption::Foreign;
     assert_eq!(
-        classify(Some(&mesh), &clock, clock.interruption, false, OwnDraw::None, 0.1),
+        classify(
+            Some(&mesh),
+            &clock,
+            clock.interruption,
+            false,
+            OwnDraw::None,
+            0.1
+        ),
         Aim::NotAiming
     );
     // The own draw replaces the reaction onto the tracked state: posed where
     // that draw starts the clip (pin NM-26), not where the clock kept it.
     assert_eq!(
-        classify(Some(&mesh), &clock, clock.interruption, false, OwnDraw::Aiming, 0.1),
+        classify(
+            Some(&mesh),
+            &clock,
+            clock.interruption,
+            false,
+            OwnDraw::Aiming,
+            0.1
+        ),
         Aim::Aiming { time: 0.1 }
     );
 }
@@ -151,14 +211,28 @@ fn an_airborne_clip_or_pending_redraw_is_not_aiming() {
     let mesh = animated("shoot");
     let clock = tracking("shoot", 0.4);
     assert_eq!(
-        classify(Some(&mesh), &clock, clock.interruption, true, OwnDraw::Aiming, 0.0),
+        classify(
+            Some(&mesh),
+            &clock,
+            clock.interruption,
+            true,
+            OwnDraw::Aiming,
+            0.0
+        ),
         Aim::NotAiming,
         "the airborne clip drawn at the launch"
     );
     let mut redraw = tracking("shoot", 0.4);
     redraw.redraw = true;
     assert_eq!(
-        classify(Some(&mesh), &redraw, redraw.interruption, false, OwnDraw::None, 0.0),
+        classify(
+            Some(&mesh),
+            &redraw,
+            redraw.interruption,
+            false,
+            OwnDraw::None,
+            0.0
+        ),
         Aim::NotAiming,
         "a pending redraw, even with the mesh on the tracked state's name (pin NM-25)"
     );
@@ -170,7 +244,14 @@ fn a_failed_own_switch_has_no_pose() {
     let mut clock = tracking("shoot", 0.4);
     clock.interruption = Interruption::FailedOwnSwitch;
     assert_eq!(
-        classify(Some(&mesh), &clock, clock.interruption, false, OwnDraw::None, 0.0),
+        classify(
+            Some(&mesh),
+            &clock,
+            clock.interruption,
+            false,
+            OwnDraw::None,
+            0.0
+        ),
         Aim::NoPose
     );
 }

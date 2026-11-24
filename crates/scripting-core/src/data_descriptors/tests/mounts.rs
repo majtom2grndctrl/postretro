@@ -494,3 +494,78 @@ fn retired_third_person_model_rejects_as_an_unknown_weapon_field_in_both_runtime
         );
     }
 }
+
+const MOUNTS_SURFACE_TS_SRC: &str =
+    include_str!("../../../../../content/dev/scripts/mounts-surface.ts");
+const MOUNTS_SURFACE_LUAU_SRC: &str =
+    include_str!("../../../../../content/dev/scripts/mounts-surface.luau");
+
+// U1/S3: the `mesh.mounts` Scripting surface example, shipped as `content/dev`
+// content, lowers to identical descriptors from TypeScript and Luau: a
+// limitator-shaped entity mounting both rifles on one bake, and a body-built
+// weapon naming a muzzle socket, with the held-shot guard in its rows.
+#[test]
+fn the_mounts_surface_example_lowers_identically_in_both_authorings() {
+    use super::behavior::{
+        shipped_reference_descriptor_from_luau, shipped_reference_descriptor_from_typescript,
+    };
+
+    for (export, character) in [
+        ("surfaceLimitatorEntity", "surface_limitator"),
+        ("surfaceCannonBruteEntity", "surface_cannon_brute"),
+    ] {
+        let typescript = shipped_reference_descriptor_from_typescript(
+            MOUNTS_SURFACE_TS_SRC,
+            export,
+            "content/dev/scripts/mounts-surface.ts",
+        );
+        let luau = shipped_reference_descriptor_from_luau(
+            MOUNTS_SURFACE_LUAU_SRC,
+            export,
+            "content/dev/scripts/mounts-surface.luau",
+        );
+        assert_eq!(
+            typescript, luau,
+            "{character}: the two authorings lower alike"
+        );
+        assert_eq!(typescript.canonical_name.as_deref(), Some(character));
+    }
+
+    let limitator = shipped_reference_descriptor_from_typescript(
+        MOUNTS_SURFACE_TS_SRC,
+        "surfaceLimitatorEntity",
+        "content/dev/scripts/mounts-surface.ts",
+    );
+    let mesh = limitator.mesh.as_ref().expect("a mesh");
+    let table = mesh.mounts.as_ref().expect("a mount table");
+    let items: Vec<&str> = table.iter().map(|entry| entry.item.as_str()).collect();
+    assert_eq!(items, ["enemy_rifle_burst", "enemy_rifle_long"]);
+    for entry in table {
+        assert_eq!(
+            entry.attachments,
+            Some(std::collections::HashMap::from([(
+                "hand_r".to_string(),
+                "models/ar_4/limitator.gltf".to_string()
+            )])),
+            "both rifles share one bake on `hand_r`"
+        );
+        assert_eq!(entry.muzzle_socket, None);
+    }
+    let behavior = limitator.behavior.as_ref().expect("a behavior");
+    assert!(
+        format!("{:?}", behavior.envelope.transitions)
+            .contains(postretro_foundation::BRAIN_ATTACKS_HELD_IN_ACTIVITY_INPUT),
+        "a row reads the held-shot fact"
+    );
+
+    let cannon = shipped_reference_descriptor_from_typescript(
+        MOUNTS_SURFACE_TS_SRC,
+        "surfaceCannonBruteEntity",
+        "content/dev/scripts/mounts-surface.ts",
+    );
+    let table = cannon.mesh.as_ref().unwrap().mounts.as_ref().unwrap();
+    assert_eq!(table.len(), 1);
+    assert_eq!(table[0].item, "arm_cannon");
+    assert_eq!(table[0].attachments, None);
+    assert_eq!(table[0].muzzle_socket.as_deref(), Some("cannon_tip"));
+}

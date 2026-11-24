@@ -422,3 +422,75 @@ fn every_ar_4_bake_loads_with_a_rigid_muzzle_socket() {
     }
     assert_eq!(checked, 3, "limitator, trooper and warrior bakes");
 }
+
+// The built-in-weapon fixture: `cannon_brute` mounts nothing for its cannon
+// (the entry names a body socket, not a bake), and the muzzle resolver reads
+// that socket on the real, loaded model.
+#[test]
+fn cannon_brute_mounts_no_attachment_and_resolves_its_muzzle_to_the_body_socket() {
+    use crate::scripting_systems::hit_zones::{HitZoneStore, ModelLoadWarningOwner};
+    use postretro_sim::scripting::builtins::npc_mounts::{compose_attachments, npc_muzzle_mount};
+    use postretro_sim::scripting_systems::muzzle_pose::MuzzleMount;
+
+    let descriptors = dev_descriptors();
+    let brute = descriptor_named(&descriptors, "cannon_brute");
+    let mesh = brute.mesh.as_ref().expect("the cannon brute has a mesh");
+    assert!(
+        compose_attachments(brute, mesh).is_empty(),
+        "a muzzleSocket entry mounts nothing"
+    );
+    let weapons = brute.behavior.as_ref().unwrap().attack_weapons();
+    assert_eq!(weapons, ["arm_cannon"]);
+
+    let mut store = HitZoneStore::new();
+    store.insert_from_load(
+        &mesh.model,
+        &dev_content_root(),
+        ModelLoadWarningOwner::GameSide,
+    );
+    assert_eq!(
+        npc_muzzle_mount(brute, "arm_cannon", &store),
+        Some(MuzzleMount::BodySocket("cannon_tip")),
+    );
+    assert_eq!(
+        npc_muzzle_mount(brute, "arm_cannon", &HitZoneStore::new()),
+        None,
+        "no body loaded, no muzzle"
+    );
+}
+
+// The brute's attack leaves from the raised cannon: at the release's first
+// tick (`smash_strike` at time 0, the pose `smash_windup` ends on) the barrel,
+// `cannon_tip`'s local +Y, points within 35 degrees of the model's +Z front and
+// near level. The mutant has no shoot clip; `punch` points the cannon 41 degrees
+// off front and 40 down at its strike, so the fixture does not use it.
+#[test]
+fn cannon_brute_attack_clip_points_the_cannon_forward_at_the_shot() {
+    use glam::Vec3;
+    use postretro_model::mount::resolve_socket_frame;
+
+    let descriptors = dev_descriptors();
+    let brute = descriptor_named(&descriptors, "cannon_brute");
+    let mesh = brute.mesh.as_ref().unwrap();
+    let strike = mesh
+        .animations
+        .get("smash_strike")
+        .expect("the release plays the smash_strike state");
+    let frame = resolve_socket_frame(
+        &content_path(&dev_content_root(), &mesh.model),
+        &strike.clip,
+        "cannon_tip",
+        0.0,
+    )
+    .expect("cannon_tip resolves under the strike clip");
+    let barrel = frame.matrix.y_axis.truncate().normalize();
+    let from_front = barrel.dot(Vec3::Z).clamp(-1.0, 1.0).acos().to_degrees();
+    assert!(
+        from_front < 35.0,
+        "the barrel points {from_front:.0} degrees off the front at the shot: {barrel}"
+    );
+    assert!(
+        barrel.y.abs() < 0.35,
+        "the barrel is near level at the shot: {barrel}"
+    );
+}

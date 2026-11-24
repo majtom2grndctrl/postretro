@@ -17,8 +17,8 @@ use crate::agent_steering;
 use crate::ai_host::AiHost;
 use crate::emission::entity_emitter;
 use crate::nav::distance_xz;
-use crate::sim::EnemyProjectilePresentationSpawn;
 use crate::npc_launch::{self, LaunchInputs};
+use crate::sim::EnemyProjectilePresentationSpawn;
 use crate::weapon_controller::{AiWeaponControllers, SkippedShot, WithheldStart};
 use glam::Quat;
 use postretro_entities::components::agent::ArrivalLeash;
@@ -762,8 +762,11 @@ fn plan_own_draw<'a>(
     let flinch_shows = !outcome.state_changed
         && (outcome.brain.clip_clock.stagger.is_some()
             || (clip_clock::routes_flinches(&outcome.brain) && switches != seen));
-    let stride_or_entry =
-        should_switch_animation(outcome.state_changed, moving, outcome.brain.locomotion_moving);
+    let stride_or_entry = should_switch_animation(
+        outcome.state_changed,
+        moving,
+        outcome.brain.locomotion_moving,
+    );
     let variant_changed = travel_variant != outcome.brain.presented_travel_variant;
     let switch_due = !flinch_shows
         && (stride_or_entry

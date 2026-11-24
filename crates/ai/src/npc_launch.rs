@@ -226,9 +226,9 @@ pub(crate) fn pose_muzzles(
         let store = store?;
         let state = clock.state.as_deref()?;
         let provenance = registry.get_component::<DescriptorProvenance>(actor).ok()?;
-        let descriptor = descriptors
-            .iter()
-            .find(|descriptor| descriptor.canonical_name.as_deref() == Some(&provenance.canonical_name))?;
+        let descriptor = descriptors.iter().find(|descriptor| {
+            descriptor.canonical_name.as_deref() == Some(&provenance.canonical_name)
+        })?;
         let mount = npc_muzzle_mount(descriptor, weapon, store)?;
         let transform = registry.get_component::<Transform>(actor).ok()?;
         let mesh = registry.get_component::<MeshComponent>(actor).ok()?;

@@ -1119,7 +1119,7 @@ The starter declares no levels, so the bundle runs no bake stage. The sweep refu
 
 **Acceptance for the shipped tool runs outside any repository.** Every workspace test has a `Cargo.toml` ancestor and a cargo binary, the two things a recipient lacks. `bin/postretro-tool run` on the starter of a relocated bundle is the smallest check; `bin/postretro-tool dist` on an external project is the full one.
 
-**`docs/` is modder-facing only.** `sdk-dist` copies that tree verbatim into every bundle, so every command in it must be runnable by someone holding only a bundle. The engine-developer workflow — `cargo run -p xtask -- …` — lives in `CLAUDE.md`, `AGENTS.md`, and here, never in `docs/`. No command in it names a `content/dev` path, since no bundle carries one.
+**`docs/` is modder-facing only.** `sdk-dist` copies that tree verbatim into every bundle, so every command in it must be runnable by someone holding only a bundle. The engine-developer workflow — `cargo run -p xtask -- …` — lives in `CLAUDE.md`, `AGENTS.md`, and here, never in `docs/`. No command in `docs/` names a `content/dev` path, since no bundle carries one.
 
 ---
 

@@ -577,7 +577,15 @@ where
                 fire.recovery_ms,
             )
         {
-            end_held_hold(registry, outcome.id);
+            // A burst of one attack firing while another attack's start was
+            // held this tick does not end that hold.
+            if !advance
+                .withheld
+                .as_ref()
+                .is_some_and(|withheld| withheld.held)
+            {
+                end_held_hold(registry, outcome.id);
+            }
             projectile_spawns.push(EnemyProjectilePresentationSpawn {
                 projectile: fire.projectile,
                 descriptor_class: fire.canonical_weapon,

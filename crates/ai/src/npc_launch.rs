@@ -196,7 +196,7 @@ pub(crate) fn near_path_blocked(
         return true;
     }
     let toward = target_aim - muzzle;
-    let reach = (toward.length() - radius.max(0.0)).min(NEAR_PATH_DISTANCE_M);
+    let reach = (toward.length() - radius.max(0.0)).clamp(0.0, NEAR_PATH_DISTANCE_M);
     match toward.try_normalize() {
         Some(direction) => leg_blocked(world, muzzle, muzzle + direction * reach, radius),
         None => false,

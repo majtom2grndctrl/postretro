@@ -261,6 +261,9 @@ fn the_post_sweep_check_warns_once_for_a_missing_socket_and_marks_the_binding_ke
     // The mesh-binding resolver's key is taken, so it never doubles the warning.
     let key = format!("attachment-socket:{BODY}:hand_r:{BAKE}");
     assert!(!store.mark_attachment_resolution_warning(key));
+    // Regression: a muzzle-bearing bake on a missing socket also drew the
+    // no-muzzle warning; only the socket's warning logs (pin NM-3).
+    assert_eq!(warns(&logs, "muzzle"), 0);
 }
 
 #[test]

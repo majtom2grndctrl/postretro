@@ -261,26 +261,40 @@ impl AiWeaponControllers {
             actor_weapons.cancel_all();
         }
         let mut request = request.filter(|_| aim.is_some());
-        // A request for another weapon cancels the burst in flight, so its
-        // first shot is decided before that cancel: one that cannot launch
-        // leaves the attack unstarted and the running burst untouched.
+        // A request for another weapon cancels the burst in flight, so a first
+        // shot due on the start tick is decided before that cancel, on a dry
+        // run of the start (the shot's own scaled radius included): one that
+        // cannot launch leaves the attack unstarted and the running burst
+        // untouched. A start with no shot due this tick (a charge, a weapon
+        // that refuses to start) is not decided here; its first shot is
+        // decided when it comes due. Only weapon-switch ticks pay the copy.
         if let Some(requested) = request.as_ref()
             && actor_weapons
                 .active
                 .as_ref()
                 .is_some_and(|active| active != &requested.canonical_weapon)
-            && let Some(radius) = actor_weapons
-                .weapons
-                .get(&requested.canonical_weapon)
-                .and_then(|weapon| weapon.component.projectile.as_ref())
-                .map(|projectile| projectile.radius)
+            && let Some(weapon) = actor_weapons.weapons.get(&requested.canonical_weapon)
+            && weapon.component.state.activation_cursor().is_none()
         {
-            let decision = launch(&requested.canonical_weapon, radius);
-            if !matches!(decision, ShotLaunch::Launch(_)) {
-                outcome.withheld = Some(WithheldStart {
-                    held: decision == ShotLaunch::Held,
-                });
-                request = None;
+            let mut trial = weapon.component.clone();
+            let advanced = advance_weapon_activation(
+                &mut trial,
+                start_command(self.tick, actor),
+                dt_ms,
+                false,
+                true,
+            );
+            if let Some(attempt) = advanced.shot {
+                let radius = freeze_weapon_shot(&trial, attempt)
+                    .projectile
+                    .map_or(0.0, |projectile| projectile.radius);
+                let decision = launch(&requested.canonical_weapon, radius);
+                if !matches!(decision, ShotLaunch::Launch(_)) {
+                    outcome.withheld = Some(WithheldStart {
+                        held: decision == ShotLaunch::Held,
+                    });
+                    request = None;
+                }
             }
         }
         if let Some(request) = request.as_ref()
@@ -328,21 +342,13 @@ impl AiWeaponControllers {
                 });
             }
             let checkpoint = WeaponActivationCheckpoint::capture(&weapon.component);
-            let command = ActivationCommand {
-                tick: self.tick,
-                pawn: actor.to_raw(),
-                real_command: true,
+            let command = activation_command(
+                self.tick,
+                actor,
                 input,
-                controller_starts: false,
-                primary: FireButtonState {
-                    pressed: starts.is_some(),
-                    active: starts.is_some() || weapon.attack_name.is_some(),
-                },
-                secondary: FireButtonState {
-                    pressed: false,
-                    active: false,
-                },
-            };
+                starts.is_some(),
+                starts.is_some() || weapon.attack_name.is_some(),
+            );
             let advanced = advance_weapon_activation(
                 &mut weapon.component,
                 command,
@@ -435,7 +441,10 @@ impl AiWeaponControllers {
                         recovery_ms: shot.activation.recovery_ms,
                     });
                 } else {
+                    // Nothing launched: the same shot is retried, still first
+                    // if it was.
                     checkpoint.restore(&mut weapon.component);
+                    weapon.first_shot_due = first_shot;
                 }
             }
             if weapon.component.state.activation_cursor().is_none() {
@@ -469,4 +478,40 @@ impl AiWeaponControllers {
             .get_mut(canonical)
             .map(|weapon| &mut weapon.component)
     }
+}
+
+/// The AI's command for one weapon this tick: the primary lane only, pressed
+/// on a start and held while an attack runs.
+fn activation_command(
+    tick: u32,
+    actor: EntityId,
+    input: ActivationInput,
+    pressed: bool,
+    active: bool,
+) -> ActivationCommand {
+    ActivationCommand {
+        tick,
+        pawn: actor.to_raw(),
+        real_command: true,
+        input,
+        controller_starts: false,
+        primary: FireButtonState { pressed, active },
+        secondary: FireButtonState {
+            pressed: false,
+            active: false,
+        },
+    }
+}
+
+/// The command that starts an activation this tick, as the advance below
+/// builds it for a request.
+fn start_command(tick: u32, actor: EntityId) -> ActivationCommand {
+    let input = ActivationInput {
+        initiation: Some(ActivationToken {
+            start_tick: tick,
+            lane: ActivationLane::Primary,
+        }),
+        ..ActivationInput::default()
+    };
+    activation_command(tick, actor, input, true, true)
 }

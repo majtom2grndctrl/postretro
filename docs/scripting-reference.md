@@ -417,13 +417,14 @@ defineEntity({
 | Field | Type | Description |
 |-------|------|-------------|
 | `item` | weapon `defineEntity` value | The weapon this entry is for, as in `inventory.loadout`. Each weapon appears at most once. |
-| `attachments` | `{ [socket]: string }` | Socket name → content-relative model path, mounted while the weapon is active. Must be non-empty. Paths use forward slashes and stay inside the content root. |
-| `muzzleSocket` | string | A socket on the character's own body model that the weapon's shots leave from, for a weapon built into the body. The entry mounts nothing. Must be non-empty. |
+| `attachments` | `{ [socket]: string }` | Socket name → content-relative model path, mounted while a player wields the weapon, or always on an NPC whose attacks name it. Must be non-empty. Paths use forward slashes and stay inside the content root. |
+| `muzzleSocket` | string | A socket on the character's own body model that an NPC's shots with this weapon leave from, for a weapon built into the body. The entry mounts nothing, and a player ignores it. Must be non-empty. |
 
 An entry names exactly one of `attachments` and `muzzleSocket`.
 
-The mounted props are `mesh.attachments`, then the active weapon's entry; the
-entry wins on a socket both name. A weapon switch swaps one entry's sockets for
+For a player, the mounted props are `mesh.attachments`, then the active
+weapon's entry; the entry wins on a socket both name. (An NPC mounts every
+attack weapon's entry at once; see `docs/weapon-mounts.md`.) A weapon switch swaps one entry's sockets for
 the other's in one step. When the weapon leaves, its sockets return to
 `mesh.attachments`, or empty. An entry may name any sockets the model has, not
 only `hand_r`.

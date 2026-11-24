@@ -183,7 +183,9 @@ This author-time read is separate from the skinned character mount solver. It
 requires a rigid rest socket on the viewmodel and reports an error if `"muzzle"`
 is absent or is a skinned joint. The runtime does not look up this socket; only
 the copied `muzzleOffset` participates in projectile simulation, so a
-third-person mount never moves where a player's shot starts. (An NPC's shot does start at its mounted muzzle; see [Where an NPC's shot starts](#where-an-npcs-shot-starts).)
+third-person mount never moves where a player's shot starts. (An NPC's shot
+does start at its mounted muzzle; see
+[Where an NPC's shot starts](#where-an-npcs-shot-starts).)
 
 ## Pose and character limits
 
@@ -279,9 +281,11 @@ plus `muzzleOffset`, whatever their entry says, and the entry mounts nothing.
 An NPC does not fire into cover at its gun. Before a shot leaves, the engine
 sweeps the shot's radius along two legs: from the NPC's body (its eye) to the
 muzzle, then from the muzzle toward the target's aim point for the first 2 m
-(less if the target is nearer). If something blocks either leg, the NPC
-**holds the shot** rather than launching it into the lip. A burst checks every
-shot; a shot with no clip moment counts once per hold, not once per tick. A held shot counts in
+(less if the target is nearer: the leg then stops about one shot radius short
+of the aim point, so a ledge just beside a point-blank target does not hold the
+shot). If something blocks either leg, the NPC **holds the shot** rather than
+launching it into the lip. A burst checks every shot; an attack with no clip
+moment counts once per hold, not once per tick. A held shot counts in
 `brain.attacksHeldInActivity`, which a behavior row can read to move on. An
 obstacle past 2 m does not hold anything: the shot flies and hits it, which is
 how a player ducks behind a column and makes the NPC waste shots. The target's
@@ -296,8 +300,8 @@ The NPC still works; the missing piece draws or launches as described.
 | Problem | What happens |
 |---|---|
 | A `mounts` table with no entry for an attack weapon | Mounts nothing for it; its shots leave from the eye. |
-| An entry socket the character's model lacks | Nothing draws there; warns; that weapon's shots leave from the eye. |
-| An entry model the level did not load | Nothing draws there; warns; that weapon's shots leave from the eye. |
+| An entry socket the character's model lacks | Nothing draws there; warns; that weapon's shots leave from the eye, unless another socket of the entry carries a `muzzle`. |
+| An entry model the level did not load | Nothing draws there; warns; that weapon's shots leave from the eye, unless another socket of the entry carries a `muzzle`. |
 | No loaded bake carries a `muzzle` socket | Warns; the weapon's shots leave from the eye. |
 | Several bakes carry a `muzzle` socket | Warns, naming the one the shots use. |
 | A `muzzleSocket` the body model lacks | Warns; shots leave from the eye. |

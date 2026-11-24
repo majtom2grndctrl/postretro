@@ -161,12 +161,13 @@ fn check_attachment_entry(
     let mut muzzle_bakes: Vec<&str> = Vec::new();
     for (socket, bake) in sorted_attachments(mesh, weapon) {
         let bake_model = store.get_by_name(bake);
-        if bake_model.is_some() {
+        // Only a bake on a socket the body has can fire: the one the warning
+        // names below must be the one `npc_muzzle_mount` picks, and a bake on
+        // a missing socket is the socket warning's alone, never a muzzle one.
+        let mountable = body.is_none_or(|body| body.has_socket(socket));
+        if mountable && bake_model.is_some() {
             loaded_bakes += 1;
-            // Only a bake on a socket the body has can fire: the one the
-            // warning names below must be the one `npc_muzzle_mount` picks.
-            let mountable = body.is_none_or(|body| body.has_socket(socket));
-            if mountable && has_rigid_muzzle(bake_model) && !muzzle_bakes.contains(&bake) {
+            if has_rigid_muzzle(bake_model) && !muzzle_bakes.contains(&bake) {
                 muzzle_bakes.push(bake);
             }
         }

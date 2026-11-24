@@ -1250,10 +1250,10 @@ declare function fire(reaction: Reaction<any> | string): {SequenceStep}
 --- matched against `ModMapEntry.tags`; omit scoping for every level.
 declare function scopeReactions<S>(tags: {string}, list: {Reaction<S>}): {Reaction<S>}
 
---- An entity descriptor returned by `defineEntity` that declares a weapon block and can be referenced from an inventory loadout or from `mesh.weaponMounts[].weapon`.
+--- An entity descriptor returned by `defineEntity` that declares a weapon block and can be referenced from an inventory loadout or from `mesh.mounts[].item`.
 export type WeaponEntityDescriptor = EntityTypeDescriptor & { components: EntityTypeComponents & { weapon: WeaponDescriptor } }
 --- Lowers `components.inventory.loadout` and
---- `components.mesh.weaponMounts[].weapon` weapon descriptor references to
+--- `components.mesh.mounts[].item` weapon descriptor references to
 --- their canonical names after validating each reference by value.
 declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- Pure identity builder for the mod manifest consumed from the chunk return.

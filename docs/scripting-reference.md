@@ -208,7 +208,7 @@ levels.
 | `canonicalName` | `string` (optional) | The `.map` classname this archetype matches. Omit it for descriptors that are not directly map-placeable. Built-in classnames (e.g. `billboard_emitter`) take precedence. |
 | `components.emitter` | `ComponentValue` (optional) | Emitter component attached at spawn. Use `smokeEmitter`, `sparkEmitter`, or `emitter()`. |
 | `components.light` | `{ color: [r, g, b], range: number, intensity: number, is_dynamic: boolean }` (optional) | Light component attached at spawn. Descriptor-spawned lights are always treated as dynamic regardless of `is_dynamic`. |
-| `components.mesh` | `MeshDescriptor` (optional) | The entity's model, plus optional socket `attachments`, per-weapon `weaponMounts` and animation states. Unknown keys fail the load. See [Character weapon mounts](#character-weapon-mounts) and [Player locomotion animation states](#player-locomotion-animation-states). |
+| `components.mesh` | `MeshDescriptor` (optional) | The entity's model, plus optional socket `attachments`, per-weapon `mounts` and animation states. Unknown keys fail the load. See [Character weapon mounts](#character-weapon-mounts) and [Player locomotion animation states](#player-locomotion-animation-states). |
 | `components.behavior` | `BehaviorGraphDescriptor` (optional) | Authored enemy behavior statechart — hierarchical activities, motion/action verbs, candidate eligibility, and ordered transition guards. It owns acquisition and stand-down policy. See [`components.behavior`](#componentsbehavior). |
 | `components.lifeStates` | life-state descriptor (optional) | Named player capability profiles, an `initial` state and optional `rejoin` map. Requires player movement. See [Player life states](#player-life-states). |
 
@@ -386,7 +386,7 @@ defineEntity({
 
 ### Character weapon mounts
 
-A character holds its active weapon through `components.mesh.weaponMounts`: one
+A character holds its active weapon through `components.mesh.mounts`: one
 entry per weapon it may wield, naming the props it mounts while that weapon is
 active. Each prop is a bake fitted to this character's rig; see
 `docs/weapon-mounts.md` for making one. Weapons carry no third-person model of
@@ -401,9 +401,9 @@ defineEntity({
   components: {
     mesh: {
       model: "models/exo_red/model.gltf",
-      weaponMounts: [
-        { weapon: rifle, attachments: { hand_r: "models/cyberpunk_weapons/rifle/exo_red.gltf" } },
-        { weapon: pistol, attachments: { hand_r: "models/cyberpunk_weapons/pistol/exo_red.gltf" } },
+      mounts: [
+        { item: rifle, attachments: { hand_r: "models/cyberpunk_weapons/rifle/exo_red.gltf" } },
+        { item: pistol, attachments: { hand_r: "models/cyberpunk_weapons/pistol/exo_red.gltf" } },
       ],
     },
     inventory: { loadout: [rifle, pistol] },
@@ -422,7 +422,7 @@ the other's in one step. When the weapon leaves, its sockets return to
 `mesh.attachments`, or empty. An entry may name any sockets the model has, not
 only `hand_r`.
 
-Leave `weaponMounts` out for a character whose weapon is part of its model, like
+Leave `mounts` out for a character whose weapon is part of its model, like
 a robot with a gun arm: it mounts no weapon and logs nothing. Declaring the
 table, even empty, turns missing data into warnings. None repeats within one
 level load:

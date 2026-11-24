@@ -1,12 +1,13 @@
-// Tests: `components.mesh` key set and the `weaponMounts` table, parsed by
+// Tests: `components.mesh` key set and the `mounts` table, parsed by
 // both descriptor readers.
 // See: context/lib/entity_model.md §2 (MeshComponent)
 
 use super::super::*;
 use super::common::*;
-use postretro_entities::data_descriptors::WeaponMountDescriptor;
+use postretro_entities::data_descriptors::MountDescriptor;
 
-const KNOWN_MESH_KEYS: &str = "model, attachments, shadowBiasScale, shadowOnly, animations, defaultState, locomotion, weaponMounts";
+const KNOWN_MESH_KEYS: &str =
+    "model, attachments, shadowBiasScale, shadowOnly, animations, defaultState, locomotion, mounts";
 
 fn js_player(mesh_fields: &str) -> String {
     format!(
@@ -36,9 +37,9 @@ fn lua_error(source: &str) -> String {
     })
 }
 
-fn mount(weapon: &str, attachments: &[(&str, &str)]) -> WeaponMountDescriptor {
-    WeaponMountDescriptor {
-        weapon: weapon.to_string(),
+fn mount(weapon: &str, attachments: &[(&str, &str)]) -> MountDescriptor {
+    MountDescriptor {
+        item: weapon.to_string(),
         attachments: attachments
             .iter()
             .map(|(socket, model)| (socket.to_string(), model.to_string()))
@@ -50,18 +51,18 @@ fn mount(weapon: &str, attachments: &[(&str, &str)]) -> WeaponMountDescriptor {
 fn weapon_mounts_parse_identically_in_both_runtimes() {
     let js = eval_js(
         &js_player(
-            r#"weaponMounts: [
-                { weapon: "reference_rifle", attachments: { hand_r: "models/cyberpunk_weapons/rifle/exo_red.gltf" } },
-                { weapon: "reference_pistol", attachments: { hand_r: "models/cyberpunk_weapons/pistol/exo_red.gltf", back: "models/holster/exo_red.gltf" } },
+            r#"mounts: [
+                { item: "reference_rifle", attachments: { hand_r: "models/cyberpunk_weapons/rifle/exo_red.gltf" } },
+                { item: "reference_pistol", attachments: { hand_r: "models/cyberpunk_weapons/pistol/exo_red.gltf", back: "models/holster/exo_red.gltf" } },
             ]"#,
         ),
         |ctx, value| entity_descriptor_from_js(ctx, value).unwrap(),
     );
     let lua = eval_lua(
         &lua_player(
-            r#"weaponMounts = {
-                { weapon = "reference_rifle", attachments = { hand_r = "models/cyberpunk_weapons/rifle/exo_red.gltf" } },
-                { weapon = "reference_pistol", attachments = { hand_r = "models/cyberpunk_weapons/pistol/exo_red.gltf", back = "models/holster/exo_red.gltf" } },
+            r#"mounts = {
+                { item = "reference_rifle", attachments = { hand_r = "models/cyberpunk_weapons/rifle/exo_red.gltf" } },
+                { item = "reference_pistol", attachments = { hand_r = "models/cyberpunk_weapons/pistol/exo_red.gltf", back = "models/holster/exo_red.gltf" } },
             }"#,
         ),
         |value| entity_descriptor_from_lua(value).unwrap(),
@@ -69,7 +70,7 @@ fn weapon_mounts_parse_identically_in_both_runtimes() {
     assert_eq!(js, lua, "both runtimes produce one descriptor");
     let mesh = js.mesh.expect("mesh parses");
     assert_eq!(
-        mesh.weapon_mounts,
+        mesh.mounts,
         Some(vec![
             mount(
                 "reference_rifle",
@@ -85,12 +86,12 @@ fn weapon_mounts_parse_identically_in_both_runtimes() {
         ])
     );
     assert_eq!(
-        mesh.weapon_mount("reference_pistol")
+        mesh.mount("reference_pistol")
             .map(|entry| entry.attachments.len()),
         Some(2)
     );
-    assert!(mesh.weapon_mount("reference_shotgun").is_none());
-    let mut models: Vec<_> = mesh.weapon_mount_models().collect();
+    assert!(mesh.mount("reference_shotgun").is_none());
+    let mut models: Vec<_> = mesh.mount_models().collect();
     models.sort();
     assert_eq!(
         models,
@@ -108,23 +109,23 @@ fn an_absent_table_is_none_and_an_empty_one_is_declared() {
     let absent = eval_js(&js_player(""), |ctx, value| {
         entity_descriptor_from_js(ctx, value).unwrap()
     });
-    let undefined = eval_js(&js_player("weaponMounts: undefined"), |ctx, value| {
+    let undefined = eval_js(&js_player("mounts: undefined"), |ctx, value| {
         entity_descriptor_from_js(ctx, value).unwrap()
     });
     let lua_absent = eval_lua(&lua_player(""), |value| {
         entity_descriptor_from_lua(value).unwrap()
     });
     for descriptor in [&absent, &undefined, &lua_absent] {
-        assert_eq!(descriptor.mesh.as_ref().unwrap().weapon_mounts, None);
+        assert_eq!(descriptor.mesh.as_ref().unwrap().mounts, None);
     }
-    let js_empty = eval_js(&js_player("weaponMounts: []"), |ctx, value| {
+    let js_empty = eval_js(&js_player("mounts: []"), |ctx, value| {
         entity_descriptor_from_js(ctx, value).unwrap()
     });
-    let lua_empty = eval_lua(&lua_player("weaponMounts = {}"), |value| {
+    let lua_empty = eval_lua(&lua_player("mounts = {}"), |value| {
         entity_descriptor_from_lua(value).unwrap()
     });
-    assert_eq!(js_empty.mesh.unwrap().weapon_mounts, Some(Vec::new()));
-    assert_eq!(lua_empty.mesh.unwrap().weapon_mounts, Some(Vec::new()));
+    assert_eq!(js_empty.mesh.unwrap().mounts, Some(Vec::new()));
+    assert_eq!(lua_empty.mesh.unwrap().mounts, Some(Vec::new()));
 }
 
 // Each load rule rejects in both runtimes with the same text, naming the
@@ -142,57 +143,57 @@ fn weapon_mount_load_rules_reject_identically_naming_the_character() {
         ),
         (
             "unknown entry key",
-            r#"weaponMounts: [{ weapon: "reference_rifle", attachments: { hand_r: "models/rifle/exo_red.gltf" }, socket: "hand_r" }]"#,
-            r#"weaponMounts = {{ weapon = "reference_rifle", attachments = { hand_r = "models/rifle/exo_red.gltf" }, socket = "hand_r" }}"#,
-            "entity `player`: `components.mesh.weaponMounts[0].socket` is not a weapon-mount field; expected `weapon` and `attachments`".to_string(),
+            r#"mounts: [{ item: "reference_rifle", attachments: { hand_r: "models/rifle/exo_red.gltf" }, socket: "hand_r" }]"#,
+            r#"mounts = {{ item = "reference_rifle", attachments = { hand_r = "models/rifle/exo_red.gltf" }, socket = "hand_r" }}"#,
+            "entity `player`: `components.mesh.mounts[0].socket` is not a weapon-mount field; expected `item` and `attachments`".to_string(),
         ),
         (
             "duplicated weapon",
-            r#"weaponMounts: [
-                { weapon: "reference_rifle", attachments: { hand_r: "models/rifle/exo_red.gltf" } },
-                { weapon: "reference_rifle", attachments: { hand_r: "models/rifle/other.gltf" } },
+            r#"mounts: [
+                { item: "reference_rifle", attachments: { hand_r: "models/rifle/exo_red.gltf" } },
+                { item: "reference_rifle", attachments: { hand_r: "models/rifle/other.gltf" } },
             ]"#,
-            r#"weaponMounts = {
-                { weapon = "reference_rifle", attachments = { hand_r = "models/rifle/exo_red.gltf" } },
-                { weapon = "reference_rifle", attachments = { hand_r = "models/rifle/other.gltf" } },
+            r#"mounts = {
+                { item = "reference_rifle", attachments = { hand_r = "models/rifle/exo_red.gltf" } },
+                { item = "reference_rifle", attachments = { hand_r = "models/rifle/other.gltf" } },
             }"#,
-            "entity `player`: `components.mesh.weaponMounts[1].weapon` repeats weapon `reference_rifle`; each weapon takes one entry".to_string(),
+            "entity `player`: `components.mesh.mounts[1].item` repeats weapon `reference_rifle`; each weapon takes one entry".to_string(),
         ),
         (
             "empty attachment map",
-            r#"weaponMounts: [{ weapon: "reference_rifle", attachments: {} }]"#,
-            r#"weaponMounts = {{ weapon = "reference_rifle", attachments = {} }}"#,
-            "entity `player`: `components.mesh.weaponMounts[0].attachments` for weapon `reference_rifle` is empty; an entry mounts at least one socket".to_string(),
+            r#"mounts: [{ item: "reference_rifle", attachments: {} }]"#,
+            r#"mounts = {{ item = "reference_rifle", attachments = {} }}"#,
+            "entity `player`: `components.mesh.mounts[0].attachments` for weapon `reference_rifle` is empty; an entry mounts at least one socket".to_string(),
         ),
         (
             "empty weapon name",
-            r#"weaponMounts: [{ weapon: "", attachments: { hand_r: "models/rifle/exo_red.gltf" } }]"#,
-            r#"weaponMounts = {{ weapon = "", attachments = { hand_r = "models/rifle/exo_red.gltf" } }}"#,
-            "entity `player`: `components.mesh.weaponMounts[0].weapon` must be a non-empty weapon name".to_string(),
+            r#"mounts: [{ item: "", attachments: { hand_r: "models/rifle/exo_red.gltf" } }]"#,
+            r#"mounts = {{ item = "", attachments = { hand_r = "models/rifle/exo_red.gltf" } }}"#,
+            "entity `player`: `components.mesh.mounts[0].item` must be a non-empty weapon name".to_string(),
         ),
         (
             "empty socket name",
-            r#"weaponMounts: [{ weapon: "reference_rifle", attachments: { "": "models/rifle/exo_red.gltf" } }]"#,
-            r#"weaponMounts = {{ weapon = "reference_rifle", attachments = { [""] = "models/rifle/exo_red.gltf" } }}"#,
-            "entity `player`: `components.mesh.weaponMounts[0].attachments` must not contain an empty socket name".to_string(),
+            r#"mounts: [{ item: "reference_rifle", attachments: { "": "models/rifle/exo_red.gltf" } }]"#,
+            r#"mounts = {{ item = "reference_rifle", attachments = { [""] = "models/rifle/exo_red.gltf" } }}"#,
+            "entity `player`: `components.mesh.mounts[0].attachments` must not contain an empty socket name".to_string(),
         ),
         (
             "weapon still a handle",
-            r#"weaponMounts: [{ weapon: { canonicalName: "reference_rifle" }, attachments: { hand_r: "models/rifle/exo_red.gltf" } }]"#,
-            r#"weaponMounts = {{ weapon = { canonicalName = "reference_rifle" }, attachments = { hand_r = "models/rifle/exo_red.gltf" } }}"#,
-            "entity `player`: `components.mesh.weaponMounts[0].weapon` must be a weapon name; `defineEntity` lowers a weapon descriptor to its canonical name".to_string(),
+            r#"mounts: [{ item: { canonicalName: "reference_rifle" }, attachments: { hand_r: "models/rifle/exo_red.gltf" } }]"#,
+            r#"mounts = {{ item = { canonicalName = "reference_rifle" }, attachments = { hand_r = "models/rifle/exo_red.gltf" } }}"#,
+            "entity `player`: `components.mesh.mounts[0].item` must be a weapon name; `defineEntity` lowers a weapon descriptor to its canonical name".to_string(),
         ),
         (
             "table not a list",
-            r#"weaponMounts: { reference_rifle: { hand_r: "models/rifle/exo_red.gltf" } }"#,
-            r#"weaponMounts = { reference_rifle = { hand_r = "models/rifle/exo_red.gltf" } }"#,
-            "entity `player`: `components.mesh.weaponMounts` must be an array of `{ weapon, attachments }` entries".to_string(),
+            r#"mounts: { reference_rifle: { hand_r: "models/rifle/exo_red.gltf" } }"#,
+            r#"mounts = { reference_rifle = { hand_r = "models/rifle/exo_red.gltf" } }"#,
+            "entity `player`: `components.mesh.mounts` must be an array of `{ item, attachments }` entries".to_string(),
         ),
         (
             "entry not an object",
-            r#"weaponMounts: ["reference_rifle"]"#,
-            r#"weaponMounts = { "reference_rifle" }"#,
-            "entity `player`: `components.mesh.weaponMounts[0]` must be an object `{ weapon, attachments }`".to_string(),
+            r#"mounts: ["reference_rifle"]"#,
+            r#"mounts = { "reference_rifle" }"#,
+            "entity `player`: `components.mesh.mounts[0]` must be an object `{ item, attachments }`".to_string(),
         ),
     ];
     for (label, js_fields, lua_fields, expected) in cases {
@@ -206,11 +207,60 @@ fn weapon_mount_load_rules_reject_identically_naming_the_character() {
     }
 }
 
+// The table was renamed with no alias: the retired mesh key and the retired
+// entry key reject in both runtimes, naming the key and the character, and
+// the same table under the new names loads.
+#[test]
+fn retired_mount_table_keys_reject_while_the_renamed_table_loads_in_both_runtimes() {
+    let model = "models/rifle/exo_red.gltf";
+    let cases = [
+        (
+            "retired mesh key",
+            format!(r#"weaponMounts: [{{ item: "reference_rifle", attachments: {{ hand_r: "{model}" }} }}]"#),
+            format!(r#"weaponMounts = {{ {{ item = "reference_rifle", attachments = {{ hand_r = "{model}" }} }} }}"#),
+            format!(
+                "entity `player`: `components.mesh.weaponMounts` is not a mesh field; expected one of {KNOWN_MESH_KEYS}"
+            ),
+        ),
+        (
+            "retired entry key",
+            format!(r#"mounts: [{{ weapon: "reference_rifle", attachments: {{ hand_r: "{model}" }} }}]"#),
+            format!(r#"mounts = {{ {{ weapon = "reference_rifle", attachments = {{ hand_r = "{model}" }} }} }}"#),
+            "entity `player`: `components.mesh.mounts[0].weapon` is not a weapon-mount field; expected `item` and `attachments`".to_string(),
+        ),
+    ];
+    for (label, js_fields, lua_fields, expected) in cases {
+        let js = js_error(&js_player(&js_fields));
+        let lua = lua_error(&lua_player(&lua_fields));
+        assert!(
+            js.contains(&expected),
+            "QuickJS {label}: expected {expected:?}, got {js}"
+        );
+        assert_eq!(js, lua, "{label}: both runtimes reject with one message");
+    }
+
+    let js = eval_js(
+        &js_player(&format!(
+            r#"mounts: [{{ item: "reference_rifle", attachments: {{ hand_r: "{model}" }} }}]"#
+        )),
+        |ctx, value| entity_descriptor_from_js(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        &lua_player(&format!(
+            r#"mounts = {{ {{ item = "reference_rifle", attachments = {{ hand_r = "{model}" }} }} }}"#
+        )),
+        |value| entity_descriptor_from_lua(value).unwrap(),
+    );
+    let expected = Some(vec![mount("reference_rifle", &[("hand_r", model)])]);
+    assert_eq!(js.mesh.unwrap().mounts, expected);
+    assert_eq!(lua.mesh.unwrap().mounts, expected);
+}
+
 // A model path that breaks the content-relative rule weapon models follow
 // rejects load in both runtimes, as `components.weapon.viewmodel` does.
 #[test]
 fn weapon_mount_model_paths_follow_the_weapon_model_path_rule() {
-    let expected = "entity `player`: `components.mesh.weaponMounts[0].attachments.hand_r` must be a non-empty, content-relative model path using forward slashes with no parent traversal";
+    let expected = "entity `player`: `components.mesh.mounts[0].attachments.hand_r` must be a non-empty, content-relative model path using forward slashes with no parent traversal";
     for path in [
         "",
         "../models/rifle/exo_red.gltf",
@@ -220,10 +270,10 @@ fn weapon_mount_model_paths_follow_the_weapon_model_path_rule() {
         r"models\\rifle\\exo_red.gltf",
     ] {
         let js = js_error(&js_player(&format!(
-            r#"weaponMounts: [{{ weapon: "reference_rifle", attachments: {{ hand_r: "{path}" }} }}]"#
+            r#"mounts: [{{ item: "reference_rifle", attachments: {{ hand_r: "{path}" }} }}]"#
         )));
         let lua = lua_error(&lua_player(&format!(
-            r#"weaponMounts = {{ {{ weapon = "reference_rifle", attachments = {{ hand_r = "{path}" }} }} }}"#
+            r#"mounts = {{ {{ item = "reference_rifle", attachments = {{ hand_r = "{path}" }} }} }}"#
         )));
         assert!(js.contains(expected), "{path:?}: {js}");
         assert_eq!(js, lua, "{path:?}");
@@ -249,7 +299,7 @@ fn unknown_mesh_keys_reject_in_both_runtimes_and_known_ones_parse() {
         &js_player(
             r#"attachments: { hand_l: "models/shield.gltf" }, shadowBiasScale: 2, shadowOnly: true,
                animations: { idle: { clip: "idle", loop: true } }, defaultState: "idle",
-               locomotion: { speedScale: false }, weaponMounts: []"#,
+               locomotion: { speedScale: false }, mounts: []"#,
         ),
         |ctx, value| entity_descriptor_from_js(ctx, value).unwrap(),
     );
@@ -257,14 +307,14 @@ fn unknown_mesh_keys_reject_in_both_runtimes_and_known_ones_parse() {
         &lua_player(
             r#"attachments = { hand_l = "models/shield.gltf" }, shadowBiasScale = 2, shadowOnly = true,
                animations = { idle = { clip = "idle", loop = true } }, defaultState = "idle",
-               locomotion = { speedScale = false }, weaponMounts = {}"#,
+               locomotion = { speedScale = false }, mounts = {}"#,
         ),
         |value| entity_descriptor_from_lua(value).unwrap(),
     );
     assert_eq!(js_known, lua_known);
 }
 
-// `thirdPersonModel` is retired: the character's `weaponMounts` table is the
+// `thirdPersonModel` is retired: the character's `mounts` table is the
 // only third-person source, so a weapon carrying the old field is rejected as
 // an unknown field rather than silently ignored.
 #[test]

@@ -875,7 +875,7 @@ fn hot_reload_beside_load_installs_reloaded_models() {
         animations: Default::default(),
         default_state: None,
         locomotion: None,
-        weapon_mounts: None,
+        mounts: None,
     });
     // The mod's descriptors before the reload.
     script_ctx(&app)
@@ -1067,7 +1067,7 @@ fn commit_miss_reuses_released_level_model() {
         animations: Default::default(),
         default_state: None,
         locomotion: None,
-        weapon_mounts: None,
+        mounts: None,
     });
     // The mod's descriptors before the reload.
     script_ctx(&app)

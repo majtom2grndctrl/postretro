@@ -102,7 +102,10 @@ fn limitator_muzzle_sits_at_the_mounted_barrel_below_the_head() {
     let store = store_with(&[BODY, BAKE]);
     let mesh = limitator_mesh();
     let offset = bake_muzzle_offset(&store);
-    assert!(offset > 0.15, "the barrel tip sits well off the grip: {offset}");
+    assert!(
+        offset > 0.15,
+        "the barrel tip sits well off the grip: {offset}"
+    );
 
     for (state, time) in [("idle_aiming", 0.0), ("idle_aiming", 0.7), ("shoot", 0.1)] {
         let at = muzzle(&store, &mesh, Mat4::IDENTITY, state, time, MOUNTED)
@@ -140,7 +143,15 @@ fn muzzle_moves_with_clip_time_and_wraps_a_looping_state() {
         .expect("idle_aiming resolves")
         .duration as f64;
     let early = muzzle(&store, &mesh, Mat4::IDENTITY, "idle_aiming", 0.0, MOUNTED).unwrap();
-    let mid = muzzle(&store, &mesh, Mat4::IDENTITY, "idle_aiming", duration / 2.0, MOUNTED).unwrap();
+    let mid = muzzle(
+        &store,
+        &mesh,
+        Mat4::IDENTITY,
+        "idle_aiming",
+        duration / 2.0,
+        MOUNTED,
+    )
+    .unwrap();
     assert!(
         early.distance(mid) > 1e-3,
         "the pose moves the muzzle: {early} vs {mid}"
@@ -154,7 +165,10 @@ fn muzzle_moves_with_clip_time_and_wraps_a_looping_state() {
         MOUNTED,
     )
     .unwrap();
-    assert!(mid.distance(wrapped) < 1e-4, "unwrapped clip time wraps a looping state");
+    assert!(
+        mid.distance(wrapped) < 1e-4,
+        "unwrapped clip time wraps a looping state"
+    );
 
     let shoot = muzzle(&store, &mesh, Mat4::IDENTITY, "shoot", 0.0, MOUNTED).unwrap();
     assert!(
@@ -179,11 +193,17 @@ fn muzzle_follows_the_holder_model_matrix() {
 #[test]
 fn built_in_muzzle_reads_a_body_socket_that_moves_with_the_clip() {
     let store = store_with(&[BODY_CANNON]);
-    let mesh = mesh(BODY_CANNON, &[("idle", "idle", true), ("punch", "punch", false)]);
+    let mesh = mesh(
+        BODY_CANNON,
+        &[("idle", "idle", true), ("punch", "punch", false)],
+    );
     let tip = MuzzleMount::BodySocket("cannon_tip");
     let idle = muzzle(&store, &mesh, Mat4::IDENTITY, "idle", 0.0, tip).expect("cannon_tip poses");
     let punch = muzzle(&store, &mesh, Mat4::IDENTITY, "punch", 0.4, tip).expect("cannon_tip poses");
-    assert!(idle.distance(punch) > 0.1, "the forearm carries the tip: {idle} vs {punch}");
+    assert!(
+        idle.distance(punch) > 0.1,
+        "the forearm carries the tip: {idle} vs {punch}"
+    );
 }
 
 #[test]
@@ -192,7 +212,11 @@ fn muzzle_is_missing_when_the_state_socket_or_bake_does_not_resolve() {
     let mesh = limitator_mesh();
     let at = |state: &str, mount| muzzle(&store, &mesh, Mat4::IDENTITY, state, 0.0, mount);
 
-    assert_eq!(at("no_such_state", MOUNTED), None, "an untracked state has no pose");
+    assert_eq!(
+        at("no_such_state", MOUNTED),
+        None,
+        "an untracked state has no pose"
+    );
     assert_eq!(
         at(
             "shoot",
@@ -241,7 +265,10 @@ fn a_bake_without_a_muzzle_socket_has_no_muzzle() {
         holder_socket: "hand_r",
         bake,
     };
-    assert_eq!(muzzle(&store, &mesh, Mat4::IDENTITY, "shoot", 0.0, mount), None);
+    assert_eq!(
+        muzzle(&store, &mesh, Mat4::IDENTITY, "shoot", 0.0, mount),
+        None
+    );
 }
 
 fn mesh_with_unknown_clip() -> MeshComponent {

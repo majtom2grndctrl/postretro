@@ -65,7 +65,7 @@ fn fire_origin_and_hits_are_identical_with_and_without_a_weapon_mount_table() {
         if !with_table {
             for descriptor in &mut descriptors {
                 if let Some(mesh) = descriptor.mesh.as_mut() {
-                    mesh.weapon_mounts = None;
+                    mesh.mounts = None;
                 }
             }
         }

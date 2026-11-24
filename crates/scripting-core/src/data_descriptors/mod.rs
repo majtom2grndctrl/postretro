@@ -90,7 +90,7 @@ mod js {
     pub mod input_block;
     pub mod loading_manifest;
     pub mod manifest;
-    mod mesh_weapon_mounts;
+    mod mesh_mounts;
     pub mod movement;
     pub mod movement_view_feel;
     pub mod reactions;
@@ -109,7 +109,7 @@ mod lua {
     pub mod loading_manifest;
     pub mod manifest;
     pub mod maps;
-    mod mesh_weapon_mounts;
+    mod mesh_mounts;
     pub mod movement;
     pub mod movement_view_feel;
     pub mod reactions;

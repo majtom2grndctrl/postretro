@@ -1,10 +1,10 @@
 // Data-context descriptors: JS readers for the mesh key set and the
-// `components.mesh.weaponMounts` table.
+// `components.mesh.mounts` table.
 // See: context/lib/scripting.md
 
 use super::super::*;
 use postretro_entities::data_descriptors::{
-    WeaponMountDescriptor, check_mesh_key, check_weapon_mount_key, weapon_mount_shape_error,
+    MountDescriptor, check_mesh_key, check_mount_key, mount_shape_error,
 };
 use rquickjs::object::Filter;
 
@@ -67,50 +67,47 @@ pub(super) fn string_map_from_js(
     Ok(out)
 }
 
-/// Read `components.mesh.weaponMounts`: an array of `{ weapon, attachments }`
-/// entries whose `weapon` the SDK has lowered to a canonical name. Shape
+/// Read `components.mesh.mounts`: an array of `{ item, attachments }`
+/// entries whose `item` the SDK has lowered to a canonical name. Shape
 /// errors name the character; the shared rules run in `MeshDescriptor::build`.
-pub(super) fn weapon_mounts_from_js(
+pub(super) fn mounts_from_js(
     owner: &str,
     raw: JsValue<'_>,
-) -> Result<Vec<WeaponMountDescriptor>, DescriptorError> {
+) -> Result<Vec<MountDescriptor>, DescriptorError> {
     let Some(array) = raw.as_array() else {
-        return Err(weapon_mount_shape_error(
+        return Err(mount_shape_error(
             owner,
-            "`components.mesh.weaponMounts` must be an array of `{ weapon, attachments }` entries",
+            "`components.mesh.mounts` must be an array of `{ item, attachments }` entries",
         ));
     };
     let mut entries = Vec::with_capacity(array.len());
     for index in 0..array.len() {
-        let path = format!("components.mesh.weaponMounts[{index}]");
+        let path = format!("components.mesh.mounts[{index}]");
         let value: JsValue = array.get(index).map_err(js_err)?;
         if value.type_of() != rquickjs::Type::Object {
-            return Err(weapon_mount_shape_error(
+            return Err(mount_shape_error(
                 owner,
-                format_args!("`{path}` must be an object `{{ weapon, attachments }}`"),
+                format_args!("`{path}` must be an object `{{ item, attachments }}`"),
             ));
         }
         let entry = Object::from_value(value).map_err(js_err)?;
         for key in sorted_own_keys(&entry)? {
-            check_weapon_mount_key(owner, index, &key)?;
+            check_mount_key(owner, index, &key)?;
         }
-        let weapon: JsValue = entry.get("weapon").map_err(js_err)?;
-        let Some(weapon) = weapon.as_string() else {
-            return Err(weapon_mount_shape_error(
+        let item: JsValue = entry.get("item").map_err(js_err)?;
+        let Some(item) = item.as_string() else {
+            return Err(mount_shape_error(
                 owner,
                 format_args!(
-                    "`{path}.weapon` must be a weapon name; `defineEntity` lowers a weapon descriptor to its canonical name"
+                    "`{path}.item` must be a weapon name; `defineEntity` lowers a weapon descriptor to its canonical name"
                 ),
             ));
         };
-        let weapon = weapon.to_string().map_err(js_err)?;
+        let item = item.to_string().map_err(js_err)?;
         let attachments: JsValue = entry.get("attachments").map_err(js_err)?;
         let attachments = string_map_from_js(attachments, &format!("{path}.attachments"))
-            .map_err(|reason| weapon_mount_shape_error(owner, reason))?;
-        entries.push(WeaponMountDescriptor {
-            weapon,
-            attachments,
-        });
+            .map_err(|reason| mount_shape_error(owner, reason))?;
+        entries.push(MountDescriptor { item, attachments });
     }
     Ok(entries)
 }

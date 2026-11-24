@@ -618,7 +618,7 @@ render-rate view-feel sway/bob is a separate overlay composed on top (owned by
 movement), excluded from authority.
 
 The third-person avatar weapon mount does not read placement. Observers see the weapon
-posed by the sockets the wielder's `mesh.weaponMounts` entry names; the FP viewmodel is
+posed by the sockets the wielder's `mesh.mounts` entry names; the FP viewmodel is
 a screen-space presentation. The two vantages legitimately diverge — the shooter's
 authored FP placement versus observers' socket pose — and the TP mount carries no
 placement offset. Art owns its fit in the rig's bake. Each peer resolves the mount from

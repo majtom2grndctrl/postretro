@@ -18,7 +18,10 @@ pub const BAKE_MUZZLE_SOCKET: &str = "muzzle";
 pub enum MuzzleMount<'a> {
     /// A bake mounted on a holder socket; the shot leaves the bake's own
     /// [`BAKE_MUZZLE_SOCKET`], composed as the renderer places the bake.
-    Mounted { holder_socket: &'a str, bake: &'a str },
+    Mounted {
+        holder_socket: &'a str,
+        bake: &'a str,
+    },
     /// A weapon built into the body: the shot leaves this body socket.
     BodySocket(&'a str),
 }
@@ -53,7 +56,10 @@ pub fn posed_muzzle_world(
 ) -> Option<Vec3> {
     let holder = store.get_by_name(&mesh.model)?;
     let (holder_socket, bake_muzzle) = match mount {
-        MuzzleMount::Mounted { holder_socket, bake } => {
+        MuzzleMount::Mounted {
+            holder_socket,
+            bake,
+        } => {
             let bake = store.get_by_name(bake)?;
             let SocketBinding::RigidRest(muzzle) = bake.sockets.get(BAKE_MUZZLE_SOCKET)? else {
                 return None;
@@ -85,7 +91,11 @@ fn pose_at_clip_time(
     let animation = mesh.animation.as_ref()?;
     let state = animation.states.get(pose.state)?;
     let clip = holder.state_clip(state.clip_index, &state.clip)?;
-    let loop_policy = if state.looping { Loop::Wrap } else { Loop::Clamp };
+    let loop_policy = if state.looping {
+        Loop::Wrap
+    } else {
+        Loop::Clamp
+    };
     out.clear();
     sample_clip_looped_world(
         clip,

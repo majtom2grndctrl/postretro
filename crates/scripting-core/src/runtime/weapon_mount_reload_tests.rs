@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use log::Level;
-use postretro_entities::data_descriptors::WeaponMountDescriptor;
+use postretro_entities::data_descriptors::MountDescriptor;
 use postretro_test_log_capture::LogCapture;
 
 use super::*;
@@ -53,7 +53,7 @@ fn write_mod(mod_root: &Path, weapon: &str, bake: &str) {
                     entities: [rifle, defineEntity({{ canonicalName: "player", components: {{
                         mesh: {{
                             model: "models/exo_red/model.gltf",
-                            weaponMounts: [{{ weapon: rifle, attachments: {{ hand_r: "{bake}" }} }}],
+                            mounts: [{{ item: rifle, attachments: {{ hand_r: "{bake}" }} }}],
                         }},
                         inventory: {{ loadout: [rifle] }},
                     }} }})],
@@ -64,19 +64,19 @@ fn write_mod(mod_root: &Path, weapon: &str, bake: &str) {
     .expect("staged mod manifest should be written");
 }
 
-fn player_mounts(descriptors: &[EntityTypeDescriptor]) -> Option<Vec<WeaponMountDescriptor>> {
+fn player_mounts(descriptors: &[EntityTypeDescriptor]) -> Option<Vec<MountDescriptor>> {
     descriptors
         .iter()
         .find(|descriptor| descriptor.canonical_name.as_deref() == Some("player"))
         .expect("the player registers")
         .mesh
         .as_ref()
-        .and_then(|mesh| mesh.weapon_mounts.clone())
+        .and_then(|mesh| mesh.mounts.clone())
 }
 
-fn rifle_mount(weapon: &str, bake: &str) -> Option<Vec<WeaponMountDescriptor>> {
-    Some(vec![WeaponMountDescriptor {
-        weapon: weapon.to_string(),
+fn rifle_mount(weapon: &str, bake: &str) -> Option<Vec<MountDescriptor>> {
+    Some(vec![MountDescriptor {
+        item: weapon.to_string(),
         attachments: [("hand_r".to_string(), bake.to_string())]
             .into_iter()
             .collect(),
@@ -165,7 +165,7 @@ fn a_staged_weapon_mounts_edit_is_deferred_with_the_mesh_warning() {
             animations: Default::default(),
             default_state: None,
             locomotion: None,
-            weapon_mounts: rifle_mount("reference_rifle", bake),
+            mounts: rifle_mount("reference_rifle", bake),
         }),
         health: None,
         behavior: None,

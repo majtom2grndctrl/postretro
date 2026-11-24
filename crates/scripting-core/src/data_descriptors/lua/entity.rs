@@ -4,9 +4,7 @@
 use std::collections::HashSet;
 
 use super::super::*;
-use super::mesh_weapon_mounts::{
-    reject_unknown_mesh_keys, string_map_from_lua, weapon_mounts_from_lua,
-};
+use super::mesh_mounts::{mounts_from_lua, reject_unknown_mesh_keys, string_map_from_lua};
 use postretro_entities::data_descriptors::mesh_owner_label;
 
 /// Mirror of [`entity_descriptor_from_js`] for Luau tables. Shape:
@@ -499,12 +497,12 @@ pub fn mesh_descriptor_from_lua(
             .map_err(|reason| DescriptorError::InvalidShape { reason })?;
     }
 
-    let weapon_mounts = if table.contains_key("weaponMounts").map_err(lua_err)? {
-        let raw: LuaValue = table.get("weaponMounts").map_err(lua_err)?;
+    let mounts = if table.contains_key("mounts").map_err(lua_err)? {
+        let raw: LuaValue = table.get("mounts").map_err(lua_err)?;
         if matches!(raw, LuaValue::Nil) {
             None
         } else {
-            Some(weapon_mounts_from_lua(owner, raw)?)
+            Some(mounts_from_lua(owner, raw)?)
         }
     } else {
         None
@@ -597,7 +595,7 @@ pub fn mesh_descriptor_from_lua(
             locomotion,
             shadow_bias_scale,
             shadow_only,
-            weapon_mounts,
+            mounts,
         },
         owner,
     )

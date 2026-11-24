@@ -7,7 +7,7 @@
 
 use std::fs;
 
-use postretro_entities::data_descriptors::WeaponMountDescriptor;
+use postretro_entities::data_descriptors::MountDescriptor;
 
 use super::tests::temp_mod_root;
 use super::*;
@@ -59,19 +59,16 @@ fn assert_fails_mentioning(label: &str, result: &StagedManifestBuildResult, need
     );
 }
 
-fn mount(weapon: &str, model: &str) -> WeaponMountDescriptor {
-    WeaponMountDescriptor {
-        weapon: weapon.to_string(),
+fn mount(weapon: &str, model: &str) -> MountDescriptor {
+    MountDescriptor {
+        item: weapon.to_string(),
         attachments: [("hand_r".to_string(), model.to_string())]
             .into_iter()
             .collect(),
     }
 }
 
-fn mounts_of(
-    manifest: &transfer::StagedManifest,
-    name: &str,
-) -> Option<Vec<WeaponMountDescriptor>> {
+fn mounts_of(manifest: &transfer::StagedManifest, name: &str) -> Option<Vec<MountDescriptor>> {
     manifest
         .entities
         .iter()
@@ -79,7 +76,7 @@ fn mounts_of(
         .unwrap_or_else(|| panic!("`{name}` registers"))
         .mesh
         .as_ref()
-        .and_then(|mesh| mesh.weapon_mounts.clone())
+        .and_then(|mesh| mesh.mounts.clone())
 }
 
 // The brief's Scripting surface example, verbatim apart from the weapon
@@ -97,9 +94,9 @@ export const playerEntity = defineEntity({
       shadowOnly: true,
       // Each bake fitted to exo_red's hand with `postretro-tool solve-weapon-mount`,
       // kept beside its weapon and named for the rig.
-      weaponMounts: [
-        { weapon: rifle, attachments: { hand_r: "models/cyberpunk_weapons/rifle/exo_red.gltf" } },
-        { weapon: pistol, attachments: { hand_r: "models/cyberpunk_weapons/pistol/exo_red.gltf" } },
+      mounts: [
+        { item: rifle, attachments: { hand_r: "models/cyberpunk_weapons/rifle/exo_red.gltf" } },
+        { item: pistol, attachments: { hand_r: "models/cyberpunk_weapons/pistol/exo_red.gltf" } },
       ],
       // animations… as today
     },
@@ -133,9 +130,9 @@ return {
       mesh = {
         model = "models/exo_red/model.gltf",
         shadowOnly = true,
-        weaponMounts = {
-          { weapon = rifle, attachments = { hand_r = "models/cyberpunk_weapons/rifle/exo_red.gltf" } },
-          { weapon = pistol, attachments = { hand_r = "models/cyberpunk_weapons/pistol/exo_red.gltf" } },
+        mounts = {
+          { item = rifle, attachments = { hand_r = "models/cyberpunk_weapons/rifle/exo_red.gltf" } },
+          { item = pistol, attachments = { hand_r = "models/cyberpunk_weapons/pistol/exo_red.gltf" } },
         },
       },
       inventory = { loadout = { rifle, pistol } },
@@ -221,14 +218,14 @@ fn the_weapon_mounts_surface_example_lowers_identically_in_both_runtimes() {
 
 const SHARED_JS: &str = r#"
     const rifle = defineEntity({ canonicalName: "reference_rifle", components: { weapon: WEAPON } });
-    const mounts = [{ weapon: rifle, attachments: { hand_r: "models/cyberpunk_weapons/rifle/exo_red.gltf" } }];
-    const base = { model: "models/exo_red/model.gltf", weaponMounts: mounts };
-    const sharedMesh = { model: "models/exo_red/model.gltf", weaponMounts: mounts };
-    const sharedComponents = { mesh: { model: "models/exo_red/model.gltf", weaponMounts: mounts } };
+    const mounts = [{ item: rifle, attachments: { hand_r: "models/cyberpunk_weapons/rifle/exo_red.gltf" } }];
+    const base = { model: "models/exo_red/model.gltf", mounts: mounts };
+    const sharedMesh = { model: "models/exo_red/model.gltf", mounts: mounts };
+    const sharedComponents = { mesh: { model: "models/exo_red/model.gltf", mounts: mounts } };
     const entities = [
         rifle,
-        defineEntity({ canonicalName: "direct_a", components: { mesh: { model: "models/a.gltf", weaponMounts: mounts } } }),
-        defineEntity({ canonicalName: "direct_b", components: { mesh: { model: "models/b.gltf", weaponMounts: mounts } } }),
+        defineEntity({ canonicalName: "direct_a", components: { mesh: { model: "models/a.gltf", mounts: mounts } } }),
+        defineEntity({ canonicalName: "direct_b", components: { mesh: { model: "models/b.gltf", mounts: mounts } } }),
         defineEntity({ canonicalName: "spread_a", components: { mesh: { ...base, shadowOnly: true } } }),
         defineEntity({ canonicalName: "spread_b", components: { mesh: { ...base } } }),
         defineEntity({ canonicalName: "mesh_a", components: { mesh: sharedMesh } }),
@@ -236,8 +233,8 @@ const SHARED_JS: &str = r#"
         defineEntity({ canonicalName: "components_a", components: sharedComponents }),
         defineEntity({ canonicalName: "components_b", components: sharedComponents }),
     ];
-    if (mounts[0].weapon !== rifle || base.weaponMounts !== mounts || sharedMesh.weaponMounts !== mounts
-        || sharedComponents.mesh.weaponMounts !== mounts) {
+    if (mounts[0].item !== rifle || base.mounts !== mounts || sharedMesh.mounts !== mounts
+        || sharedComponents.mesh.mounts !== mounts) {
         throw new Error("defineEntity changed the authored weapon-mount table");
     }
     globalThis.__postretroModManifest = defineMod({ name: "Shared", id: "shared", version: "1", entities });
@@ -245,16 +242,16 @@ const SHARED_JS: &str = r#"
 
 const SHARED_LUAU: &str = r#"
     local rifle = defineEntity({ canonicalName = "reference_rifle", components = { weapon = WEAPON } })
-    local mounts = { { weapon = rifle, attachments = { hand_r = "models/cyberpunk_weapons/rifle/exo_red.gltf" } } }
-    local base = { model = "models/exo_red/model.gltf", weaponMounts = mounts }
-    local sharedMesh = { model = "models/exo_red/model.gltf", weaponMounts = mounts }
-    local sharedComponents = { mesh = { model = "models/exo_red/model.gltf", weaponMounts = mounts } }
+    local mounts = { { item = rifle, attachments = { hand_r = "models/cyberpunk_weapons/rifle/exo_red.gltf" } } }
+    local base = { model = "models/exo_red/model.gltf", mounts = mounts }
+    local sharedMesh = { model = "models/exo_red/model.gltf", mounts = mounts }
+    local sharedComponents = { mesh = { model = "models/exo_red/model.gltf", mounts = mounts } }
     local spreadA = table.clone(base)
     spreadA.shadowOnly = true
     local entities = {
         rifle,
-        defineEntity({ canonicalName = "direct_a", components = { mesh = { model = "models/a.gltf", weaponMounts = mounts } } }),
-        defineEntity({ canonicalName = "direct_b", components = { mesh = { model = "models/b.gltf", weaponMounts = mounts } } }),
+        defineEntity({ canonicalName = "direct_a", components = { mesh = { model = "models/a.gltf", mounts = mounts } } }),
+        defineEntity({ canonicalName = "direct_b", components = { mesh = { model = "models/b.gltf", mounts = mounts } } }),
         defineEntity({ canonicalName = "spread_a", components = { mesh = spreadA } }),
         defineEntity({ canonicalName = "spread_b", components = { mesh = table.clone(base) } }),
         defineEntity({ canonicalName = "mesh_a", components = { mesh = sharedMesh } }),
@@ -262,8 +259,8 @@ const SHARED_LUAU: &str = r#"
         defineEntity({ canonicalName = "components_a", components = sharedComponents }),
         defineEntity({ canonicalName = "components_b", components = sharedComponents }),
     }
-    if mounts[1].weapon ~= rifle or base.weaponMounts ~= mounts or sharedMesh.weaponMounts ~= mounts
-        or sharedComponents.mesh.weaponMounts ~= mounts then
+    if mounts[1].item ~= rifle or base.mounts ~= mounts or sharedMesh.mounts ~= mounts
+        or sharedComponents.mesh.mounts ~= mounts then
         error("defineEntity changed the authored weapon-mount table")
     end
     return defineMod({ name = "Shared", id = "shared", version = "1", entities = entities })
@@ -336,15 +333,15 @@ fn the_sdk_rejects_a_non_weapon_mount_reference_by_value_in_both_runtimes() {
         ),
     ];
     for (label, js_weapon, luau_weapon, reason) in cases {
-        let needle = format!("components.mesh.weaponMounts[0].weapon {reason}");
+        let needle = format!("components.mesh.mounts[0].item {reason}");
         let js = format!(
             r#"defineEntity({{ canonicalName: "player", components: {{ mesh: {{ model: "m.gltf",
-                 weaponMounts: [{{ weapon: {js_weapon}, attachments: {{ hand_r: "r.gltf" }} }}] }} }} }});
+                 mounts: [{{ item: {js_weapon}, attachments: {{ hand_r: "r.gltf" }} }}] }} }} }});
                globalThis.__postretroModManifest = defineMod({{ name: "M", id: "m", version: "1" }});"#
         );
         let luau = format!(
             r#"defineEntity({{ canonicalName = "player", components = {{ mesh = {{ model = "m.gltf",
-                 weaponMounts = {{ {{ weapon = {luau_weapon}, attachments = {{ hand_r = "r.gltf" }} }} }} }} }} }})
+                 mounts = {{ {{ item = {luau_weapon}, attachments = {{ hand_r = "r.gltf" }} }} }} }} }} }})
                return defineMod({{ name = "M", id = "m", version = "1" }})"#
         );
         assert_fails_mentioning(
@@ -394,7 +391,7 @@ const REUSED_JS: &str = r#"
     const rifle = defineEntity({ canonicalName: "reference_rifle", components: { weapon: WEAPON } });
     const player = defineEntity({ canonicalName: "player", components: {
         mesh: { model: "models/exo_red/model.gltf",
-                weaponMounts: [{ weapon: rifle, attachments: { hand_r: "models/cyberpunk_weapons/rifle/exo_red.gltf" } }] },
+                mounts: [{ item: rifle, attachments: { hand_r: "models/cyberpunk_weapons/rifle/exo_red.gltf" } }] },
         inventory: { loadout: [rifle] },
     } });
     const entities = [
@@ -413,7 +410,7 @@ const REUSED_LUAU: &str = r#"
     local rifle = defineEntity({ canonicalName = "reference_rifle", components = { weapon = WEAPON } })
     local player = defineEntity({ canonicalName = "player", components = {
         mesh = { model = "models/exo_red/model.gltf",
-                 weaponMounts = { { weapon = rifle, attachments = { hand_r = "models/cyberpunk_weapons/rifle/exo_red.gltf" } } } },
+                 mounts = { { item = rifle, attachments = { hand_r = "models/cyberpunk_weapons/rifle/exo_red.gltf" } } } },
         inventory = { loadout = { rifle } },
     } })
     local meshSpread = table.clone(player.components.mesh)
@@ -488,20 +485,20 @@ fn reusing_a_defined_characters_components_or_mesh_lowers_the_same_in_both_runti
 fn an_authored_string_weapon_still_rejects_beside_reused_entries_in_both_runtimes() {
     let player_js = r#"const rifle = defineEntity({ canonicalName: "reference_rifle", components: { weapon: WEAPON } });
         const player = defineEntity({ canonicalName: "player", components: { mesh: { model: "m.gltf",
-            weaponMounts: [{ weapon: rifle, attachments: { hand_r: "r.gltf" } }] }, inventory: { loadout: [rifle] } } });"#
+            mounts: [{ item: rifle, attachments: { hand_r: "r.gltf" } }] }, inventory: { loadout: [rifle] } } });"#
         .replace("WEAPON", WEAPON_TS);
     let player_luau = r#"local rifle = defineEntity({ canonicalName = "reference_rifle", components = { weapon = WEAPON } })
         local player = defineEntity({ canonicalName = "player", components = { mesh = { model = "m.gltf",
-            weaponMounts = { { weapon = rifle, attachments = { hand_r = "r.gltf" } } } }, inventory = { loadout = { rifle } } } })"#
+            mounts = { { item = rifle, attachments = { hand_r = "r.gltf" } } } }, inventory = { loadout = { rifle } } } })"#
         .replace("WEAPON", WEAPON_LUAU);
     let cases = [
         (
             "mount",
-            r#"{ mesh: { model: "m.gltf", weaponMounts: [...player.components.mesh.weaponMounts,
-                 { weapon: "reference_rifle", attachments: { hand_r: "p.gltf" } }] } }"#,
-            r#"{ mesh = { model = "m.gltf", weaponMounts = { player.components.mesh.weaponMounts[1],
-                 { weapon = "reference_rifle", attachments = { hand_r = "p.gltf" } } } } }"#,
-            "components.mesh.weaponMounts[1].weapon must reference an entity descriptor",
+            r#"{ mesh: { model: "m.gltf", mounts: [...player.components.mesh.mounts,
+                 { item: "reference_rifle", attachments: { hand_r: "p.gltf" } }] } }"#,
+            r#"{ mesh = { model = "m.gltf", mounts = { player.components.mesh.mounts[1],
+                 { item = "reference_rifle", attachments = { hand_r = "p.gltf" } } } } }"#,
+            "components.mesh.mounts[1].item must reference an entity descriptor",
         ),
         (
             "loadout",

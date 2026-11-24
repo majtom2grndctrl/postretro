@@ -178,7 +178,7 @@ bin/postretro-tool solve-weapon-mount content/mymod/models/trooper/model.gltf \
 
 A rigid mount is solved against one character's hand, so each rig has its own
 bake of each weapon, named for the rig: `rifle/trooper.gltf` above fits the
-`trooper` model. A character lists its bakes in `mesh.weaponMounts`. Check every
+`trooper` model. A character lists its bakes in `mesh.mounts`. Check every
 bake a changed clip affects. See `docs/weapon-mounts.md`.
 
 ## Licence

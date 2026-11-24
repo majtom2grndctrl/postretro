@@ -4,30 +4,28 @@
 use std::collections::HashMap;
 
 use log::Level;
-use postretro_entities::data_descriptors::{InventoryDescriptor, WeaponMountDescriptor};
+use postretro_entities::data_descriptors::{InventoryDescriptor, MountDescriptor};
 use postretro_test_log_capture::LogCapture;
 
 use super::*;
 use crate::scripting::builtins::data_archetype_test_fixtures::mesh_descriptor;
 use crate::traps::trap_test_fixtures::{bolt, entity};
 
-const RIFLE_MISSING: &str = "[Weapon mounts] entity `player` has no weaponMounts entry for weapon `rifle`; it mounts nothing";
+const RIFLE_MISSING: &str =
+    "[Weapon mounts] entity `player` has no mounts entry for weapon `rifle`; it mounts nothing";
 
-fn entry(weapon: &str, model: &str) -> WeaponMountDescriptor {
-    WeaponMountDescriptor {
-        weapon: weapon.to_string(),
+fn entry(weapon: &str, model: &str) -> MountDescriptor {
+    MountDescriptor {
+        item: weapon.to_string(),
         attachments: HashMap::from([("hand_r".to_string(), model.to_string())]),
     }
 }
 
 /// A player carrying `loadout`, with `table` as its weapon-mount table, plus
 /// the `rifle` and `pistol` weapons.
-fn descriptors(
-    loadout: &[&str],
-    table: Option<Vec<WeaponMountDescriptor>>,
-) -> Vec<EntityTypeDescriptor> {
+fn descriptors(loadout: &[&str], table: Option<Vec<MountDescriptor>>) -> Vec<EntityTypeDescriptor> {
     let mut player = mesh_descriptor("player", false);
-    player.mesh.as_mut().unwrap().weapon_mounts = table;
+    player.mesh.as_mut().unwrap().mounts = table;
     player.inventory = Some(InventoryDescriptor {
         loadout: loadout.iter().map(|name| name.to_string()).collect(),
     });
@@ -88,12 +86,12 @@ fn an_entry_naming_no_weapon_warns_once_per_level_load() {
             entry("retired_rifle", "models/rifle/player.gltf"),
         ]),
     );
-    let unknown = "[Weapon mounts] entity `player` has a weaponMounts entry for `retired_rifle`, which names no weapon; the entry never mounts";
+    let unknown = "[Weapon mounts] entity `player` has a mounts entry for `retired_rifle`, which names no weapon; the entry never mounts";
 
     check_weapon_mount_tables(&descriptors, &store);
     check_weapon_mount_tables(&descriptors, &store);
     logs.assert_logged_once(Level::Warn, unknown);
-    logs.assert_not_logged(Level::Warn, "no weaponMounts entry");
+    logs.assert_not_logged(Level::Warn, "no mounts entry");
 
     // The next level load clears the per-level set; the check may warn again.
     store.clear();

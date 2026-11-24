@@ -1,10 +1,10 @@
 // Data-context descriptors: Luau readers for the mesh key set and the
-// `components.mesh.weaponMounts` table. Mirrors `js/mesh_weapon_mounts.rs`.
+// `components.mesh.mounts` table. Mirrors `js/mesh_mounts.rs`.
 // See: context/lib/scripting.md
 
 use super::super::*;
 use postretro_entities::data_descriptors::{
-    WeaponMountDescriptor, check_mesh_key, check_weapon_mount_key, weapon_mount_shape_error,
+    MountDescriptor, check_mesh_key, check_mount_key, mount_shape_error,
 };
 
 /// A table's keys in display form, sorted so the first rejected key matches
@@ -73,17 +73,17 @@ pub(super) fn string_map_from_lua(
     Ok(out)
 }
 
-/// Read `components.mesh.weaponMounts`: a sequence of `{ weapon, attachments }`
-/// entries whose `weapon` the SDK has lowered to a canonical name. Shape
+/// Read `components.mesh.mounts`: a sequence of `{ item, attachments }`
+/// entries whose `item` the SDK has lowered to a canonical name. Shape
 /// errors name the character; the shared rules run in `MeshDescriptor::build`.
-pub(super) fn weapon_mounts_from_lua(
+pub(super) fn mounts_from_lua(
     owner: &str,
     raw: LuaValue,
-) -> Result<Vec<WeaponMountDescriptor>, DescriptorError> {
+) -> Result<Vec<MountDescriptor>, DescriptorError> {
     let not_a_list = || {
-        weapon_mount_shape_error(
+        mount_shape_error(
             owner,
-            "`components.mesh.weaponMounts` must be an array of `{ weapon, attachments }` entries",
+            "`components.mesh.mounts` must be an array of `{ item, attachments }` entries",
         )
     };
     let LuaValue::Table(list) = raw else {
@@ -105,35 +105,32 @@ pub(super) fn weapon_mounts_from_lua(
 
     let mut entries = Vec::with_capacity(len);
     for index in 0..len {
-        let path = format!("components.mesh.weaponMounts[{index}]");
+        let path = format!("components.mesh.mounts[{index}]");
         let value: LuaValue = list.raw_get(index + 1).map_err(lua_err)?;
         let LuaValue::Table(entry) = value else {
-            return Err(weapon_mount_shape_error(
+            return Err(mount_shape_error(
                 owner,
-                format_args!("`{path}` must be an object `{{ weapon, attachments }}`"),
+                format_args!("`{path}` must be an object `{{ item, attachments }}`"),
             ));
         };
         for key in sorted_keys(&entry)? {
-            check_weapon_mount_key(owner, index, &key)?;
+            check_mount_key(owner, index, &key)?;
         }
-        let weapon = match entry.raw_get::<LuaValue>("weapon").map_err(lua_err)? {
+        let item = match entry.raw_get::<LuaValue>("item").map_err(lua_err)? {
             LuaValue::String(name) => name.to_str().map_err(lua_err)?.to_string(),
             _ => {
-                return Err(weapon_mount_shape_error(
+                return Err(mount_shape_error(
                     owner,
                     format_args!(
-                        "`{path}.weapon` must be a weapon name; `defineEntity` lowers a weapon descriptor to its canonical name"
+                        "`{path}.item` must be a weapon name; `defineEntity` lowers a weapon descriptor to its canonical name"
                     ),
                 ));
             }
         };
         let attachments = entry.raw_get::<LuaValue>("attachments").map_err(lua_err)?;
         let attachments = string_map_from_lua(attachments, &format!("{path}.attachments"))
-            .map_err(|reason| weapon_mount_shape_error(owner, reason))?;
-        entries.push(WeaponMountDescriptor {
-            weapon,
-            attachments,
-        });
+            .map_err(|reason| mount_shape_error(owner, reason))?;
+        entries.push(MountDescriptor { item, attachments });
     }
     Ok(entries)
 }

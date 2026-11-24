@@ -19,39 +19,39 @@ pub const MESH_DESCRIPTOR_KEYS: &[&str] = &[
     "animations",
     "defaultState",
     "locomotion",
-    "weaponMounts",
+    "mounts",
 ];
 
-/// Every key one `components.mesh.weaponMounts` entry accepts.
-pub const WEAPON_MOUNT_KEYS: &[&str] = &["weapon", "attachments"];
+/// Every key one `components.mesh.mounts` entry accepts.
+pub const MOUNT_KEYS: &[&str] = &["item", "attachments"];
 
 /// One entry of a character's weapon-mount table: the props this character
-/// mounts while it wields `weapon`, each baked for its own rig.
+/// mounts while it wields `item`, each baked for its own rig.
 #[derive(Debug, Clone, PartialEq)]
-pub struct WeaponMountDescriptor {
+pub struct MountDescriptor {
     /// Canonical name of the weapon descriptor. The SDK builders lower the
     /// authored weapon handle to this name. Rust does not check that it names
     /// a registered weapon; an unresolved name is a runtime warning.
-    pub weapon: String,
+    pub item: String,
     /// Holder socket → content-relative prop model path, the same shape as
     /// [`MeshDescriptor::attachments`]. Never empty.
     pub attachments: HashMap<String, String>,
 }
 
 impl MeshDescriptor {
-    /// The table entry for `weapon` (a canonical weapon name), if this
+    /// The table entry for `item` (a canonical weapon name), if this
     /// character declares one.
-    pub fn weapon_mount(&self, weapon: &str) -> Option<&WeaponMountDescriptor> {
-        self.weapon_mounts
+    pub fn mount(&self, item: &str) -> Option<&MountDescriptor> {
+        self.mounts
             .as_deref()?
             .iter()
-            .find(|entry| entry.weapon == weapon)
+            .find(|entry| entry.item == item)
     }
 
     /// Every prop model the weapon-mount table lists, across all entries, for
     /// preload sweeps. A model named by several entries repeats.
-    pub fn weapon_mount_models(&self) -> impl Iterator<Item = &str> {
-        self.weapon_mounts
+    pub fn mount_models(&self) -> impl Iterator<Item = &str> {
+        self.mounts
             .iter()
             .flatten()
             .flat_map(|entry| entry.attachments.values().map(String::as_str))
@@ -81,21 +81,21 @@ pub fn check_mesh_key(owner: &str, key: &str) -> Result<(), DescriptorError> {
     })
 }
 
-/// Reject a weapon-mount entry key outside [`WEAPON_MOUNT_KEYS`], naming the
+/// Reject a weapon-mount entry key outside [`MOUNT_KEYS`], naming the
 /// key and the character.
-pub fn check_weapon_mount_key(owner: &str, index: usize, key: &str) -> Result<(), DescriptorError> {
-    if WEAPON_MOUNT_KEYS.contains(&key) {
+pub fn check_mount_key(owner: &str, index: usize, key: &str) -> Result<(), DescriptorError> {
+    if MOUNT_KEYS.contains(&key) {
         return Ok(());
     }
     Err(DescriptorError::InvalidShape {
         reason: format!(
-            "{owner}: `components.mesh.weaponMounts[{index}].{key}` is not a weapon-mount field; expected `weapon` and `attachments`"
+            "{owner}: `components.mesh.mounts[{index}].{key}` is not a weapon-mount field; expected `item` and `attachments`"
         ),
     })
 }
 
-/// A shape error inside `components.mesh.weaponMounts`, naming the character.
-pub fn weapon_mount_shape_error(owner: &str, detail: impl std::fmt::Display) -> DescriptorError {
+/// A shape error inside `components.mesh.mounts`, naming the character.
+pub fn mount_shape_error(owner: &str, detail: impl std::fmt::Display) -> DescriptorError {
     DescriptorError::InvalidShape {
         reason: format!("{owner}: {detail}"),
     }
@@ -105,34 +105,31 @@ pub fn weapon_mount_shape_error(owner: &str, detail: impl std::fmt::Display) -> 
 /// weapon has a non-empty name and appears once, each entry mounts at least
 /// one socket, socket names are non-empty, and each model path follows the
 /// content-relative rule weapon models follow (`components.weapon.viewmodel`).
-pub fn validate_weapon_mounts(
-    owner: &str,
-    entries: &[WeaponMountDescriptor],
-) -> Result<(), DescriptorError> {
+pub fn validate_mounts(owner: &str, entries: &[MountDescriptor]) -> Result<(), DescriptorError> {
     let mut seen = HashSet::with_capacity(entries.len());
     for (index, entry) in entries.iter().enumerate() {
-        let path = format!("components.mesh.weaponMounts[{index}]");
-        if entry.weapon.is_empty() {
-            return Err(weapon_mount_shape_error(
+        let path = format!("components.mesh.mounts[{index}]");
+        if entry.item.is_empty() {
+            return Err(mount_shape_error(
                 owner,
-                format_args!("`{path}.weapon` must be a non-empty weapon name"),
+                format_args!("`{path}.item` must be a non-empty weapon name"),
             ));
         }
-        if !seen.insert(entry.weapon.as_str()) {
-            return Err(weapon_mount_shape_error(
+        if !seen.insert(entry.item.as_str()) {
+            return Err(mount_shape_error(
                 owner,
                 format_args!(
-                    "`{path}.weapon` repeats weapon `{}`; each weapon takes one entry",
-                    entry.weapon
+                    "`{path}.item` repeats weapon `{}`; each weapon takes one entry",
+                    entry.item
                 ),
             ));
         }
         if entry.attachments.is_empty() {
-            return Err(weapon_mount_shape_error(
+            return Err(mount_shape_error(
                 owner,
                 format_args!(
                     "`{path}.attachments` for weapon `{}` is empty; an entry mounts at least one socket",
-                    entry.weapon
+                    entry.item
                 ),
             ));
         }
@@ -142,13 +139,13 @@ pub fn validate_weapon_mounts(
         sockets.sort();
         for (socket, model) in sockets {
             if socket.is_empty() {
-                return Err(weapon_mount_shape_error(
+                return Err(mount_shape_error(
                     owner,
                     format_args!("`{path}.attachments` must not contain an empty socket name"),
                 ));
             }
             if !is_portable_content_relative_asset_path(model) {
-                return Err(weapon_mount_shape_error(
+                return Err(mount_shape_error(
                     owner,
                     format_args!(
                         "`{path}.attachments.{socket}` must be a non-empty, content-relative model path using forward slashes with no parent traversal"

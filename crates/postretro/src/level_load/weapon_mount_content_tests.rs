@@ -1,4 +1,4 @@
-//! The dev player's `mesh.weaponMounts` against the committed bakes, read
+//! The dev player's `mesh.mounts` against the committed bakes, read
 //! from the table rather than a directory: each listed model is a declared
 //! (VERIFIED) fit on exo_red's `hand_r`, sits beside its weapon's viewmodel as
 //! `exo_red.gltf` with its own `exo_red.bin`, and is never a viewmodel. The
@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use postretro_entities::data_descriptors::WeaponMountDescriptor;
+use postretro_entities::data_descriptors::MountDescriptor;
 use postretro_model::gltf_loader::{LoadedModel, load_model};
 use postretro_model::mount::{
     MountThresholds, REFERENCE_MOUNT_CLIP, REFERENCE_MOUNT_TIME, check_declared_weapon_mount,
@@ -47,14 +47,14 @@ fn player(descriptors: &[EntityTypeDescriptor]) -> &EntityTypeDescriptor {
         .expect("the dev mod registers the player")
 }
 
-fn player_table(descriptors: &[EntityTypeDescriptor]) -> &[WeaponMountDescriptor] {
+fn player_table(descriptors: &[EntityTypeDescriptor]) -> &[MountDescriptor] {
     player(descriptors)
         .mesh
         .as_ref()
         .expect("the dev player has a mesh")
-        .weapon_mounts
+        .mounts
         .as_deref()
-        .expect("the dev player declares mesh.weaponMounts")
+        .expect("the dev player declares mesh.mounts")
 }
 
 fn weapon_viewmodel<'a>(descriptors: &'a [EntityTypeDescriptor], weapon: &str) -> Option<&'a str> {
@@ -99,7 +99,7 @@ fn buffer_uris(gltf: &Path) -> Result<Vec<String>, String> {
 /// beside its entry weapon's viewmodel as [`BAKE_FILE`] over [`BAKE_BUFFER`],
 /// and is no weapon's viewmodel.
 fn table_violations(
-    table: &[WeaponMountDescriptor],
+    table: &[MountDescriptor],
     descriptors: &[EntityTypeDescriptor],
     holder_name: &str,
     holder: &LoadedModel,
@@ -111,7 +111,7 @@ fn table_violations(
         .collect();
     let mut violations = Vec::new();
     for entry in table {
-        let weapon = entry.weapon.as_str();
+        let weapon = entry.item.as_str();
         let mut sockets: Vec<_> = entry.attachments.iter().collect();
         sockets.sort();
         for (socket, model) in sockets {
@@ -211,7 +211,7 @@ fn every_dev_player_weapon_mount_is_a_verified_exo_red_bake_beside_its_viewmodel
 fn dev_player_weapon_mount_table_covers_exactly_the_dev_arsenal() {
     let descriptors = dev_descriptors();
     let table = player_table(&descriptors);
-    let named: Vec<&str> = table.iter().map(|entry| entry.weapon.as_str()).collect();
+    let named: Vec<&str> = table.iter().map(|entry| entry.item.as_str()).collect();
     let covered: BTreeSet<&str> = named.iter().copied().collect();
     assert_eq!(
         named.len(),
@@ -244,7 +244,7 @@ fn dev_player_level_install_warns_about_no_missing_weapon_mount_entry() {
         );
         logs.assert_not_logged(
             log::Level::Warn,
-            "[Weapon mounts] entity `player` has no weaponMounts entry",
+            "[Weapon mounts] entity `player` has no mounts entry",
         );
     }
 }
@@ -258,8 +258,8 @@ fn a_weapon_mount_entry_repointed_at_a_viewmodel_fails_the_table_check() {
     let rifle_viewmodel = weapon_viewmodel(&descriptors, "reference_rifle")
         .expect("the reference rifle has a viewmodel")
         .to_string();
-    let table = [WeaponMountDescriptor {
-        weapon: "reference_rifle".to_string(),
+    let table = [MountDescriptor {
+        item: "reference_rifle".to_string(),
         attachments: [(MOUNT_SOCKET.to_string(), rifle_viewmodel)].into(),
     }];
     let violations = table_violations(
@@ -327,8 +327,8 @@ fn a_listed_bake_re_exported_without_extras_mount_fails_the_table_check() {
         std::fs::copy(source_folder.join(file), folder.join(file))
             .unwrap_or_else(|error| panic!("{file} copies: {error}"));
     }
-    let table = [WeaponMountDescriptor {
-        weapon: "reference_rifle".to_string(),
+    let table = [MountDescriptor {
+        item: "reference_rifle".to_string(),
         attachments: [(MOUNT_SOCKET.to_string(), model.to_string())].into(),
     }];
 

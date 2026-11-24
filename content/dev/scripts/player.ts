@@ -91,18 +91,18 @@ export const playerEntity = defineEntity({
       shadowOnly: true,
       // One entry per weapon this character may wield; a weapon without one
       // mounts nothing and warns.
-      weaponMounts: [
-        { weapon: referenceShotgunEntity, attachments: exoRedMount("shotgun") },
-        { weapon: referencePistolEntity, attachments: exoRedMount("pistol") },
-        { weapon: referenceRifleEntity, attachments: exoRedMount("rifle") },
-        { weapon: referencePlasmaBoltEntity, attachments: exoRedMount("rpg") },
-        { weapon: referenceRocketEntity, attachments: exoRedMount("sci_fi_weapon") },
+      mounts: [
+        { item: referenceShotgunEntity, attachments: exoRedMount("shotgun") },
+        { item: referencePistolEntity, attachments: exoRedMount("pistol") },
+        { item: referenceRifleEntity, attachments: exoRedMount("rifle") },
+        { item: referencePlasmaBoltEntity, attachments: exoRedMount("rpg") },
+        { item: referenceRocketEntity, attachments: exoRedMount("sci_fi_weapon") },
         // Spreads the reference rifle, so it shares the rifle's bake.
-        { weapon: incendiaryRifleEntity, attachments: exoRedMount("rifle") },
-        { weapon: wieldableFixtureAutoEntity, attachments: exoRedMount("smg") },
-        { weapon: wieldableFixturePressEntity, attachments: exoRedMount("shotgun") },
-        { weapon: coopHealthWeaponEntity, attachments: exoRedMount("smg") },
-        { weapon: coopHeatTestEntity, attachments: exoRedMount("smg") },
+        { item: incendiaryRifleEntity, attachments: exoRedMount("rifle") },
+        { item: wieldableFixtureAutoEntity, attachments: exoRedMount("smg") },
+        { item: wieldableFixturePressEntity, attachments: exoRedMount("shotgun") },
+        { item: coopHealthWeaponEntity, attachments: exoRedMount("smg") },
+        { item: coopHeatTestEntity, attachments: exoRedMount("smg") },
       ],
       animations: {
         idle: { clip: "idle", loop: true, crossfadeMs: 50 },

@@ -131,7 +131,7 @@ non-uniform scale instead of solving against that invalid frame.
 
 ## 6. Declare the mount on the character
 
-A character names its bakes in `components.mesh.weaponMounts`, one entry per
+A character names its bakes in `components.mesh.mounts`, one entry per
 weapon it may wield. `weapon` is the weapon's `defineEntity` value, as in
 `inventory.loadout`; `attachments` maps sockets to bakes, like
 `mesh.attachments`.
@@ -146,9 +146,9 @@ export const playerEntity = defineEntity({
   components: {
     mesh: {
       model: "models/exo_red/model.gltf",
-      weaponMounts: [
-        { weapon: rifle, attachments: { hand_r: "models/cyberpunk_weapons/rifle/exo_red.gltf" } },
-        { weapon: pistol, attachments: { hand_r: "models/cyberpunk_weapons/pistol/exo_red.gltf" } },
+      mounts: [
+        { item: rifle, attachments: { hand_r: "models/cyberpunk_weapons/rifle/exo_red.gltf" } },
+        { item: pistol, attachments: { hand_r: "models/cyberpunk_weapons/pistol/exo_red.gltf" } },
       ],
     },
     inventory: { loadout: [rifle, pistol] },
@@ -194,5 +194,5 @@ name under `content/dev/models/`. The rifle the Limitator holds is
 `content/dev/models/ar_4/limitator.gltf`; the rifle squads' trooper and warrior
 each have their own bake in that folder, `rodin_sci-fi_trooper_m.gltf` and
 `cyberpunk_warrior_f.gltf`. These NPC bakes mount through `mesh.attachments`,
-not `weaponMounts`, as every weapon an NPC carries still does. A folder whose
+not `mounts`, as every weapon an NPC carries still does. A folder whose
 raw source lives outside your project, like `ar_4/`, holds bakes only.

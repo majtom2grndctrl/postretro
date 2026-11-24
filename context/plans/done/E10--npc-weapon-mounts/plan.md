@@ -1,7 +1,7 @@
 # E10--npc-weapon-mounts — plan of record
 
 mode: resumable
-status: approved (built; results below)
+status: done (landed 2026-11-24)
 read at: 0773e4bdb
 
 Source unchanged in `crates/`, `sdk/` since the brief's `dcd60bfb3`; only `content/dev/models/mutant_arm_cannon/` was added. Every symbol cited by Decisions and Path was re-read at `0773e4bdb`.

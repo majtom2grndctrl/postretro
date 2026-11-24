@@ -1,6 +1,6 @@
 # descriptor-instance-overrides
 
-Brief · compact · draft, owner decisions pending · Epic 16 · reads: `context/lib/entity_model.md` §2 (Weapon vocabulary, Weapon mounts), §4 · `context/lib/scripting.md` §1 (Authoring API style), §2 · `context/lib/networking.md` §What gates, and what replicates instead, §Weapon placement is content · composes with `drafts/E10--npc-weapon-mounts/` and `drafts/E10--npc-equipment-sets/` · read at bb7323fc5
+Brief · compact · draft, owner decisions pending · Epic 16 · reads: `context/lib/entity_model.md` §2 (Weapon vocabulary, Weapon mounts), §4 · `context/lib/scripting.md` §1 (Authoring API style), §2 · `context/lib/networking.md` §What gates, and what replicates instead, §Weapon placement is content · composes with `done/E10--npc-weapon-mounts/` and `drafts/E10--npc-equipment-sets/` · read at bb7323fc5
 
 ## Problem
 Owner-requested capability (2026-11-23): an author reuses one weapon with tuning changed for one use, and it stays the same weapon. The motivating case: NPCs wield the player's reference rifle, overridden into a projectile weapon with the tuning of today's `enemy_rifle_burst` and `enemy_rifle_long`: 20 m/s dodgeable shots, 6 damage, three-shot bursts. A spread of the reference rifle already composes that tuning, but it derives a new weapon. Everything keyed on the weapon's name treats the result as a stranger, so every rig repeats a mount entry pointing at the same bake. When done:
@@ -17,7 +17,7 @@ Owner-requested capability (2026-11-23): an author reuses one weapon with tuning
 - **Non-goals.**
   - Per-instance runtime overrides on a live weapon: augments and rolls own them.
   - Enemy hitscan, an AI secondary lane, and AI reload: separate AI decisions; the override fits the weapon to the AI instead.
-  - NPC shot origin. `drafts/E10--npc-weapon-mounts/` launches an NPC shot from its mounted muzzle, so the reference rifle's `muzzleOffset` does not move it.
+  - NPC shot origin. `done/E10--npc-weapon-mounts/` launches an NPC shot from its mounted muzzle, so the reference rifle's `muzzleOffset` does not move it.
   - The per-instance first-person placement tier: `done/weapon-placement/` reserves it for dual-wield.
   - Overriding a non-weapon component (mesh, touchable, health).
 - **Layer placement.** Composition is load-time and script-side: SDK or `scripting-core` lowering. The engine gains only the identity rule the identity question settles.
@@ -51,7 +51,7 @@ Owner-requested capability (2026-11-23): an author reuses one weapon with tuning
 - Seams:
   - Composition: the SDK's weapon-reference lowering in `defineEntity` (`sdk/lib/data_script.ts`, Luau twin) and its Rust readers `data_descriptors/js/entity.rs` and `lua/entity.rs`.
   - Validation: `WeaponDescriptor` validation in `combat/weapon_validation.rs`.
-  - Mount lookup (`mesh.mounts` after `drafts/E10--npc-weapon-mounts/` renames E21's table): `MeshDescriptor::weapon_mount` via `compose_mounted_attachments` (`crates/netcode/src/weapon_mounts.rs`), on both peers. Model preload: `weapon_presentation_models` (`data_archetype.rs`). Mount warnings: `crates/sim/src/scripting_systems/weapon_mounts.rs`.
+  - Mount lookup (`mesh.mounts` after `done/E10--npc-weapon-mounts/` renames E21's table): `MeshDescriptor::weapon_mount` via `compose_mounted_attachments` (`crates/netcode/src/weapon_mounts.rs`), on both peers. Model preload: `weapon_presentation_models` (`data_archetype.rs`). Mount warnings: `crates/sim/src/scripting_systems/weapon_mounts.rs`.
   - Credit default: `resolve_credit_source`.
   - AI: `resolve_projectile_attacks` and `AiWeaponControllers::sync` need no change when a variant has its own name.
 - Shape recommended for the owner: a named variant that keeps its own canonical name and records its base. A candidate surface, not decided:

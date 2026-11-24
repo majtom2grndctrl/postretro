@@ -1076,13 +1076,23 @@
 }
 {
 "classname" "light"
-"_tb_name" "faction corner fill: troopers"
-"origin" "1280 -680 150"
-"light" "3"
-"_falloff_range" "700"
+"_tb_name" "faction corner ceiling wash: troopers pink"
+"origin" "1120 -760 215"
+"light" "8"
+"_falloff_range" "750"
 "delay" "0"
 "style" "0"
-"_color" "220 230 255"
+"_color" "245 119 255"
+}
+{
+"classname" "light"
+"_tb_name" "faction corner ceiling wash: troopers cyan"
+"origin" "1360 -520 235"
+"light" "8"
+"_falloff_range" "750"
+"delay" "0"
+"style" "0"
+"_color" "126 241 255"
 }
 {
 "classname" "light_spot"
@@ -1098,13 +1108,23 @@
 }
 {
 "classname" "light"
-"_tb_name" "faction corner fill: warriors"
-"origin" "-1080 -700 140"
-"light" "3"
-"_falloff_range" "700"
+"_tb_name" "faction corner ceiling wash: warriors cyan"
+"origin" "-1200 -560 175"
+"light" "8"
+"_falloff_range" "750"
 "delay" "0"
 "style" "0"
-"_color" "220 230 255"
+"_color" "126 241 255"
+}
+{
+"classname" "light"
+"_tb_name" "faction corner ceiling wash: warriors pink"
+"origin" "-920 -800 165"
+"light" "8"
+"_falloff_range" "750"
+"delay" "0"
+"style" "0"
+"_color" "245 119 255"
 }
 {
 "classname" "light_spot"
@@ -1120,11 +1140,21 @@
 }
 {
 "classname" "light"
-"_tb_name" "faction corner fill: raiders"
-"origin" "-1180 1380 96"
-"light" "3"
-"_falloff_range" "700"
+"_tb_name" "faction corner ceiling wash: raiders pink"
+"origin" "-1280 1460 110"
+"light" "8"
+"_falloff_range" "750"
 "delay" "0"
 "style" "0"
-"_color" "220 230 255"
+"_color" "245 119 255"
+}
+{
+"classname" "light"
+"_tb_name" "faction corner ceiling wash: raiders cyan"
+"origin" "-1020 1220 170"
+"light" "8"
+"_falloff_range" "750"
+"delay" "0"
+"style" "0"
+"_color" "126 241 255"
 }

@@ -25,7 +25,7 @@ Do not commit the built `.prl` unless a later workflow explicitly asks for compi
 
 Each faction starts in its own corner: the unfactioned arena wave around the player start, raiders far northwest, troopers and the cannon brute southeast, warriors southwest. The limitator no longer appears here: its dark texture reads poorly, and the rifle squads cover the same behavior. Squad members spawn 5-8 m apart across about 15 m of their corner, so a burst at an enemy rarely crosses a squadmate; packed spawns, or cover that pens a squad together, set squadmates' shots into each other and they turn on one another. Keep open floor between groups when adding placements, so they meet rather than spawn mixed.
 
-Each faction corner has a warm `light_spot` aimed straight down from just under the domed ceiling (which sits lowest over the northwest corner, about 177 units) and a dim, 700-unit-reach white fill `light` below it that lifts the corner's darkest floor.
+Each faction corner has a warm `light_spot` aimed straight down from just under the domed ceiling (which sits lowest over the northwest corner, about 177 units) and two colored ceiling-wash `light`s, one pink and one cyan, matching the map's pink and cyan ambient lights (`light` 8, 750-unit reach) but placed outside their linked groups. Each pair sits 8+ m apart at about 60-65% of the ceiling height above it, roughly 65-110 units under the dome. Find them by their `faction corner ceiling wash: <faction> <color>` names.
 
 ## Diagnostics Check
 

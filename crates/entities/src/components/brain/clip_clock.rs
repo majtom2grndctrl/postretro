@@ -86,6 +86,12 @@ pub struct ClipClock {
     /// every entry.
     #[serde(default)]
     pub stagger: Option<Stagger>,
+    /// The interim record of a drawn state the brain does not own, read at an
+    /// NPC's launch: until the brain's next own draw, a living enemy is not
+    /// aiming under a switch it did not make, and has no pose after its own
+    /// switch failed. The pose-and-stagger brief replaces it.
+    #[serde(default)]
+    pub interruption: Interruption,
     /// The tracked state's resolved clip, cached on first use. `None` when not
     /// yet looked up or when the clip did not resolve, which is looked up again.
     #[serde(skip)]
@@ -106,6 +112,21 @@ pub struct Stagger {
     /// plays at, if the reaction has not ended first.
     #[serde(default)]
     pub game_elapsed: f64,
+}
+
+/// What the mesh draws in place of the brain's own state, since the brain's
+/// last own draw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Interruption {
+    /// The mesh draws what the brain last drew.
+    #[default]
+    None,
+    /// A switch the brain did not make (a script reaction, an impact effect)
+    /// stays drawn.
+    Foreign,
+    /// The brain's own switch failed (an undeclared or unresolved state) and
+    /// the mesh kept its prior state.
+    FailedOwnSwitch,
 }
 
 /// What the clock caches of the tracked state's resolved clip.
@@ -149,6 +170,7 @@ impl PartialEq for ClipClock {
             && self.release_resolved == other.release_resolved
             && self.release_moments == other.release_moments
             && self.stagger == other.stagger
+            && self.interruption == other.interruption
     }
 }
 
@@ -195,6 +217,7 @@ mod tests {
                 until: Some(0.4),
                 game_elapsed: 0.05,
             }),
+            interruption: Interruption::Foreign,
             clip: Some(ClipFacts {
                 duration: 2.0,
                 looping: true,
@@ -208,6 +231,11 @@ mod tests {
         let restored: ClipClock = serde_json::from_value(json).expect("clip clock loads");
         assert_eq!(restored, clock, "the serialized half round-trips");
         assert_eq!(restored.mesh_switches, Some(7), "the switch count survives");
+        assert_eq!(
+            restored.interruption,
+            Interruption::Foreign,
+            "the interim not-aiming record survives a restore"
+        );
         assert_eq!(restored.clip, None, "clip facts rebind lazily");
 
         let old: ClipClock =
@@ -219,6 +247,7 @@ mod tests {
             !old.release_resolved && old.release_moments == 0 && old.stagger.is_none(),
             "a clock saved before the release exit holds no gate and no flinch"
         );
+        assert_eq!(old.interruption, Interruption::None);
     }
 
     #[test]

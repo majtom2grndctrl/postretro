@@ -16,6 +16,7 @@ use postretro_foundation::{
 
 use crate::ai_host::AiHost;
 use crate::brain_programs::BrainPrograms;
+use crate::npc_launch::ShotLaunch;
 use crate::sim::ProjectileSource;
 use crate::weapon::execution::{
     ActivationCommand, WeaponActivationCheckpoint, advance_authoritative_weapon_resource,
@@ -23,7 +24,7 @@ use crate::weapon::execution::{
 };
 use crate::weapon::{FireButtonState, ProjectileLaunch, freeze_weapon_shot};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct WeaponAim {
     pub origin: Vec3,
     pub direction: Vec3,
@@ -32,6 +33,31 @@ pub(crate) struct WeaponAim {
 pub(crate) struct WeaponAttackRequest {
     pub canonical_weapon: String,
     pub attack_name: String,
+}
+
+/// A due burst shot that launched nothing: the enemy was not aiming, or the
+/// near-path test held it. It spent its shot and restarts the attack's
+/// cooldown as a fired shot does (`entity_model.md` §2, Weapon mounts).
+pub(crate) struct SkippedShot {
+    pub attack_name: String,
+    pub recovery_ms: f32,
+    /// The near-path test held it; `false` when the enemy was not aiming.
+    pub held: bool,
+}
+
+/// An attack whose first shot could not launch, so its activation did not
+/// start: nothing spent, no cooldown, its turn grant released as unstarted.
+pub(crate) struct WithheldStart {
+    /// The near-path test held it; `false` when the enemy was not aiming.
+    pub held: bool,
+}
+
+/// What one actor's weapon advance did this tick.
+#[derive(Default)]
+pub(crate) struct WeaponAdvance {
+    pub fired: Option<CommittedWeaponFire>,
+    pub skipped: Option<SkippedShot>,
+    pub withheld: Option<WithheldStart>,
 }
 
 pub(crate) struct CommittedWeaponFire {
@@ -192,24 +218,38 @@ impl AiWeaponControllers {
             .and(weapon.attack_name.as_deref())
     }
 
+    /// The weapon whose execution this actor has in flight, if any.
+    pub(crate) fn active_weapon(&self, actor: EntityId) -> Option<&str> {
+        self.actors.get(&actor)?.active.as_deref()
+    }
+
     pub(crate) fn cancel_activations(&mut self) {
         for actor in self.actors.values_mut() {
             actor.cancel_all();
         }
     }
 
-    /// Charging and waits commit every valid tick. Only an actual failed
-    /// materialization restores the shot transaction; passive regen stays paid.
+    /// Charging and waits commit every valid tick. Each due shot asks `launch`
+    /// where it leaves, at its projectile's radius: a launched shot that fails
+    /// to materialize restores the shot transaction; a shot that cannot launch
+    /// (not aiming, or held by the near-path test) is skipped and keeps its
+    /// spend, unless it was the activation's first, which then does not start.
+    /// Passive regen stays paid.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn advance_actor<H: AiHost + ?Sized>(
         &mut self,
         registry: &mut EntityRegistry,
         actor: EntityId,
         request: Option<WeaponAttackRequest>,
         aim: Option<WeaponAim>,
+        launch: &dyn Fn(&str, f32) -> ShotLaunch,
         dt_ms: f32,
         host: &mut H,
-    ) -> Option<CommittedWeaponFire> {
-        let actor_weapons = self.actors.get_mut(&actor)?;
+    ) -> WeaponAdvance {
+        let mut outcome = WeaponAdvance::default();
+        let Some(actor_weapons) = self.actors.get_mut(&actor) else {
+            return outcome;
+        };
         if aim.is_none() {
             actor_weapons.cancel_all();
         }
@@ -227,7 +267,6 @@ impl AiWeaponControllers {
             previous.component.cancel_activation();
             previous.attack_name = None;
         }
-        let mut committed = None;
         for (canonical, weapon) in &mut actor_weapons.weapons {
             let starts = request
                 .as_ref()
@@ -287,11 +326,40 @@ impl AiWeaponControllers {
             }
             if let Some(attempt) = advanced.shot {
                 let shot = freeze_weapon_shot(&weapon.component, attempt);
-                let aim = aim.expect("a live AI execution retains an aim");
+                debug_assert!(aim.is_some(), "a live AI execution retains an aim");
                 let projectile = shot
                     .projectile
                     .as_ref()
                     .expect("AI sync admits projectile weapons");
+                let attack_name = weapon
+                    .attack_name
+                    .clone()
+                    .expect("AI execution retains its initiating attack");
+                let aim = match launch(canonical, projectile.radius) {
+                    ShotLaunch::Launch(aim) => aim,
+                    decision => {
+                        let held = decision == ShotLaunch::Held;
+                        if advanced.initiated.is_some() {
+                            // The first shot could not launch: the attack does
+                            // not start, so nothing is spent.
+                            checkpoint.restore(&mut weapon.component);
+                            outcome.withheld = Some(WithheldStart { held });
+                        } else {
+                            outcome.skipped = Some(SkippedShot {
+                                attack_name,
+                                recovery_ms: shot.activation.recovery_ms,
+                                held,
+                            });
+                        }
+                        if weapon.component.state.activation_cursor().is_none() {
+                            weapon.attack_name = None;
+                            if actor_weapons.active.as_ref() == Some(canonical) {
+                                actor_weapons.active = None;
+                            }
+                        }
+                        continue;
+                    }
+                };
                 let launch = ProjectileLaunch {
                     sounds: Some(shot.sounds.clone()),
                     origin: aim.origin,
@@ -324,16 +392,13 @@ impl AiWeaponControllers {
                 if let Some(projectile) =
                     host.spawn_projectile(registry, actor, actor, launch, source)
                 {
-                    committed = Some(CommittedWeaponFire {
+                    outcome.fired = Some(CommittedWeaponFire {
                         sounds: shot.sounds.clone(),
                         action: Arc::clone(shot.action()),
                         shot_id: shot.activation.shot_id,
                         projectile,
                         canonical_weapon: canonical.clone(),
-                        attack_name: weapon
-                            .attack_name
-                            .clone()
-                            .expect("AI execution retains its initiating attack"),
+                        attack_name,
                         recovery_ms: shot.activation.recovery_ms,
                     });
                 } else {
@@ -347,7 +412,7 @@ impl AiWeaponControllers {
                 }
             }
         }
-        committed
+        outcome
     }
 
     #[cfg(test)]

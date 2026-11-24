@@ -849,6 +849,7 @@ pub(super) fn evaluate(
                 attack_name,
                 cooldown_ms,
                 effect: outcome,
+                clip_moment: moment == clip_clock::Moment::Reached,
             });
         }
         // The enemy committed: a stance release left having struck nothing,

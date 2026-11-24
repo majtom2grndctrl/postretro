@@ -26,6 +26,7 @@ mod heading;
 mod launch;
 mod leap;
 mod pawn_index;
+mod npc_launch;
 mod perception;
 mod steering;
 mod targeting;
@@ -268,6 +269,9 @@ pub(crate) struct PendingAttack {
     attack_name: String,
     cooldown_ms: f32,
     effect: AttackOutcome,
+    /// Proposed on its clip moment's tick: a near-path hold whiffs the
+    /// moment, counted once, rather than starting a hold.
+    clip_moment: bool,
 }
 
 pub(crate) enum AttackOutcome {
@@ -824,6 +828,11 @@ where
         blocked_warned,
         weapons,
         turns,
+        npc_launch::LaunchInputs {
+            world: sight_world.as_ref(),
+            descriptors,
+            store: clips,
+        },
         host,
     )
 }

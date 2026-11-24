@@ -45,7 +45,7 @@ pub use awareness::{
     AWARENESS_FULL_EPSILON, AWARENESS_METER_CAPACITY, AwarenessCheck, AwarenessMeter,
     AwarenessMeters,
 };
-pub use clip_clock::{ClipClock, ClipFacts, Stagger, note_replaced_mesh};
+pub use clip_clock::{ClipClock, ClipFacts, Interruption, Stagger, note_replaced_mesh};
 
 /// Maximum number of distinct damagers remembered by one brain. Entries age to
 /// the shared damage-recency sentinel and remain until this bounded ledger must

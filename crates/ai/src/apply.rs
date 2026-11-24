@@ -577,13 +577,11 @@ where
                 fire.recovery_ms,
             )
         {
-            // A burst of one attack firing while another attack's start was
-            // held this tick does not end that hold.
-            if !advance
-                .withheld
-                .as_ref()
-                .is_some_and(|withheld| withheld.held)
-            {
+            // Only the path's own attack ends its hold: a burst another
+            // attack started, still in flight after the path moved on, leaves
+            // the hold running (`attacksHeldInActivity` counts holds of the
+            // attack the activity proposes).
+            if path_attack(&outcome.brain) == Some(fire.attack_name.as_str()) {
                 end_held_hold(registry, outcome.id);
             }
             projectile_spawns.push(EnemyProjectilePresentationSpawn {
@@ -722,6 +720,17 @@ where
         events,
         projectile_spawns,
     }
+}
+
+/// The attack the active path's deepest activity with an action names: the
+/// attack whose shots its near-path holds count.
+fn path_attack(brain: &BrainComponent) -> Option<&str> {
+    (0..brain.active_depth()).rev().find_map(|depth| {
+        brain
+            .activity_at_depth(depth)
+            .and_then(|(_, activity)| activity.action.as_ref())
+            .map(|postretro_foundation::ActionVerb::Attack { name, .. }| name.as_str())
+    })
 }
 
 /// The brain's own draw this apply, planned before the launch.

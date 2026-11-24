@@ -23,7 +23,7 @@ pub const MESH_DESCRIPTOR_KEYS: &[&str] = &[
 ];
 
 /// Every key one `components.mesh.mounts` entry accepts.
-pub const MOUNT_KEYS: &[&str] = &["item", "attachments"];
+pub const MOUNT_KEYS: &[&str] = &["item", "attachments", "muzzleSocket"];
 
 /// One entry of a character's weapon-mount table: the props this character
 /// mounts while it wields `item`, each baked for its own rig.
@@ -34,8 +34,13 @@ pub struct MountDescriptor {
     /// a registered weapon; an unresolved name is a runtime warning.
     pub item: String,
     /// Holder socket → content-relative prop model path, the same shape as
-    /// [`MeshDescriptor::attachments`]. Never empty.
-    pub attachments: HashMap<String, String>,
+    /// [`MeshDescriptor::attachments`]. `None` for a `muzzleSocket` entry;
+    /// present, it is never empty.
+    pub attachments: Option<HashMap<String, String>>,
+    /// A socket on the character's own body model that this item's shots leave
+    /// from, for a weapon built into the body. The entry mounts nothing. Exactly
+    /// one of `attachments` and `muzzle_socket` is set; a non-empty name.
+    pub muzzle_socket: Option<String>,
 }
 
 impl MeshDescriptor {
@@ -54,7 +59,8 @@ impl MeshDescriptor {
         self.mounts
             .iter()
             .flatten()
-            .flat_map(|entry| entry.attachments.values().map(String::as_str))
+            .filter_map(|entry| entry.attachments.as_ref())
+            .flat_map(|attachments| attachments.values().map(String::as_str))
     }
 }
 
@@ -89,7 +95,7 @@ pub fn check_mount_key(owner: &str, index: usize, key: &str) -> Result<(), Descr
     }
     Err(DescriptorError::InvalidShape {
         reason: format!(
-            "{owner}: `components.mesh.mounts[{index}].{key}` is not a weapon-mount field; expected `item` and `attachments`"
+            "{owner}: `components.mesh.mounts[{index}].{key}` is not a weapon-mount field; expected `item`, `attachments` or `muzzleSocket`"
         ),
     })
 }
@@ -124,7 +130,35 @@ pub fn validate_mounts(owner: &str, entries: &[MountDescriptor]) -> Result<(), D
                 ),
             ));
         }
-        if entry.attachments.is_empty() {
+        let attachments = match (&entry.attachments, &entry.muzzle_socket) {
+            (Some(_), Some(_)) => {
+                return Err(mount_shape_error(
+                    owner,
+                    format_args!(
+                        "`{path}` names both `attachments` and `muzzleSocket`; an entry takes exactly one"
+                    ),
+                ));
+            }
+            (None, None) => {
+                return Err(mount_shape_error(
+                    owner,
+                    format_args!(
+                        "`{path}` names neither `attachments` nor `muzzleSocket`; an entry takes exactly one"
+                    ),
+                ));
+            }
+            (None, Some(socket)) => {
+                if socket.is_empty() {
+                    return Err(mount_shape_error(
+                        owner,
+                        format_args!("`{path}.muzzleSocket` must be a non-empty socket name"),
+                    ));
+                }
+                continue;
+            }
+            (Some(attachments), None) => attachments,
+        };
+        if attachments.is_empty() {
             return Err(mount_shape_error(
                 owner,
                 format_args!(
@@ -135,7 +169,7 @@ pub fn validate_mounts(owner: &str, entries: &[MountDescriptor]) -> Result<(), D
         }
         // Sorted so a table with several bad sockets reports the same one in
         // both runtimes.
-        let mut sockets: Vec<_> = entry.attachments.iter().collect();
+        let mut sockets: Vec<_> = attachments.iter().collect();
         sockets.sort();
         for (socket, model) in sockets {
             if socket.is_empty() {

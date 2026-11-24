@@ -232,7 +232,8 @@ fn every_weapon_mount_table_model_is_swept_and_predicted_on_both_roles() {
     let descriptors = dev_descriptors_with_player_table(vec![
         postretro_entities::data_descriptors::MountDescriptor {
             item: "reference_rifle".to_string(),
-            attachments: [("back".to_string(), PROP_MODEL.to_string())].into(),
+            attachments: Some([("back".to_string(), PROP_MODEL.to_string())].into()),
+            muzzle_socket: None,
         },
     ]);
     let placements = vec![record("player_spawn", &[], 0)];

@@ -62,9 +62,12 @@ fn assert_fails_mentioning(label: &str, result: &StagedManifestBuildResult, need
 fn mount(weapon: &str, model: &str) -> MountDescriptor {
     MountDescriptor {
         item: weapon.to_string(),
-        attachments: [("hand_r".to_string(), model.to_string())]
-            .into_iter()
-            .collect(),
+        attachments: Some(
+            [("hand_r".to_string(), model.to_string())]
+                .into_iter()
+                .collect(),
+        ),
+        muzzle_socket: None,
     }
 }
 

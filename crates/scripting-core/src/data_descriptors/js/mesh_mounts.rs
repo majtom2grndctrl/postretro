@@ -67,7 +67,7 @@ pub(super) fn string_map_from_js(
     Ok(out)
 }
 
-/// Read `components.mesh.mounts`: an array of `{ item, attachments }`
+/// Read `components.mesh.mounts`: an array of `{ item, attachments }` or `{ item, muzzleSocket }`
 /// entries whose `item` the SDK has lowered to a canonical name. Shape
 /// errors name the character; the shared rules run in `MeshDescriptor::build`.
 pub(super) fn mounts_from_js(
@@ -105,9 +105,31 @@ pub(super) fn mounts_from_js(
         };
         let item = item.to_string().map_err(js_err)?;
         let attachments: JsValue = entry.get("attachments").map_err(js_err)?;
-        let attachments = string_map_from_js(attachments, &format!("{path}.attachments"))
-            .map_err(|reason| mount_shape_error(owner, reason))?;
-        entries.push(MountDescriptor { item, attachments });
+        let attachments = if attachments.is_undefined() {
+            None
+        } else {
+            Some(
+                string_map_from_js(attachments, &format!("{path}.attachments"))
+                    .map_err(|reason| mount_shape_error(owner, reason))?,
+            )
+        };
+        let muzzle_socket: JsValue = entry.get("muzzleSocket").map_err(js_err)?;
+        let muzzle_socket = if muzzle_socket.is_undefined() {
+            None
+        } else {
+            let Some(socket) = muzzle_socket.as_string() else {
+                return Err(mount_shape_error(
+                    owner,
+                    format_args!("`{path}.muzzleSocket` must be a socket name string"),
+                ));
+            };
+            Some(socket.to_string().map_err(js_err)?)
+        };
+        entries.push(MountDescriptor {
+            item,
+            attachments,
+            muzzle_socket,
+        });
     }
     Ok(entries)
 }

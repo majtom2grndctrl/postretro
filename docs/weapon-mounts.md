@@ -132,9 +132,11 @@ non-uniform scale instead of solving against that invalid frame.
 ## 6. Declare the mount on the character
 
 A character names its bakes in `components.mesh.mounts`, one entry per
-weapon it may wield. `weapon` is the weapon's `defineEntity` value, as in
+weapon it may wield. `item` is the weapon's `defineEntity` value, as in
 `inventory.loadout`; `attachments` maps sockets to bakes, like
-`mesh.attachments`.
+`mesh.attachments`. A weapon built into the character's body takes
+`{ item, muzzleSocket: "<body socket>" }` instead: it names no `attachments` and
+mounts nothing. An entry names exactly one of the two.
 
 ```typescript
 import { defineEntity } from "postretro";

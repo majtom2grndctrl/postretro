@@ -121,6 +121,12 @@ fn compose_mounted_attachments<'a>(
         return mounted;
     };
 
+    // A `muzzleSocket` entry names a body socket for an NPC's shot origin and
+    // mounts nothing; a pawn ignores it, and its fire origin is unchanged.
+    let Some(entry_attachments) = entry.attachments.as_ref() else {
+        return mounted;
+    };
+
     // An unloaded holder has no sockets to check the entry against, so the
     // entry mounts nothing. The base attachments stay as authored; the binding
     // resolver leaves them unresolved, as for any unloaded holder.
@@ -128,7 +134,7 @@ fn compose_mounted_attachments<'a>(
         warn_weapon_mount_holder_missing(hit_zone_store, wielder_class, weapon, holder_model);
         return mounted;
     };
-    let mut sockets: Vec<(&String, &String)> = entry.attachments.iter().collect();
+    let mut sockets: Vec<(&String, &String)> = entry_attachments.iter().collect();
     sockets.sort_unstable();
     for (socket, model) in sockets {
         // A socket the rig lacks is reported ahead of its model: nothing could

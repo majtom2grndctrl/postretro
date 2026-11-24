@@ -73,12 +73,14 @@ export type MeshDescriptor = {
   locomotion: LocomotionDescriptor?,
 }
 
---- One entry of `MeshDescriptor.mounts`: the props a character mounts while it wields one weapon, each baked for this character's rig (`postretro-tool solve-weapon-mount`). Unknown keys are rejected.
+--- One entry of `MeshDescriptor.mounts`: either the props a character mounts while it wields one weapon, each baked for this character's rig (`postretro-tool solve-weapon-mount`), or the body socket a built-in weapon's shots leave from. Unknown keys are rejected.
 export type MountDescriptor = {
   --- The weapon this entry mounts for: the value `defineEntity` returned for a descriptor declaring a weapon block, as in `components.inventory.loadout`. The SDK lowers it to the weapon's canonical name.
   item: WeaponEntityDescriptor,
-  --- Socket-name → content-relative prop-model map, mounted while this weapon is active. Must be non-empty; each model path uses forward slashes and stays inside the content root.
-  attachments: { [string]: string },
+  --- Socket-name → content-relative prop-model map, mounted while this weapon is active. Must be non-empty; each model path uses forward slashes and stays inside the content root. Exactly one of `attachments` and `muzzleSocket` is required; naming both or neither rejects load.
+  attachments: { [string]: string }?,
+  --- A socket on the character's own body model that this weapon's shots leave from, for a weapon built into the body. The entry mounts nothing. Must be a non-empty socket name. Exactly one of `attachments` and `muzzleSocket` is required; naming both or neither rejects load.
+  muzzleSocket: string?,
 }
 
 --- Authored per-archetype locomotion calibration attached to `MeshDescriptor.locomotion`. Sibling to the per-state `travelSpeed` override.

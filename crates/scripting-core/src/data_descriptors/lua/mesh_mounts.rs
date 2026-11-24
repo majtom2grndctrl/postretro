@@ -127,10 +127,28 @@ pub(super) fn mounts_from_lua(
                 ));
             }
         };
-        let attachments = entry.raw_get::<LuaValue>("attachments").map_err(lua_err)?;
-        let attachments = string_map_from_lua(attachments, &format!("{path}.attachments"))
-            .map_err(|reason| mount_shape_error(owner, reason))?;
-        entries.push(MountDescriptor { item, attachments });
+        let attachments = match entry.raw_get::<LuaValue>("attachments").map_err(lua_err)? {
+            LuaValue::Nil => None,
+            attachments => Some(
+                string_map_from_lua(attachments, &format!("{path}.attachments"))
+                    .map_err(|reason| mount_shape_error(owner, reason))?,
+            ),
+        };
+        let muzzle_socket = match entry.raw_get::<LuaValue>("muzzleSocket").map_err(lua_err)? {
+            LuaValue::Nil => None,
+            LuaValue::String(socket) => Some(socket.to_str().map_err(lua_err)?.to_string()),
+            _ => {
+                return Err(mount_shape_error(
+                    owner,
+                    format_args!("`{path}.muzzleSocket` must be a socket name string"),
+                ));
+            }
+        };
+        entries.push(MountDescriptor {
+            item,
+            attachments,
+            muzzle_socket,
+        });
     }
     Ok(entries)
 }

@@ -413,8 +413,11 @@ defineEntity({
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `weapon` | weapon `defineEntity` value | The weapon this entry is for, as in `inventory.loadout`. Each weapon appears at most once. |
+| `item` | weapon `defineEntity` value | The weapon this entry is for, as in `inventory.loadout`. Each weapon appears at most once. |
 | `attachments` | `{ [socket]: string }` | Socket name → content-relative model path, mounted while the weapon is active. Must be non-empty. Paths use forward slashes and stay inside the content root. |
+| `muzzleSocket` | string | A socket on the character's own body model that the weapon's shots leave from, for a weapon built into the body. The entry mounts nothing. Must be non-empty. |
+
+An entry names exactly one of `attachments` and `muzzleSocket`.
 
 The mounted props are `mesh.attachments`, then the active weapon's entry; the
 entry wins on a socket both name. A weapon switch swaps one entry's sockets for
@@ -448,8 +451,10 @@ These fail the mod's load:
   names the key and the character.
 - The same weapon in two entries.
 - An empty `attachments` map.
+- An entry naming both `attachments` and `muzzleSocket`, or neither, or an empty
+  `muzzleSocket`.
 - A model path that is absolute, uses backslashes or climbs out with `..`.
-- A `weapon` value that is not a weapon's `defineEntity` value.
+- An `item` value that is not a weapon's `defineEntity` value.
 - `thirdPersonModel` on a weapon descriptor, which is no longer a field.
 
 Every listed model loads with the level, so a switch never waits on a load. A

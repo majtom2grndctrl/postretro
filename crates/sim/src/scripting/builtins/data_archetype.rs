@@ -3127,10 +3127,13 @@ mod tests {
 
         let mount = |weapon: &str, attachments: &[(&str, &str)]| MountDescriptor {
             item: weapon.to_string(),
-            attachments: attachments
-                .iter()
-                .map(|(socket, model)| (socket.to_string(), model.to_string()))
-                .collect(),
+            attachments: Some(
+                attachments
+                    .iter()
+                    .map(|(socket, model)| (socket.to_string(), model.to_string()))
+                    .collect(),
+            ),
+            muzzle_socket: None,
         };
         let mut player = mesh_descriptor("player", false);
         player.mesh.as_mut().unwrap().mounts = Some(vec![

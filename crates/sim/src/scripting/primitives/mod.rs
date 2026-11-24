@@ -132,9 +132,10 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("MountDescriptor")
-        .doc("One entry of `MeshDescriptor.mounts`: the props a character mounts while it wields one weapon, each baked for this character's rig (`postretro-tool solve-weapon-mount`). Unknown keys are rejected.")
+        .doc("One entry of `MeshDescriptor.mounts`: either the props a character mounts while it wields one weapon, each baked for this character's rig (`postretro-tool solve-weapon-mount`), or the body socket a built-in weapon's shots leave from. Unknown keys are rejected.")
         .field("item", "WeaponEntityDescriptor", "The weapon this entry mounts for: the value `defineEntity` returned for a descriptor declaring a weapon block, as in `components.inventory.loadout`. The SDK lowers it to the weapon's canonical name.")
-        .field("attachments", "MeshAttachments", "Socket-name → content-relative prop-model map, mounted while this weapon is active. Must be non-empty; each model path uses forward slashes and stays inside the content root.")
+        .field("attachments?", "MeshAttachments", "Socket-name → content-relative prop-model map, mounted while this weapon is active. Must be non-empty; each model path uses forward slashes and stays inside the content root. Exactly one of `attachments` and `muzzleSocket` is required; naming both or neither rejects load.")
+        .field("muzzleSocket?", "String", "A socket on the character's own body model that this weapon's shots leave from, for a weapon built into the body. The entry mounts nothing. Must be a non-empty socket name. Exactly one of `attachments` and `muzzleSocket` is required; naming both or neither rejects load.")
         .finish();
     registry
         .register_type("LocomotionDescriptor")

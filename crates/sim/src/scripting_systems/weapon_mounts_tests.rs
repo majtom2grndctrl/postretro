@@ -17,7 +17,8 @@ const RIFLE_MISSING: &str =
 fn entry(weapon: &str, model: &str) -> MountDescriptor {
     MountDescriptor {
         item: weapon.to_string(),
-        attachments: HashMap::from([("hand_r".to_string(), model.to_string())]),
+        attachments: Some(HashMap::from([("hand_r".to_string(), model.to_string())])),
+        muzzle_socket: None,
     }
 }
 

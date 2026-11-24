@@ -112,7 +112,7 @@ fn table_violations(
     let mut violations = Vec::new();
     for entry in table {
         let weapon = entry.item.as_str();
-        let mut sockets: Vec<_> = entry.attachments.iter().collect();
+        let mut sockets: Vec<_> = entry.attachments.iter().flatten().collect();
         sockets.sort();
         for (socket, model) in sockets {
             let mut fail =
@@ -260,7 +260,8 @@ fn a_weapon_mount_entry_repointed_at_a_viewmodel_fails_the_table_check() {
         .to_string();
     let table = [MountDescriptor {
         item: "reference_rifle".to_string(),
-        attachments: [(MOUNT_SOCKET.to_string(), rifle_viewmodel)].into(),
+        attachments: Some([(MOUNT_SOCKET.to_string(), rifle_viewmodel)].into()),
+        muzzle_socket: None,
     }];
     let violations = table_violations(
         &table,
@@ -329,7 +330,8 @@ fn a_listed_bake_re_exported_without_extras_mount_fails_the_table_check() {
     }
     let table = [MountDescriptor {
         item: "reference_rifle".to_string(),
-        attachments: [(MOUNT_SOCKET.to_string(), model.to_string())].into(),
+        attachments: Some([(MOUNT_SOCKET.to_string(), model.to_string())].into()),
+        muzzle_socket: None,
     }];
 
     let violations = table_violations(

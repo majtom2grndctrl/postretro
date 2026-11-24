@@ -115,10 +115,13 @@ pub(super) fn weapon_entity(name: &str) -> EntityTypeDescriptor {
 pub(super) fn entry(weapon: &str, attachments: &[(&str, &str)]) -> MountDescriptor {
     MountDescriptor {
         item: weapon.to_string(),
-        attachments: attachments
-            .iter()
-            .map(|(socket, model)| (socket.to_string(), model.to_string()))
-            .collect(),
+        attachments: Some(
+            attachments
+                .iter()
+                .map(|(socket, model)| (socket.to_string(), model.to_string()))
+                .collect(),
+        ),
+        muzzle_socket: None,
     }
 }
 
@@ -776,6 +779,46 @@ fn a_picked_up_weapon_without_an_entry_warns_once_per_character_and_weapon_per_l
             .count(),
         2
     );
+}
+
+// A `{ item, muzzleSocket }` entry names a body socket for an NPC's shot
+// origin. A pawn ignores it: the entry exists, so nothing warns it missing,
+// and it mounts nothing beyond the base attachments.
+#[test]
+fn a_pawn_with_a_muzzle_socket_entry_mounts_nothing_and_warns_nothing() {
+    let logs = LogCapture::start();
+    let mut descriptors = descriptors();
+    descriptors[0]
+        .mesh
+        .as_mut()
+        .unwrap()
+        .mounts
+        .as_mut()
+        .unwrap()
+        .push(MountDescriptor {
+            item: "pickup".to_string(),
+            attachments: None,
+            muzzle_socket: Some("cannon_tip".to_string()),
+        });
+    let store = store();
+    crate::scripting_systems::weapon_mounts::check_weapon_mount_tables(&descriptors, &store);
+    let mut registry = EntityRegistry::new();
+    let pawn = materialized_pawn(&mut registry, &descriptors, "player");
+
+    write(
+        &mut registry,
+        pawn,
+        "player",
+        &descriptors,
+        Some("pickup"),
+        &store,
+    );
+    assert_eq!(
+        mounted(&registry, pawn),
+        pairs(&[("back", BACKPACK), ("hand_r", GRIP_TAPE)]),
+        "the muzzle entry mounts nothing; the base attachments stay"
+    );
+    logs.assert_not_logged(Level::Warn, "pickup");
 }
 
 #[test]

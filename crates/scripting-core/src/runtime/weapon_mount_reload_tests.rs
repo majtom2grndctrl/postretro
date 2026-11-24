@@ -77,9 +77,12 @@ fn player_mounts(descriptors: &[EntityTypeDescriptor]) -> Option<Vec<MountDescri
 fn rifle_mount(weapon: &str, bake: &str) -> Option<Vec<MountDescriptor>> {
     Some(vec![MountDescriptor {
         item: weapon.to_string(),
-        attachments: [("hand_r".to_string(), bake.to_string())]
-            .into_iter()
-            .collect(),
+        attachments: Some(
+            [("hand_r".to_string(), bake.to_string())]
+                .into_iter()
+                .collect(),
+        ),
+        muzzle_socket: None,
     }])
 }
 

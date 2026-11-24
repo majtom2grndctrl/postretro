@@ -308,7 +308,7 @@ fn reject_object_where_move_selector_belongs(
 }
 
 /// Parse a `components.mesh` object (JS). Shape:
-/// `{ model: string, attachments?: { [socket]: string }, animations?: { [state]: { clip, loop?, crossfadeMs?, interrupt? } }, defaultState?: string, mounts?: { item: string, attachments: { [socket]: string } }[] }`.
+/// `{ model: string, attachments?: { [socket]: string }, animations?: { [state]: { clip, loop?, crossfadeMs?, interrupt? } }, defaultState?: string, mounts?: ({ item: string, attachments: { [socket]: string } } | { item: string, muzzleSocket: string })[] }`.
 /// Any other own key rejects load. `owner` names the character in those
 /// errors and in the weapon-mount rules. Gathers raw fields and delegates
 /// validation to [`MeshDescriptor::build`] so both FFI paths share identical

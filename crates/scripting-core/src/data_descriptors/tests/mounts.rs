@@ -40,10 +40,13 @@ fn lua_error(source: &str) -> String {
 fn mount(weapon: &str, attachments: &[(&str, &str)]) -> MountDescriptor {
     MountDescriptor {
         item: weapon.to_string(),
-        attachments: attachments
-            .iter()
-            .map(|(socket, model)| (socket.to_string(), model.to_string()))
-            .collect(),
+        attachments: Some(
+            attachments
+                .iter()
+                .map(|(socket, model)| (socket.to_string(), model.to_string()))
+                .collect(),
+        ),
+        muzzle_socket: None,
     }
 }
 
@@ -87,8 +90,8 @@ fn weapon_mounts_parse_identically_in_both_runtimes() {
     );
     assert_eq!(
         mesh.mount("reference_pistol")
-            .map(|entry| entry.attachments.len()),
-        Some(2)
+            .map(|entry| entry.attachments.as_ref().map(|a| a.len())),
+        Some(Some(2))
     );
     assert!(mesh.mount("reference_shotgun").is_none());
     let mut models: Vec<_> = mesh.mount_models().collect();
@@ -145,7 +148,7 @@ fn weapon_mount_load_rules_reject_identically_naming_the_character() {
             "unknown entry key",
             r#"mounts: [{ item: "reference_rifle", attachments: { hand_r: "models/rifle/exo_red.gltf" }, socket: "hand_r" }]"#,
             r#"mounts = {{ item = "reference_rifle", attachments = { hand_r = "models/rifle/exo_red.gltf" }, socket = "hand_r" }}"#,
-            "entity `player`: `components.mesh.mounts[0].socket` is not a weapon-mount field; expected `item` and `attachments`".to_string(),
+            "entity `player`: `components.mesh.mounts[0].socket` is not a weapon-mount field; expected `item`, `attachments` or `muzzleSocket`".to_string(),
         ),
         (
             "duplicated weapon",
@@ -226,7 +229,7 @@ fn retired_mount_table_keys_reject_while_the_renamed_table_loads_in_both_runtime
             "retired entry key",
             format!(r#"mounts: [{{ weapon: "reference_rifle", attachments: {{ hand_r: "{model}" }} }}]"#),
             format!(r#"mounts = {{ {{ weapon = "reference_rifle", attachments = {{ hand_r = "{model}" }} }} }}"#),
-            "entity `player`: `components.mesh.mounts[0].weapon` is not a weapon-mount field; expected `item` and `attachments`".to_string(),
+            "entity `player`: `components.mesh.mounts[0].weapon` is not a weapon-mount field; expected `item`, `attachments` or `muzzleSocket`".to_string(),
         ),
     ];
     for (label, js_fields, lua_fields, expected) in cases {
@@ -254,6 +257,83 @@ fn retired_mount_table_keys_reject_while_the_renamed_table_loads_in_both_runtime
     let expected = Some(vec![mount("reference_rifle", &[("hand_r", model)])]);
     assert_eq!(js.mesh.unwrap().mounts, expected);
     assert_eq!(lua.mesh.unwrap().mounts, expected);
+}
+
+// An entry takes exactly one of `attachments` and `muzzleSocket`; each shape
+// loads, and a muzzle entry carries no attachments.
+#[test]
+fn an_entry_takes_exactly_one_of_attachments_and_muzzle_socket_in_both_runtimes() {
+    let model = "models/rifle/exo_red.gltf";
+    let cases = [
+        (
+            "both",
+            format!(
+                r#"mounts: [{{ item: "arm_cannon", attachments: {{ hand_r: "{model}" }}, muzzleSocket: "cannon_tip" }}]"#
+            ),
+            format!(
+                r#"mounts = {{ {{ item = "arm_cannon", attachments = {{ hand_r = "{model}" }}, muzzleSocket = "cannon_tip" }} }}"#
+            ),
+            "entity `player`: `components.mesh.mounts[0]` names both `attachments` and `muzzleSocket`; an entry takes exactly one",
+        ),
+        (
+            "neither",
+            r#"mounts: [{ item: "arm_cannon" }]"#.to_string(),
+            r#"mounts = { { item = "arm_cannon" } }"#.to_string(),
+            "entity `player`: `components.mesh.mounts[0]` names neither `attachments` nor `muzzleSocket`; an entry takes exactly one",
+        ),
+        (
+            "empty muzzle socket",
+            r#"mounts: [{ item: "arm_cannon", muzzleSocket: "" }]"#.to_string(),
+            r#"mounts = { { item = "arm_cannon", muzzleSocket = "" } }"#.to_string(),
+            "entity `player`: `components.mesh.mounts[0].muzzleSocket` must be a non-empty socket name",
+        ),
+        (
+            "non-string muzzle socket",
+            r#"mounts: [{ item: "arm_cannon", muzzleSocket: 7 }]"#.to_string(),
+            r#"mounts = { { item = "arm_cannon", muzzleSocket = 7 } }"#.to_string(),
+            "entity `player`: `components.mesh.mounts[0].muzzleSocket` must be a socket name string",
+        ),
+        (
+            "present and empty attachments",
+            r#"mounts: [{ item: "arm_cannon", attachments: {} }]"#.to_string(),
+            r#"mounts = { { item = "arm_cannon", attachments = {} } }"#.to_string(),
+            "entity `player`: `components.mesh.mounts[0].attachments` for weapon `arm_cannon` is empty; an entry mounts at least one socket",
+        ),
+    ];
+    for (label, js_fields, lua_fields, expected) in cases {
+        let js = js_error(&js_player(&js_fields));
+        let lua = lua_error(&lua_player(&lua_fields));
+        assert!(
+            js.contains(expected),
+            "QuickJS {label}: expected {expected:?}, got {js}"
+        );
+        assert_eq!(js, lua, "{label}: both runtimes reject with one message");
+    }
+
+    let js = eval_js(
+        &js_player(&format!(
+            r#"mounts: [{{ item: "arm_cannon", muzzleSocket: "cannon_tip" }}, {{ item: "rifle", attachments: {{ hand_r: "{model}" }} }}]"#
+        )),
+        |ctx, value| entity_descriptor_from_js(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        &lua_player(&format!(
+            r#"mounts = {{ {{ item = "arm_cannon", muzzleSocket = "cannon_tip" }}, {{ item = "rifle", attachments = {{ hand_r = "{model}" }} }} }}"#
+        )),
+        |value| entity_descriptor_from_lua(value).unwrap(),
+    );
+    let expected = Some(vec![
+        MountDescriptor {
+            item: "arm_cannon".to_string(),
+            attachments: None,
+            muzzle_socket: Some("cannon_tip".to_string()),
+        },
+        mount("rifle", &[("hand_r", model)]),
+    ]);
+    assert_eq!(js.mesh.as_ref().unwrap().mounts, expected);
+    assert_eq!(lua.mesh.as_ref().unwrap().mounts, expected);
+    let mesh = js.mesh.unwrap();
+    assert_eq!(mesh.mount_models().collect::<Vec<_>>(), vec![model]);
 }
 
 // A model path that breaks the content-relative rule weapon models follow

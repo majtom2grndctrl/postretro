@@ -41,7 +41,7 @@ Owner-observed defect (2026-11-23): NPC rifle shots launch from above the head (
 - **The muzzle pose reads game-tick clip time.** The host poses the state the clip clock tracks at the brain's clip time, the clock clip-timed attacks use (`entity_model.md` §7c), never the render clock, so the launch point is deterministic. The muzzle pose joins §7c's one exception to a single animation clock, so the drawn gun may lead or trail the launch point by a frame, as it does a clip moment. The pose omits presentation-only modifiers, as gameplay probes do (`entity_model.md` §7). Foreclosure: a later presentation-only modifier on an NPC's arms, such as an aim bend or recoil, would move the drawn gun off the launch point, so that work decides whether its modifier joins this pose.
 - **Sockets enter one gameplay query: the host NPC shot.** Its origin and its near-path gate read the mount. This reverses E21's "Gameplay never reads a mount" (`networking.md` §Weapon placement is content) and `resource_management.md` §7's "sockets never participate in gameplay queries" for NPC shots. Only the host computes an NPC's shot and no peer reproduces it, so peers need not agree on the pose for gameplay; hit zones and collision still ignore attachments. Gap: a client draws the host's launch point against its own pose of the gun, so on a client a shot leaves the drawn barrel only as closely as its clip phase tracks the host's. That agreement is unverified (Manual).
 - **The actor-kind launch branch stays.** Pawns launch from placement plus `muzzleOffset` and fall back to the eye when the muzzle is obstructed; NPCs launch from the mount and never fall back from an obstructed one. `entity_model.md` §2 admits no branch on actor kind; this one is admitted in launch origin only, because a pawn's origin must be reproducible by client prediction from replicated placement (`networking.md`) and an NPC's is host-only. The fallback splits with it: a pawn's eye is its camera, while falling back to an NPC's eye would restore the defect. The weapon descriptor stays one type.
-- **Dev content is the first consumer.** Each AR_4 rig bake gains a rigid `muzzle` socket at its barrel tip. The limitator and the rifle squads move from `mesh.attachments` to `mesh.mounts`, with entries for both rifles on their own rig bake. exo_red's table moves to `mesh.mounts` unchanged in content. A built-in-weapon fixture ships as the first consumer of `{ item, muzzleSocket }` (Open questions).
+- **Dev content is the first consumer.** Each AR_4 rig bake gains a rigid `muzzle` socket at its barrel tip. The limitator and the rifle squads move from `mesh.attachments` to `mesh.mounts`, with entries for both rifles on their own rig bake. exo_red's table moves to `mesh.mounts` unchanged in content. The first consumer of `{ item, muzzleSocket }` is `cannon_brute`, on `models/mutant_arm_cannon/`: the mutant with its right hand replaced by a cannon rigidly skinned to `RightForeArm`, and a `cannon_tip` skin joint at the bore. Its arm-cannon weapon and attack are new `content/dev` content.
 - **Load rules (both runtimes, twin behavior).** Each rejects load, naming the character:
   - an entry naming both `attachments` and `muzzleSocket`, or neither. An attachment map that is present and empty still rejects (E21);
   - two attack weapons whose entries put different models on one socket. The rejection also names the socket.
@@ -88,14 +88,14 @@ export const limitator = defineEntity({
   },
 });
 
-// A weapon built into the body. `sentry`, `./arm-cannon` and `cannon_tip` are placeholders until the built-in content is found (Open questions).
-export const sentry = defineEntity({
-  canonicalName: "sentry",
+// A weapon built into the body: `cannon_tip` is a skin joint on the model, not a mounted bake.
+export const cannonBrute = defineEntity({
+  canonicalName: "cannon_brute",
   components: {
     mesh: {
-      model: "models/sentry/model.gltf",
+      model: "models/mutant_arm_cannon/model.gltf",
       mounts: [{ item: armCannon, muzzleSocket: "cannon_tip" }],
-      // animations…
+      // animations… from the mutant's `mixamo_brute` clips
     },
     // health, behavior with an attack on armCannon…
   },
@@ -203,6 +203,7 @@ Both runtimes ship; the Luau example mirrors the TypeScript one key for key.
   - Missing entry and missing muzzle: `check_weapon_mount_tables` runs before the model sweep in `install_world_cpu`, so the missing-muzzle check runs after the sweep, against loaded models only (pin NM-4).
   - Bakes: `content/dev/models/ar_4/`; the raw source lives outside the repo, so the socket node goes into each bake. `prop_to_gltf.py --socket` and the cyberpunk viewmodels' `muzzle` nodes are the precedent (`docs/weapon-mounts.md`).
   - Rename consumers: every symbol, call site and test file is in `research.md` §Rename consumers.
+  - Built-in fixture: `content/dev/models/mutant_arm_cannon/`; its `license.txt` records how it was built from the mutant. `cannon_tip` has no clip tracks, so it rides the forearm. `socket_dump` (`crates/model/examples/`) resolves it under `mixamo_brute` clips and shows it moving with `idle` and `punch` (`research.md` §Built-in fixture).
 - Art is gameplay now: re-baking an AR_4 or moving its `muzzle` node changes where an NPC's shot starts and which cover blocks it. `solve-weapon-mount --check` proves orientation only, so a bake edit re-runs the shot-origin and near-path rows.
 - Shape chosen: the carried weapon's mounted muzzle, posed on the game-tick clip clock, gated by the paths its shot needs clear.
 - Strongest rival: an authored chest or shoulder launch offset in the facing frame. The owner rejected it: it leaves the shot off the drawn gun. Runner-up: the bake's `muzzle` posed once at load per archetype and attack state, kept as a facing-relative offset. For a clip moment it is the drawn muzzle, and it drops pins NM-1 and NM-2, but bursts and shots with no clip moment fire at any point of a looping clip, whose pose one offset cannot follow, so their shots would leave beside the gun by an unmeasured amount; the owner kept the clip-time pose. For the interim aiming rule, the rival was to keep firing from the eye under a reaction until the pose brief lands: it restores the defect on every reaction, so the owner chose not aiming. Others: `research.md` §NPC shot origin, §Blocked muzzle, §Fire decision, §Validation history input.
@@ -211,7 +212,7 @@ Both runtimes ship; the Luau example mirrors the TypeScript one key for key.
 - Derivation and verified facts: `research.md`.
 
 ## Open questions
-- Find the built-in-weapon content (a body model with a muzzle socket, its weapon and attack) before the build starts; the build is gated on it. — owner: owner — **blocks build**
+- The fixture's attack clip: `mixamo_brute` has no aim or shoot clip. Recommended: `punch`, with the shot's clip moment at the strike, if the cannon then points at the target; otherwise another brute clip that does. — **delegated**
 - A `muzzleSocket` on a player pawn's entry: pawns launch from placement plus `muzzleOffset`. Recommended: it validates, mounts nothing, and is ignored for fire origin. — **delegated**
 - An entry mounting several models, more than one carrying a `muzzle` socket. Recommended: warn once at load and launch from the first in socket-name order. — **delegated**
 - Whether the near-path test shares the eye verdict's loss grace. Recommended: no; it is a raw test on the fire tick, since a grace would launch a shot into cover. — **delegated**

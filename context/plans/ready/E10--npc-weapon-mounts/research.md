@@ -105,6 +105,16 @@ Every consumer of `mesh.weaponMounts`, read at e57fcf5ea. The owner moved the re
 
 The `weapon_mount` names in `crates/model/src/mount*` and `crates/tool/src/mount/` belong to the mount solver (`solve-weapon-mount`), not the table; they stay.
 
+## Built-in fixture
+Built 2026-11-23 at the owner's request, after a search found no CC0 or CC-BY rigged body with a fused gun whose clips and gun geometry its page confirmed.
+- `content/dev/models/mutant_arm_cannon/` is a copy of `models/mutant/`, edited in its glTF with no Blender round trip, so joint order, rest pose, extras and the `mixamo_brute` clip library match the mutant.
+- The right hand is gone: triangles with a vertex weighted over 50% to `RightHand` or its fingers were dropped. Those joints stay in the skin.
+- The cannon is a second primitive with its own material and flat-colour texture, every vertex weighted 1.0 to `RightForeArm`. It runs from near the elbow to about 0.23 m past the old wrist.
+- `cannon_tip` is a new skin joint, a child of `RightForeArm` at the bore mouth, with local +Y along the barrel and `extras.socket = "cannon_tip"`. No clip has a track for it, so it holds its rest offset from the forearm.
+- Engine-loader check (`socket_dump`): `cannon_tip` resolves to joint 37. World positions: `idle` t=0 (-0.32, 0.68, 0.52), t=1 (-0.33, 0.71, 0.51); `punch` t=0.4 (0.66, 1.22, -0.09). Not yet run in a level.
+- Licence: Mixamo terms, as the mutant's. It may ship in a game from this repo, never in an SDK bundle (`resource_management.md` §7, Mixamo licence).
+- The AI admits projectile weapons only (§One rifle for players and NPCs), so the arm cannon is a projectile weapon.
+
 ## One rifle for players and NPCs
 - The dev enemy rifles (`enemy-rifle.ts`) all fire projectiles at 20 m/s: `enemy_rifle` (10 damage, 12 m), `enemy_rifle_long` (10 damage, 20 m) and `enemy_rifle_burst` (6 damage, three shots 120 ms apart, 12 m). The owner treats the slow, dodgeable shot as balance.
 - `reference_rifle` (`reference-rifle.ts`) is hitscan, 9 damage, 80 m, with `muzzleOffset` and a first-person placement. The AI admits projectile weapons only, so NPCs cannot wield it as authored.
@@ -265,3 +275,5 @@ A sixth `/validate-plan` returned Reshape at the boundary only (2026-11-23): the
 A final combined review (2026-11-23), after the seventh `/validate-plan` returned Direction sound, found no Blockers. Rows and pins NM-28 to NM-32 added, Path's seam names the pre-launch switch predicate. Owner rulings: a redraw tick is not aiming (aiming is read from the state at the launch; only entries and stride or variant changes fire on their tick); the interim rule gates launched shots only, contact strikes behave as today; detection sites and the pin pointer live in Path; apply's pre-launch reaction check stays.
 
 Owner sign-off, 2026-11-23, after re-reading the Scripting surface and Boundary inventory: the built-in muzzle's entry key is `muzzleSocket`, not `muzzle`, so it does not read as the bake's `muzzle` socket name; the near distance is 2 m. The built-in-weapon content still gates the build, not promotion (owner ruling, 2026-11-23).
+
+Built-in-weapon content found (2026-11-23): the owner asked for the mutant with an arm cannon instead of an outside asset (§Built-in fixture). The surface's `sentry` placeholder became `cannon_brute` on `models/mutant_arm_cannon/`, and the build gate is lifted. The fixture's attack clip is delegated.

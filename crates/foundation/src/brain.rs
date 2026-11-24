@@ -150,6 +150,16 @@ pub const BRAIN_DAMAGE_IN_ACTIVITY_INPUT: &str = "@brain.damageInActivity";
 /// check on this decide left it; 1 while the enemy has a target. Guards on a
 /// decide read the value that decide's check produced.
 pub const BRAIN_AWARENESS_INPUT: &str = "@brain.awareness";
+/// Shots the gun's near-path test held since the currently-evaluated activity
+/// was entered: a clip moment that whiffed on a blocked near path, a burst
+/// shot skipped on one, or an attack with no clip moment when it becomes held.
+/// An eye-sight failure, a missing muzzle, a shot withheld while the enemy is
+/// not aiming and an obstacle past the near distance count nothing.
+///
+/// Scope-relative like [`BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT`]: nested
+/// envelopes evaluate their own rows against their own count, and a hold on
+/// the current tick becomes observable only after the next refresh. Host-only.
+pub const BRAIN_ATTACKS_HELD_IN_ACTIVITY_INPUT: &str = "@brain.attacksHeldInActivity";
 
 /// Prefix of the named Bool read `attackTurnHeld(attack)`: a turn is held for
 /// that attack, as of the previous tick.
@@ -189,7 +199,7 @@ pub const BRAIN_NO_TARGET_DISTANCE: f32 = 1.0e9;
 /// it, so refresh must write the same slots in the same order. Names use the
 /// camelCase idiom of the script surface (scripting.md §4) inside the
 /// `@`-reserved ephemeral-dispatch-input namespace (scripting.md §5).
-pub const BRAIN_INPUTS: [(&str, IrType); 25] = [
+pub const BRAIN_INPUTS: [(&str, IrType); 26] = [
     (BRAIN_HAS_TARGET_INPUT, IrType::Bool),
     (BRAIN_TARGET_DISTANCE_INPUT, IrType::Number),
     (BRAIN_TIME_IN_ACTIVITY_MS_INPUT, IrType::Number),
@@ -215,6 +225,7 @@ pub const BRAIN_INPUTS: [(&str, IrType); 25] = [
     (BRAIN_ACTIVITY_ROLL_INPUT, IrType::Number),
     (BRAIN_DAMAGE_IN_ACTIVITY_INPUT, IrType::Number),
     (BRAIN_AWARENESS_INPUT, IrType::Number),
+    (BRAIN_ATTACKS_HELD_IN_ACTIVITY_INPUT, IrType::Number),
 ];
 
 /// What a brain input name resolves to, independent of where the values live.
@@ -504,6 +515,15 @@ mod tests {
         assert_eq!(
             BRAIN_INPUTS[24],
             (BRAIN_AWARENESS_INPUT, IrType::Number),
+            "new brain facts append; they never repoint existing guard handles"
+        );
+    }
+
+    #[test]
+    fn attacks_held_in_activity_appends_at_fixed_slot_twenty_five() {
+        assert_eq!(
+            BRAIN_INPUTS[25],
+            (BRAIN_ATTACKS_HELD_IN_ACTIVITY_INPUT, IrType::Number),
             "new brain facts append; they never repoint existing guard handles"
         );
     }

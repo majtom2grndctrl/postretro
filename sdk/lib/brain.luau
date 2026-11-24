@@ -65,7 +65,10 @@ local BrainSdk = {}
 --- `applyDamage` included; scope-relative like `timeInActivityMs`, resetting
 --- to 0 when that level is entered), and `awareness` (number; highest
 --- awareness of any candidate, 0 to 1, 1 once it has a target; a guard on a
---- decide reads the value that decide's acquisition check produced).
+--- decide reads the value that decide's acquisition check produced), and
+--- `attacksHeldInActivity` (number; shots the gun's near-path test held since
+--- the current activity entered, visible to guards on the next refresh;
+--- host-only).
 BrainSdk.brain = table.freeze({
   hasTarget = input("@brain.hasTarget"),
   targetDistance = input("@brain.targetDistance"),
@@ -92,6 +95,7 @@ BrainSdk.brain = table.freeze({
   activityRoll = input("@brain.activityRoll"),
   damageInActivity = input("@brain.damageInActivity"),
   awareness = input("@brain.awareness"),
+  attacksHeldInActivity = input("@brain.attacksHeldInActivity"),
 })
 
 --- Facts about one offered target, evaluated during acquisition.

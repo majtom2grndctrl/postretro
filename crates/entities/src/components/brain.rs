@@ -393,6 +393,17 @@ pub struct BrainComponent {
     /// envelope's rows. This host-only state does not alter snapshot payloads.
     #[serde(default = "default_activity_attack_counts")]
     pub attacks_fired_in_activity: [u32; MAX_BEHAVIOR_NESTING_DEPTH],
+    /// Shots the near-path test held while the matching active activity has
+    /// been active, read as `@brain.attacksHeldInActivity`. Host-only, like the
+    /// fired count: it is never in a snapshot payload, and an older brain reads
+    /// zeros.
+    #[serde(default = "default_activity_attack_counts")]
+    pub attacks_held_in_activity: [u32; MAX_BEHAVIOR_NESTING_DEPTH],
+    /// Whether the hold of an attack with no clip moment has already counted
+    /// at each depth, so a hold lasting many ticks counts once. Cleared when the
+    /// attack fires or its near path clears, and for a depth when it is entered.
+    #[serde(default = "default_held_hold_edges")]
+    pub held_hold_edge: [bool; MAX_BEHAVIOR_NESTING_DEPTH],
     /// Scope-relative `@brain.activityRoll` for the matching active activity:
     /// drawn from [`Self::behavior_draws`] on that level's entry and fixed
     /// until the level's activity is left. Host-only: clients never evaluate
@@ -512,6 +523,8 @@ impl BrainComponent {
             active_activity_path_len: 0,
             time_in_activity_ms: default_activity_timers(),
             attacks_fired_in_activity: default_activity_attack_counts(),
+            attacks_held_in_activity: default_activity_attack_counts(),
+            held_hold_edge: default_held_hold_edges(),
             activity_roll: default_activity_rolls(),
             damage_in_activity: default_activity_damage(),
             hold_release_ms: default_hold_release_ms(),
@@ -859,6 +872,45 @@ impl BrainComponent {
             .find(|entry| entry.attacker == attacker)
     }
 
+    /// Shots the near-path test held since the activity active at `depth` was
+    /// entered. Parent activities include holds from active descendants.
+    pub fn activity_held_count(&self, depth: usize) -> Option<u32> {
+        if depth < self.active_depth() {
+            Some(self.attacks_held_in_activity[depth])
+        } else {
+            None
+        }
+    }
+
+    /// Record one held shot (a whiffed clip moment, or a burst shot skipped on
+    /// a blocked near path) for every active activity scope.
+    pub fn record_held_shot(&mut self) {
+        let active_depth = self.active_depth();
+        for count in self.attacks_held_in_activity[..active_depth].iter_mut() {
+            *count = count.saturating_add(1);
+        }
+    }
+
+    /// Record the hold of an attack with no clip moment: each active scope
+    /// whose edge is not yet set counts it once and sets the edge, so a hold
+    /// across many ticks counts once, and a scope entered afresh while the
+    /// attack is still held counts it again.
+    pub fn record_held_hold(&mut self) {
+        let active_depth = self.active_depth();
+        for depth in 0..active_depth {
+            if !self.held_hold_edge[depth] {
+                self.held_hold_edge[depth] = true;
+                self.attacks_held_in_activity[depth] =
+                    self.attacks_held_in_activity[depth].saturating_add(1);
+            }
+        }
+    }
+
+    /// The attack fired or its near path cleared: the next hold counts afresh.
+    pub fn end_held_hold(&mut self) {
+        self.held_hold_edge.fill(false);
+    }
+
     /// Record one successful edge-triggered attack fire for every active
     /// activity scope. The AI tick calls this only after the range, cooldown,
     /// and live-target gates succeed, so a skipped entry never advances a
@@ -1095,6 +1147,8 @@ impl BrainComponent {
     fn start_scope_relative_facts(&mut self, depth: usize) {
         self.time_in_activity_ms[depth] = 0.0;
         self.attacks_fired_in_activity[depth] = 0;
+        self.attacks_held_in_activity[depth] = 0;
+        self.held_hold_edge[depth] = false;
         self.damage_in_activity[depth] = 0.0;
         self.activity_roll[depth] = self
             .behavior_draws
@@ -1107,6 +1161,8 @@ impl BrainComponent {
         let depth = depth.min(MAX_BEHAVIOR_NESTING_DEPTH);
         self.time_in_activity_ms[depth..].fill(0.0);
         self.attacks_fired_in_activity[depth..].fill(0);
+        self.attacks_held_in_activity[depth..].fill(0);
+        self.held_hold_edge[depth..].fill(false);
         self.damage_in_activity[depth..].fill(0.0);
         self.activity_roll[depth..].fill(0.0);
         self.hold_release_ms[depth..].fill(0.0);
@@ -1212,6 +1268,10 @@ const fn default_activity_timers() -> [f32; MAX_BEHAVIOR_NESTING_DEPTH] {
 
 const fn default_activity_attack_counts() -> [u32; MAX_BEHAVIOR_NESTING_DEPTH] {
     [0; MAX_BEHAVIOR_NESTING_DEPTH]
+}
+
+const fn default_held_hold_edges() -> [bool; MAX_BEHAVIOR_NESTING_DEPTH] {
+    [false; MAX_BEHAVIOR_NESTING_DEPTH]
 }
 
 const fn default_activity_rolls() -> [f32; MAX_BEHAVIOR_NESTING_DEPTH] {
@@ -1793,6 +1853,100 @@ mod tests {
 
         brain.record_successful_attack_fire();
         assert_eq!(brain.activity_attack_count(0), Some(1));
+    }
+
+    // A held shot counts at every active depth, like a fired one, and an
+    // entry zeroes only the entered depths.
+    #[test]
+    fn held_shots_follow_active_scopes_and_reset_on_entry() {
+        let graph = authored_graph();
+        let mut brain = BrainComponent::from_graph(&graph);
+        assert_eq!(brain.activity_held_count(0), Some(0));
+        assert_eq!(brain.activity_held_count(1), None, "inactive depth");
+
+        brain.active_activity_path_len = 2;
+        brain.record_held_shot();
+        brain.record_held_shot();
+        assert_eq!(brain.activity_held_count(0), Some(2));
+        assert_eq!(brain.activity_held_count(1), Some(2));
+        assert_eq!(
+            brain.activity_attack_count(0),
+            Some(0),
+            "a held shot is not a fire"
+        );
+
+        brain.start_scope_relative_facts(1);
+        assert_eq!(
+            brain.activity_held_count(0),
+            Some(2),
+            "the outer depth keeps it"
+        );
+        assert_eq!(
+            brain.activity_held_count(1),
+            Some(0),
+            "the entered depth zeroes"
+        );
+
+        brain.active_activity_path_len = 1;
+        brain.clear_scope_relative_facts_from(1);
+        brain.record_held_shot();
+        assert_eq!(brain.activity_held_count(0), Some(3));
+        brain.active_activity_path_len = 2;
+        assert_eq!(
+            brain.activity_held_count(1),
+            Some(0),
+            "a left depth reads clean"
+        );
+    }
+
+    // A hold with no clip moment counts once per hold, not once per tick; the
+    // edge clears when the attack fires or its path clears; a depth entered
+    // while the attack is still held counts again, an enclosing depth does not.
+    #[test]
+    fn a_hold_counts_once_until_it_ends_and_again_at_each_entered_depth() {
+        let graph = authored_graph();
+        let mut brain = BrainComponent::from_graph(&graph);
+        brain.active_activity_path_len = 2;
+
+        for _ in 0..5 {
+            brain.record_held_hold();
+        }
+        assert_eq!(brain.activity_held_count(0), Some(1));
+        assert_eq!(brain.activity_held_count(1), Some(1));
+
+        brain.end_held_hold();
+        brain.record_held_hold();
+        assert_eq!(brain.activity_held_count(0), Some(2), "a new hold counts");
+        assert_eq!(brain.activity_held_count(1), Some(2));
+
+        // Re-entering the inner depth with the hold still on: the edge is
+        // cleared there only, so the inner depth counts it and the outer keeps 2.
+        brain.start_scope_relative_facts(1);
+        brain.record_held_hold();
+        brain.record_held_hold();
+        assert_eq!(brain.activity_held_count(0), Some(2));
+        assert_eq!(brain.activity_held_count(1), Some(1));
+    }
+
+    #[test]
+    fn held_counts_survive_a_serde_round_trip_and_default_when_absent() {
+        let graph = authored_graph();
+        let mut brain = BrainComponent::from_graph(&graph);
+        brain.record_held_shot();
+        brain.record_held_hold();
+        let saved = serde_json::to_value(&brain).expect("brain serializes");
+        let restored: BrainComponent = serde_json::from_value(saved.clone()).expect("round trip");
+        assert_eq!(restored, brain);
+        assert_eq!(restored.activity_held_count(0), Some(2));
+        assert!(restored.held_hold_edge[0]);
+
+        let mut old = saved;
+        let fields = old.as_object_mut().expect("brain is an object");
+        fields.remove("attacks_held_in_activity");
+        fields.remove("held_hold_edge");
+        let loaded: BrainComponent = serde_json::from_value(old).expect("an older brain loads");
+        assert_eq!(loaded.activity_held_count(0), Some(0));
+        assert_eq!(loaded.held_hold_edge, [false; MAX_BEHAVIOR_NESTING_DEPTH]);
     }
 
     // Every hit adds its points to each active level's sum; entry zeroes the

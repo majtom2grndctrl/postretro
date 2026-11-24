@@ -5,7 +5,7 @@
 // context/plans/in-progress/glossy-world-reflections/ip-check.md §7
 
 use super::*;
-use crate::render::gpu_test_harness::wgsl_function;
+use crate::render::gpu_test_harness::{wgsl_function, wgsl_item};
 
 const FORWARD_WGSL: &str = include_str!("../shaders/forward.wgsl");
 const MOVER_WGSL: &str = include_str!("../shaders/kinematic_brush.wgsl");
@@ -23,10 +23,27 @@ fn squashed(src: &str) -> String {
 
 /// Every source the floor layer's blur reads or writes through, code only:
 /// the chain's downsample shader, the targets it builds its groups over, and
-/// its recording. The floor march's pass (Task 11b) joins this list, so one
-/// gate covers the layer.
+/// its recording; the blur at the march's hit, the march's hit and read, and
+/// the march's recording. One gate covers the layer. Names a scan may skip
+/// are stripped first: the blur width's probe-term exponent → mip function
+/// and its constants (the width reads the exponent and the minimum blur, as
+/// B1 allows), and the world vertex stream of probe indices the march's
+/// vertex stage culls by.
 fn floor_layer_blur_sources() -> Vec<(&'static str, String)> {
-    vec![
+    let march = include_str!("../shaders/glossy_floor_march.wgsl");
+    let strip = |code: String| {
+        [
+            "reflection_probe_exponent_mip",
+            "reflection_probe_mip0_texel_angle",
+            "glossy_floor_probe_mips",
+            "world_probes",
+        ]
+        .into_iter()
+        .fold(code, |code, name| {
+            code.replace(name, "").replace(&name.to_uppercase(), "")
+        })
+    };
+    let sources = vec![
         (
             "scene_colour_chain.wgsl",
             squashed(SCENE_COLOUR_CHAIN_SHADER),
@@ -49,15 +66,56 @@ fn floor_layer_blur_sources() -> Vec<(&'static str, String)> {
                 "record_glossy_scene_colour_chain",
             )),
         ),
-    ]
+        (
+            "glossy_floor_blur.wgsl",
+            squashed(include_str!("../shaders/glossy_floor_blur.wgsl")),
+        ),
+        (
+            "glossy_floor_march.wgsl glossy_floor_hit",
+            squashed(wgsl_function(march, "glossy_floor_hit")),
+        ),
+        (
+            "glossy_floor_march.wgsl glossy_floor_hit_colour",
+            squashed(wgsl_function(march, "glossy_floor_hit_colour")),
+        ),
+        (
+            "glossy_floor/march.rs record_march",
+            squashed(wgsl_item(
+                include_str!("glossy_floor/march.rs"),
+                "fn record_march<'a>(",
+            )),
+        ),
+        (
+            "renderer_glossy_floor_frame.rs record_glossy_floor_march",
+            squashed(wgsl_function(
+                include_str!("renderer_glossy_floor_frame.rs"),
+                "record_glossy_floor_march",
+            )),
+        ),
+    ];
+    sources
+        .into_iter()
+        .map(|(file, code)| (file, strip(code)))
+        .collect()
 }
 
-// Acceptance row 44 (chain half), fences B2 and B4 (`ip-check.md` §7), B1's
-// inputs. No target the blur reads or writes holds the probe term: the
-// chain's one source is the highlight-free colour, which every opaque pass
-// writes before the overlay adds a probe term to scene colour, and the
-// downsample names no probe array, capture-shadow quantity, scene colour or
-// D_static. The filter is isotropic: four taps at fixed quarter-texel offsets
+/// The words the blur at the hit may read beyond the chain's: the texel's
+/// exponent, which sets its width (B1).
+const BLUR_AT_THE_HIT: [&str; 3] = [
+    "glossy_floor_blur.wgsl",
+    "glossy_floor_march.wgsl glossy_floor_hit_colour",
+    "glossy_floor/march.rs record_march",
+];
+
+// Acceptance row 44, fences B2 and B4 (`ip-check.md` §7), B1's inputs. No
+// target the blur reads or writes holds the probe term: the chain's one
+// source is the highlight-free colour, which every opaque pass writes before
+// the overlay adds a probe term to scene colour, and neither the downsample,
+// the blur at the hit nor the march's recording names a probe array, a
+// capture-shadow quantity, scene colour or D_static (the march's bindings:
+// `the_floor_march_is_waters_and_binds_no_probe_quantity`; its read at the
+// hit's own screen position, B3:
+// `the_floor_blur_reads_exponent_minimum_blur_and_hit_length_alone`). The filter is isotropic: four taps at fixed quarter-texel offsets
 // on each axis, from the destination texel's own size alone, equal weights,
 // no weight or offset from a neighbour's exponent or normal.
 #[test]
@@ -81,6 +139,9 @@ fn the_floor_layers_blur_reads_no_probe_term_and_filters_isotropically() {
     for (file, code) in floor_layer_blur_sources() {
         let lower = code.to_lowercase();
         for word in forbidden {
+            if word == "exponent" && BLUR_AT_THE_HIT.contains(&file) {
+                continue;
+            }
             assert!(!lower.contains(word), "{file} names `{word}`");
         }
     }

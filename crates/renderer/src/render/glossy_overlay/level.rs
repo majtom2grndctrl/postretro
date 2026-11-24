@@ -26,12 +26,10 @@ pub(crate) struct GlossyLevelLayout {
     pub(super) floor: GlossyFloorLayout,
 }
 
-/// The static-diffuse target at scene extent, with the overlay's inputs
-/// group over it.
+/// The static-diffuse target at scene extent.
 struct StaticDiffuseTarget {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
-    inputs_group: wgpu::BindGroup,
 }
 
 /// One level's glossy overlay state, owned by its level set and dropped with
@@ -48,9 +46,14 @@ pub(crate) struct GlossyLevelState {
     /// Whether a bound world face faces up by water's test: only such a
     /// level takes the floor layer.
     floor_faces: bool,
-    /// The floor layer's highlight-free colour and scene-colour chain, while
-    /// `floor_faces` holds at a tier that runs the floor layer.
+    /// The floor layer's highlight-free colour, scene-colour chain, target
+    /// and march depth, while `floor_faces` holds at a tier that runs the
+    /// floor layer.
     floor: Option<GlossyFloorTargets>,
+    /// The overlay's inputs group, while D_static exists: D_static, the
+    /// sampler, and the floor layer's target or its placeholder. Rebuilt
+    /// only when either target is created, resized or released.
+    inputs_group: Option<wgpu::BindGroup>,
 }
 
 impl GlossyLevelLayout {
@@ -87,6 +90,7 @@ impl GlossyLevelLayout {
             target: None,
             floor_faces: binds_an_up_facing_face(geometry.vertices, &stream),
             floor: None,
+            inputs_group: None,
         };
         self.sync_target(device, &mut state, quality, extent);
         Some(state)
@@ -128,8 +132,9 @@ impl GlossyLevelLayout {
     /// Bring the D_static target and the floor layer's targets in line with
     /// `quality` and `extent`: D_static allocated above off at `extent`,
     /// released at off; the floor targets as [`GlossyFloorLayout::sync`]
-    /// rules. Targets already there build nothing. Returns whether it
-    /// created a D_static target.
+    /// rules. Targets already there build nothing; the inputs group rebuilds
+    /// only over a target created or released. Returns whether it created a
+    /// D_static target.
     pub(crate) fn sync_target(
         &self,
         device: &wgpu::Device,
@@ -137,18 +142,27 @@ impl GlossyLevelLayout {
         quality: FluidReflectionQuality,
         extent: Extent,
     ) -> bool {
-        self.floor
-            .sync(device, &mut state.floor, state.floor_faces, quality, extent);
-        if quality == FluidReflectionQuality::Off {
+        let had_floor = state.floor.is_some();
+        let floor_built =
+            self.floor
+                .sync(device, &mut state.floor, state.floor_faces, quality, extent);
+        let floor_moved = floor_built || had_floor != state.floor.is_some();
+        let created = if quality == FluidReflectionQuality::Off {
             state.target = None;
-            return false;
+            false
+        } else {
+            let current = state.target.as_ref().map(|target| target.texture.size());
+            let kept = current
+                .is_some_and(|size| size.width == extent.width && size.height == extent.height);
+            if !kept {
+                state.target = Some(self.target(device, extent));
+            }
+            !kept
+        };
+        if created || floor_moved || state.target.is_none() {
+            self.rebind_inputs(device, state);
         }
-        let current = state.target.as_ref().map(|target| target.texture.size());
-        if current.is_some_and(|size| size.width == extent.width && size.height == extent.height) {
-            return false;
-        }
-        state.target = Some(self.target(device, extent));
-        true
+        created
     }
 
     /// Recreate allocated targets at `extent` (the scene targets moved);
@@ -163,6 +177,7 @@ impl GlossyLevelLayout {
             state.target = Some(self.target(device, extent));
         }
         self.floor.resize(device, &mut state.floor, extent);
+        self.rebind_inputs(device, state);
     }
 
     fn target(&self, device: &wgpu::Device, extent: Extent) -> StaticDiffuseTarget {
@@ -181,25 +196,35 @@ impl GlossyLevelLayout {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let inputs_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Glossy Overlay Inputs Bind Group"),
-            layout: &self.inputs_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-            ],
+        StaticDiffuseTarget { texture, view }
+    }
+
+    /// The overlay's inputs group over the current D_static and floor layer
+    /// (or its placeholder); none without D_static. A released floor target
+    /// leaves no group pointing at it.
+    fn rebind_inputs(&self, device: &wgpu::Device, state: &mut GlossyLevelState) {
+        state.inputs_group = state.target.as_ref().map(|target| {
+            device.new_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Glossy Overlay Inputs Bind Group"),
+                layout: &self.inputs_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&target.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(
+                            self.floor.overlay_view(state.floor.as_ref()),
+                        ),
+                    },
+                ],
+            })
         });
-        StaticDiffuseTarget {
-            texture,
-            view,
-            inputs_group,
-        }
     }
 }
 
@@ -228,7 +253,7 @@ impl GlossyLevelState {
     }
 
     pub(crate) fn inputs_group(&self) -> Option<&wgpu::BindGroup> {
-        self.target.as_ref().map(|target| &target.inputs_group)
+        self.inputs_group.as_ref()
     }
 
     /// Forward's second attachment, while allocated.
@@ -249,7 +274,7 @@ impl GlossyLevelState {
     }
 
     /// The ledger rows of every target allocated: D_static, then the floor
-    /// layer's highlight-free colour and chain.
+    /// layer's highlight-free colour, chain, target and march depth.
     pub(crate) fn residency_rows(&self) -> impl Iterator<Item = ResidencyAllocation> + '_ {
         let static_diffuse = self.target.as_ref().map(|target| {
             texture_row(

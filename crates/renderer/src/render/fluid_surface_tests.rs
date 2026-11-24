@@ -5164,6 +5164,24 @@ fn the_march_and_its_confidence_read_no_direction() {
         FS_REFLECTION_BODY,
         "{rule}: the reflection entry"
     );
+    // The glossy floor layer's march is this march, composed unmodified,
+    // and its entry is pinned whole beside water's: the scan covers it.
+    use crate::render::glossy_floor::GLOSSY_FLOOR_MARCH_SHADER_SOURCE as FLOOR;
+    assert_eq!(
+        code_only(wgsl_fn(FLOOR, "screen_march")),
+        SCREEN_MARCH_WGSL_BODY,
+        "{rule}: the floor layer's march body"
+    );
+    assert_eq!(
+        march_conditions(FLOOR),
+        march_conditions(SCREEN_MARCH_WGSL),
+        "{rule}: the floor layer's `if` conditions"
+    );
+    assert_eq!(
+        code_only(wgsl_fn(FLOOR, "glossy_floor_march")),
+        crate::render::glossy_floor::march_tests::GLOSSY_FLOOR_MARCH_BODY,
+        "{rule}: the floor layer's march entry"
+    );
 }
 
 /// Each `if` condition in `screen_march`, code only, in source order: every

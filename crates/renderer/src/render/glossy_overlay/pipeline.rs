@@ -111,25 +111,28 @@ pub(crate) fn glossy_overlay_probe_layout_entries() -> [wgpu::BindGroupLayoutEnt
 }
 
 /// The frame inputs group's entries: D_static, read by `textureLoad` at the
-/// fragment's pixel, and the probe reads' linear-clamp sampler.
-pub(crate) fn glossy_overlay_inputs_layout_entries() -> [wgpu::BindGroupLayoutEntry; 2] {
-    [
-        wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                view_dimension: wgpu::TextureViewDimension::D2,
-                multisampled: false,
-            },
-            count: None,
+/// fragment's pixel, the probe reads' linear-clamp sampler, and the floor
+/// layer's target (or its placeholder), read by the `_floor` entries alone.
+pub(crate) fn glossy_overlay_inputs_layout_entries() -> [wgpu::BindGroupLayoutEntry; 3] {
+    let texture = |binding, filterable| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
         },
+        count: None,
+    };
+    [
+        texture(0, false),
         wgpu::BindGroupLayoutEntry {
             binding: 1,
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
             count: None,
         },
+        texture(2, true),
     ]
 }
 

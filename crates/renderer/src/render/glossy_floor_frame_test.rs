@@ -17,7 +17,7 @@ use super::glossy_floor::ColourOutputs;
 use super::glossy_floor_frame_test_fixtures::{
     FloorFrame, FloorTargets, GLOSSY_BROAD_TINTED, GLOSSY_BROAD_UNTINTED, HIGHLIGHT, ROOM_X,
     ROOM_Z, SPECULAR_WALL, WALL_HEIGHT, box_mean, floor_frame, install_faces, install_room,
-    read_floor_targets, read_scene_colour, room_faces, room_view, store_slack,
+    read_floor_layer, read_floor_targets, read_scene_colour, room_faces, room_view, store_slack,
     with_forward_highlight, with_mover_highlight,
 };
 use super::glossy_overlay_frame_test_fixtures::{
@@ -30,7 +30,10 @@ use super::glossy_overlay_guard_frame_test::{CHARACTER, character_at, character_
 use super::glossy_overlay_room_frame_test_fixtures::ray_through;
 use super::glossy_overlay_weights_frame_test::{point_light, set_light};
 use super::gpu_create::{GpuCreationCounts, gpu_creation_counts};
-use super::{GLOSSY_HIGHLIGHT_FREE, GLOSSY_SCENE_COLOUR_CHAIN, GLOSSY_STATIC_DIFFUSE, Renderer};
+use super::{
+    GLOSSY_FLOOR_LAYER, GLOSSY_FLOOR_LAYER_DEPTH, GLOSSY_HIGHLIGHT_FREE, GLOSSY_SCENE_COLOUR_CHAIN,
+    GLOSSY_STATIC_DIFFUSE, Renderer,
+};
 use FluidReflectionQuality::{High, Low, Medium, Off};
 
 /// Where a pixel's centre ray first meets the room.
@@ -399,6 +402,17 @@ fn floor_ledger(renderer: &Renderer) -> (Option<u64>, Option<u64>) {
     )
 }
 
+/// The ledger's floor-layer target rows, `(target, march depth)` bytes.
+fn floor_layer_ledger(renderer: &Renderer) -> (Option<u64>, Option<u64>) {
+    let ledger = renderer
+        .reflection_probe_residency_report()
+        .expect("full renderer");
+    (
+        ledger.bytes(GLOSSY_FLOOR_LAYER),
+        ledger.bytes(GLOSSY_FLOOR_LAYER_DEPTH),
+    )
+}
+
 /// Assert a frame drawn now meets the floor layer's boundary rows: its
 /// targets at `scene` and the tier's fraction of it (`chain`), down to 1×1,
 /// the highlight-free colour holding this frame's passes (the opaque scene
@@ -418,6 +432,7 @@ fn assert_boundary_frame(
         "{what}: the targets follow the current extent, the chain to 1×1"
     );
     let chains = renderer.full().glossy_overlay.floor().chains();
+    let marches = renderer.full().glossy_overlay.floor().marches();
     let created = with_variant(renderer, "fs_test_zero", |renderer| {
         let before = gpu_creation_counts();
         frame_at(renderer, room_view(), 0.0);
@@ -427,6 +442,11 @@ fn assert_boundary_frame(
         renderer.full().glossy_overlay.floor().chains(),
         chains + 1,
         "{what}: one chain"
+    );
+    assert_eq!(
+        renderer.full().glossy_overlay.floor().marches(),
+        marches + 1,
+        "{what}: one march"
     );
     let floor = read_floor_targets(renderer).expect("targets");
     let (extent, colour) = read_scene_colour(renderer);
@@ -448,6 +468,16 @@ fn assert_boundary_frame(
         "{what}: the ledger counts the highlight-free colour: {bytes_free:?}"
     );
     assert!(bytes_chain.is_some(), "{what}: the ledger counts the chain");
+    // The floor layer's target and the march's depth at the chain's level-0
+    // extent: eight and four bytes a texel.
+    let texels = u64::from(chain.0 * chain.1);
+    assert_eq!(
+        floor_layer_ledger(renderer),
+        (Some(texels * 8), Some(texels * 4)),
+        "{what}: the ledger counts the floor layer and its depth"
+    );
+    let layer = read_floor_layer(renderer).expect("the floor layer");
+    assert_eq!(layer.extent, UVec2::new(chain.0, chain.1));
     created
 }
 
@@ -460,6 +490,8 @@ fn assert_released(renderer: &mut Renderer, what: &str) {
         (None, None),
         "{what}: no ledger rows"
     );
+    assert_eq!(floor_layer_ledger(renderer), (None, None));
+    let marches = renderer.full().glossy_overlay.floor().marches();
     let chains = renderer.full().glossy_overlay.floor().chains();
     renderer.full().kinematic_brush.take_bound_outputs();
     floor_frame(renderer, room_view());
@@ -467,6 +499,11 @@ fn assert_released(renderer: &mut Renderer, what: &str) {
         renderer.full().glossy_overlay.floor().chains(),
         chains,
         "{what}: no chain"
+    );
+    assert_eq!(
+        renderer.full().glossy_overlay.floor().marches(),
+        marches,
+        "{what}: no march"
     );
     assert_eq!(
         renderer.full().kinematic_brush.take_bound_outputs(),
@@ -517,15 +554,17 @@ fn publish_room(renderer: &mut Renderer, id: super::LevelSetId) {
     set_mover(renderer, Some(mover_in_front()));
 }
 
-// Acceptance rows 39 (chain half) and 43, pins P21 and P28. The
-// highlight-free colour and the chain follow the floor layer. On the first
-// frame after install, a resize, a level set published at another extent
-// and a live low → medium switch, both sit at the current extent (the chain
-// at the tier's fraction, down to 1×1), hold that frame's passes (the
-// mover's colour) and appear in the memory ledger. At low and off, and
-// after unload, neither exists, no chain records and the mover writes its
-// one output. A tier change builds no pipeline under either specular style:
-// low → medium builds the two targets and one group per chain level alone.
+// Acceptance rows 39 and 43, pins P21 and P28. The highlight-free colour,
+// the chain and the floor layer's target and depth follow the floor layer.
+// On the first frame after install, a resize, a level set published at
+// another extent and a live low → medium switch, all sit at the current
+// extent (the chain and the floor layer at the tier's fraction, the chain
+// down to 1×1), hold that frame's passes (the mover's colour) and appear in
+// the memory ledger, and the frame records one chain and one march. At low
+// and off, and after unload, none exists, no chain or march records and the
+// mover writes its one output. A tier change builds no pipeline under either
+// specular style: low → medium builds the targets and their groups alone,
+// high → low the overlay's inputs over the placeholder alone.
 #[test]
 fn the_floor_targets_follow_the_floor_tier_and_extent_and_release_below_it() {
     let Some(mut renderer) = renderer() else {
@@ -582,11 +621,12 @@ fn the_floor_targets_follow_the_floor_tier_and_extent_and_release_below_it() {
 
         let before = gpu_creation_counts();
         renderer.set_reflection_quality(Low);
+        let built = gpu_creation_counts().since(before);
         assert_eq!(
-            gpu_creation_counts().since(before).total(),
-            0,
-            "{}",
-            what("high → low builds nothing")
+            (built.total(), built.bind_groups),
+            (1, 1),
+            "{}: {built:?}",
+            what("high → low builds the overlay's inputs over the placeholder alone")
         );
         assert_released(&mut renderer, &what("low"));
         assert!(renderer.level().glossy.as_ref().is_some_and(|g| g.ready()));
@@ -595,6 +635,9 @@ fn the_floor_targets_follow_the_floor_tier_and_extent_and_release_below_it() {
         renderer.set_reflection_quality(Medium);
         let built = gpu_creation_counts().since(before);
         let levels = floor_extents(&renderer).expect("medium targets").2;
+        // The highlight-free colour, the chain, the floor layer and its
+        // depth; the march uniform; a group per chain level, the march's
+        // and the overlay's inputs over the new floor layer.
         assert_eq!(
             (
                 built.pipelines,
@@ -602,9 +645,9 @@ fn the_floor_targets_follow_the_floor_tier_and_extent_and_release_below_it() {
                 built.textures,
                 built.bind_groups
             ),
-            (0, 0, 2, u64::from(levels)),
+            (0, 1, 4, u64::from(levels) + 2),
             "{}: {built:?}",
-            what("low → medium builds the targets and one group per level alone")
+            what("low → medium builds the targets and their groups alone")
         );
         let created =
             assert_boundary_frame(&mut renderer, frame, quarter, &what("first medium frame"));
@@ -632,6 +675,7 @@ fn the_floor_targets_follow_the_floor_tier_and_extent_and_release_below_it() {
         (None, None),
         "unload: no ledger rows"
     );
+    assert_eq!(floor_layer_ledger(&renderer), (None, None));
     let ledger = renderer.reflection_probe_residency_report().expect("full");
     assert_eq!(ledger.bytes(GLOSSY_STATIC_DIFFUSE), None);
 }

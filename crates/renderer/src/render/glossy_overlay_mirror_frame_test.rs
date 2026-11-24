@@ -20,13 +20,14 @@ use super::fluid_reflection_frame_test_fixtures::{
 };
 use super::fluid_reflection_sums_frame_test_fixtures::frame_at;
 use super::fluid_surface_frame_test::look_draw;
+use super::glossy_floor_frame_test_fixtures::read_floor_layer;
 use super::glossy_overlay_frame_test_fixtures::{
     FixtureFace, FloorMaterial, GlossyFrame, face_at, floor_faces, floor_probe, floor_view,
     overlays, renderer, set_floor_material, with_faces, with_variant,
 };
 use super::glossy_overlay_gate_frame_fixtures::{
-    ALL, MARGIN, MOVER, assert_composite, binding_the_pool, frame_seeing, install_floor_with,
-    install_mover, mirror_camera, pool, upright_mover,
+    ALL, Layers, MARGIN, MOVER, assert_layered_composite, binding_the_pool, frame_seeing,
+    install_floor_with, install_mover, mirror_camera, pool, upright_mover,
 };
 use FluidReflectionQuality::{Low, Off, VeryHigh};
 
@@ -136,10 +137,11 @@ fn on_pool(view: View, pixel: UVec2, margin: f32) -> bool {
     })
 }
 
-/// The composite row on the bound face: the probe term alone (no planar or
-/// screen-space share reaches a world face), with no validation error, and
-/// at very high the mirror recorded on both frames.
-fn assert_probe_term(renderer: &mut Renderer, view: View, mirror: bool, what: &str) {
+/// The composite row on the bound face: the probe term with the floor
+/// layer's share at very high (no planar share reaches a world face), the
+/// probe term alone at Low, with no validation error, and at very high the
+/// mirror recorded on both frames.
+fn assert_bound_face_composite(renderer: &mut Renderer, view: View, mirror: bool, what: &str) {
     let records = renderer.planar_reflection_records();
     let production = frame_seeing(renderer, view, &ALL);
     let forward = with_variant(renderer, "fs_test_zero", |renderer| {
@@ -151,7 +153,19 @@ fn assert_probe_term(renderer: &mut Renderer, view: View, mirror: bool, what: &s
         "{what}: the mirror records each frame at very high"
     );
     let skip = past_the_floor(view);
-    let checked = assert_composite(view, &production, &forward, &[0], &skip, what);
+    // At very high the floor runs its floor layer: the bound face takes the
+    // layered form over the floor layer this frame left.
+    let floor = read_floor_layer(renderer);
+    assert_eq!(
+        floor.is_some(),
+        mirror,
+        "{what}: the floor layer runs at very high alone"
+    );
+    let layers = Layers {
+        floor: floor.as_ref(),
+        ..Layers::PROBE_ALONE
+    };
+    let checked = assert_layered_composite(view, &production, &forward, &[0], &layers, &skip, what);
     assert!(checked > 100, "{what}: {checked} bound pixels");
 }
 
@@ -213,17 +227,17 @@ fn the_mirror_records_no_overlay_and_matches_the_level_before_glossy_faces() {
         .count();
     assert!(water > 30, "the pool is on screen: {water}");
 
-    assert_probe_term(&mut glossy, view, true, "very high");
+    assert_bound_face_composite(&mut glossy, view, true, "very high");
     glossy.set_reflection_quality(Off);
     frame_seeing(&mut glossy, view, &ALL);
     glossy.set_reflection_quality(Low);
-    assert_probe_term(&mut glossy, view, false, "the first low frame after off");
+    assert_bound_face_composite(&mut glossy, view, false, "the first low frame after off");
     glossy.set_reflection_quality(VeryHigh);
-    assert_probe_term(&mut glossy, view, true, "very high after low");
+    assert_bound_face_composite(&mut glossy, view, true, "very high after low");
     glossy.record_surface_size(48, 40);
     frame_at(&mut glossy, view, 0.0);
     glossy.record_surface_size(FRAME, FRAME);
-    assert_probe_term(&mut glossy, view, true, "the first frame after a resize");
+    assert_bound_face_composite(&mut glossy, view, true, "the first frame after a resize");
 }
 
 // Acceptance row 58 (renderer half). At very high, a level whose glossy

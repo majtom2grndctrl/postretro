@@ -531,6 +531,25 @@ pub(super) fn with_variant<R>(
     result
 }
 
+/// Run `frame` with the overlay compositing the probe term alone at every
+/// tier: the floor layer's forms swapped for the probe term's, restored
+/// after. For proofs of the probe term on fixtures whose floors reflect
+/// on-screen content at the tiers that run the floor layer; the floor
+/// layer's own proofs are `glossy_floor_layer_frame_test`'s.
+pub(super) fn with_probe_term_alone<R>(
+    renderer: &mut Renderer,
+    frame: impl FnOnce(&mut Renderer) -> R,
+) -> R {
+    let alone = renderer.full().glossy_overlay.probe_term_alone();
+    let production = renderer.full_mut().glossy_overlay.swap_pipelines(alone);
+    let result = frame(renderer);
+    renderer
+        .full_mut()
+        .glossy_overlay
+        .swap_pipelines(production);
+    result
+}
+
 /// Overlay passes recorded so far.
 pub(super) fn overlays(renderer: &Renderer) -> u32 {
     renderer.full().glossy_overlay.recorded()

@@ -54,7 +54,13 @@ fn glossy_overlay_shader_validates_with_its_composed_modules() {
             "fs_pixel_flat",
             "fs_smooth_flat",
             "fs_pixel_plain",
-            "fs_smooth_plain"
+            "fs_smooth_plain",
+            "fs_pixel_floor",
+            "fs_smooth_floor",
+            "fs_pixel_flat_floor",
+            "fs_smooth_flat_floor",
+            "fs_pixel_plain_floor",
+            "fs_smooth_plain_floor"
         ]
     );
 }
@@ -525,11 +531,17 @@ fn overlay_records_after_the_skinned_mesh_pass_and_before_the_ghost_pass() {
     let chain = glossy
         .find("self.record_glossy_scene_colour_chain(encoder,floor_layer);")
         .expect("the overlay records the scene-colour chain");
+    let march = glossy
+        .find("self.record_glossy_floor_march(encoder,floor_layer);")
+        .expect("the overlay records the floor march");
     assert!(
-        guard < chain && chain < overlay,
+        guard < chain && chain < march && march < overlay,
         "the guard marks D_static, then the chain reads the opaque passes' \
-         highlight-free colour, before the overlay adds a probe term"
+         highlight-free colour and the floor march reads the chain, before the \
+         overlay adds a probe term and composites the floor layer"
     );
+    assert_eq!(glossy.matches("record_glossy_floor_march(").count(), 1);
+    assert_eq!(frame.matches("record_glossy_floor_march(").count(), 0);
     assert_eq!(glossy.matches(".guard().record(").count(), 1);
     assert_eq!(
         glossy.matches("record_glossy_scene_colour_chain(").count(),
@@ -680,7 +692,10 @@ fn overlay_shades_from_forwards_march_normal_and_texel_point() {
     ));
     let overlay = squashed(include_str!("glossy_overlay.rs"));
     assert!(overlay.contains("letkeep=|bucket:u32|glossy(bucket)&&form(bucket)==drawn;"));
-    assert!(overlay.contains("pass.set_pipeline(self.pipelines.for_style(style,drawn));"));
+    assert!(overlay.contains("pass.set_pipeline(self.pipelines.get(style,drawn,floor_layer));"));
+    let march = squashed(include_str!("glossy_floor/march.rs"));
+    assert!(march.contains("letkeep=|bucket:u32|glossy(bucket)&&form(bucket)==drawn;"));
+    assert!(march.contains("pass.set_pipeline(self.march.for_style(style,drawn));"));
     assert!(squashed(include_str!("level_resource_set.rs")).contains(
         "GlossyOverlayForm::of(material.uniform_plan.can_march(),texture.normal_mapped)"
     ));

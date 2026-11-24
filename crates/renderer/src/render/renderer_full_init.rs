@@ -285,6 +285,7 @@ pub(crate) fn build_full_renderer(
         &texture_bind_group_layout,
         forward_static_diffuse,
         &kinematic_brush,
+        &depth_view,
     );
     let reflection_probe_sums = reflection_probe_sums::ReflectionProbeSumsPass::new(
         device,

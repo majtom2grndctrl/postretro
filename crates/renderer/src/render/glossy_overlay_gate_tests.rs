@@ -48,15 +48,21 @@ fn names_planar(text: &str) -> bool {
 #[test]
 fn the_overlay_probe_layer_derives_from_the_face_binding_alone() {
     let surface = squashed(include_str!("../shaders/glossy_surface.wgsl"));
-    assert!(surface.contains("@location(3)probe:u32,"), "the vertex stream");
+    assert!(
+        surface.contains("@location(3)probe:u32,"),
+        "the vertex stream"
+    );
     assert!(surface.contains("@location(2)@interpolate(flat)probe:u32,"));
     assert_eq!(surface.matches("probe").count(), 2, "declared, never read");
     let code = squashed(OVERLAY_WGSL);
     assert!(overlay_fn("vs_main").contains("out.probe=in.probe;"));
     assert_eq!(
         code.matches("in.probe").count(),
-        3,
-        "the vertex stage's copy and the probe term's two reads"
+        4,
+        "the vertex stage's copy, the probe term's two reads and the floor layer's gate"
+    );
+    assert!(
+        overlay_fn("glossy_overlay_floor_screen").contains("ifin.probe==FLUID_REFLECTION_NO_PROBE")
     );
     assert!(!squashed(include_str!("../shaders/glossy_overlay_shading.wgsl")).contains("probe"));
     let term = overlay_fn("glossy_overlay_probe");
@@ -231,8 +237,48 @@ fn no_planar_layer_reaches_the_overlay() {
             );
         }
     }
+    // Below the floor tiers the screen-space share is a literal miss; at
+    // them it is the floor layer's own target, read at the fragment.
     assert!(overlay_fn("glossy_overlay_delta").contains(
         "returnglossy_composite(d_static.rgb,probe.capture,probe.weight,vec4<f32>(0.0),"
     ));
+    let floor = overlay_fn("glossy_overlay_floor_delta");
+    assert!(floor.contains(
+        "letscreen=glossy_overlay_floor_screen(in,surface,pixel);\
+         returnglossy_composite(d_static.rgb,probe.capture,probe.weight,screen,"
+    ));
+    let screen = overlay_fn("glossy_overlay_floor_screen");
+    assert_eq!(
+        screen.matches("floor_layer").count(),
+        3,
+        "the screen share reads the floor layer alone: {screen}"
+    );
+    for (file, source) in [
+        (
+            "glossy_floor_march.wgsl",
+            include_str!("../shaders/glossy_floor_march.wgsl"),
+        ),
+        (
+            "glossy_floor_blur.wgsl",
+            include_str!("../shaders/glossy_floor_blur.wgsl"),
+        ),
+        (
+            "glossy_floor/march.rs",
+            include_str!("glossy_floor/march.rs"),
+        ),
+        (
+            "renderer_glossy_floor_frame.rs",
+            include_str!("renderer_glossy_floor_frame.rs"),
+        ),
+    ] {
+        for (index, line) in source.lines().enumerate() {
+            assert!(
+                !names_planar(line),
+                "{file}:{}: the floor layer names a planar resource: `{}`",
+                index + 1,
+                line.trim()
+            );
+        }
+    }
     assert!(names_planar("planar_layer") && !names_planar("coplanar mover"));
 }

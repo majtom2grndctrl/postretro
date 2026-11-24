@@ -8,8 +8,8 @@ The mover shader sits near a register cliff on the RDNA1 Mac target
 (`context/lib/rendering_pipeline.md` §7.3): a small WGSL edit can push an
 entry's VGPR count into a slower occupancy tier. Screen both entries after
 every edit to `kinematic_brush.wgsl`, or to any snippet composed into it,
-before it lands. The tool also screens the fluid surface, glossy overlay and
-world forward entries (see their sections).
+before it lands. The tool also screens the fluid surface, glossy overlay,
+glossy floor march and world forward entries (see their sections).
 
 ## Requirements
 
@@ -140,8 +140,43 @@ fewer hold 16 waves per SIMD, 72 hold 14, 88 hold 11 and 96 hold 10.
 | same, march-free with the neutral normal placeholder's one texel loaded | `fs_pixel_plain` | 63 | 64 |
 | same | `fs_smooth_plain` | 61 | 64 |
 
+| glossy floor layer (Task 11b): the six entries above, unchanged | `fs_pixel` … `fs_smooth_plain` | 95 / 84 / 62 / 61 / 63 / 61 | 80 / 78 / 64 / 64 / 64 / 64 |
+| same, the floor tiers' forms compositing the floor layer | `fs_pixel_floor` | 95 | 80 |
+| same | `fs_smooth_floor` | 84 | 78 |
+| same | `fs_pixel_flat_floor` | 64 | 68 |
+| same | `fs_smooth_flat_floor` | 64 | 68 |
+| same | `fs_pixel_plain_floor` | 63 | 68 |
+| same | `fs_smooth_plain_floor` | 63 | 68 |
+
 The march-free entries fell from 71 / 67 to 62 / 61 when the mover guard's
 mark moved from an early second `D_static` load to the composite's one load.
+The `_floor` forms run only at the tiers that run the floor layer; every other
+frame draws the six forms above, whose call graphs reach no floor-layer
+binding.
+
+## Glossy floor march entries
+
+```bash
+tools/metal_register_screen/screen_glossy_floor.sh <out dir> [fragment entry...]
+```
+
+Screens the glossy floor layer's march pipelines, every style and material
+form by default (`fs_pixel`, `fs_smooth`, `fs_pixel_flat`, `fs_smooth_flat`,
+`fs_pixel_plain`, `fs_smooth_plain`). The capture test
+`glossy_floor_march_msl_capture_for_the_register_screen` builds every entry of
+`GLOSSY_FLOOR_MARCH_SHADER_SOURCE` through the production pipeline
+constructor over the production layout entries, and writes `vertex_layout`
+(the world vertex and probe streams); the floor layer's one `rgba16Float`
+attachment is the screen's default.
+
+| Build | Entry | VGPRs | SGPRs |
+|---|---|---|---|
+| Task 11b: the march from the overlay's point, lifted one pixel | `fs_pixel` | 95 | 82 |
+| same | `fs_smooth` | 84 | 80 |
+| same | `fs_pixel_flat` | 42 | 58 |
+| same | `fs_smooth_flat` | 42 | 58 |
+| same | `fs_pixel_plain` | 42 | 60 |
+| same | `fs_smooth_plain` | 42 | 70 |
 
 ## World forward entries
 

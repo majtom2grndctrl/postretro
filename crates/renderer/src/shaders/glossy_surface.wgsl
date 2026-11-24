@@ -1,7 +1,8 @@
 // Glossy world faces' shared surface: the camera and world-material groups,
 // the world vertex a glossy redraw interpolates, and the texel read it shares
-// with forward. Declares groups 0 and 1 only; glossy_overlay.wgsl composes it
-// with its own groups and entries.
+// with forward. Declares groups 0 and 1 only; glossy_overlay.wgsl and the
+// floor layer's glossy_floor_march.wgsl each compose it with their own groups
+// and entries.
 // See: context/lib/rendering_pipeline.md §7.3a (Glossy world faces)
 
 // --- Group 0: the shared camera uniforms, forward's struct member for member.

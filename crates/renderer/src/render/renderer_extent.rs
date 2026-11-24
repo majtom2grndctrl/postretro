@@ -134,6 +134,10 @@ impl Renderer {
             &full.depth_view,
             full.screen_effects.scene_color_view(),
         );
+        // The glossy floor march reads scene depth through its own group.
+        full.glossy_overlay
+            .floor_mut()
+            .rebuild_scene_inputs(device, &full.depth_view);
         // The SDF shadow target is half the scene.
         full.sdf_shadow_pass.resize(device, width, height);
         // Only the active set's extent-bound groups follow: its spot group 5

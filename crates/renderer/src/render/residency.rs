@@ -98,8 +98,10 @@ pub(crate) fn texture_row(
 /// Bytes of a single-mip texture: whole compression blocks times block size.
 pub(crate) fn texture_bytes(format: wgpu::TextureFormat, extent: wgpu::Extent3d) -> u64 {
     let (block_w, block_h) = format.block_dimensions();
+    // A depth format's texel is its depth aspect's.
     let block_bytes = format
         .block_copy_size(None)
+        .or_else(|| format.block_copy_size(Some(wgpu::TextureAspect::DepthOnly)))
         .unwrap_or_else(|| panic!("residency texture format {format:?} has no copy size"));
     u64::from(extent.width.div_ceil(block_w))
         * u64::from(extent.height.div_ceil(block_h))
@@ -132,6 +134,7 @@ pub(crate) fn texture_format_name(format: wgpu::TextureFormat) -> &'static str {
         wgpu::TextureFormat::Rg16Float => "Rg16Float",
         wgpu::TextureFormat::R16Float => "R16Float",
         wgpu::TextureFormat::Rg11b10Ufloat => "Rg11b10Ufloat",
+        wgpu::TextureFormat::Depth32Float => "Depth32Float",
         format => panic!("unexpected residency texture format {format:?}"),
     }
 }

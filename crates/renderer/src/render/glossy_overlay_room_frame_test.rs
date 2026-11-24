@@ -27,7 +27,9 @@ use postretro_render_cpu::sh_compose::AnimatedLightScaleDescriptor;
 use super::Renderer;
 use super::fluid_reflection_frame_test_fixtures::View;
 use super::fluid_reflection_sums_frame_test_fixtures::descriptor_record;
-use super::glossy_overlay_frame_test_fixtures::{GlossyFrame, half_step, renderer, with_variant};
+use super::glossy_overlay_frame_test_fixtures::{
+    GlossyFrame, half_step, renderer, with_probe_term_alone, with_variant,
+};
 use super::glossy_overlay_room_frame_test_fixtures::{
     Face, Room, RoomMaterial, RoomReference, face_pixels, flat, room_floor_view, room_frame,
     room_view, stored,
@@ -41,9 +43,11 @@ fn bound(value: f32) -> f32 {
 }
 
 /// Production at `time` and the zero-adding variant (forward's colour and
-/// D_static) at the same pose and clock.
+/// D_static) at the same pose and clock. The room's floor reflects its walls
+/// through the floor layer at the tiers that run it; these proofs hold the
+/// probe term, so production composites the probe term alone.
 fn frames(renderer: &mut Renderer, view: View, time: f32) -> (GlossyFrame, GlossyFrame) {
-    let production = room_frame(renderer, view, time);
+    let production = with_probe_term_alone(renderer, |renderer| room_frame(renderer, view, time));
     let forward = with_variant(renderer, "fs_test_zero", |renderer| {
         room_frame(renderer, view, time)
     });

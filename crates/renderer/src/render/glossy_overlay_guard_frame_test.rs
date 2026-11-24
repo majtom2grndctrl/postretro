@@ -15,7 +15,8 @@ use super::Renderer;
 use super::fluid_reflection_frame_test_fixtures::{MAGENTA_UV, pixels};
 use super::ghost_depth_frame_test::install_skinned_model;
 use super::glossy_overlay_frame_test_fixtures::{
-    GlossyFrame, face_at, floor_probe, floor_view, overlays, renderer, with_variant,
+    GlossyFrame, face_at, floor_probe, floor_view, overlays, renderer, with_probe_term_alone,
+    with_variant,
 };
 use super::glossy_overlay_gate_frame_fixtures::{
     ALL, MARGIN, at, both_glossy_faces_bound, coplanar_mover, frame_seeing, guards,
@@ -25,7 +26,11 @@ use super::glossy_overlay_gate_frame_fixtures::{
 /// The production frame, then the zero-adding and constant-adding variants,
 /// at one pose and clock, with the guard marks each frame left.
 struct Frames {
+    /// Production, with the floor layer at the default tier.
     production: GlossyFrame,
+    /// Production compositing the probe term alone: what the floor shows
+    /// apart from what it reflects of the scene.
+    probe_alone: GlossyFrame,
     marks: Vec<f32>,
     forward: GlossyFrame,
     counted: GlossyFrame,
@@ -33,6 +38,8 @@ struct Frames {
 
 fn frames(renderer: &mut Renderer) -> Frames {
     let view = floor_view();
+    let probe_alone =
+        with_probe_term_alone(renderer, |renderer| frame_seeing(renderer, view, &ALL));
     let production = frame_seeing(renderer, view, &ALL);
     let marks = read_guard_marks(renderer).expect("D_static is allocated");
     let forward = with_variant(renderer, "fs_test_zero", |renderer| {
@@ -43,6 +50,7 @@ fn frames(renderer: &mut Renderer) -> Frames {
     });
     Frames {
         production,
+        probe_alone,
         marks,
         forward,
         counted,
@@ -83,10 +91,10 @@ fn a_coplanar_mover_takes_no_term_and_the_next_frame_takes_it_again() {
     let with = frames(&mut renderer);
     assert_eq!(
         guards(&renderer),
-        guards_before + 3,
+        guards_before + 4,
         "one guard pass a frame"
     );
-    assert_eq!(overlays(&renderer), overlays_before + 3);
+    assert_eq!(overlays(&renderer), overlays_before + 4);
     let constant = Vec3::splat(0.125);
     let (mut covered, mut kept) = (0, 0);
     for pixel in pixels() {
@@ -205,9 +213,10 @@ pub(super) fn character_at(at: Vec3) -> MeshInstanceInput {
 
 // Acceptance row 49, pin P15: a mover and a character standing on a bound
 // glossy face, in front of it, take no overlay fragment: their pixels are the
-// same with the production overlay and with one that adds nothing, and with
-// one that adds a constant per fragment. Every floor pixel they leave
-// uncovered is the frame without them, bit for bit.
+// same with the production overlay (the floor layer included) and with one
+// that adds nothing, and with one that adds a constant per fragment. Every
+// floor pixel they leave uncovered takes the probe term of the frame without
+// them, bit for bit.
 #[test]
 fn movers_and_characters_in_front_of_a_glossy_face_take_no_term() {
     let Some(mut renderer) = renderer() else {
@@ -252,9 +261,11 @@ fn movers_and_characters_in_front_of_a_glossy_face_take_no_term() {
                 character += 1;
             }
         } else {
+            // The floor reflects them through its floor layer; its probe
+            // term is unchanged.
             assert_eq!(
-                with.production.colour(pixel),
-                without.production.colour(pixel),
+                with.probe_alone.colour(pixel),
+                without.probe_alone.colour(pixel),
                 "{pixel}: the floor they leave uncovered is unchanged"
             );
             if face_at(view, pixel, MARGIN) == Some(0)

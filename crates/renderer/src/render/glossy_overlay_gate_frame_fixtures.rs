@@ -4,7 +4,7 @@
 //! the composite row checked per pixel.
 //! See: context/lib/rendering_pipeline.md §7.3a (Glossy world faces)
 
-use glam::{Mat4, UVec2, Vec3};
+use glam::{Mat4, UVec2, Vec3, Vec4};
 use postretro_level_format::cell_draw_index::Span;
 use postretro_level_format::environment_volumes::{
     EnvironmentSurfaceFace, EnvironmentSurfaceVertex, EnvironmentVolumeRecord,
@@ -14,7 +14,7 @@ use postretro_level_format::reflection_probes::{
     ReflectionProbeFluidBinding, ReflectionProbeWorldBinding, ReflectionProbesSection,
 };
 use postretro_level_loader::{CellDrawIndex, KinematicGeometry, ShDrainBatch};
-use postretro_render_cpu::fluid_surface::reflection::reflection_fresnel;
+use postretro_render_cpu::glossy_reflection::{glossy_composite, glossy_fresnel, glossy_texel};
 use postretro_render_cpu::planar_reflection::MirrorCamera;
 use postretro_render_cpu::sh_compose::f16_bits_to_f32;
 use postretro_visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
@@ -22,6 +22,7 @@ use postretro_visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
 use super::fluid_reflection_frame_test_fixtures::{
     FRAME, MAGENTA_UV, View, centre, on_plane, pixels, read_back, read_scene,
 };
+use super::glossy_floor_frame_test_fixtures::FloorLayer;
 use super::glossy_overlay_frame_test_fixtures::{
     FACES, FloorMaterial, GlossyFrame, PROBE_COLOUR, face_at, floor_probe, half_step,
     near_any_face, read_static_diffuse, set_floor_material, with_floor_indexed,
@@ -263,12 +264,9 @@ pub(super) fn guards(renderer: &Renderer) -> u32 {
     renderer.full().glossy_overlay.guard().recorded()
 }
 
-/// Assert the composite row on every pixel of `view` the CPU can call and
-/// `skip` leaves: on a floor face in `bound` ([`FACES`] numbering),
-/// production is forward + W·(R − D_static) within one half-float step, W
-/// the head-on-0.04 Schlick weight (capture-shadow weight 1: zero
-/// distances); everywhere else it is forward's, bit for bit. Returns the
-/// bound pixels checked.
+/// Assert the composite row over every pixel of `view` but those `skip`
+/// takes, the probe term alone (no screen-space share): see
+/// [`assert_layered_composite`].
 pub(super) fn assert_composite(
     view: View,
     production: &GlossyFrame,
@@ -277,19 +275,97 @@ pub(super) fn assert_composite(
     skip: &dyn Fn(UVec2) -> bool,
     what: &str,
 ) -> usize {
+    assert_layered_composite(
+        view,
+        production,
+        forward,
+        bound,
+        &Layers::PROBE_ALONE,
+        skip,
+        what,
+    )
+}
+
+/// What a bound face composites, for [`assert_layered_composite`]: the floor
+/// layer's target where it runs, the glossy faces' material (its albedo
+/// bytes 0 or 255, so linear exactly) and the capture-shadow weight s the
+/// fixture's probe gives every checked pixel.
+pub(super) struct Layers<'a> {
+    pub floor: Option<&'a FloorLayer>,
+    pub material: FloorMaterial,
+    pub shadow: f32,
+}
+
+impl Layers<'_> {
+    /// The probe term alone, uncoloured, unshadowed.
+    pub const PROBE_ALONE: Layers<'static> = Layers {
+        floor: None,
+        material: FloorMaterial::WHITE_SHARP,
+        shadow: 1.0,
+    };
+}
+
+/// Assert the composite row over every pixel of `view` but those `skip`
+/// takes: a bound face's pixel is forward + the layered form of the CPU
+/// reference (`glossy_composite`: F·colour·[c·X + (1 − c)·s·R] − W·D, the
+/// probe's uniform [`PROBE_COLOUR`] as R, read smooth), with the floor
+/// layer's `(c·X, c)` read bilinearly from `layers.floor` where given and
+/// zero where not, within one f16 step plus the bilinear weights' rounding;
+/// every other pixel is forward's colour, bit for bit. Returns how many
+/// bound pixels it checked.
+pub(super) fn assert_layered_composite(
+    view: View,
+    production: &GlossyFrame,
+    forward: &GlossyFrame,
+    bound: &[usize],
+    layers: &Layers<'_>,
+    skip: &dyn Fn(UVec2) -> bool,
+    what: &str,
+) -> usize {
+    let [r, g, b, _] = layers.material.albedo.map(|byte| {
+        assert!(matches!(byte, 0 | 255), "an albedo exact in linear");
+        f32::from(byte) / 255.0
+    });
+    let albedo = Vec3::new(r, g, b);
+    let texel = glossy_texel(layers.material.slot_sample(), albedo);
     let mut checked = 0;
+    let scene = UVec2::splat(FRAME);
     for pixel in pixels().filter(|&pixel| !skip(pixel)) {
         match face_at(view, pixel, MARGIN) {
             Some(face) if bound.contains(&face) => {
                 let point = on_plane(view, centre(pixel), 0.0).expect("on the floor");
-                let weight = reflection_fresnel((view.eye - point).normalize().y, 2.0);
-                let expected =
-                    forward.colour(pixel) + weight * (PROBE_COLOUR - forward.static_diffuse(pixel));
+                let fresnel = glossy_fresnel(&texel, (view.eye - point).normalize().y);
+                let (screen, spread) = layers.floor.map_or((Vec4::ZERO, Vec4::ZERO), |floor| {
+                    floor.bilinear(pixel, scene)
+                });
+                let expected = forward.colour(pixel)
+                    + glossy_composite(
+                        forward.static_diffuse(pixel),
+                        PROBE_COLOUR,
+                        layers.shadow,
+                        screen,
+                        fresnel,
+                        texel.colour,
+                    );
+                let reflected = glossy_composite(
+                    Vec3::ZERO,
+                    PROBE_COLOUR,
+                    layers.shadow,
+                    screen,
+                    fresnel,
+                    texel.colour,
+                );
                 let actual = production.colour(pixel);
                 for c in 0..3 {
                     // f32 rasterization against the CPU's ray-plane point
-                    // moves W by about 1e-6.
-                    let tolerance = half_step(expected[c]) + 1.0e-5;
+                    // moves W by about 1e-6; the sampler's weights round to
+                    // a 256th of the texels' spread; the GPU's Fresnel and
+                    // tint transcendentals round to about 1e-3 of the
+                    // reflection, as the weights proofs allow.
+                    let tolerance = half_step(expected[c])
+                        + 1.0e-5
+                        + fresnel * (spread[c] + spread.w * PROBE_COLOUR[c]) / 128.0
+                        + 1.5e-3 * reflected[c];
                     assert!(
                         (actual[c] - expected[c]).abs() <= tolerance,
                         "{what}: {pixel} channel {c} is {} against {}",

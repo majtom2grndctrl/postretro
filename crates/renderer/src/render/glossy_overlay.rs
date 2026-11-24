@@ -16,6 +16,7 @@ pub(crate) use mover_guard::GlossyMoverGuard;
 pub(crate) use pipeline::glossy_overlay_blend_state;
 pub(crate) use pipeline::{
     glossy_overlay_inputs_layout_entries, glossy_overlay_probe_layout_entries,
+    glossy_primitive_state, glossy_vertex_buffers,
 };
 
 use postretro_render_cpu::fluid_surface::reflection::reflection_mask_on;
@@ -115,8 +116,9 @@ impl GlossyOverlayForm {
         }
     }
 
-    /// The fragment entry drawing this form in `style`.
-    fn entry(self, style: FluidReflectionStyle) -> &'static str {
+    /// The fragment entry drawing this form in `style`: the overlay's probe
+    /// term, or the floor layer's march, whose entries take the same names.
+    pub(crate) fn entry(self, style: FluidReflectionStyle) -> &'static str {
         match (style, self) {
             (FluidReflectionStyle::Pixel, Self::March) => "fs_pixel",
             (FluidReflectionStyle::Smooth, Self::March) => "fs_smooth",
@@ -126,49 +128,92 @@ impl GlossyOverlayForm {
             (FluidReflectionStyle::Smooth, Self::Plain) => "fs_smooth_plain",
         }
     }
-}
 
-/// The overlay's pipelines, one per `render.reflections.style` and
-/// [`GlossyOverlayForm`], all built at full init so a style change compiles
-/// nothing.
-pub(crate) struct GlossyOverlayPipelines {
-    /// Indexed `[style][form]`, styles pixel then smooth, forms as
-    /// [`GlossyOverlayForm::ALL`].
-    pipelines: [[wgpu::RenderPipeline; 3]; 2],
-}
-
-impl GlossyOverlayPipelines {
-    const STYLES: [FluidReflectionStyle; 2] =
-        [FluidReflectionStyle::Pixel, FluidReflectionStyle::Smooth];
-
-    fn new(build: impl Fn(&str) -> wgpu::RenderPipeline) -> Self {
-        Self {
-            pipelines: Self::STYLES
-                .map(|style| GlossyOverlayForm::ALL.map(|form| build(form.entry(style)))),
+    /// The overlay entry drawing this form in `style` on a frame that runs
+    /// the floor layer: the probe term's entry with the floor layer
+    /// composited on up-facing faces.
+    fn floor_entry(self, style: FluidReflectionStyle) -> &'static str {
+        match (style, self) {
+            (FluidReflectionStyle::Pixel, Self::March) => "fs_pixel_floor",
+            (FluidReflectionStyle::Smooth, Self::March) => "fs_smooth_floor",
+            (FluidReflectionStyle::Pixel, Self::NormalMapped) => "fs_pixel_flat_floor",
+            (FluidReflectionStyle::Smooth, Self::NormalMapped) => "fs_smooth_flat_floor",
+            (FluidReflectionStyle::Pixel, Self::Plain) => "fs_pixel_plain_floor",
+            (FluidReflectionStyle::Smooth, Self::Plain) => "fs_smooth_plain_floor",
         }
     }
 
-    fn for_style(
+    /// Its index in [`GlossyOverlayForm::ALL`].
+    pub(crate) fn index(self) -> usize {
+        match self {
+            Self::Plain => 0,
+            Self::NormalMapped => 1,
+            Self::March => 2,
+        }
+    }
+}
+
+/// A pipeline set's index for `style`: pixel 0, smooth 1.
+pub(crate) fn style_index(style: FluidReflectionStyle) -> usize {
+    match style {
+        FluidReflectionStyle::Pixel => 0,
+        FluidReflectionStyle::Smooth => 1,
+    }
+}
+
+/// Both reflection styles, in pipeline-set order.
+pub(crate) const GLOSSY_STYLES: [FluidReflectionStyle; 2] =
+    [FluidReflectionStyle::Pixel, FluidReflectionStyle::Smooth];
+
+/// The overlay's pipelines, one per `render.reflections.style` and
+/// [`GlossyOverlayForm`], each in a probe-term form and a floor-layer form,
+/// all built at full init so a style or tier change compiles nothing.
+pub(crate) struct GlossyOverlayPipelines {
+    /// Indexed `[floor][style][form]`: the probe term's entries, then the
+    /// floor layer's; styles pixel then smooth, forms as
+    /// [`GlossyOverlayForm::ALL`].
+    pipelines: [[[wgpu::RenderPipeline; 3]; 2]; 2],
+}
+
+impl GlossyOverlayPipelines {
+    fn new(build: impl Fn(&str) -> wgpu::RenderPipeline) -> Self {
+        let set = |entry: fn(GlossyOverlayForm, FluidReflectionStyle) -> &'static str| {
+            GLOSSY_STYLES.map(|style| GlossyOverlayForm::ALL.map(|form| build(entry(form, style))))
+        };
+        Self {
+            pipelines: [
+                set(GlossyOverlayForm::entry),
+                set(GlossyOverlayForm::floor_entry),
+            ],
+        }
+    }
+
+    /// The pipeline drawing `form` in `style`, with the floor layer when
+    /// `floor_layer` holds.
+    fn get(
         &self,
         style: FluidReflectionStyle,
         form: GlossyOverlayForm,
+        floor_layer: bool,
     ) -> &wgpu::RenderPipeline {
-        let style = match style {
-            FluidReflectionStyle::Pixel => 0,
-            FluidReflectionStyle::Smooth => 1,
-        };
-        let form = match form {
-            GlossyOverlayForm::Plain => 0,
-            GlossyOverlayForm::NormalMapped => 1,
-            GlossyOverlayForm::March => 2,
-        };
-        &self.pipelines[style][form]
+        &self.pipelines[usize::from(floor_layer)][style_index(style)][form.index()]
     }
 
     /// `pipeline` in every style's and form's place: a test-only variant.
     #[cfg(test)]
     pub(crate) fn both(pipeline: wgpu::RenderPipeline) -> Self {
         Self::new(|_| pipeline.clone())
+    }
+
+    /// These pipelines with the probe term's in the floor layer's place, so
+    /// a frame that runs the floor layer composites nothing of it: a
+    /// test-only variant for proofs of the probe term alone.
+    #[cfg(test)]
+    pub(crate) fn probe_term_alone(&self) -> Self {
+        let probe = self.pipelines[0].clone();
+        Self {
+            pipelines: [probe.clone(), probe],
+        }
     }
 }
 
@@ -197,6 +242,7 @@ impl GlossyOverlayPass {
         material_layout: &wgpu::BindGroupLayout,
         forward: ForwardStaticDiffusePipelines,
         movers: &KinematicBrushPass,
+        scene_depth: &wgpu::TextureView,
     ) -> Self {
         let probe_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Glossy Overlay Probe BGL"),
@@ -235,7 +281,13 @@ impl GlossyOverlayPass {
             )
         });
         let guard = GlossyMoverGuard::new(device, movers, forward.format);
-        let floor = GlossyFloorPass::new(device, forward.highlight_free_format);
+        let floor = GlossyFloorPass::new(
+            device,
+            forward.highlight_free_format,
+            uniform_layout,
+            material_layout,
+            scene_depth,
+        );
         let level_layout = GlossyLevelLayout {
             probe_layout,
             inputs_layout,
@@ -272,23 +324,31 @@ impl GlossyOverlayPass {
         &self.guard
     }
 
-    /// The floor layer's pass: its scene-colour chain, recorded after the
-    /// guard and ahead of the overlay.
+    /// The floor layer's pass: its scene-colour chain and march, recorded
+    /// after the guard and ahead of the overlay.
     pub(crate) fn floor(&self) -> &GlossyFloorPass {
         &self.floor
     }
 
+    /// The floor layer's pass, to follow recreated scene targets.
+    pub(crate) fn floor_mut(&mut self) -> &mut GlossyFloorPass {
+        &mut self.floor
+    }
+
     /// Record the overlay's draws over the frame's glossy camera ranges in
-    /// `style`, the renderer's committed reflection style this frame. The
-    /// caller opens the pass (scene colour loaded, depth read-only) and binds
-    /// group 0; `glossy` names the glossy buckets, `form` each bucket's
-    /// [`GlossyOverlayForm`], which picks its pipeline, and `bind_material`
-    /// binds a bucket's world material at [`GLOSSY_OVERLAY_MATERIAL_GROUP`].
+    /// `style`, the renderer's committed reflection style this frame, with
+    /// the floor layer composited on up-facing faces on a frame that runs it
+    /// (`floor_layer`). The caller opens the pass (scene colour loaded, depth
+    /// read-only) and binds group 0; `glossy` names the glossy buckets,
+    /// `form` each bucket's [`GlossyOverlayForm`], which picks its pipeline,
+    /// and `bind_material` binds a bucket's world material at
+    /// [`GLOSSY_OVERLAY_MATERIAL_GROUP`].
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn record<'a>(
         &'a self,
         pass: &mut wgpu::RenderPass<'a>,
         style: FluidReflectionStyle,
+        floor_layer: bool,
         state: &'a GlossyLevelState,
         vertex_buffer: &'a wgpu::Buffer,
         index_buffer: &'a wgpu::Buffer,
@@ -316,7 +376,7 @@ impl GlossyOverlayPass {
             if !cull.draws_bucket(keep) {
                 continue;
             }
-            pass.set_pipeline(self.pipelines.for_style(style, drawn));
+            pass.set_pipeline(self.pipelines.get(style, drawn, floor_layer));
             cull.draw_indirect_subset(pass, Some(bind_material), &keep);
         }
     }
@@ -348,6 +408,13 @@ impl GlossyOverlayPass {
         forms: ForwardStaticDiffusePipelines,
     ) -> ForwardStaticDiffusePipelines {
         std::mem::replace(&mut self.forward, forms)
+    }
+
+    /// The production pipelines with the probe term's in the floor layer's
+    /// place (test-only).
+    #[cfg(test)]
+    pub(crate) fn probe_term_alone(&self) -> GlossyOverlayPipelines {
+        self.pipelines.probe_term_alone()
     }
 
     /// Put `pipelines` in the production pipelines' place, returning them.

@@ -5,7 +5,7 @@
 //! chain read back.
 //! See: context/lib/rendering_pipeline.md §7.3a (Glossy world faces, Floors)
 
-use glam::{UVec2, Vec3};
+use glam::{UVec2, Vec2, Vec3, Vec4};
 use postretro_render_cpu::sh_compose::f16_bits_to_f32;
 
 use super::fluid_reflection_frame_test_fixtures::{View, view_from};
@@ -391,4 +391,85 @@ pub(super) fn box_mean(texels: &[Vec3], extent: UVec2, cell: UVec2, block: u32) 
         }
     }
     sum / (block * block) as f32
+}
+
+/// The floor layer's target as the last frame left it: premultiplied
+/// (c × X, c) per texel, with its extent.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct FloorLayer {
+    pub extent: UVec2,
+    pub texels: Vec<Vec4>,
+}
+
+impl FloorLayer {
+    pub fn at(&self, texel: UVec2) -> Vec4 {
+        self.texels[(texel.y * self.extent.x + texel.x) as usize]
+    }
+
+    /// Texels with any confidence.
+    pub fn confident(&self) -> usize {
+        self.texels.iter().filter(|texel| texel.w > 0.0).count()
+    }
+
+    /// The overlay's smooth read at scene pixel `pixel` of a `scene`-extent
+    /// frame: bilinear at the pixel's centre, clamped to the edge, as the
+    /// sampler reads it; and the largest spread of the four texels it
+    /// weighs, which bounds the hardware's weight rounding.
+    pub fn bilinear(&self, pixel: UVec2, scene: UVec2) -> (Vec4, Vec4) {
+        let uv = (pixel.as_vec2() + 0.5) / scene.as_vec2();
+        let at = uv * self.extent.as_vec2() - 0.5;
+        let base = at.floor();
+        let frac = at - base;
+        let last = self.extent.as_ivec2() - 1;
+        let tap = |dx: i32, dy: i32| {
+            let texel = (base.as_ivec2() + glam::IVec2::new(dx, dy)).clamp(glam::IVec2::ZERO, last);
+            self.at(texel.as_uvec2())
+        };
+        let (a, b, c, d) = (tap(0, 0), tap(1, 0), tap(0, 1), tap(1, 1));
+        let top = a.lerp(b, frac.x);
+        let bottom = c.lerp(d, frac.x);
+        let spread = a.max(b).max(c).max(d) - a.min(b).min(c).min(d);
+        (top.lerp(bottom, frac.y), spread)
+    }
+
+    /// The overlay's pixel-style read: one load of the texel holding the
+    /// scene position `at`, as the overlay projects a texel centre.
+    pub fn nearest(&self, at: Vec2, scene: UVec2) -> Vec4 {
+        let texel = (at * self.extent.as_vec2() / scene.as_vec2()).as_uvec2();
+        self.at(texel.min(self.extent - 1))
+    }
+}
+
+/// The active level's floor layer target, read back, or `None` when it is
+/// not allocated.
+pub(super) fn read_floor_layer(renderer: &Renderer) -> Option<FloorLayer> {
+    let texture = renderer
+        .level()
+        .glossy
+        .as_ref()?
+        .floor()?
+        .layer_texture()
+        .clone();
+    assert_eq!(texture.format(), wgpu::TextureFormat::Rgba16Float);
+    let bytes = super::fluid_reflection_frame_test_fixtures::read_back(
+        renderer,
+        &texture,
+        8,
+        wgpu::TextureAspect::All,
+    );
+    Some(FloorLayer {
+        extent: UVec2::new(texture.width(), texture.height()),
+        texels: bytes
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|texel| {
+                Vec4::from(
+                    [0, 1, 2, 3].map(|c| {
+                        f16_bits_to_f32(u16::from_le_bytes([texel[2 * c], texel[2 * c + 1]]))
+                    }),
+                )
+            })
+            .collect(),
+    })
 }

@@ -2,16 +2,19 @@
 // W x (R - D_static) over forward's colour, R the bound probe's reflection
 // coloured as the texel's highlight, W its Fresnel x `_s` x sharpness fade x
 // capture-shadow weight, and D_static forward's static diffuse at the same
-// pixel. Concatenated with glossy_surface.wgsl (the camera and world-material
-// groups and the world vertex), glossy_overlay_shading.wgsl (where the fragment
-// reflects from and about which normal: the reflection style's point, forward's
-// Surface Depth march and normal map), material_shading.wgsl (the tint rule
-// forward's highlight reads), surface_depth.wgsl (forward's march),
-// reflection_probe_blur.wgsl (the exponent -> mip function that picks the
-// colour mips R reads), reflection_probe_lobes.wgsl, fluid_motion.wgsl,
-// fluid_reflection_ray.wgsl and fluid_reflection.wgsl, whose probe search,
-// hemisphere, live lighting and Fresnel it reuses by name. Mirrors render-cpu
-// `glossy_reflection` and `reflection_probe_mips`.
+// pixel. On up-facing faces at the tiers that run the floor layer, the
+// `_floor` entries composite the floor layer's (c x X, c) over the probe term
+// in water's layered form. Concatenated with glossy_surface.wgsl (the camera
+// and world-material groups and the world vertex), glossy_overlay_shading.wgsl
+// (where the fragment reflects from and about which normal: the reflection
+// style's point, forward's Surface Depth march and normal map),
+// material_shading.wgsl (the tint rule forward's highlight reads),
+// surface_depth.wgsl (forward's march), reflection_probe_blur.wgsl (the
+// exponent -> mip function that picks the colour mips R reads),
+// reflection_probe_lobes.wgsl, fluid_motion.wgsl, fluid_reflection_ray.wgsl
+// and fluid_reflection.wgsl, whose probe search, hemisphere, live lighting and
+// Fresnel it reuses by name. Mirrors render-cpu `glossy_reflection` and
+// `reflection_probe_mips`.
 // See: context/lib/rendering_pipeline.md §7.3a (Glossy world faces)
 
 // --- Group 2: the level's probe records, read only: the colour array, the
@@ -51,9 +54,13 @@ struct FluidProbeSums {
 // fragment's own pixel, and the linear-clamp sampler the probe reads take
 // (named as the fluid shader names the one it borrows). D_static's alpha is
 // the coplanar-mover guard's mark: 0 as forward clears and writes it, 1 where
-// this frame's mover guard pass found a mover.
+// this frame's mover guard pass found a mover. Binding 2 is the floor layer's
+// target, premultiplied (c x X, c) at the floor tier's fraction of the scene:
+// read by the `_floor` entries alone, so every other entry declares nothing
+// new; a 1x1 placeholder of c = 0 where no floor layer runs.
 @group(3) @binding(0) var static_diffuse: texture_2d<f32>;
 @group(3) @binding(1) var sh_atlas_sampler: sampler;
+@group(3) @binding(2) var floor_layer: texture_2d<f32>;
 
 // Water's reflectance scale (0.02 x surfaceReflectivity): an untinted texel's
 // head-on base of 0.04, raised by its tint to water's mirror cap, 1.
@@ -256,6 +263,59 @@ fn glossy_overlay_delta(in: GlossyVertexOutput, texel: GlossyTexel,
         texel.colour);
 }
 
+// The floor layer's (c x X, c) this fragment composites, on an up-facing face
+// by water's test under the probe term's gate (a bound probe, the face seen
+// from its up side, the all-terms mask), else (0, 0). Smooth samples the
+// target bilinearly at the fragment's own screen position; pixel loads it
+// nearest at the texel centre's projection, so every fragment of a texel
+// reads one value, and a centre off screen or behind the camera reads c = 0.
+// IP rule (owner review to change, ip-check.md B3): no normal- or
+// noise-driven offset moves either read.
+fn glossy_overlay_floor_screen(in: GlossyVertexOutput, surface: GlossySurface,
+                               pixel: bool) -> vec4<f32> {
+    if in.probe == FLUID_REFLECTION_NO_PROBE
+        || surface.outward.y < REFLECTION_UP_FACING_MIN_COS
+        || !fluid_reflection_seen_from_above(surface.outward, surface.view)
+        || !fluid_reflection_mask_on(uniforms.light_term_mask) {
+        return vec4<f32>(0.0);
+    }
+    let extent = vec2<f32>(textureDimensions(static_diffuse));
+    if !pixel {
+        return textureSampleLevel(floor_layer, sh_atlas_sampler, in.clip_position.xy / extent,
+            0.0);
+    }
+    let clip = uniforms.view_proj * vec4<f32>(surface.origin, 1.0);
+    if !(clip.w > 0.0) {
+        return vec4<f32>(0.0);
+    }
+    let ndc = clip.xy / clip.w;
+    let at = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5) * extent;
+    if any(at < vec2<f32>(0.0)) || any(at >= extent) {
+        return vec4<f32>(0.0);
+    }
+    let size = textureDimensions(floor_layer);
+    return textureLoad(floor_layer,
+        min(vec2<u32>(at * vec2<f32>(size) / extent), size - vec2<u32>(1u)), 0);
+}
+
+// `glossy_overlay_delta` with the floor layer in its composite: water's
+// layered form, F = Fresnel x `_s` x sharpness fade, the probe term taking
+// the (1 - c) the floor layer leaves. Read after the mover guard's mark, so a
+// pixel this frame's movers cover takes nothing from either layer; at c = 0
+// it is the probe term's line exactly.
+fn glossy_overlay_floor_delta(in: GlossyVertexOutput, texel: GlossyTexel,
+                              surface: GlossySurface, pixel: bool) -> vec3<f32> {
+    let fresnel = glossy_fresnel(texel, dot(surface.view, surface.outward));
+    let probe = glossy_overlay_probe(in, surface, texel.exponent);
+    let d_static = glossy_overlay_static_diffuse(in.clip_position.xy);
+    if glossy_overlay_mover_covered(d_static) {
+        return vec3<f32>(0.0);
+    }
+    let screen = glossy_overlay_floor_screen(in, surface, pixel);
+    return glossy_composite(d_static.rgb, probe.capture, probe.weight, screen, fresnel,
+        texel.colour);
+}
+
 // One style's overlay addition: forward's march picks the texel (in the
 // pipeline built with it), a texel of zero weight (no `_s`, at or below the
 // sharpness floor) adds nothing and reads nothing more, and the style picks
@@ -270,6 +330,21 @@ fn glossy_overlay_shade(in: GlossyVertexOutput, pixel: bool, march: bool,
     }
     let surface = glossy_overlay_surface(in, derivatives, depth, pixel, normal_map);
     return glossy_overlay_delta(in, texel, surface);
+}
+
+// `glossy_overlay_shade` at a floor tier: the floor layer joins the probe term
+// behind the same zero-weight early-out, so a texel of zero weight reads
+// neither.
+fn glossy_overlay_shade_floor(in: GlossyVertexOutput, pixel: bool, march: bool,
+                              normal_map: bool) -> vec3<f32> {
+    let derivatives = glossy_overlay_derivatives(in);
+    let depth = glossy_overlay_depth(in, derivatives, march);
+    let texel = glossy_overlay_texel(depth.uv, derivatives.ddx, derivatives.ddy);
+    if texel.mask <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    let surface = glossy_overlay_surface(in, derivatives, depth, pixel, normal_map);
+    return glossy_overlay_floor_delta(in, texel, surface, pixel);
 }
 
 // Added over forward's colour (src x 1 + dst x 1): forward + W x (R - D_static),
@@ -307,4 +382,38 @@ fn fs_pixel_plain(in: GlossyVertexOutput) -> @location(0) vec4<f32> {
 @fragment
 fn fs_smooth_plain(in: GlossyVertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(glossy_overlay_shade(in, false, false, false), 0.0);
+}
+
+// The `_floor` entries draw on frames that run the floor layer, each its
+// probe-term entry with the floor layer composited on up-facing faces; every
+// other face reads (0, 0) there. A frame without the floor layer draws the
+// entries above, which never reach the floor layer's binding.
+@fragment
+fn fs_pixel_floor(in: GlossyVertexOutput) -> @location(0) vec4<f32> {
+    return vec4<f32>(glossy_overlay_shade_floor(in, true, true, true), 0.0);
+}
+
+@fragment
+fn fs_smooth_floor(in: GlossyVertexOutput) -> @location(0) vec4<f32> {
+    return vec4<f32>(glossy_overlay_shade_floor(in, false, true, true), 0.0);
+}
+
+@fragment
+fn fs_pixel_flat_floor(in: GlossyVertexOutput) -> @location(0) vec4<f32> {
+    return vec4<f32>(glossy_overlay_shade_floor(in, true, false, true), 0.0);
+}
+
+@fragment
+fn fs_smooth_flat_floor(in: GlossyVertexOutput) -> @location(0) vec4<f32> {
+    return vec4<f32>(glossy_overlay_shade_floor(in, false, false, true), 0.0);
+}
+
+@fragment
+fn fs_pixel_plain_floor(in: GlossyVertexOutput) -> @location(0) vec4<f32> {
+    return vec4<f32>(glossy_overlay_shade_floor(in, true, false, false), 0.0);
+}
+
+@fragment
+fn fs_smooth_plain_floor(in: GlossyVertexOutput) -> @location(0) vec4<f32> {
+    return vec4<f32>(glossy_overlay_shade_floor(in, false, false, false), 0.0);
 }

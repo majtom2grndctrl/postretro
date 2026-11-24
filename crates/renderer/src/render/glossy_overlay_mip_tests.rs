@@ -144,9 +144,13 @@ fn water_samples_colour_mip_zero_only() {
             continue;
         }
         let code = squashed(&source);
+        // The glossy floor layer's blur reads the probe term's blur width
+        // at a texel's exponent, never the colour array (its pass binds no
+        // probe array: `glossy_floor_march_tests`).
         assert!(
             !code.contains("reflection_probe_exponent_mip(")
-                || name == "reflection_probe_blur.wgsl",
+                || name == "reflection_probe_blur.wgsl"
+                || name == "glossy_floor_blur.wgsl",
             "{name} reaches the exponent -> mip function"
         );
         for (at, _) in code.match_indices("(fluid_probe_array,") {

@@ -164,6 +164,8 @@ mod glossy_floor_frame_test;
 #[cfg(test)]
 mod glossy_floor_frame_test_fixtures;
 #[cfg(test)]
+mod glossy_floor_layer_frame_test;
+#[cfg(test)]
 mod glossy_overlay_frame_test;
 #[cfg(test)]
 mod glossy_overlay_frame_test_fixtures;
@@ -298,7 +300,9 @@ use dynamic_depth_cache::{DynamicDepthCacheGpu, DynamicDepthCachePlan};
 use fog_pass::FogPass;
 use frame_timing::FrameTiming;
 pub use geometry_install_marks::GeometryInstallTiming;
-pub use glossy_floor::{GLOSSY_HIGHLIGHT_FREE, GLOSSY_SCENE_COLOUR_CHAIN};
+pub use glossy_floor::{
+    GLOSSY_FLOOR_LAYER, GLOSSY_FLOOR_LAYER_DEPTH, GLOSSY_HIGHLIGHT_FREE, GLOSSY_SCENE_COLOUR_CHAIN,
+};
 pub use glossy_overlay::GLOSSY_STATIC_DIFFUSE;
 pub use level_build::{
     LevelBuildError, LevelBuildEvent, LevelBuildPart, LevelBuildSnapshotInputs, LevelGeometryParts,

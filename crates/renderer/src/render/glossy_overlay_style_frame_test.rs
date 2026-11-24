@@ -15,8 +15,11 @@ use postretro_render_data::material::Material;
 
 use super::Renderer;
 use super::fluid_reflection_frame_test_fixtures::{View, centre};
+use super::glossy_floor_frame_test_fixtures::read_floor_layer;
 use super::glossy_overlay::GlossyOverlayForm;
-use super::glossy_overlay_frame_test_fixtures::{GlossyFrame, half_step, renderer, with_variant};
+use super::glossy_overlay_frame_test_fixtures::{
+    GlossyFrame, half_step, renderer, with_probe_term_alone, with_variant,
+};
 use super::glossy_overlay_room_frame_test_fixtures::{
     Face, Room, RoomMaterial, RoomReference, face_pixels, ray_through, room_frame, room_view,
     set_room_material, with_room_variant,
@@ -45,7 +48,9 @@ const MIRROR_8: RoomMaterial = RoomMaterial {
 
 /// Production and the zero-adding variant at one pose.
 fn frames(renderer: &mut Renderer, view: View) -> (GlossyFrame, GlossyFrame) {
-    let production = room_frame(renderer, view, 0.0);
+    // The probe term alone: the floor layer's style proof is
+    // `glossy_floor_layer_frame_test`'s.
+    let production = with_probe_term_alone(renderer, |renderer| room_frame(renderer, view, 0.0));
     let forward = with_variant(renderer, "fs_test_zero", |renderer| {
         room_frame(renderer, view, 0.0)
     });
@@ -347,6 +352,97 @@ fn surface_depth_marches_the_overlay_as_forward_and_a_toggle_takes_the_same_fram
     }
 }
 
+// Acceptance rows 35 (both layers) and 45 (GPU half). The room's floor
+// reflects its walls through the floor layer; what the floor layer adds over
+// the probe term alone, F·colour·c·(X − R), is one value per albedo texel in
+// pixel style (the texel's weight, its point's probe term and the floor
+// layer's texel at its centre's projection) and varies within a texel in
+// smooth, on the first frame after a switch, both ways. The bound wall and
+// ceiling take nothing from it at any style: their pixels are the probe
+// term's bit for bit, and the floor layer is clear wherever they cover it.
+#[test]
+fn the_floor_layer_reaches_the_floor_alone_once_per_texel_in_pixel_style() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let room = Room::new([gradient, gradient, gradient]);
+    room.install(&mut renderer, &MIRROR_8);
+    let view = room_view();
+    let scene = UVec2::splat(super::fluid_reflection_frame_test_fixtures::FRAME);
+    for style in [
+        FluidReflectionStyle::Smooth,
+        FluidReflectionStyle::Pixel,
+        FluidReflectionStyle::Smooth,
+    ] {
+        renderer.set_fluid_reflection_style(style);
+        let layered = room_frame(&mut renderer, view, 0.0);
+        let floor = read_floor_layer(&renderer).expect("the room's tier runs the floor layer");
+        let alone =
+            with_probe_term_alone(&mut renderer, |renderer| room_frame(renderer, view, 0.0));
+        for face in [Face::Wall, Face::Ceiling] {
+            let covered = face_pixels(view, face, MARGIN);
+            assert!(covered.len() > 100, "{face:?} in view");
+            let on_face: std::collections::HashSet<UVec2> =
+                covered.iter().map(|(pixel, _)| *pixel).collect();
+            for &(pixel, _) in &covered {
+                assert_eq!(
+                    layered.colour(pixel),
+                    alone.colour(pixel),
+                    "{style:?}: {face:?} at {pixel} takes the floor layer"
+                );
+            }
+            // Every floor-layer texel whose scene pixels the face covers.
+            for y in 0..floor.extent.y {
+                for x in 0..floor.extent.x {
+                    let block = scene / floor.extent;
+                    let first = UVec2::new(x, y) * block;
+                    let all = (0..block.y).all(|dy| {
+                        (0..block.x).all(|dx| on_face.contains(&(first + UVec2::new(dx, dy))))
+                    });
+                    if all {
+                        assert_eq!(
+                            floor.at(UVec2::new(x, y)),
+                            glam::Vec4::ZERO,
+                            "{style:?}: the floor layer reaches {face:?}"
+                        );
+                    }
+                }
+            }
+        }
+        let texels: HashMap<_, _> = additions_by_texel(view, &layered, &alone)
+            .into_iter()
+            .filter(|((face, _), values)| *face == Face::Floor.index() && values.len() >= 4)
+            .collect();
+        let taking = texels
+            .values()
+            .filter(|values| values.iter().any(|value| value.abs().max_element() > 0.01))
+            .count();
+        assert!(
+            taking > 8,
+            "{style:?}: {taking} floor texels take the floor layer"
+        );
+        let varying = texels
+            .values()
+            .filter(|values| spread(values) > 0.01)
+            .count();
+        if style == FluidReflectionStyle::Pixel {
+            for values in texels.values() {
+                let slack = 2.0 * bound(values[0].max_element());
+                assert!(
+                    spread(values) <= slack,
+                    "a pixel texel's floor layer varies by {}",
+                    spread(values)
+                );
+            }
+        } else {
+            assert!(
+                varying * 4 > taking,
+                "{style:?}: {varying} of {taking} texels vary"
+            );
+        }
+    }
+}
+
 /// One frame with the overlay's production fragment `entry` in every
 /// pipeline's place.
 fn entry_frame(renderer: &mut Renderer, view: View, entry: &str) -> GlossyFrame {
@@ -361,6 +457,8 @@ fn entry_frame(renderer: &mut Renderer, view: View, entry: &str) -> GlossyFrame 
 // march-free ones' bit for bit, in both styles. A carved material draws
 // through the full pipeline (the march-free one draws it otherwise at On),
 // and at Off the march-free and plain pipelines draw its frame bit for bit.
+// At High the room's floor runs the floor layer, so each frame is drawn
+// through the floor layer's forms, and they hold it too.
 #[test]
 fn every_overlay_form_draws_the_full_pipelines_frame_for_the_materials_it_takes() {
     let Some(mut renderer) = renderer() else {
@@ -377,10 +475,13 @@ fn every_overlay_form_draws_the_full_pipelines_frame_for_the_materials_it_takes(
         room_frame(renderer, view, 0.0)
     });
     for (style, entries) in [
-        (FluidReflectionStyle::Pixel, ["fs_pixel", "fs_pixel_flat"]),
+        (
+            FluidReflectionStyle::Pixel,
+            ["fs_pixel_floor", "fs_pixel_flat_floor"],
+        ),
         (
             FluidReflectionStyle::Smooth,
-            ["fs_smooth", "fs_smooth_flat"],
+            ["fs_smooth_floor", "fs_smooth_flat_floor"],
         ),
     ] {
         renderer.set_fluid_reflection_style(style);
@@ -407,7 +508,7 @@ fn every_overlay_form_draws_the_full_pipelines_frame_for_the_materials_it_takes(
     for quality in [SurfaceDepthQuality::On, SurfaceDepthQuality::Off] {
         renderer.set_surface_depth_quality(quality);
         let production = room_frame(&mut renderer, view, 0.0);
-        for entry in ["fs_smooth_flat", "fs_smooth_plain"] {
+        for entry in ["fs_smooth_flat_floor", "fs_smooth_plain_floor"] {
             let flat = entry_frame(&mut renderer, view, entry);
             assert_eq!(
                 production.scene.colour == flat.scene.colour,

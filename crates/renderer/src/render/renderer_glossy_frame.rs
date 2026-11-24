@@ -34,7 +34,8 @@ impl Renderer {
     /// `scene_color`, when [`Self::glossy_overlay_probe_term_draws`] holds,
     /// after the coplanar-mover guard on a frame with mover draws and, on a
     /// frame that runs the floor layer (`floor_layer`), the scene-colour
-    /// chain. Scene colour loads and blends additively; scene depth is
+    /// chain and the floor march, whose layer the overlay then composites on
+    /// up-facing faces. Scene colour loads and blends additively; scene depth is
     /// attached read-only for the Equal test.
     pub(super) fn record_glossy_overlay_pass(
         &self,
@@ -72,8 +73,10 @@ impl Renderer {
             );
         }
         // The chain reads the highlight-free colour every opaque pass wrote,
-        // before the overlay adds anything to scene colour.
+        // before the overlay adds anything to scene colour; the floor march
+        // reads the chain into the floor layer the overlay composites.
         self.record_glossy_scene_colour_chain(encoder, floor_layer);
+        self.record_glossy_floor_march(encoder, floor_layer);
         let timestamps = full
             .frame_timing
             .as_ref()
@@ -113,6 +116,7 @@ impl Renderer {
         full.glossy_overlay.record(
             &mut pass,
             self.fluid_reflection_style,
+            floor_layer,
             glossy,
             &level.vertex_buffer,
             &level.index_buffer,

@@ -76,7 +76,8 @@ fn rust_violations(sources: &[Source]) -> Vec<String> {
                 )
             }
             // Bucket subsets over the same indirect buffer: forward's two
-            // sweeps on a glossy level, and the glossy overlay.
+            // sweeps on a glossy level, the glossy overlay and the floor
+            // layer's march.
             ("method", "draw_indirect_subset") => {
                 let whole = matches!(
                     site.index_binding.as_deref(),
@@ -93,8 +94,15 @@ fn rust_violations(sources: &[Source]) -> Vec<String> {
                     "GlossyOverlayPass",
                     "record",
                 ) && site.pipeline.as_deref()
-                    == Some("self.pipelines.for_style(style,drawn)");
-                whole && (forward || overlay)
+                    == Some("self.pipelines.get(style,drawn,floor_layer)");
+                let march = is_owner(
+                    site,
+                    "render/glossy_floor/march.rs",
+                    "GlossyFloorPass",
+                    "record_march",
+                ) && site.pipeline.as_deref()
+                    == Some("self.march.for_style(style,drawn)");
+                whole && (forward || overlay || march)
             }
             ("method", "indirect_buffer") => {
                 is_owner(
@@ -407,7 +415,7 @@ fn indirect_contract_production_consumers_keep_guarded_ownership() {
         ("path", "INDIRECT", 1),
         ("call", "ComputeCullPipeline::new", 1),
         ("method", "draw_indirect", 2),
-        ("method", "draw_indirect_subset", 3),
+        ("method", "draw_indirect_subset", 4),
         ("call", "Instance::new", 2),
         ("call", "renderer_instance_flags_from_env", 2),
         ("literal", "WGPU_VALIDATION_INDIRECT_CALL", 1),

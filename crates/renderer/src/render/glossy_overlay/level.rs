@@ -7,6 +7,7 @@ use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQual
 use postretro_render_cpu::render_extent::Extent;
 
 use crate::render::LevelGeometry;
+use crate::render::glossy_floor::{GlossyFloorLayout, GlossyFloorTargets, binds_an_up_facing_face};
 use crate::render::gpu_create::GpuCreate;
 use crate::render::reflection_probe_resources::ReflectionProbeResources;
 use crate::render::residency::{ResidencyAllocation, ResidencyAllocationState, texture_row};
@@ -22,6 +23,7 @@ pub(crate) struct GlossyLevelLayout {
     pub(super) inputs_layout: wgpu::BindGroupLayout,
     pub(super) sampler: wgpu::Sampler,
     pub(super) static_diffuse_format: wgpu::TextureFormat,
+    pub(super) floor: GlossyFloorLayout,
 }
 
 /// The static-diffuse target at scene extent, with the overlay's inputs
@@ -43,12 +45,18 @@ pub(crate) struct GlossyLevelState {
     /// Forward's D_static target, at scene extent while the reflection tier
     /// is above off; `None` at off.
     target: Option<StaticDiffuseTarget>,
+    /// Whether a bound world face faces up by water's test: only such a
+    /// level takes the floor layer.
+    floor_faces: bool,
+    /// The floor layer's highlight-free colour and scene-colour chain, while
+    /// `floor_faces` holds at a tier that runs the floor layer.
+    floor: Option<GlossyFloorTargets>,
 }
 
 impl GlossyLevelLayout {
     /// The level's glossy state, or `None` (no allocation) when its id 54
     /// binds no world face, or the bindings cannot reach the vertices. The
-    /// target follows `quality` at `extent`.
+    /// targets follow `quality` at `extent`.
     pub(crate) fn build(
         &self,
         device: &wgpu::Device,
@@ -77,6 +85,8 @@ impl GlossyLevelLayout {
             world_probes,
             probe_group: None,
             target: None,
+            floor_faces: binds_an_up_facing_face(geometry.vertices, &stream),
+            floor: None,
         };
         self.sync_target(device, &mut state, quality, extent);
         Some(state)
@@ -115,9 +125,11 @@ impl GlossyLevelLayout {
         });
     }
 
-    /// Bring the D_static target in line with `quality` and `extent`:
-    /// allocated above off at `extent`, released at off. A target already at
-    /// `extent` builds nothing. Returns whether it created one.
+    /// Bring the D_static target and the floor layer's targets in line with
+    /// `quality` and `extent`: D_static allocated above off at `extent`,
+    /// released at off; the floor targets as [`GlossyFloorLayout::sync`]
+    /// rules. Targets already there build nothing. Returns whether it
+    /// created a D_static target.
     pub(crate) fn sync_target(
         &self,
         device: &wgpu::Device,
@@ -125,6 +137,8 @@ impl GlossyLevelLayout {
         quality: FluidReflectionQuality,
         extent: Extent,
     ) -> bool {
+        self.floor
+            .sync(device, &mut state.floor, state.floor_faces, quality, extent);
         if quality == FluidReflectionQuality::Off {
             state.target = None;
             return false;
@@ -137,8 +151,8 @@ impl GlossyLevelLayout {
         true
     }
 
-    /// Recreate an allocated target at `extent` (the scene targets moved);
-    /// an absent one stays absent.
+    /// Recreate allocated targets at `extent` (the scene targets moved);
+    /// absent ones stay absent.
     pub(crate) fn resize_target(
         &self,
         device: &wgpu::Device,
@@ -148,6 +162,7 @@ impl GlossyLevelLayout {
         if state.target.is_some() {
             state.target = Some(self.target(device, extent));
         }
+        self.floor.resize(device, &mut state.floor, extent);
     }
 
     fn target(&self, device: &wgpu::Device, extent: Extent) -> StaticDiffuseTarget {
@@ -221,16 +236,34 @@ impl GlossyLevelState {
         self.target.as_ref().map(|target| &target.view)
     }
 
-    /// The target's ledger row, while allocated.
-    pub(crate) fn residency_row(&self) -> Option<ResidencyAllocation> {
-        self.target.as_ref().map(|target| {
+    /// The floor layer's targets, while allocated.
+    pub(crate) fn floor(&self) -> Option<&GlossyFloorTargets> {
+        self.floor.as_ref()
+    }
+
+    /// Whether a bound world face faces up: the level takes the floor layer
+    /// at the tiers that run it.
+    #[cfg(test)]
+    pub(crate) fn has_floor_faces(&self) -> bool {
+        self.floor_faces
+    }
+
+    /// The ledger rows of every target allocated: D_static, then the floor
+    /// layer's highlight-free colour and chain.
+    pub(crate) fn residency_rows(&self) -> impl Iterator<Item = ResidencyAllocation> + '_ {
+        let static_diffuse = self.target.as_ref().map(|target| {
             texture_row(
                 GLOSSY_STATIC_DIFFUSE,
                 &target.texture,
                 &[SectionId::ReflectionProbes as u16],
                 ResidencyAllocationState::Data,
             )
-        })
+        });
+        static_diffuse.into_iter().chain(
+            self.floor
+                .iter()
+                .flat_map(GlossyFloorTargets::residency_rows),
+        )
     }
 
     /// The target texture, for readback (tests).

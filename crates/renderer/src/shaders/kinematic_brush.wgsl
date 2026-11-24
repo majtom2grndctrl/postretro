@@ -585,6 +585,10 @@ fn mover_light_n_dot_l(depth: SurfaceDepthResult, n: vec3<f32>, above_plane: boo
 struct MoverPixelDirect {
     lit: vec3<f32>,
     tinted_specular: vec3<f32>,
+    // The untinted specular `lit` already folds in light by light, summed
+    // apart for the highlight-free output alone: dead code in `fs_pixel`
+    // (rendering_pipeline.md §7.3a, Glossy world faces, Floors).
+    untinted_specular: vec3<f32>,
 };
 
 // The pixel pipeline's runtime light loop. Selected-static specular is
@@ -606,6 +610,7 @@ fn accumulate_pixel_direct(
     // Only a tinted texel's specular lands here; an untinted texel adds its
     // specular into `total` right after each light's diffuse, as before tint.
     var tinted_total = vec3<f32>(0.0);
+    var untinted_total = vec3<f32>(0.0);
     let light_count = select(0u, kinematic_light_params.light_count, use_dynamic);
     var depth_shadow_marches: u32 = 0u;
     for (var i: u32 = 0u; i < light_count; i = i + 1u) {
@@ -665,10 +670,11 @@ fn accumulate_pixel_direct(
                 tinted_total = tinted_total + term;
             } else {
                 total = total + term;
+                untinted_total = untinted_total + term;
             }
         }
     }
-    return MoverPixelDirect(total, tinted_total);
+    return MoverPixelDirect(total, tinted_total, untinted_total);
 }
 
 // The smooth pipeline's light-loop sums: diffuse, and every selected-static
@@ -899,10 +905,30 @@ fn mover_smooth_shade(
     return base_color * lit + emissive + dynamic.specular * spec_color;
 }
 
-// The pixel specular style's beauty entry (rendering_pipeline.md §4,
+// A mover fragment's colour, and the highlight it adds: albedo times the
+// untinted specular plus the tinted specular.
+struct MoverShaded {
+    colour: vec4<f32>,
+    highlight: vec3<f32>,
+};
+
+// The floor layer's tiers: the same colour, then the colour with its
+// highlight left out (rendering_pipeline.md §7.3a, Glossy world faces,
+// Floors).
+struct MoverHighlightFreeOutput {
+    @location(0) colour: vec4<f32>,
+    @location(1) highlight_free: vec4<f32>,
+};
+
+// The colour less its highlight, taken in f32 and floored at 0 against the
+// colour's own rounding.
+fn mover_highlight_free(shaded: MoverShaded) -> vec4<f32> {
+    return vec4<f32>(max(shaded.colour.rgb - shaded.highlight, vec3<f32>(0.0)), shaded.colour.a);
+}
+
+// The pixel specular style's shading (rendering_pipeline.md §4,
 // Texel-centre highlight): one highlight point per albedo texel.
-@fragment
-fn fs_pixel(in: VertexOutput) -> @location(0) vec4<f32> {
+fn mover_pixel_fragment(in: VertexOutput) -> MoverShaded {
     let s = mover_surface(in);
     let spec_point = mover_specular_point(
         s.depth,
@@ -934,16 +960,20 @@ fn fs_pixel(in: VertexOutput) -> @location(0) vec4<f32> {
     // VGPRs on AMD Metal (tools/metal_register_screen). Screen before moving it.
     let base_color = sample_post_retro(base_texture, aniso_sampler, s.depth.uv, s.ddx, s.ddy);
     let emissive = mover_emissive(s.depth.uv, s.ddx, s.ddy);
-    return vec4<f32>(
-        mover_pixel_shade(base_color.rgb, s.lighting, dynamic, emissive, s.spec_texel),
-        base_color.a,
+    let highlight = base_color.rgb * dynamic.untinted_specular
+        + dynamic.tinted_specular * specular_tint(base_color.rgb, s.spec_texel.tint);
+    return MoverShaded(
+        vec4<f32>(
+            mover_pixel_shade(base_color.rgb, s.lighting, dynamic, emissive, s.spec_texel),
+            base_color.a,
+        ),
+        highlight,
     );
 }
 
-// The smooth specular style's beauty entry: every highlight input per
-// fragment, so sharp texels crawl with the camera.
-@fragment
-fn fs_smooth(in: VertexOutput) -> @location(0) vec4<f32> {
+// The smooth specular style's shading: every highlight input per fragment,
+// so sharp texels crawl with the camera.
+fn mover_smooth_fragment(in: VertexOutput) -> MoverShaded {
     let s = mover_surface(in);
     let dynamic = accumulate_smooth_direct(
         in.world_position,
@@ -960,8 +990,42 @@ fn fs_smooth(in: VertexOutput) -> @location(0) vec4<f32> {
     // register cliff). Screen before moving it.
     let base_color = sample_post_retro(base_texture, aniso_sampler, s.depth.uv, s.ddx, s.ddy);
     let emissive = mover_emissive(s.depth.uv, s.ddx, s.ddy);
-    return vec4<f32>(
-        mover_smooth_shade(base_color.rgb, s.lighting, dynamic, emissive, s.spec_texel),
-        base_color.a,
+    let spec_color = select(
+        base_color.rgb,
+        specular_tint(base_color.rgb, s.spec_texel.tint),
+        s.spec_texel.tinted,
     );
+    return MoverShaded(
+        vec4<f32>(
+            mover_smooth_shade(base_color.rgb, s.lighting, dynamic, emissive, s.spec_texel),
+            base_color.a,
+        ),
+        dynamic.specular * spec_color,
+    );
+}
+
+// The pixel style's beauty entry.
+@fragment
+fn fs_pixel(in: VertexOutput) -> @location(0) vec4<f32> {
+    return mover_pixel_fragment(in).colour;
+}
+
+// The smooth style's beauty entry.
+@fragment
+fn fs_smooth(in: VertexOutput) -> @location(0) vec4<f32> {
+    return mover_smooth_fragment(in).colour;
+}
+
+// The pixel style's entry at a tier that runs the floor layer.
+@fragment
+fn fs_pixel_highlight_free(in: VertexOutput) -> MoverHighlightFreeOutput {
+    let shaded = mover_pixel_fragment(in);
+    return MoverHighlightFreeOutput(shaded.colour, mover_highlight_free(shaded));
+}
+
+// The smooth style's entry at a tier that runs the floor layer.
+@fragment
+fn fs_smooth_highlight_free(in: VertexOutput) -> MoverHighlightFreeOutput {
+    let shaded = mover_smooth_fragment(in);
+    return MoverHighlightFreeOutput(shaded.colour, mover_highlight_free(shaded));
 }

@@ -169,3 +169,79 @@ fn each_fluid_reflection_tier_resolves_at_its_fraction_of_the_scene() {
         Some((961, 541))
     );
 }
+
+// The floor layer runs at exactly the tiers that run water's screen-space
+// layer, each with a preset pinned from its table: fraction, steps, stride
+// divisor and thickness, already sanitized.
+#[test]
+fn the_floor_layer_runs_at_waters_screen_space_tiers_with_its_own_presets() {
+    use FluidReflectionQuality::*;
+    for quality in FluidReflectionQuality::ALL {
+        assert_eq!(
+            quality.runs_floor_layer(),
+            quality.runs_screen_space(),
+            "{quality:?}"
+        );
+    }
+    let presets: Vec<_> = FluidReflectionQuality::ALL
+        .iter()
+        .map(|quality| {
+            quality.floor_layer_preset().map(|preset| {
+                (
+                    preset.fraction,
+                    preset.march.step_budget,
+                    preset.march.rows_per_stride_pixel,
+                    preset.march.thickness,
+                )
+            })
+        })
+        .collect();
+    assert_eq!(
+        presets,
+        [
+            None,
+            None,
+            Some((0.25, 48, 180, 1.0)),
+            Some((0.5, 90, 180, 1.0)),
+            Some((0.5, 180, 360, 1.5)),
+            Some((0.5, 270, 540, 2.5)),
+        ]
+    );
+    for quality in [Medium, High, VeryHigh, Ultra] {
+        let march = quality.floor_layer_preset().unwrap().march;
+        assert_eq!(march.sanitized(march), march, "{quality:?}");
+    }
+}
+
+// A lower floor tier never reaches further than a higher one, and never
+// draws a larger target: reach is steps over divisor screen heights.
+#[test]
+fn a_lower_floor_tier_never_reaches_further_or_draws_larger() {
+    let presets: Vec<_> = FluidReflectionQuality::ALL
+        .iter()
+        .filter_map(|quality| quality.floor_layer_preset())
+        .collect();
+    for pair in presets.windows(2) {
+        let reach = |preset: &FluidReflectionPreset| {
+            preset.march.step_budget as f32 / preset.march.rows_per_stride_pixel as f32
+        };
+        assert!(reach(&pair[0]) <= reach(&pair[1]), "{pair:?}");
+        assert!(pair[0].fraction <= pair[1].fraction, "{pair:?}");
+        assert!(
+            pair[0].fraction > 0.0 && pair[1].fraction <= 1.0,
+            "{pair:?}"
+        );
+    }
+}
+
+// The floor layer's extent is its fraction of the scene, rounded up, at
+// least 1×1; none where the tier runs no floor layer.
+#[test]
+fn the_floor_layer_extent_follows_its_tiers_fraction() {
+    use FluidReflectionQuality::*;
+    assert_eq!(Off.floor_layer_extent((1920, 1080)), None);
+    assert_eq!(Low.floor_layer_extent((1920, 1080)), None);
+    assert_eq!(Medium.floor_layer_extent((1920, 1080)), Some((480, 270)));
+    assert_eq!(High.floor_layer_extent((1921, 1081)), Some((961, 541)));
+    assert_eq!(Medium.floor_layer_extent((1, 1)), Some((1, 1)));
+}

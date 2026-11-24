@@ -142,6 +142,18 @@ pub(super) fn install_floor(renderer: &mut Renderer, probes: &ReflectionProbesSe
 /// Replace bucket 0's material with `material`'s one-texel textures, marked
 /// glossy as a material whose specular slot passes the opt-in would be.
 pub(super) fn set_floor_material(renderer: &mut Renderer, material: FloorMaterial) {
+    set_bucket_material(renderer, 0, material, true);
+}
+
+/// Give material bucket `bucket` `material`'s one-texel textures, glossy
+/// when `reflects` holds (the opt-in's verdict over its slot). A bucket one
+/// past the level's materials is appended.
+pub(super) fn set_bucket_material(
+    renderer: &mut Renderer,
+    bucket: usize,
+    material: FloorMaterial,
+    reflects: bool,
+) {
     use super::loaded_texture::{placeholder_loaded_texture, upload_texture_data};
     let device = renderer.device.clone();
     let queue = renderer.queue.raw().clone();
@@ -168,7 +180,7 @@ pub(super) fn set_floor_material(renderer: &mut Renderer, material: FloorMateria
         );
         texture_material.emissive_strength = strength;
     }
-    texture.reflects = true;
+    texture.reflects = reflects;
     let surface_depth_quality = renderer.surface_depth_quality;
     let full = renderer.full();
     let sampler = full
@@ -187,8 +199,17 @@ pub(super) fn set_floor_material(renderer: &mut Renderer, material: FloorMateria
         "Glossy Floor Material",
     );
     let level = renderer.level_mut();
-    level.loaded_textures[0] = texture;
-    level.gpu_textures[0] = binding.into();
+    assert!(
+        bucket <= level.loaded_textures.len(),
+        "buckets fill in order"
+    );
+    if bucket == level.loaded_textures.len() {
+        level.loaded_textures.push(texture);
+        level.gpu_textures.push(binding.into());
+    } else {
+        level.loaded_textures[bucket] = texture;
+        level.gpu_textures[bucket] = binding.into();
+    }
 }
 
 /// The floor level, lent to `use_geometry`.

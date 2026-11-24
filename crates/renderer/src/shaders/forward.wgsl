@@ -1161,15 +1161,35 @@ fn shadowmask_union_subtraction(
 // output reads (rendering_pipeline.md §7.3a, Glossy world faces). Both
 // entries share this, so fs_main's colour is computed exactly as before and
 // the static diffuse is dead code there.
+//
+// `highlight` is the Blinn-Phong highlight forward adds to the colour (the
+// untinted specular times albedo plus the tinted specular), which only the
+// floor layer's highlight-free outputs leave out (rendering_pipeline.md
+// §7.3a, Glossy world faces, Floors); dead code in every other entry.
 struct ForwardShaded {
     colour: vec4<f32>,
     static_diffuse: vec3<f32>,
+    highlight: vec3<f32>,
 };
 
 // fs_main_static_diffuse's two targets: scene colour, then D_static.
 struct ForwardStaticDiffuseOutput {
     @location(0) colour: vec4<f32>,
     @location(1) static_diffuse: vec4<f32>,
+};
+
+// The floor layer's forms add the highlight-free colour at location 2, after
+// D_static's location 1, which glossy buckets write and every other bucket
+// masks.
+struct ForwardHighlightFreeOutput {
+    @location(0) colour: vec4<f32>,
+    @location(2) highlight_free: vec4<f32>,
+};
+
+struct ForwardStaticDiffuseHighlightFreeOutput {
+    @location(0) colour: vec4<f32>,
+    @location(1) static_diffuse: vec4<f32>,
+    @location(2) highlight_free: vec4<f32>,
 };
 
 // The always-run entry: one colour output, the static diffuse unwritten.
@@ -1184,6 +1204,33 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 fn fs_main_static_diffuse(in: VertexOutput) -> ForwardStaticDiffuseOutput {
     let shaded = forward_shade(in);
     return ForwardStaticDiffuseOutput(shaded.colour, vec4<f32>(shaded.static_diffuse, 0.0));
+}
+
+// The colour with forward's highlight left out, the floor layer's source: the
+// difference is taken in f32, so it carries the colour's own rounding alone,
+// and floored at 0 against that rounding.
+fn forward_highlight_free(shaded: ForwardShaded) -> vec4<f32> {
+    return vec4<f32>(max(shaded.colour.rgb - shaded.highlight, vec3<f32>(0.0)), shaded.colour.a);
+}
+
+// Every non-glossy bucket at a tier that runs the floor layer: the same
+// colour, D_static masked, and the highlight-free colour.
+@fragment
+fn fs_main_highlight_free(in: VertexOutput) -> ForwardHighlightFreeOutput {
+    let shaded = forward_shade(in);
+    return ForwardHighlightFreeOutput(shaded.colour, forward_highlight_free(shaded));
+}
+
+// Glossy buckets at a tier that runs the floor layer: the same colour,
+// D_static, and the highlight-free colour.
+@fragment
+fn fs_main_static_diffuse_highlight_free(in: VertexOutput) -> ForwardStaticDiffuseHighlightFreeOutput {
+    let shaded = forward_shade(in);
+    return ForwardStaticDiffuseHighlightFreeOutput(
+        shaded.colour,
+        vec4<f32>(shaded.static_diffuse, 0.0),
+        forward_highlight_free(shaded),
+    );
 }
 
 fn forward_shade(in: VertexOutput) -> ForwardShaded {
@@ -1508,6 +1555,9 @@ fn forward_shade(in: VertexOutput) -> ForwardShaded {
         }
     }
     total_light = total_light + specular_sum;
+    // What the colour below gains from the highlight: the untinted sum rides
+    // the albedo multiply, the tinted one is added after it.
+    let highlight = base_color.rgb * specular_sum + tinted_specular;
 
     let light_count = select(0u, uniforms.light_count, use_dynamic);
     // Surface Depth self-shadowing is budgeted: at most
@@ -1720,7 +1770,7 @@ fn forward_shade(in: VertexOutput) -> ForwardShaded {
     // visualize".
     if uniforms.sdf_shadow_mode == 2u {
         let g = sdf_factor.r;
-        return ForwardShaded(vec4<f32>(g, g, g, base_color.a), static_diffuse);
+        return ForwardShaded(vec4<f32>(g, g, g, base_color.a), static_diffuse, vec3<f32>(0.0));
     }
     // TEMP DEBUG: SDF shadow path visualization (mode 3). The half-res pass
     // encoded the slot-0 trace OUTCOME as an RGB code (see `debug_trace_outcome`
@@ -1739,7 +1789,7 @@ fn forward_shade(in: VertexOutput) -> ForwardShaded {
         let half_xy = (in.clip_position.xy / depth_dims) * half_dims;
         let h = vec2<i32>(clamp(floor(half_xy), vec2<f32>(0.0), h_max));
         let code = textureLoad(sdf_shadow_factor, h, 0).rgb;
-        return ForwardShaded(vec4<f32>(code, base_color.a), static_diffuse);
+        return ForwardShaded(vec4<f32>(code, base_color.a), static_diffuse, vec3<f32>(0.0));
     }
     // TEMP DEBUG: SDF shadow path visualization (mode 4). The half-res pass
     // encoded the reconstructed GEOMETRIC NORMAL as RGB = normal*0.5+0.5 (see
@@ -1756,14 +1806,14 @@ fn forward_shade(in: VertexOutput) -> ForwardShaded {
         let half_xy = (in.clip_position.xy / depth_dims) * half_dims;
         let h = vec2<i32>(clamp(floor(half_xy), vec2<f32>(0.0), h_max));
         let n = textureLoad(sdf_shadow_factor, h, 0).rgb;
-        return ForwardShaded(vec4<f32>(n, base_color.a), static_diffuse);
+        return ForwardShaded(vec4<f32>(n, base_color.a), static_diffuse, vec3<f32>(0.0));
     }
     if uniforms.sdf_shadow_mode == SHADOWMASK_VISUALIZE_MODE {
-        return ForwardShaded(vec4<f32>(shadowmask_union, base_color.a), static_diffuse);
+        return ForwardShaded(vec4<f32>(shadowmask_union, base_color.a), static_diffuse, vec3<f32>(0.0));
     }
     if uniforms.sdf_shadow_mode == SHADOWMASK_RAW_POOL_VISIBILITY_MODE {
         let g = shadowmask_raw_pool_visibility;
-        return ForwardShaded(vec4<f32>(g, g, g, base_color.a), static_diffuse);
+        return ForwardShaded(vec4<f32>(g, g, g, base_color.a), static_diffuse, vec3<f32>(0.0));
     }
-    return ForwardShaded(vec4<f32>(rgb, base_color.a), static_diffuse);
+    return ForwardShaded(vec4<f32>(rgb, base_color.a), static_diffuse, highlight);
 }

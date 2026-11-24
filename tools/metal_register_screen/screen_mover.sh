@@ -4,7 +4,9 @@
 # GPU, print its registers.
 #
 # usage: tools/metal_register_screen/screen_mover.sh <out dir> [fragment entry...]
-#        (default entries: fs_pixel fs_smooth, one per specular style)
+#        (default entries: fs_pixel fs_smooth, one per specular style, and
+#         fs_pixel_highlight_free fs_smooth_highlight_free, the glossy floor
+#         layer's forms)
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
@@ -17,7 +19,7 @@ mkdir -p "$1"
 out=${1:A}
 shift
 entries=("$@")
-(( ${#entries} )) || entries=(fs_pixel fs_smooth)
+(( ${#entries} )) || entries=(fs_pixel fs_smooth fs_pixel_highlight_free fs_smooth_highlight_free)
 
 (cd "$root" && POSTRETRO_REGISTER_SCREEN_OUT="$out" nice cargo test -j 6 -p postretro-renderer --lib -- --ignored --exact \
     render::kinematic_register_screen_capture::kinematic_pipeline_msl_capture_for_the_register_screen \

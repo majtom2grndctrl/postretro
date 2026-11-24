@@ -853,7 +853,7 @@ fn fluid_pipeline_blends_over_the_scene_two_sided_without_writing_depth() {
 fn fluid_pass_records_between_skinned_meshes_and_billboards_on_its_own_gate() {
     let frame = &scene_source_with_fluid_passes();
     let skinned = frame
-        .find("label: Some(\"Skinned Mesh Pass\")")
+        .find("self.record_skinned_mesh_pass(")
         .expect("skinned mesh pass");
     let reflection = frame
         .find("self.record_fluid_reflection_pass(")
@@ -3312,8 +3312,9 @@ fn fluid_pass_picks_variants_by_the_frames_group_0_mask() {
         )
         .expect("the sums dispatch reads the frame's mask and tier");
     assert!(snapshot < sums && sums < gate);
-    // Two more: forward's static-diffuse forms and the glossy overlay.
-    assert_eq!(frame.matches("frame_reflection_quality").count(), 7);
+    // Three more: forward's static-diffuse forms, the glossy floor layer's
+    // verdict and the glossy overlay.
+    assert_eq!(frame.matches("frame_reflection_quality").count(), 8);
 
     let source = include_str!("fluid_surface.rs");
     let reflection_source = include_str!("fluid_surface/reflection_pass.rs");

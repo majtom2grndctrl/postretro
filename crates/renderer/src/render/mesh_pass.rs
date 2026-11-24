@@ -86,6 +86,10 @@ pub use postretro_model::ClipMetadata;
 /// GPU resources for the skinned-mesh forward pass.
 pub struct MeshPass {
     pipeline: wgpu::RenderPipeline,
+    /// [`Self::pipeline`]'s form at the glossy floor layer's tiers: the same
+    /// colour, written again as the highlight-free colour, which the mesh
+    /// draws no highlight into.
+    highlight_free_pipeline: wgpu::RenderPipeline,
 
     /// Depth-only skinned pipeline (shadow occluders). Skins vertices with the
     /// same `skin_matrix` kernel and projects by a per-render light-space matrix

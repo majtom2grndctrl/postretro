@@ -189,7 +189,11 @@ pub(super) fn upright_mover() -> KinematicGeometry {
 
 /// One mover over the quad `corners`, drawn with both windings (the culled
 /// one never shades).
-fn mover_of(corners: &[[f32; 3]; 4], normal: [f32; 3], tangent: [f32; 3]) -> KinematicGeometry {
+pub(super) fn mover_of(
+    corners: &[[f32; 3]; 4],
+    normal: [f32; 3],
+    tangent: [f32; 3],
+) -> KinematicGeometry {
     let vertices = corners
         .iter()
         .map(|&corner| Vertex::new(corner, MAGENTA_UV, normal, tangent, true, [0.0, 0.0], 0))

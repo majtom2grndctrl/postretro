@@ -157,9 +157,9 @@ fn a_coplanar_mover_takes_no_term_and_the_next_frame_takes_it_again() {
 
 /// A skinned model: a two-sided quad 1.4 m wide and 1.8 m tall about its
 /// bottom centre, on the placeholder checkerboard.
-const CHARACTER: &str = "glossy-guard/character";
+pub(super) const CHARACTER: &str = "glossy-guard/character";
 
-fn character_quads() -> [[Vertex; 4]; 2] {
+pub(super) fn character_quads() -> [[Vertex; 4]; 2] {
     let corners = [
         Vec3::new(-0.7, 0.0, 0.0),
         Vec3::new(0.7, 0.0, 0.0),
@@ -185,7 +185,7 @@ fn character_quads() -> [[Vertex; 4]; 2] {
     ]
 }
 
-fn character_at(at: Vec3) -> MeshInstanceInput {
+pub(super) fn character_at(at: Vec3) -> MeshInstanceInput {
     MeshInstanceInput {
         model: postretro_model::ModelHandle::from(CHARACTER),
         transform: Mat4::from_translation(at),

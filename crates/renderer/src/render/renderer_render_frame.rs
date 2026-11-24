@@ -3,6 +3,7 @@
 // See: context/lib/rendering_pipeline.md §1
 
 use super::cpu_stages::RenderStage;
+use super::glossy_floor::ColourOutputs;
 use super::*;
 use postretro_level_loader::{ShDrainBatch, ShDrainOutcome};
 
@@ -538,17 +539,32 @@ impl Renderer {
             frame_light_term_mask,
             frame_reflection_quality,
         );
+        // One floor-layer verdict for the frame: forward, the mover and
+        // skinned-mesh passes write the highlight-free colour, and the chain
+        // records, together or not at all.
+        let floor_layer = self.glossy_floor_layer_draws(
+            render_world,
+            frame_light_term_mask,
+            frame_reflection_quality,
+        );
         self.record_world_forward_pass(
             encoder,
             &scene_color,
             clear_color,
             render_world,
             frame_reflection_quality,
+            floor_layer,
         );
 
         // The opaque dynamic objects: movers, then skinned meshes.
-        self.record_mover_pass(encoder, &scene_color, render_world);
-        self.record_skinned_mesh_pass(encoder, &scene_color, render_world, world_mesh_frame_plan);
+        self.record_mover_pass(encoder, &scene_color, render_world, floor_layer);
+        self.record_skinned_mesh_pass(
+            encoder,
+            &scene_color,
+            render_world,
+            world_mesh_frame_plan,
+            floor_layer,
+        );
 
         // The glossy overlay: after every opaque pass, so a mover or character
         // over a glossy face fails its Equal test, and before the Ghost Pass
@@ -559,6 +575,7 @@ impl Renderer {
             render_world,
             frame_light_term_mask,
             frame_reflection_quality,
+            floor_layer,
         );
 
         // Ghosts: unlit, translucent, after every opaque pass so they depth-test
@@ -943,6 +960,7 @@ impl Renderer {
                 &self.level().models,
                 &self.level().mesh_lights,
                 plan,
+                ColourOutputs::Colour,
             );
         }
 

@@ -46,6 +46,11 @@ pub(crate) fn request_renderer_device(
 ) -> Result<(wgpu::Device, wgpu::Queue)> {
     let adapter_features = adapter.features();
     let mut required_features = wgpu::Features::TEXTURE_COMPRESSION_BC;
+    // The glossy floor layer's highlight-free colour and chain take a
+    // four-byte float where the adapter renders one
+    // (`glossy_floor::highlight_free_format`); without it they take the
+    // scene colour's format.
+    required_features |= adapter_features & wgpu::Features::RG11B10UFLOAT_RENDERABLE;
     if enable_gpu_timing {
         required_features |= gpu_timing_required_features();
     } else if gpu_timing_requested && !gpu_timing_supported {
@@ -481,6 +486,7 @@ fn timing_pass_labels() -> Vec<&'static str> {
     pass_labels[TIMING_PAIR_SKINNED_MESH] = "skinned_mesh";
     pass_labels[TIMING_PAIR_VIEWMODEL] = "viewmodel";
     pass_labels[TIMING_PAIR_GLOSSY_OVERLAY] = "glossy_overlay";
+    pass_labels[TIMING_PAIR_GLOSSY_SCENE_COLOUR_CHAIN] = "glossy_scene_colour_chain";
     pass_labels
 }
 

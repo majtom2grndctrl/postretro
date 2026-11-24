@@ -144,6 +144,38 @@ const FLUID_REFLECTION_PRESETS: [(FluidReflectionQuality, FluidReflectionPreset)
     ),
 ];
 
+/// Every floor-layer tier's preset, lowest first, in water's columns: the
+/// floor screen-space layer's target fraction of the scene extent (also the
+/// scene-colour chain's level 0) and its march. Glossy up-facing world faces
+/// run it at exactly the tiers that run water's layer
+/// (`rendering_pipeline.md` §7.3a, Glossy world faces).
+///
+/// Starting values (`glossy-world-reflections` plan, Delegated answers):
+/// water's steps, divisors and thickness, so the compiler's floor-probe
+/// stride equals water's, with the target fraction halved, since the floor's
+/// reflection is blurred by the texel's lobe and carries less detail. The
+/// owner sets the measured values; the compiler's
+/// `FLOOR_LAYER_COARSEST_STRIDE_DIVISOR` is pinned to this table's coarsest
+/// divisor.
+const FLOOR_LAYER_PRESETS: [(FluidReflectionQuality, FluidReflectionPreset); 4] = [
+    (
+        FluidReflectionQuality::Medium,
+        FluidReflectionPreset::new(0.25, 48, 180, 1.0),
+    ),
+    (
+        FluidReflectionQuality::High,
+        FluidReflectionPreset::new(0.5, 90, 180, 1.0),
+    ),
+    (
+        FluidReflectionQuality::VeryHigh,
+        FluidReflectionPreset::new(0.5, 180, 360, 1.5),
+    ),
+    (
+        FluidReflectionQuality::Ultra,
+        FluidReflectionPreset::new(0.5, 270, 540, 2.5),
+    ),
+];
+
 impl FluidReflectionQuality {
     /// Every tier, lowest first.
     pub const ALL: [Self; 6] = [
@@ -190,6 +222,33 @@ impl FluidReflectionQuality {
     pub fn target_extent(self, scene: (u32, u32)) -> Option<(u32, u32)> {
         self.target_fraction()
             .map(|fraction| reflection_target_extent(scene, fraction))
+    }
+
+    /// This tier's floor-layer preset, sanitized as water's are; `None` at
+    /// every tier that runs no floor layer.
+    pub fn floor_layer_preset(self) -> Option<FluidReflectionPreset> {
+        FLOOR_LAYER_PRESETS
+            .iter()
+            .find(|(quality, _)| *quality == self)
+            .map(|(_, preset)| FluidReflectionPreset {
+                fraction: preset.fraction,
+                march: preset.march.sanitized(preset.march),
+            })
+    }
+
+    /// Whether this tier runs the glossy floor's screen-space layer: its
+    /// highlight separation, scene-colour chain, march and target. The tiers
+    /// that run water's screen-space layer; never Off or Low.
+    pub fn runs_floor_layer(self) -> bool {
+        self.floor_layer_preset().is_some()
+    }
+
+    /// The floor layer's extent for a `scene` extent at this tier, rounded
+    /// up and at least 1×1 as water's target is: the scene-colour chain's
+    /// level 0. `None` at every tier that runs no floor layer.
+    pub fn floor_layer_extent(self, scene: (u32, u32)) -> Option<(u32, u32)> {
+        self.floor_layer_preset()
+            .map(|preset| reflection_target_extent(scene, preset.fraction))
     }
 }
 

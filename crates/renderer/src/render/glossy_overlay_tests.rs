@@ -521,11 +521,28 @@ fn overlay_records_after_the_skinned_mesh_pass_and_before_the_ghost_pass() {
     let overlay = glossy
         .find("label:Some(\"GlossyOverlayPass\")")
         .expect("the overlay's pass");
+    let chain = glossy
+        .find("self.record_glossy_scene_colour_chain(encoder,floor_layer);")
+        .expect("the overlay records the scene-colour chain");
     assert!(
-        guard < overlay,
-        "the guard marks D_static before the overlay reads it"
+        guard < chain && chain < overlay,
+        "the guard marks D_static, then the chain reads the opaque passes' \
+         highlight-free colour, before the overlay adds a probe term"
     );
     assert_eq!(glossy.matches(".guard().record(").count(), 1);
+    assert_eq!(
+        glossy.matches("record_glossy_scene_colour_chain(").count(),
+        1
+    );
+    assert_eq!(
+        frame.matches("record_glossy_scene_colour_chain(").count(),
+        0
+    );
+    // One floor-layer gate per frame, taken before forward and handed to
+    // every pass that writes or reads the highlight-free colour.
+    let gate = at("letfloor_layer=self.glossy_floor_layer_draws(");
+    assert!(gate < at("self.record_world_forward_pass("));
+    assert_eq!(frame.matches("self.glossy_floor_layer_draws(").count(), 1);
 }
 
 // Acceptance row 30: a character's promoted-light shadow is forward's

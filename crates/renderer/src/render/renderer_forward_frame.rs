@@ -12,7 +12,11 @@ impl Renderer {
     /// On a level whose glossy faces are ready at `frame_reflection_quality`
     /// above off, forward also writes D_static, cleared to 0, as a second
     /// output: glossy buckets through the static-diffuse entry, every other
-    /// bucket with that output masked. Otherwise it keeps one output.
+    /// bucket with that output masked. Otherwise it keeps one output. On a
+    /// frame that runs the glossy floor layer (`floor_layer`), every bucket
+    /// also writes the colour with its highlight left out, a third output
+    /// cleared to `clear_color` like the colour, so pixels no draw covers
+    /// match the scene colour there.
     pub(super) fn record_world_forward_pass(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -20,6 +24,7 @@ impl Renderer {
         clear_color: ClearColor,
         render_world: bool,
         frame_reflection_quality: FluidReflectionQuality,
+        floor_layer: bool,
     ) {
         let cpu = std::rc::Rc::clone(&self.cpu_frame);
         let _forward_scope = cpu.scope(RenderStage::Forward);
@@ -35,6 +40,23 @@ impl Renderer {
                     store: wgpu::StoreOp::Store,
                 },
             });
+        // The floor layer's frames write D_static too: the overlay draws on
+        // every one of them.
+        let highlight_free = self
+            .glossy_highlight_free_view(floor_layer)
+            .filter(|_| static_diffuse.is_some());
+        let highlight_free_attachment =
+            highlight_free.map(|view| wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(clear_color.into()),
+                    store: wgpu::StoreOp::Store,
+                },
+            });
+        let color_attachments =
+            usize::from(static_diffuse.is_some()) + usize::from(highlight_free.is_some()) + 1;
         let forward_ts = self
             .full()
             .frame_timing
@@ -53,7 +75,8 @@ impl Renderer {
                     },
                 }),
                 static_diffuse_attachment,
-            ][..1 + usize::from(static_diffuse.is_some())],
+                highlight_free_attachment,
+            ][..color_attachments],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &self.full().depth_view,
                 // Forward pass uses `depth_compare: Equal` with depth
@@ -99,7 +122,11 @@ impl Renderer {
                 if static_diffuse.is_some() {
                     // Two sweeps, each binding its materials once per bucket
                     // as the one-output draw does: two pipeline switches.
-                    let forms = self.full().glossy_overlay.forward_forms();
+                    let forms = self
+                        .full()
+                        .glossy_overlay
+                        .forward_forms()
+                        .sweeps(highlight_free.is_some());
                     let glossy = |bucket: u32| self.level().bucket_is_glossy(bucket);
                     render_pass.set_pipeline(&forms.masked);
                     cull.draw_indirect_subset(&mut render_pass, Some(&bind_material), &|bucket| {

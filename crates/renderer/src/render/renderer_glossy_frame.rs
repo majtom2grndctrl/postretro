@@ -32,9 +32,10 @@ impl Renderer {
 
     /// Record the overlay over the frame's glossy camera ranges into
     /// `scene_color`, when [`Self::glossy_overlay_probe_term_draws`] holds,
-    /// after the coplanar-mover guard on a frame with mover draws. Scene
-    /// colour loads and blends additively; scene depth is attached read-only
-    /// for the Equal test.
+    /// after the coplanar-mover guard on a frame with mover draws and, on a
+    /// frame that runs the floor layer (`floor_layer`), the scene-colour
+    /// chain. Scene colour loads and blends additively; scene depth is
+    /// attached read-only for the Equal test.
     pub(super) fn record_glossy_overlay_pass(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -42,6 +43,7 @@ impl Renderer {
         render_world: bool,
         frame_light_term_mask: LightTermMask,
         frame_reflection_quality: FluidReflectionQuality,
+        floor_layer: bool,
     ) {
         if !self.glossy_overlay_probe_term_draws(
             render_world,
@@ -69,6 +71,9 @@ impl Renderer {
                 &level.kinematic,
             );
         }
+        // The chain reads the highlight-free colour every opaque pass wrote,
+        // before the overlay adds anything to scene colour.
+        self.record_glossy_scene_colour_chain(encoder, floor_layer);
         let timestamps = full
             .frame_timing
             .as_ref()

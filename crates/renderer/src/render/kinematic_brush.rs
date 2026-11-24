@@ -8,9 +8,12 @@ use postretro_render_cpu::frame_uniforms::SpecularStyle;
 use postretro_render_cpu::planar_reflection::aabb_in_planes;
 use postretro_render_data::cone_frustum::Aabb;
 
+use super::glossy_floor::ColourOutputs;
 use super::*;
-pub(crate) use beauty::beauty_fragment_entry;
-use beauty::{MoverBeautyPipelines, beauty_pipeline};
+pub(crate) use beauty::MoverBeautyPipelines;
+use beauty::beauty_pipeline;
+#[cfg(test)]
+pub(crate) use beauty::{beauty_fragment_entry, highlight_free_fragment_entry};
 
 const INSTANCE_ENTRY_SIZE: usize = 64;
 const KINEMATIC_LIGHT_PARAMS_SIZE: usize = 32;
@@ -100,6 +103,14 @@ pub(crate) struct KinematicBrushPass {
     /// tests read to prove which pipeline drew.
     #[cfg(test)]
     bound_styles: std::sync::Mutex<Vec<(MoverViewKind, SpecularStyle)>>,
+    /// The output form each `record_draws` bound, in record order.
+    #[cfg(test)]
+    bound_outputs: std::sync::Mutex<Vec<ColourOutputs>>,
+    /// What [`Self::beauty_variant`] rebuilds the beauty pipelines over.
+    #[cfg(test)]
+    beauty_layout: wgpu::PipelineLayout,
+    #[cfg(test)]
+    depth_format: wgpu::TextureFormat,
 }
 
 /// One level's mover geometry, its lookups, and the group-2 light bind
@@ -495,11 +506,18 @@ impl KinematicBrushPass {
             immediate_size: 0,
         });
 
-        let build = |style| beauty_pipeline(device, &pipeline_layout, &shader, depth_format, style);
-        let beauty_pipelines = MoverBeautyPipelines {
-            pixel: build(SpecularStyle::Pixel),
-            smooth: build(SpecularStyle::Smooth),
-        };
+        let highlight_free_format = super::glossy_floor::highlight_free_format(device.features());
+        let beauty_pipelines = MoverBeautyPipelines::new(|style, outputs| {
+            beauty_pipeline(
+                device,
+                &pipeline_layout,
+                &shader,
+                depth_format,
+                style,
+                outputs,
+                highlight_free_format,
+            )
+        });
         // Vertex-only, from the colour shader's own module so the two clip
         // paths cannot drift: camera and instance transforms only.
         let depth_pipeline_layout =
@@ -576,6 +594,12 @@ impl KinematicBrushPass {
             instance_bytes: Vec::new(),
             #[cfg(test)]
             bound_styles: std::sync::Mutex::new(Vec::new()),
+            #[cfg(test)]
+            bound_outputs: std::sync::Mutex::new(Vec::new()),
+            #[cfg(test)]
+            beauty_layout: pipeline_layout,
+            #[cfg(test)]
+            depth_format,
         }
     }
 
@@ -990,8 +1014,9 @@ impl KinematicBrushPass {
 
     /// `view`'s mover colour draws, `Equal` against the depth
     /// [`Self::record_depth`] wrote for the same view, through `style`'s
-    /// beauty pipeline. `style` is the frame's snapshot, taken with group 0,
-    /// so the main view and the mirror draw one style. The mirror reads its
+    /// beauty pipeline in the `outputs` form the caller's pass attaches.
+    /// `style` is the frame's snapshot, taken with group 0, so the main view
+    /// and the mirror draw one style. The mirror reads its
     /// own light records (group 2) on a frame a mirror-only light holds a
     /// shadow slot. The caller binds groups 0 and 4, and opens a mirror pass
     /// only when [`Self::has_view_draws`] holds, so a bound-style report is a
@@ -1002,6 +1027,7 @@ impl KinematicBrushPass {
         level: &KinematicLevelState,
         materials: &[GpuTexture],
         view: MoverView,
+        outputs: ColourOutputs,
         style: SpecularStyle,
     ) {
         if !self.has_draws(level) {
@@ -1009,12 +1035,17 @@ impl KinematicBrushPass {
         }
         let mirror_light_records =
             matches!(view, MoverView::Mirror { .. }) && self.mirror_light_records;
-        pass.set_pipeline(self.beauty_pipelines.for_style(style));
+        pass.set_pipeline(self.beauty_pipelines.for_style(style, outputs));
         #[cfg(test)]
         self.bound_styles
             .lock()
             .expect("bound_styles")
             .push((view.kind(), style));
+        #[cfg(test)]
+        self.bound_outputs
+            .lock()
+            .expect("bound_outputs")
+            .push(outputs);
         pass.set_bind_group(2, level.light_groups.select(mirror_light_records), &[]);
         pass.set_bind_group(3, &self.instance_bind_group, &[]);
         pass.set_vertex_buffer(0, level.vertex_buffer.slice(..));
@@ -1071,6 +1102,76 @@ impl KinematicBrushPass {
     /// in record order.
     pub(crate) fn take_bound_styles(&self) -> Vec<(MoverViewKind, SpecularStyle)> {
         std::mem::take(&mut *self.bound_styles.lock().expect("bound_styles"))
+    }
+
+    /// The beauty pipelines, every style and form, rebuilt over the same
+    /// layout from `source`, already composed for the adapter's cube-array
+    /// support: the test-only variants.
+    pub(crate) fn beauty_variant(
+        &self,
+        device: &wgpu::Device,
+        source: &str,
+    ) -> MoverBeautyPipelines {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Kinematic Brush Shader (test variant)"),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+        MoverBeautyPipelines::new(|style, outputs| {
+            self.beauty_pipeline_from(device, &shader, style, outputs)
+        })
+    }
+
+    /// One beauty pipeline, `style` in form `outputs`, over the production
+    /// layout and targets from `shader`: a variant, or an older source the
+    /// register screen compiles.
+    pub(crate) fn beauty_pipeline_from(
+        &self,
+        device: &wgpu::Device,
+        shader: &wgpu::ShaderModule,
+        style: SpecularStyle,
+        outputs: ColourOutputs,
+    ) -> wgpu::RenderPipeline {
+        beauty_pipeline(
+            device,
+            &self.beauty_layout,
+            shader,
+            self.depth_format,
+            style,
+            outputs,
+            super::glossy_floor::highlight_free_format(device.features()),
+        )
+    }
+
+    /// Put `pipelines` in the beauty pipelines' place, returning them.
+    pub(crate) fn swap_beauty_pipelines(
+        &mut self,
+        pipelines: MoverBeautyPipelines,
+    ) -> MoverBeautyPipelines {
+        std::mem::replace(&mut self.beauty_pipelines, pipelines)
+    }
+
+    /// The mover shader as the pass composes it for the adapter.
+    pub(crate) fn composed_source(&self) -> String {
+        shader_source(self.cube_array_supported).into_owned()
+    }
+
+    /// The mover shader with its own file, `kinematic_brush.wgsl`, replaced
+    /// by `main` and the shared snippets kept, as the pass composes it.
+    pub(crate) fn composed_with_main(&self, main: &str) -> String {
+        let own = include_str!("../shaders/kinematic_brush.wgsl");
+        let composed = self.composed_source();
+        assert_eq!(
+            composed.matches(own).count(),
+            1,
+            "the pass composes its own file once"
+        );
+        composed.replace(own, main)
+    }
+
+    /// Every output form the beauty records bound since the last take, in
+    /// record order.
+    pub(crate) fn take_bound_outputs(&self) -> Vec<ColourOutputs> {
+        std::mem::take(&mut *self.bound_outputs.lock().expect("bound_outputs"))
     }
 }
 

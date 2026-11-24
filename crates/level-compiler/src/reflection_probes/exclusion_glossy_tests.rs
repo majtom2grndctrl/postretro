@@ -325,18 +325,15 @@ fn a_glossy_floor_probes_thin_rule_keys_to_the_floor_stride_and_waters_to_its_ow
 }
 
 // Row 16: the compiler's floor-layer stride is the coarsest stride among the
-// floor layer's runtime tiers, as water's is pinned to water's. The floor
-// layer's tiers start as water's steps and divisors (`plan.md` Delegated
-// answers) and live in render-cpu's reflection presets until the floor
-// layer gives them their own table, which this pin then reads; retuning a
-// tier coarser fails it either way.
+// floor layer's runtime tiers (render-cpu's floor-layer presets), as water's
+// is pinned to water's; retuning a floor tier coarser fails it.
 #[test]
 fn floor_layer_stride_divisor_matches_the_coarsest_floor_layer_tier() {
     let coarsest = FluidReflectionQuality::ALL
         .iter()
-        .filter_map(|quality| quality.preset())
+        .filter_map(|quality| quality.floor_layer_preset())
         .map(|preset| preset.march.rows_per_stride_pixel)
         .min()
-        .expect("some tier runs a screen-space layer");
+        .expect("some tier runs the floor layer");
     assert_eq!(FLOOR_LAYER_COARSEST_STRIDE_DIVISOR, coarsest);
 }

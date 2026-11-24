@@ -133,17 +133,36 @@ pub(super) fn forward_pipeline(
     })
 }
 
-/// The forward forms a level with glossy faces binds at a reflection tier
-/// above off, built at full init so an install or tier change builds none:
-/// glossy buckets write D_static as a second output; every other bucket
-/// keeps today's entry with the second target's write mask empty.
-pub(crate) struct ForwardStaticDiffusePipelines {
-    /// `fs_main_static_diffuse`: colour, then D_static.
+/// One pair of forward sweeps over a level with glossy faces: glossy buckets
+/// write D_static, every other bucket keeps it masked off.
+pub(crate) struct ForwardGlossySweeps {
+    /// Glossy buckets: colour, then D_static.
     pub written: wgpu::RenderPipeline,
-    /// `fs_main` over both targets, the second masked off.
+    /// Every other bucket: the same colour, D_static masked off.
     pub masked: wgpu::RenderPipeline,
+}
+
+/// The forward forms a level with glossy faces binds at a reflection tier
+/// above off, built at full init so an install or tier change builds none.
+/// At a tier that runs the floor layer, on a level with an up-facing glossy
+/// face, every bucket also writes the colour with its highlight left out, a
+/// third output; otherwise the forms keep two.
+pub(crate) struct ForwardStaticDiffusePipelines {
+    /// `fs_main_static_diffuse`, and `fs_main` with D_static masked.
+    pub static_diffuse: ForwardGlossySweeps,
+    /// `fs_main_static_diffuse_highlight_free`, and `fs_main_highlight_free`
+    /// with D_static masked: the floor layer's tiers.
+    pub highlight_free: ForwardGlossySweeps,
     /// The D_static target's format: the scene colour's ([`static_diffuse_format`]).
     pub format: wgpu::TextureFormat,
+    /// The highlight-free colour's format
+    /// ([`super::glossy_floor::highlight_free_format`]).
+    pub highlight_free_format: wgpu::TextureFormat,
+    /// What [`Self::variant`] rebuilds the forms over.
+    #[cfg(test)]
+    layout: wgpu::PipelineLayout,
+    #[cfg(test)]
+    scene_colour_target: Option<wgpu::ColorTargetState>,
 }
 
 impl ForwardStaticDiffusePipelines {
@@ -154,37 +173,81 @@ impl ForwardStaticDiffusePipelines {
         scene_colour_target: &Option<wgpu::ColorTargetState>,
     ) -> Self {
         let format = static_diffuse_format();
-        let static_diffuse_target = |write_mask| {
+        let highlight_free_format = super::glossy_floor::highlight_free_format(device.features());
+        let target = |format, write_mask| {
             Some(wgpu::ColorTargetState {
                 format,
                 blend: None,
                 write_mask,
             })
         };
+        let static_diffuse = target(format, wgpu::ColorWrites::ALL);
+        let static_diffuse_masked = target(format, wgpu::ColorWrites::empty());
+        let highlight_free = target(highlight_free_format, wgpu::ColorWrites::ALL);
+        let form = |label, entry, targets: &[Option<wgpu::ColorTargetState>]| {
+            forward_pipeline(device, layout, shader, label, entry, targets)
+        };
         Self {
-            written: forward_pipeline(
-                device,
-                layout,
-                shader,
-                "Textured Pipeline (static diffuse)",
-                "fs_main_static_diffuse",
-                &[
-                    scene_colour_target.clone(),
-                    static_diffuse_target(wgpu::ColorWrites::ALL),
-                ],
-            ),
-            masked: forward_pipeline(
-                device,
-                layout,
-                shader,
-                "Textured Pipeline (static diffuse masked)",
-                "fs_main",
-                &[
-                    scene_colour_target.clone(),
-                    static_diffuse_target(wgpu::ColorWrites::empty()),
-                ],
-            ),
+            static_diffuse: ForwardGlossySweeps {
+                written: form(
+                    "Textured Pipeline (static diffuse)",
+                    "fs_main_static_diffuse",
+                    &[scene_colour_target.clone(), static_diffuse.clone()],
+                ),
+                masked: form(
+                    "Textured Pipeline (static diffuse masked)",
+                    "fs_main",
+                    &[scene_colour_target.clone(), static_diffuse_masked.clone()],
+                ),
+            },
+            highlight_free: ForwardGlossySweeps {
+                written: form(
+                    "Textured Pipeline (static diffuse, highlight-free)",
+                    "fs_main_static_diffuse_highlight_free",
+                    &[
+                        scene_colour_target.clone(),
+                        static_diffuse,
+                        highlight_free.clone(),
+                    ],
+                ),
+                masked: form(
+                    "Textured Pipeline (static diffuse masked, highlight-free)",
+                    "fs_main_highlight_free",
+                    &[
+                        scene_colour_target.clone(),
+                        static_diffuse_masked,
+                        highlight_free,
+                    ],
+                ),
+            },
             format,
+            highlight_free_format,
+            #[cfg(test)]
+            layout: layout.clone(),
+            #[cfg(test)]
+            scene_colour_target: scene_colour_target.clone(),
+        }
+    }
+
+    /// Every form rebuilt over the same layout and targets from `source`,
+    /// already composed for the adapter's cube-array support: the test-only
+    /// variants.
+    #[cfg(test)]
+    pub(crate) fn variant(&self, device: &wgpu::Device, source: &str) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Textured Shader (test variant)"),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+        Self::new(device, &self.layout, &shader, &self.scene_colour_target)
+    }
+
+    /// The sweeps a frame binds: the highlight-free forms when it runs the
+    /// floor layer, else the two-output forms.
+    pub(crate) fn sweeps(&self, floor_layer: bool) -> &ForwardGlossySweeps {
+        if floor_layer {
+            &self.highlight_free
+        } else {
+            &self.static_diffuse
         }
     }
 }

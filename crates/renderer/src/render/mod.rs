@@ -26,6 +26,7 @@ mod frame_timing;
 mod ghost_depth;
 mod ghost_order;
 mod ghost_pipeline;
+mod glossy_floor;
 mod glossy_overlay;
 pub(crate) mod gpu_create;
 pub(crate) mod install_pipelines;
@@ -159,6 +160,10 @@ mod geometry_ranges_gpu_test;
 #[cfg(test)]
 mod ghost_depth_frame_test;
 #[cfg(test)]
+mod glossy_floor_frame_test;
+#[cfg(test)]
+mod glossy_floor_frame_test_fixtures;
+#[cfg(test)]
 mod glossy_overlay_frame_test;
 #[cfg(test)]
 mod glossy_overlay_frame_test_fixtures;
@@ -198,6 +203,7 @@ mod renderer_forward_frame;
 mod renderer_frame;
 mod renderer_full_init;
 mod renderer_geometry;
+mod renderer_glossy_floor_frame;
 mod renderer_glossy_frame;
 mod renderer_init;
 mod renderer_init_pipelines;
@@ -292,6 +298,7 @@ use dynamic_depth_cache::{DynamicDepthCacheGpu, DynamicDepthCachePlan};
 use fog_pass::FogPass;
 use frame_timing::FrameTiming;
 pub use geometry_install_marks::GeometryInstallTiming;
+pub use glossy_floor::{GLOSSY_HIGHLIGHT_FREE, GLOSSY_SCENE_COLOUR_CHAIN};
 pub use glossy_overlay::GLOSSY_STATIC_DIFFUSE;
 pub use level_build::{
     LevelBuildError, LevelBuildEvent, LevelBuildPart, LevelBuildSnapshotInputs, LevelGeometryParts,
@@ -404,8 +411,8 @@ pub use sh_diagnostics::{MarkerMode, ShDiagnosticsState};
 pub use sh_volume::DeltaVolumeMeta;
 
 // Internal init/render helpers used by the `impl Renderer` files via `use super::*`.
-use renderer_full_init::*;
 use forward_pipelines::*;
+use renderer_full_init::*;
 use renderer_init_pipelines::*;
 use renderer_init_resources::*;
 

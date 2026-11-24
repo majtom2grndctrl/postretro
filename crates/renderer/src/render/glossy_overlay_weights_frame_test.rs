@@ -459,7 +459,12 @@ fn any_all_terms_bit_off_draws_no_term_from_its_toggle_frame() {
 
 /// A runtime point light's GPU record (`GpuLight`, 64 bytes) and its
 /// influence sphere (16 bytes).
-fn point_light(position: Vec3, colour: Vec3, range: f32, falloff: u32) -> ([u8; 64], [u8; 16]) {
+pub(super) fn point_light(
+    position: Vec3,
+    colour: Vec3,
+    range: f32,
+    falloff: u32,
+) -> ([u8; 64], [u8; 16]) {
     let words: [u32; 16] = [
         position.x.to_bits(),
         position.y.to_bits(),
@@ -485,7 +490,7 @@ fn point_light(position: Vec3, colour: Vec3, range: f32, falloff: u32) -> ([u8; 
     )
 }
 
-fn set_light(renderer: &mut Renderer, light: Option<([u8; 64], [u8; 16])>) {
+pub(super) fn set_light(renderer: &mut Renderer, light: Option<([u8; 64], [u8; 16])>) {
     match light {
         Some((record, influence)) => {
             renderer.upload_bridge_lights(&record);

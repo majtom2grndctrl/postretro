@@ -131,6 +131,7 @@ pub(crate) fn texture_format_name(format: wgpu::TextureFormat) -> &'static str {
         wgpu::TextureFormat::Rgba16Uint => "Rgba16Uint",
         wgpu::TextureFormat::Rg16Float => "Rg16Float",
         wgpu::TextureFormat::R16Float => "R16Float",
+        wgpu::TextureFormat::Rg11b10Ufloat => "Rg11b10Ufloat",
         format => panic!("unexpected residency texture format {format:?}"),
     }
 }

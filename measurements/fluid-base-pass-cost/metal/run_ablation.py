@@ -10,7 +10,8 @@ usage: python3 measurements/fluid-base-pass-cost/metal/run_ablation.py --arms a,
   --rounds N   interleaved rounds (default 2: forward, then reversed)
   --warmup N / --samples N   capture frames (default 120 / 120)
   --tag T      results file suffix (results-<T>.{json,md})
-  --report glossy   overlay / sums / forward / frame / overlap table (glossy-world-reflections)
+  --report glossy   overlay / sums / floor chain / floor march / forward / frame / overlap
+                    table (glossy-world-reflections)
   --abort-invalid   stop at the first invalid run (pilot)
   --min-free-gb N   stop before a run when / has less free space (default 16)
 env: CELL_BIN (engine binary, must be named postretro), CELL_BIN_BEFORE /
@@ -68,6 +69,9 @@ CONFIGS.update({f"glossy-{v}-{r}": (f"glossy-{v}", res) for v in ("across", "dow
 NO_FLUID_POSES = {"glossy-across", "glossy-down"}
 # Two-binary A/B: these variants run their own binary's shader, no override.
 BINARY_VARIANTS = {"before": "CELL_BIN_BEFORE", "after": "CELL_BIN_AFTER"}
+# Tiers that run the glossy floor layer (Task 11: FLOOR_LAYER_PRESETS); an arm
+# without a quality field runs the default, high.
+FLOOR_TIERS = ("medium", "high", "very_high", "ultra")
 BASE_ENV = dict(kit.ENGINE_ENV)
 
 
@@ -183,11 +187,15 @@ def main():
                     raise SystemExit(f"under {args.min_free_gb} GB free on /")
                 no_fluid = a["pose"] in NO_FLUID_POSES
                 kit.REQUIRE_FLUID = not no_fluid
+                # Low draws the probe term alone, so the overlay is required
+                # there too; floor tiers also require one floor march.
                 overlay = (no_fluid and a["mode"] == "after" and a["mask"] == 0x17F
-                           and a["quality"] not in ("off", "low"))
+                           and a["quality"] != "off")
+                floor = overlay and (a["quality"] or "high") in FLOOR_TIERS
                 gpu_time.COMPLETE_REQUIRED = (("Depth Pre-Pass", "Textured Pass")
                                               + (() if no_fluid else ("Fluid Surface Pass",))
-                                              + ((gpu_time.GLOSSY_LABEL,) if overlay else ()))
+                                              + ((gpu_time.GLOSSY_LABEL,) if overlay else ())
+                                              + ((gpu_time.FLOOR_MARCH_LABEL,) if floor else ()))
                 label = f"{args.tag}-{a['name']}-r{rnd}"
                 print(f"run {label} ...", flush=True)
                 r = kit.run_one(label, a, rnd, args, trace_dir, flags)
@@ -198,6 +206,7 @@ def main():
                 records.append(r)
                 print(f"  busy clock {busy_clock_text(r)}", flush=True)
                 print(f"  overlay {kit.fmt(r.get('glossy_ms'), 3)} sums {kit.fmt(r.get('sums_any_ms'), 3)} "
+                      f"chain {kit.fmt(r.get('chain_ms'), 3)} march {kit.fmt(r.get('march_ms'), 3)} "
                       f"fluid {kit.fmt(r.get('fluid_ms'), 3)} forward {kit.fmt(r.get('forward_ms'), 3)} "
                       f"frame {kit.fmt(r.get('gpu_frame_ms_complete'), 3)} clock {kit.clock_text(r)} "
                       f"valid={r['valid']} {r['problems'] if not r['valid'] else ''}", flush=True)
@@ -224,6 +233,8 @@ def add_glossy_figures(r):
         return
     r["glossy_ms"] = get(gpu_time.GLOSSY_LABEL)
     r["sums_any_ms"] = get(gpu_time.PROBE_SUMS_LABEL) + get(gpu_time.SUMS_LABEL)
+    r["chain_ms"] = get(gpu_time.FLOOR_CHAIN_LABEL)
+    r["march_ms"] = get(gpu_time.FLOOR_MARCH_LABEL)
     r["pass_sum_ms"] = round(sum(p["per_frame_ms"] for p in passes.values()), 4)
     frame = complete.get("gpu_frame_ms_complete")
     r["overlap_ms"] = round(r["pass_sum_ms"] - frame, 4) if frame is not None else None
@@ -244,17 +255,20 @@ def summarize_glossy(records, tag):
     md = [f"# Glossy world reflections, 5300M ({tag})", "",
           "Per complete frame (gpu_time.py), mean over valid runs; spread = max - min across runs. "
           "frame = union of every labelled interval; pass sum = sum of every labelled pass's mean; "
-          "overlap = pass sum - frame. Clock = median core clock (min-max) over the run's busy "
+          "overlap = pass sum - frame; chain = every Glossy Floor Chain Level pass in the frame, summed; "
+          "march = Glossy Floor March Pass. Clock = median core clock (min-max) over the run's busy "
           "samples (GPU activity >= 50%), with their count, per run.", "",
-          "| arm | valid | overlay ms | spread | sums ms | forward ms | spread | GPU frame ms | spread | "
-          "pass sum ms | overlap ms | clocks |",
-          "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+          "| arm | valid | overlay ms | spread | sums ms | chain ms | march ms | forward ms | spread | "
+          "GPU frame ms | spread | pass sum ms | overlap ms | clocks |",
+          "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for name, rs in by.items():
         good = [r for r in rs if r["valid"] and r.get("forward_ms") is not None]
         col = lambda k: [r[k] for r in good if r.get(k) is not None]
         row = {"arm": name, "valid": len(good), "runs": len(rs),
                "glossy_ms": mean(col("glossy_ms")), "glossy_spread": spread(col("glossy_ms")),
                "sums_ms": mean(col("sums_any_ms")),
+               "chain_ms": mean(col("chain_ms")), "chain_spread": spread(col("chain_ms")),
+               "march_ms": mean(col("march_ms")), "march_spread": spread(col("march_ms")),
                "forward_ms": mean(col("forward_ms")), "forward_spread": spread(col("forward_ms")),
                "gpu_frame_ms": mean(col("gpu_frame_ms_complete")),
                "frame_spread": spread(col("gpu_frame_ms_complete")),
@@ -263,7 +277,8 @@ def summarize_glossy(records, tag):
         rows.append(row)
         f = kit.fmt
         md.append(f"| {name} | {len(good)}/{len(rs)} | {f(row['glossy_ms'], 3)} | {f(row['glossy_spread'], 3)} | "
-                  f"{f(row['sums_ms'], 3)} | {f(row['forward_ms'], 3)} | {f(row['forward_spread'], 3)} | "
+                  f"{f(row['sums_ms'], 3)} | {f(row['chain_ms'], 3)} | {f(row['march_ms'], 3)} | "
+                  f"{f(row['forward_ms'], 3)} | {f(row['forward_spread'], 3)} | "
                   f"{f(row['gpu_frame_ms'], 3)} | {f(row['frame_spread'], 3)} | {f(row['pass_sum_ms'], 3)} | "
                   f"{f(row['overlap_ms'], 3)} | {'; '.join(row['clocks'])} |")
     bad = [r for r in records if not r["valid"]]

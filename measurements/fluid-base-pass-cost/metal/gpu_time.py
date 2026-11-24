@@ -67,8 +67,13 @@ FORWARD_LABEL = "Textured Pass"
 # before). A driver may narrow COMPLETE_REQUIRED for a map without fluid.
 GLOSSY_LABEL = "Glossy Overlay Pass"
 PROBE_SUMS_LABEL = "Reflection Probe Sums Pass"
+# Task 11's floor layer (timing pairs 24 and 25): the scene-colour chain records
+# one render pass per level, all under one label (its per-frame figure sums
+# them), and the floor march one render pass.
+FLOOR_CHAIN_LABEL = "Glossy Floor Chain Level"
+FLOOR_MARCH_LABEL = "Glossy Floor March Pass"
 # Passes reported beside the fluid pass.
-REPORTED = (FLUID_LABEL, CELL_LABEL, SUMS_LABEL, PROBE_SUMS_LABEL, GLOSSY_LABEL, SSR_LABEL, FORWARD_LABEL, "Depth Pre-Pass", "Streamed SH Compose",
+REPORTED = (FLUID_LABEL, CELL_LABEL, SUMS_LABEL, PROBE_SUMS_LABEL, GLOSSY_LABEL, FLOOR_CHAIN_LABEL, FLOOR_MARCH_LABEL, SSR_LABEL, FORWARD_LABEL, "Depth Pre-Pass", "Streamed SH Compose",
             "Fog Raymarch Pass", "Fog Composite Pass", "Skinned Mesh Pass",
             "Kinematic Brush Pass", "Screen Effects Capture Tonemap Pass")
 

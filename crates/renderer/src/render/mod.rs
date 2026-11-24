@@ -184,6 +184,8 @@ mod glossy_overlay_room_frame_test_fixtures;
 #[cfg(test)]
 mod glossy_overlay_style_frame_test;
 #[cfg(test)]
+mod glossy_overlay_water_frame_test;
+#[cfg(test)]
 mod glossy_overlay_weights_frame_test;
 #[cfg(test)]
 mod glossy_probe_mips_gpu_test;

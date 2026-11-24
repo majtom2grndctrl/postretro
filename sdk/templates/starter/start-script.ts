@@ -4,9 +4,10 @@
 // `bin/postretro-tool run` boots to the engine's fallback menu with no content
 // at all. Replace the three fields with your game's own, then grow the
 // manifest from here — `docs/modding.md` and `docs/scripting-reference.md`
-// cover what it can declare. A map's source goes in the `maps/` folder; an
-// entry in the manifest's `maps` catalog is what offers it in the menu and
-// ships it in a distribution.
+// cover what it can declare. A map's source goes in the `maps/` folder. An
+// entry in the manifest's `maps` catalog ships it in a distribution and lets
+// a menu of your own offer it; the engine's fallback menu lists no levels, so
+// until you build one, open a level with `bin/postretro-tool run maps/<name>.prl`.
 import { defineMod } from "postretro";
 
 export default defineMod({

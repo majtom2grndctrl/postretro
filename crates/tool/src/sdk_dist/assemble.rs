@@ -632,9 +632,8 @@ mod tests {
     }
 
     /// The starter is what lets `bin/postretro-tool run` boot on arrival. The
-    /// author edits the `.ts` against the `tsconfig.json`; the shipped `.js` is
-    /// what `bin/postretro-release` loads, since a release engine compiles no
-    /// TypeScript.
+    /// author edits the `.ts` against the `tsconfig.json`; the `.js` is the
+    /// output of the compile check that ran before the bundle shipped.
     #[test]
     fn sweep_requires_the_whole_starter_mod() {
         for name in ["start-script.ts", "start-script.js", "tsconfig.json"] {

@@ -92,8 +92,8 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
 ///
 /// The debug authoring engine recompiles `start-script.ts` at every mod init,
 /// so this is not what makes the starter boot there. It proves the starter
-/// compiles before a bundle ships, and the emitted `.js` is what the release
-/// engine in `bin/` loads, since a release engine compiles no TypeScript.
+/// compiles before a bundle ships; a payload built from the bundle compiles its
+/// own entry script, so no bundle workflow depends on this `.js`.
 fn emit_starter_script(
     project: &Project,
     install_root: &Path,

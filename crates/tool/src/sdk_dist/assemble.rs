@@ -31,8 +31,8 @@ pub(super) struct BundleBinaries {
 }
 
 pub(super) struct BundleTarget<'a> {
-    /// The project whose `dist/` the bundle is written under. It supplies the
-    /// containment anchor and nothing else: no project content enters a bundle.
+    /// The project whose `dist/` the bundle is written under. Assembly uses it
+    /// only as the containment anchor; no project content enters a bundle.
     pub(super) project_root: &'a Path,
     pub(super) output_root: &'a Path,
     pub(super) bundle_root: &'a Path,

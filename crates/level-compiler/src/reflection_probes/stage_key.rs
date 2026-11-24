@@ -13,8 +13,9 @@ use postretro_level_format::reflection_probes::{
 use super::capture::SUPERSAMPLE_OFFSETS;
 use super::capture_exclusion::ProbeExclusion;
 use super::emissive_factor::{AreaGlowFaces, EmissiveFaceFactors};
-use super::exclusion::ExclusionConstants;
+use super::exclusion::{ExclusionConstants, ScreenSpaceLayers, classifies};
 use super::placement::PlacedProbe;
+use super::prefilter::{colour_mip_count, key_bytes as prefilter_key_bytes};
 use super::reference::REFERENCE_MEAN_SAMPLES;
 use super::sdf_lights::SdfLights;
 use super::sh_sample::PRODUCTION_PROBE_OCCLUSION;
@@ -62,11 +63,11 @@ pub(super) fn parse_cache_payload(
 
 /// `blake3` over every input the capture reads, in a fixed order, plus the
 /// constants that shape its output. Placement enters as its output: every
-/// probe's box, capture point and bound faces. Exclusion enters as its
-/// inputs and output: the override table and the rule's `constants`, then
-/// each probe's `exclusions` (parallel to `probes`) with what the capture
-/// reads of the brushes CSG may hide, since geometry shows only what
-/// survived it. `tracer_epoch` is `ray_traversal::TRACER_EPOCH`: primary and
+/// probe's box, capture point, bound faces and, unless up, its facing.
+/// Exclusion enters as its inputs and output: the override table and the
+/// rule's `constants`, then each probe's `exclusions` (parallel to `probes`)
+/// with what the capture reads of the brushes CSG may hide, since geometry
+/// shows only what survived it. `tracer_epoch` is `ray_traversal::TRACER_EPOCH`: primary and
 /// shadow rays trace.
 pub(super) fn cache_key(
     inputs: &ReflectionProbeInputs<'_>,
@@ -115,13 +116,33 @@ pub(super) fn cache_key(
         {
             placement.extend_from_slice(&value.to_le_bytes());
         }
-        placement.extend_from_slice(&(probe.faces.len() as u64).to_le_bytes());
-        for &(volume, face) in &probe.faces {
+        placement.extend_from_slice(&(probe.fluid_faces.len() as u64).to_le_bytes());
+        for &(volume, face) in &probe.fluid_faces {
             placement.extend_from_slice(&volume.to_le_bytes());
             placement.extend_from_slice(&face.to_le_bytes());
         }
+        placement.extend_from_slice(&(probe.world_faces.len() as u64).to_le_bytes());
+        for face in &probe.world_faces {
+            placement.extend_from_slice(&face.to_le_bytes());
+        }
+        // The hemisphere the shares cover. Up-facing probes add nothing, so
+        // water's key is unchanged.
+        if !probe.facing.is_up() {
+            for value in probe.facing.normal().to_array() {
+                placement.extend_from_slice(&value.to_le_bytes());
+            }
+        }
     }
     section("placement", &placement);
+    // The gate itself, not only the world faces it places: toggling it
+    // re-bakes even a map whose placement it leaves unchanged.
+    section("glossy reflections", &[u8::from(inputs.glossy_reflections)]);
+    // The colour chain's prefilter, only where it writes mips: a section
+    // binding only water keeps mip 0 alone, and its key.
+    let mip_count = colour_mip_count(probes);
+    if mip_count > 1 {
+        section("colour mips", &prefilter_key_bytes(mip_count));
+    }
     // Resolved values only: an edit that resolves the same keys the same.
     let overrides: Vec<u8> = inputs
         .capture_override
@@ -134,6 +155,14 @@ pub(super) fn cache_key(
         .collect();
     section("capture overrides", &overrides);
     section("exclusion constants", &constants.key_bytes());
+    // The floor layer's stride keys a glossy floor's thin rule; only a level
+    // with such a probe keys it, so a water-only level's key is unchanged.
+    if probes
+        .iter()
+        .any(|probe| classifies(probe) && ScreenSpaceLayers::of(probe).reads_floor_stride())
+    {
+        section("floor exclusion constants", &constants.floor_key_bytes());
+    }
     section("exclusions", &exclusion_bytes(inputs, exclusions));
     section(
         "sh volume",
@@ -265,10 +294,11 @@ pub(super) fn cache_key(
     ))
 }
 
-/// Per probe: its excluded brushes and their post-cut faces (the mask), each
-/// excluded hull's planes (its exit test) and contacts, and every kept
-/// contact candidate's post-cut faces (the fill's pool), planes (kept solid)
-/// and sides (the fill's covering test, material and projection). CSG hides
+/// Per probe: its transparent faces, its excluded brushes and their post-cut
+/// faces (the mask), each excluded hull's planes (its exit test) and
+/// contacts, and every kept contact candidate's post-cut faces (the fill's
+/// pool), planes (kept solid) and sides (the fill's covering test, material
+/// and projection). CSG hides
 /// what an excluded hull buries, so the geometry alone does not necessarily
 /// tell a flush pillar from a sunk one.
 fn exclusion_bytes(
@@ -283,6 +313,7 @@ fn exclusion_bytes(
         }
     };
     for exclusion in exclusions {
+        u32s(&mut out, exclusion.transparent_faces());
         let excluded = exclusion.excluded();
         u32s(&mut out, excluded);
         for (slot, &brush) in excluded.iter().enumerate() {

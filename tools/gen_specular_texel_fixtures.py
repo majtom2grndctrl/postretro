@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """Generate the exact-value dev fixtures for per-texel specular sharpness and tint.
 
-Writes five 16 x 16 materials into `content/dev/textures/test/` (or `--out`),
-each a diffuse plus its slot siblings. The last two cover `_p` on a prefix
-with no Surface Depth tuning, and `_p`, `_t` and `_h` together. The map that shows them is
-`content/dev/maps/specular-texel-sharpness.map`.
+Writes nine 16 x 16 materials into `content/dev/textures/test/` (or `--out`),
+each a diffuse plus its slot siblings. The first five cover per-texel
+sharpness and tint; of them, the last two cover `_p` on a prefix with no
+Surface Depth tuning, and `_p`, `_t` and `_h` together. The map that shows
+them is `content/dev/maps/specular-texel-sharpness.map`. The last four
+art-direct glossy world reflections through `_p` and `_s` alone, in the
+side rooms of `content/dev/maps/glossy-reflections-test.map`. Exponents
+below are n = 2 / r^4 - 2 at r = 1 - p / 255; a texel reflects only where
+n > 8 and `_s` > 0, at a weight fading in over n 8-16 (bytes 85-107).
 
 * `metal_smoothness_ramp`: a neutral grey checker per texel (sRGB 118 and
   138), so texel edges read. `_s` is 255 everywhere. `_p` column x stores
@@ -35,6 +40,20 @@ with no Surface Depth tuning, and `_p`, `_t` and `_h` together. The map that sho
   albedo glints in its own hue on the 255 columns and white on the 0 columns
   (t = 0 is white, not the raw-albedo multiply of a slot without `_t`), at
   each sharpness.
+* `concrete_satin`: warm grey 16 x 16 panels (sRGB 168 158 142) with a
+  one-texel darker seam (sRGB 104 98 90) on the low edges (x == 0 or
+  y == 0). `_s` 255 and `_p` 64 (about exponent 4.4) everywhere: a broad
+  highlight under the reflection floor, so it never reflects.
+* `metal_polished`: a dark steel checker by 4-texel cell (sRGB 64 68 74 where
+  x // 4 + y // 4 is even, 80 84 90 where odd). `_s` 255, `_p` 200 (about
+  exponent 922, past the fade band: full weight, minimum blur) and `_t` 0
+  (white highlight and reflection) everywhere.
+* `metal_fade_band`: `metal_polished` with `_p` 97 everywhere (about exponent
+  11.6, mid fade band: about half weight, blurrier).
+* `concrete_tile_grout`: 8-texel cells, each a 7 x 7 dark blue tile (sRGB 36
+  44 60) with a one-texel pale grout line (sRGB 150 146 138) on its low edges
+  (grout where x % 8 == 0 or y % 8 == 0). `_s` tiles 255, grout 0. `_p` 200
+  and `_t` 0 everywhere, so only `_s` keeps the grout from reflecting.
 
 Rows run top to bottom and columns left to right, as PNG stores them. Diffuse
 PNGs are 8-bit RGB; every sibling is 8-bit greyscale. No PNG carries an
@@ -97,6 +116,27 @@ TINTED_HEIGHT = {"tile": 200, "mortar": 56}
 TINTED_SMOOTHNESS = {"sharp": 235, "broad": 120, "mortar": 30}
 TINTED_TINT = {"tinted": 255, "untinted": 0}
 
+# concrete_satin
+SATIN_PANEL_RGB = (168, 158, 142)
+SATIN_SEAM_RGB = (104, 98, 90)
+SATIN_SPECULAR = 255
+SATIN_SMOOTHNESS = 64  # about exponent 4.4, under the reflection floor
+
+# metal_polished and metal_fade_band: one diffuse, two sharpnesses
+POLISHED_CHECKER = ((64, 68, 74), (80, 84, 90))  # even and odd (x // 4 + y // 4)
+POLISHED_SPECULAR = 255
+POLISHED_SMOOTHNESS = 200  # about exponent 922: full weight
+FADE_BAND_SMOOTHNESS = 97  # about exponent 11.6: mid fade band
+POLISHED_TINT = 0
+
+# concrete_tile_grout
+TILE_CELL = 8
+TILE_RGB = (36, 44, 60)
+GROUT_RGB = (150, 146, 138)
+TILE_SPECULAR = {"tile": 255, "grout": 0}
+TILE_SMOOTHNESS = 200
+TILE_TINT = 0
+
 
 def ramp_smoothness(x):
     """`_p` byte of ramp column x: round(255 * x / 15). 255 / 15 is 17, so the
@@ -139,6 +179,23 @@ def tinted_smoothness_region(x, y):
 def tinted_tint_region(x, y):
     """`tinted` or `untinted` for one tinted texel: by cell column."""
     return "tinted" if (x // CARVED_CELL) % 2 == 0 else "untinted"
+
+
+def satin_region(x, y):
+    """`seam` or `panel` for one satin texel."""
+    return "seam" if x == 0 or y == 0 else "panel"
+
+
+def polished_rgb(x, y):
+    """The polished and fade-band diffuse: a checker by 4-texel cell."""
+    return POLISHED_CHECKER[(x // 4 + y // 4) % 2]
+
+
+def tile_region(x, y):
+    """`grout` or `tile` for one tile-and-grout texel."""
+    if x % TILE_CELL == 0 or y % TILE_CELL == 0:
+        return "grout"
+    return "tile"
 
 
 def grid(texel):
@@ -218,6 +275,34 @@ def fixtures():
             "grey",
             grid(lambda x, y: TINTED_TINT[tinted_tint_region(x, y)]),
         ),
+        "concrete_satin.png": (
+            "rgb",
+            grid(
+                lambda x, y: SATIN_SEAM_RGB
+                if satin_region(x, y) == "seam"
+                else SATIN_PANEL_RGB
+            ),
+        ),
+        "concrete_satin_s.png": ("grey", grid(lambda x, y: SATIN_SPECULAR)),
+        "concrete_satin_p.png": ("grey", grid(lambda x, y: SATIN_SMOOTHNESS)),
+        "metal_polished.png": ("rgb", grid(polished_rgb)),
+        "metal_polished_s.png": ("grey", grid(lambda x, y: POLISHED_SPECULAR)),
+        "metal_polished_p.png": ("grey", grid(lambda x, y: POLISHED_SMOOTHNESS)),
+        "metal_polished_t.png": ("grey", grid(lambda x, y: POLISHED_TINT)),
+        "metal_fade_band.png": ("rgb", grid(polished_rgb)),
+        "metal_fade_band_s.png": ("grey", grid(lambda x, y: POLISHED_SPECULAR)),
+        "metal_fade_band_p.png": ("grey", grid(lambda x, y: FADE_BAND_SMOOTHNESS)),
+        "metal_fade_band_t.png": ("grey", grid(lambda x, y: POLISHED_TINT)),
+        "concrete_tile_grout.png": (
+            "rgb",
+            grid(lambda x, y: TILE_RGB if tile_region(x, y) == "tile" else GROUT_RGB),
+        ),
+        "concrete_tile_grout_s.png": (
+            "grey",
+            grid(lambda x, y: TILE_SPECULAR[tile_region(x, y)]),
+        ),
+        "concrete_tile_grout_p.png": ("grey", grid(lambda x, y: TILE_SMOOTHNESS)),
+        "concrete_tile_grout_t.png": ("grey", grid(lambda x, y: TILE_TINT)),
     }
 
 

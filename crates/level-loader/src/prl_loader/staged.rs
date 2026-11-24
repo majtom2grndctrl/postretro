@@ -419,6 +419,7 @@ pub(crate) fn load_prl_staged_from_container(
         &container,
         &lighting.lights,
         portal_data.as_ref().map(Vec::len),
+        geometry.face_meta.len(),
     )?;
     // Id 57 settles each mover's light ramp, so it decodes before hand-out 4;
     // the section itself rides hand-out 5 with the rest of the lighting.

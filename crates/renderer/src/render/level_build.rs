@@ -20,6 +20,7 @@ use postretro_render_data::material::TextureMaterial;
 
 use super::fluid_surface::FluidLevelLayout;
 use super::fog_pass::FogTargetLayout;
+use super::glossy_overlay::GlossyLevelLayout;
 use super::gpu_create::{GpuCreationCounts, gpu_creation_counts};
 use super::install_pipelines::InstallPipelinesSlot;
 use super::level_resource_set::{LevelResourceSet, LevelSetId, SamplerMaps};
@@ -27,6 +28,7 @@ use super::loaded_texture::upload_prepared_textures;
 use super::mesh_pass::{LevelModels, LightGroupLayout};
 use super::model_cache::{CachedModel, ModelCacheHandle, ModelCacheOffer};
 use super::planar_reflection::PlanarMirrorLayout;
+use super::reflection_probe_resources::ReflectionProbeLevelLayout;
 use super::renderer_resources::{LevelSetCoreInputs, build_level_set_core};
 use super::renderer_textures::{
     MaterialBindContext, build_level_textures, placeholder_level_textures,
@@ -97,6 +99,8 @@ pub(in crate::render) struct LevelBuildContext {
     pub(in crate::render) fog: FogTargetLayout,
     pub(in crate::render) smoke: SmokeRegistrar,
     pub(in crate::render) fluid: FluidLevelLayout,
+    pub(in crate::render) reflection_probes: ReflectionProbeLevelLayout,
+    pub(in crate::render) glossy: GlossyLevelLayout,
     pub(in crate::render) mirror: PlanarMirrorLayout,
     pub(in crate::render) scene: LevelBuildSceneTargets,
     /// The renderer's add-only sampler maps as they were: the build creates
@@ -178,6 +182,8 @@ impl Renderer {
             fog: full.fog.target_layout(),
             smoke: full.smoke_pass.registrar(),
             fluid: full.fluid_surface.level_layout(),
+            reflection_probes: full.reflection_probe_sums.level_layout(),
+            glossy: full.glossy_overlay.level_layout(),
             mirror: full.planar_reflection.mirror_layout(),
             scene: LevelBuildSceneTargets {
                 extent: scene_extent,
@@ -322,8 +328,8 @@ pub(in crate::render) struct GeometryRest {
     pub(in crate::render) planar_candidate: Option<bool>,
 }
 
-/// The geometry part's work: the shared set build, then the fluid surfaces
-/// with the set's own reflection targets at the snapshot tier and scene
+/// The geometry part's work: the shared set build, then the reflection
+/// probes, the fluid surfaces over them with the set's own reflection targets at the snapshot tier and scene
 /// targets, and the fog cell masks. Touches nothing renderer-wide.
 fn build_geometry_set(
     context: &LevelBuildContext,
@@ -353,12 +359,24 @@ fn build_geometry_set(
         },
     )
     .map_err(LevelBuildError::LevelData)?;
+    // The level's probes build whether or not it has fluid; its fluid
+    // surfaces borrow them.
+    set.reflection_probes =
+        context
+            .reflection_probes
+            .build(&upload.device, &upload.writes, extras.reflection_probes);
+    if let Some(glossy) = set.glossy.as_mut() {
+        context
+            .glossy
+            .bind_probes(&upload.device, glossy, set.reflection_probes.as_ref());
+    }
     set.fluid_surfaces = context.fluid.build_surfaces(
         &upload.device,
         &upload.writes,
         fluid,
         extras.volumes,
         extras.reflection_probes,
+        set.reflection_probes.as_ref(),
     );
     let (fluid_targets, planar_extent) = context.fluid.build_targets(
         &upload.device,
@@ -572,8 +590,8 @@ impl LevelSetBuilder {
     /// lights and the shadow tier, promoted state, SH (residency plan and
     /// first pool generation), compose, lightmap family, SDF shadow, cull,
     /// kinematic geometry and the extent-bound groups at the snapshot extent
-    /// and the level's fog pixel scale; then the fluid surfaces with the
-    /// set's own reflection targets at the snapshot reflection tier, and the
+    /// and the level's fog pixel scale; then the reflection probes, the fluid
+    /// surfaces with the set's own reflection targets at the snapshot reflection tier, and the
     /// fog cell masks.
     pub fn geometry(&self, parts: LevelGeometryParts) {
         let LevelGeometryParts {

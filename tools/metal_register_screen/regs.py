@@ -6,6 +6,8 @@ The archive is a fat binary. Its AMD GPU slice (CPU type 0x01000014, RDNA
 gfx10 on the Mac target) is a Mach-O. Its `__TEXT,__fragment` section holds a
 packed function: after the name `air.packedFragmentFunction` come a u32 at +4
 holding SGPRs and a u32 at +8 holding VGPRs. That fragment lookup is verified.
+A pipeline with more than one colour attachment tags its fragment function
+`air.new.packedFragmentFunction` instead; the same offsets follow it.
 The vertex entry (`__TEXT,__vertex`, `air.new.packedVertexFunction`, same
 offsets) is unverified and reports `not found` on the screened pipeline.
 Reverse-engineered, not a documented format: if Apple changes it, re-derive the offsets before trusting a
@@ -18,8 +20,12 @@ import sys
 AMD_GPU_CPU_TYPE = 0x01000014
 LC_SEGMENT_64 = 0x19
 STAGES = (
-    ("vertex", "__vertex", b"air.new.packedVertexFunction\0"),
-    ("fragment", "__fragment", b"air.packedFragmentFunction\0"),
+    ("vertex", "__vertex", (b"air.new.packedVertexFunction\0",)),
+    (
+        "fragment",
+        "__fragment",
+        (b"air.packedFragmentFunction\0", b"air.new.packedFragmentFunction\0"),
+    ),
 )
 
 
@@ -64,12 +70,13 @@ def main(path):
             continue
         found = True
         found_sections = sections(macho)
-        for stage, section, tag in STAGES:
-            body = found_sections.get(section)
-            at = body.find(tag) if body else -1
-            if at < 0:
+        for stage, section, tags in STAGES:
+            body = found_sections.get(section) or b""
+            hits = [(body.find(tag), tag) for tag in tags if tag in body]
+            if not hits:
                 print(f"{stage}: not found")
                 continue
+            at, tag = min(hits)
             at += len(tag)
             sgprs, vgprs = struct.unpack("<II", body[at + 4 : at + 12])
             print(f"{stage}: sgprs={sgprs} vgprs={vgprs}")

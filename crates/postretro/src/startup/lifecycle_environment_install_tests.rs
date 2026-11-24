@@ -1447,7 +1447,7 @@ fn level_with_reflecting_pool() -> LevelWorld {
     };
     use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
     use postretro_level_format::reflection_probes::{
-        REFLECTION_PROBE_LIGHTS_PER_PROBE, ReflectionProbeBinding, ReflectionProbeLightShare,
+        REFLECTION_PROBE_LIGHTS_PER_PROBE, ReflectionProbeFluidBinding, ReflectionProbeLightShare,
         ReflectionProbeRecord, ReflectionProbesSection,
     };
     let mut world = level_with_fluid_volume(7, "water");
@@ -1468,6 +1468,8 @@ fn level_with_reflecting_pool() -> LevelWorld {
         tile_dimension: 4,
         tile_border: 1,
         atlas_format: IRRADIANCE_FORMAT_BC6H,
+        colour_mip_count: 1,
+        world_bindings: Vec::new(),
         probes: vec![ReflectionProbeRecord {
             source_entity: 9,
             box_min: [0.0, 0.0, 0.0],
@@ -1476,7 +1478,7 @@ fn level_with_reflecting_pool() -> LevelWorld {
             layer: 0,
             lights: [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE],
         }],
-        bindings: vec![ReflectionProbeBinding {
+        fluid_bindings: vec![ReflectionProbeFluidBinding {
             volume: 0,
             face: 0,
             probe: 0,

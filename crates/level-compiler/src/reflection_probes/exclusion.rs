@@ -9,10 +9,12 @@ use crate::map_data::{BrushVolume, ReflectionCapture};
 use crate::partition::Aabb;
 
 use super::capture_bounds::ProjectionBox;
-use super::exclusion_underside::{PlaneBasis, bound_water, downward_faces, has_underside};
-use super::placement::PlacedProbe;
+use super::exclusion_underside::{bound_reflectors, downward_faces, has_underside};
+use super::placement::{PlacedProbe, ReflectorFace};
+use super::plane_basis::PlaneBasis;
 
-/// Water reflects about its plane, whose normal is up.
+/// Water reflects about its plane, whose normal is up; so does every probe
+/// the rule classifies ([`classifies`]).
 pub(crate) const WATER_REFLECTOR_NORMAL: DVec3 = DVec3::Y;
 
 /// The size threshold's share of the water width up to the knee.
@@ -29,6 +31,12 @@ pub(crate) const THRESHOLD_FAR_WIDTH_M: f64 = 50.0;
 /// every tier. A compiler constant, not a read of the runtime presets, so
 /// retuning a finer tier never re-keys a capture; a test pins it to them.
 pub(crate) const SSR_COARSEST_STRIDE_DIVISOR: u32 = 180;
+/// [`SSR_COARSEST_STRIDE_DIVISOR`] for the glossy floor's screen-space layer:
+/// the smallest stride divisor among its tiers, which keys the thin rule of a
+/// probe binding a glossy floor. Its tiers start as water's steps and
+/// divisors (`plan.md` Delegated answers), so it equals water's until the
+/// owner retunes them; a test pins it to them.
+pub(crate) const FLOOR_LAYER_COARSEST_STRIDE_DIVISOR: u32 = 180;
 /// The engine's default horizontal field of view. A copy: the binary's
 /// `camera::HFOV` (crates/postretro/src/camera.rs) is out of the compiler's
 /// reach, so a test pins this to it.
@@ -42,14 +50,19 @@ pub(crate) const UNDERSIDE_MAX_NORMAL_DOT: f64 = -0.017_452_406_437_283_51;
 /// The constants that shape the rule. Classification and the capture's cache
 /// key read one instance, so a retune of any one re-keys every fluid map's
 /// capture, even where it moves no brush in or out. A constant the rule
-/// gains joins this.
+/// gains joins this. The floor layer's divisor keys only levels with a probe
+/// binding a glossy floor ([`Self::floor_key_bytes`]), so retuning it leaves
+/// every water-only capture's key as it was.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ExclusionConstants {
     pub near_share: f64,
     pub knee_width_m: f64,
     pub far_share: f64,
     pub far_width_m: f64,
+    /// Water's coarsest stride divisor.
     pub stride_divisor: u32,
+    /// The glossy floor layer's coarsest stride divisor.
+    pub floor_stride_divisor: u32,
     pub hfov_degrees: f64,
     pub floor_aspect: f64,
     pub underside_max_normal_dot: f64,
@@ -62,12 +75,14 @@ impl ExclusionConstants {
         far_share: THRESHOLD_FAR_SHARE,
         far_width_m: THRESHOLD_FAR_WIDTH_M,
         stride_divisor: SSR_COARSEST_STRIDE_DIVISOR,
+        floor_stride_divisor: FLOOR_LAYER_COARSEST_STRIDE_DIVISOR,
         hfov_degrees: DEFAULT_HFOV_DEGREES,
         floor_aspect: FLOOR_ASPECT,
         underside_max_normal_dot: UNDERSIDE_MAX_NORMAL_DOT,
     };
 
-    /// Every field, little-endian, in declaration order.
+    /// Every field but the floor layer's divisor, little-endian, in
+    /// declaration order: water's rule, as it has always keyed.
     pub(crate) fn key_bytes(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(7 * 8 + 4);
         for value in [
@@ -89,6 +104,12 @@ impl ExclusionConstants {
         out
     }
 
+    /// The floor layer's divisor, little-endian: keyed beside
+    /// [`Self::key_bytes`] on a level whose probes bind a glossy floor.
+    pub(crate) fn floor_key_bytes(&self) -> [u8; 4] {
+        self.floor_stride_divisor.to_le_bytes()
+    }
+
     /// t(W) = p(W)·W: brushes smaller than this in the reflector's plane
     /// leave the probe.
     pub(crate) fn size_threshold(&self, width: f64) -> f64 {
@@ -107,17 +128,67 @@ impl ExclusionConstants {
     }
 
     /// f ÷ W = 2·tan(θv/2) / D: the extent one coarsest march stride spans
-    /// per metre of view distance, with θv the vertical field of view.
+    /// per metre of view distance, with θv the vertical field of view and D
+    /// water's divisor.
+    #[cfg(test)]
     pub(crate) fn floor_ratio(&self) -> f64 {
+        self.floor_ratio_at(self.stride_divisor)
+    }
+
+    /// [`Self::floor_ratio`] at stride divisor `divisor`.
+    fn floor_ratio_at(&self, divisor: u32) -> f64 {
         let half_horizontal = (self.hfov_degrees.to_radians() * 0.5).tan();
         let vertical_fov = 2.0 * (half_horizontal / self.floor_aspect).atan();
-        2.0 * (vertical_fov * 0.5).tan() / f64::from(self.stride_divisor)
+        2.0 * (vertical_fov * 0.5).tan() / f64::from(divisor)
     }
 
     /// f(W): brushes thinner than this along the reflector normal stay in
-    /// the probe, since the march can step over them from view distance W.
+    /// the probe, since the march can step over them from view distance W:
+    /// water's ([`Self::thin_floor_for`]).
+    #[cfg(test)]
     pub(crate) fn thin_floor(&self, width: f64) -> f64 {
-        width * self.floor_ratio()
+        self.thin_floor_for(ScreenSpaceLayers::Water, width)
+    }
+
+    /// f(W) for a probe binding `layers`: each bound layer's coarsest stride
+    /// at view distance W, the coarser of them, so a brush no march of
+    /// either layer can resolve stays in the probe. Water alone keeps
+    /// water's stride; a glossy floor alone keys to the floor layer's.
+    pub(crate) fn thin_floor_for(&self, layers: ScreenSpaceLayers, width: f64) -> f64 {
+        let divisor = match layers {
+            ScreenSpaceLayers::Water => self.stride_divisor,
+            ScreenSpaceLayers::Floor => self.floor_stride_divisor,
+            ScreenSpaceLayers::Both => self.stride_divisor.min(self.floor_stride_divisor),
+        };
+        width * self.floor_ratio_at(divisor)
+    }
+}
+
+/// The screen-space layers that draw what an up-facing probe excludes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScreenSpaceLayers {
+    /// Water's layer alone: the probe binds water and no glossy floor.
+    Water,
+    /// The glossy floor's layer alone.
+    Floor,
+    /// A probe binding water and a glossy floor: both.
+    Both,
+}
+
+impl ScreenSpaceLayers {
+    /// The layers over `probe`'s bound faces. A probe binding no face reads
+    /// as water's, as water's rule always classified it.
+    pub(crate) fn of(probe: &PlacedProbe) -> Self {
+        match (probe.fluid_faces.is_empty(), probe.world_faces.is_empty()) {
+            (false, false) => Self::Both,
+            (true, false) => Self::Floor,
+            _ => Self::Water,
+        }
+    }
+
+    /// Whether the floor layer's stride keys this probe's thin rule.
+    pub(crate) fn reads_floor_stride(self) -> bool {
+        !matches!(self, Self::Water)
     }
 }
 
@@ -134,13 +205,18 @@ pub(crate) struct ExclusionScene<'a> {
     pub geometry: &'a GeometryResult,
     /// Id 52, whose surface faces the probes bind.
     pub environment_volumes: &'a EnvironmentVolumesSection,
+    /// The glossy world faces placement offered, ascending by id-17 face:
+    /// those a probe binds are its reflector beside its water.
+    pub world_faces: &'a [ReflectorFace],
 }
 
 /// Each probe's excluded brushes: ascending, deduplicated indices into
 /// `scene.brush_volumes`. A brush is excluded from a probe when it is set to
 /// `Never`, or follows the rule (`Auto`) and is smaller than the probe's
 /// threshold in the reflector's plane, at least the floor thick along its
-/// normal, and has no underside over the probe's water. `Always` keeps.
+/// normal, and has no underside over the probe's bound reflector, its water
+/// and glossy floor. `Always` keeps. A probe the rule does not classify
+/// ([`classifies`]) excludes nothing, `Never` brushes included.
 /// Every brush of the map is classified for every probe, under the
 /// production constants.
 #[cfg(test)]
@@ -183,6 +259,7 @@ fn classify(
         scene.face_brush.len(),
         scene.geometry.face_index_ranges.len()
     );
+    // Every probe the rule classifies faces up, so one frame serves them all.
     let basis = PlaneBasis::new(WATER_REFLECTOR_NORMAL);
     let extents: Vec<BrushExtents> = scene
         .brush_volumes
@@ -193,9 +270,14 @@ fn classify(
     probes
         .iter()
         .map(|probe| {
+            if !classifies(probe) {
+                return Vec::new();
+            }
             let width = water_width(probe);
-            let (threshold, floor) = (constants.size_threshold(width), constants.thin_floor(width));
-            let water = bound_water(scene.environment_volumes, probe, &basis);
+            let threshold = constants.size_threshold(width);
+            let floor = constants.thin_floor_for(ScreenSpaceLayers::of(probe), width);
+            let reflector =
+                bound_reflectors(scene.environment_volumes, scene.world_faces, probe, &basis);
             let projection_box = ProjectionBox::of(probe);
             (0..scene.brush_volumes.len())
                 .filter(|&brush| in_scope(&projection_box, &scene.brush_volumes[brush]))
@@ -210,7 +292,7 @@ fn classify(
                         ReflectionCapture::Never => true,
                         ReflectionCapture::Auto => {
                             excluded_by_rule(extents[brush], threshold, floor, || {
-                                has_underside(&downward[brush], &water, &basis)
+                                has_underside(&downward[brush], &reflector, &basis)
                             })
                         }
                     }
@@ -221,7 +303,18 @@ fn classify(
         .collect()
 }
 
-/// W: the side of a square holding the probe's bound water, in metres.
+/// Whether the rule classifies `probe`'s brushes: when it faces up, binding
+/// water, a glossy floor or both, whose screen-space layers draw what it
+/// drops. A probe binding walls, ceilings or slopes has no such layer, so it
+/// captures every static brush, a `Never` one too. Classification measures
+/// in the up-facing frame ([`WATER_REFLECTOR_NORMAL`]), and the leak guard's
+/// projection box ignores its floor below, which holds only for these.
+pub(crate) fn classifies(probe: &PlacedProbe) -> bool {
+    probe.facing.is_up()
+}
+
+/// W: the side of a square holding the probe's bound reflector, its water
+/// and glossy floor, in metres.
 pub(crate) fn water_width(probe: &PlacedProbe) -> f64 {
     probe.bound_area.max(0.0).sqrt()
 }

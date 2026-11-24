@@ -1,0 +1,143 @@
+// Game: Postretro
+// Format: Valve
+// glossy-reflections-test dev map. One sealed room, interior x 0 to 512,
+// y 0 to 512, z 0 to 256, walls 32 thick. The floor is metal_smoothness_ramp
+// at scale 8, a glossy floor; the north wall is concrete_carved_tinted_gloss
+// at scale 8, a glossy wall. The other walls, the ceiling and the pillar are
+// concrete_stone_021, which has an _s map and no _p, so it never reflects.
+// A full-height pillar stands on the floor in the north-east; a small
+// freestanding monument of three brushes, plinth, column and cap, stands on
+// the floor at the room centre. Two static point lights. Player start in the
+// south-west corner facing the monument.
+// Glossy placement runs only under prl-build --glossy-reflections.
+// See glossy-reflections-test.README.md.
+// NOTE: keep map comments free of braces and quotes, and never leave a blank
+// line inside an entity block.
+// entity 0
+{
+"classname" "worldspawn"
+"wad" ""
+"_tb_mod" "dev"
+// brush floor
+{
+( 544 -32 -32 ) ( 544 544 0 ) ( 544 544 -32 ) 50-free-textures/concrete_stone_021 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( -32 544 -32 ) ( -32 -32 0 ) ( -32 -32 -32 ) 50-free-textures/concrete_stone_021 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 544 544 -32 ) ( -32 544 0 ) ( -32 544 -32 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( -32 -32 -32 ) ( 544 -32 0 ) ( 544 -32 -32 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( -32 544 0 ) ( 544 -32 0 ) ( -32 -32 0 ) test/metal_smoothness_ramp [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 8 8
+( -32 -32 -32 ) ( 544 544 -32 ) ( -32 544 -32 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+// brush ceiling
+{
+( 544 -32 256 ) ( 544 544 288 ) ( 544 544 256 ) 50-free-textures/concrete_stone_021 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( -32 544 256 ) ( -32 -32 288 ) ( -32 -32 256 ) 50-free-textures/concrete_stone_021 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 544 544 256 ) ( -32 544 288 ) ( -32 544 256 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( -32 -32 256 ) ( 544 -32 288 ) ( 544 -32 256 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( -32 544 288 ) ( 544 -32 288 ) ( -32 -32 288 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( -32 -32 256 ) ( 544 544 256 ) ( -32 544 256 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+// brush north_wall
+{
+( 544 512 0 ) ( 544 544 256 ) ( 544 544 0 ) 50-free-textures/concrete_stone_021 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( -32 544 0 ) ( -32 512 256 ) ( -32 512 0 ) 50-free-textures/concrete_stone_021 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 544 544 0 ) ( -32 544 256 ) ( -32 544 0 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( -32 512 0 ) ( 544 512 256 ) ( 544 512 0 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( -32 544 256 ) ( 544 512 256 ) ( -32 512 256 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( -32 512 0 ) ( 544 544 0 ) ( -32 544 0 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+// brush south_wall
+{
+( 544 -32 0 ) ( 544 0 256 ) ( 544 0 0 ) 50-free-textures/concrete_stone_021 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( -32 0 0 ) ( -32 -32 256 ) ( -32 -32 0 ) 50-free-textures/concrete_stone_021 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 544 0 0 ) ( -32 0 256 ) ( -32 0 0 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( -32 -32 0 ) ( 544 -32 256 ) ( 544 -32 0 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( -32 0 256 ) ( 544 -32 256 ) ( -32 -32 256 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( -32 -32 0 ) ( 544 0 0 ) ( -32 0 0 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+// brush east_wall
+{
+( 544 0 0 ) ( 544 512 256 ) ( 544 512 0 ) 50-free-textures/concrete_stone_021 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 512 512 0 ) ( 512 0 256 ) ( 512 0 0 ) 50-free-textures/concrete_stone_021 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 544 512 0 ) ( 512 512 256 ) ( 512 512 0 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 512 0 0 ) ( 544 0 256 ) ( 544 0 0 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 512 512 256 ) ( 544 0 256 ) ( 512 0 256 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 512 0 0 ) ( 544 512 0 ) ( 512 512 0 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+// brush west_wall
+{
+( 0 0 0 ) ( 0 512 256 ) ( 0 512 0 ) 50-free-textures/concrete_stone_021 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( -32 512 0 ) ( -32 0 256 ) ( -32 0 0 ) 50-free-textures/concrete_stone_021 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 0 512 0 ) ( -32 512 256 ) ( -32 512 0 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( -32 0 0 ) ( 0 0 256 ) ( 0 0 0 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( -32 512 256 ) ( 0 0 256 ) ( -32 0 256 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( -32 0 0 ) ( 0 512 0 ) ( -32 512 0 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+// brush pillar
+{
+( 416 352 0 ) ( 416 384 256 ) ( 416 384 0 ) 50-free-textures/concrete_stone_021 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 384 384 0 ) ( 384 352 256 ) ( 384 352 0 ) 50-free-textures/concrete_stone_021 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 416 384 0 ) ( 384 384 256 ) ( 384 384 0 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 384 352 0 ) ( 416 352 256 ) ( 416 352 0 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 384 384 256 ) ( 416 352 256 ) ( 384 352 256 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 384 352 0 ) ( 416 384 0 ) ( 384 384 0 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+// brush monument_plinth
+{
+( 288 224 0 ) ( 288 288 16 ) ( 288 288 0 ) 50-free-textures/concrete_pavement_036 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 224 288 0 ) ( 224 224 16 ) ( 224 224 0 ) 50-free-textures/concrete_pavement_036 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 288 288 0 ) ( 224 288 16 ) ( 224 288 0 ) 50-free-textures/concrete_pavement_036 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 224 224 0 ) ( 288 224 16 ) ( 288 224 0 ) 50-free-textures/concrete_pavement_036 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 224 288 16 ) ( 288 224 16 ) ( 224 224 16 ) 50-free-textures/concrete_pavement_036 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 224 224 0 ) ( 288 288 0 ) ( 224 288 0 ) 50-free-textures/concrete_pavement_036 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+// brush monument_column
+{
+( 272 240 16 ) ( 272 272 96 ) ( 272 272 16 ) 50-free-textures/concrete_pavement_036 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 240 272 16 ) ( 240 240 96 ) ( 240 240 16 ) 50-free-textures/concrete_pavement_036 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 272 272 16 ) ( 240 272 96 ) ( 240 272 16 ) 50-free-textures/concrete_pavement_036 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 240 240 16 ) ( 272 240 96 ) ( 272 240 16 ) 50-free-textures/concrete_pavement_036 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 240 272 96 ) ( 272 240 96 ) ( 240 240 96 ) 50-free-textures/concrete_pavement_036 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 240 240 16 ) ( 272 272 16 ) ( 240 272 16 ) 50-free-textures/concrete_pavement_036 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+// brush monument_cap
+{
+( 280 232 96 ) ( 280 280 104 ) ( 280 280 96 ) 50-free-textures/concrete_pavement_036 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 232 280 96 ) ( 232 232 104 ) ( 232 232 96 ) 50-free-textures/concrete_pavement_036 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 280 280 96 ) ( 232 280 104 ) ( 232 280 96 ) 50-free-textures/concrete_pavement_036 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 232 232 96 ) ( 280 232 104 ) ( 280 232 96 ) 50-free-textures/concrete_pavement_036 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 232 280 104 ) ( 280 232 104 ) ( 232 232 104 ) 50-free-textures/concrete_pavement_036 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 232 232 96 ) ( 280 280 96 ) ( 232 280 96 ) 50-free-textures/concrete_pavement_036 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+}
+// entity 1 -- player start, south-west, facing the monument
+{
+"classname" "player_spawn"
+"origin" "64 64 40"
+"angles" "0 45 0"
+}
+// entity 2 -- static point light over the south half of the floor
+{
+"classname" "light"
+"origin" "256 128 200"
+"light" "300"
+"_color" "255 255 255"
+"_falloff_range" "768"
+"_light_size" "0"
+"_shadow_type" "static_light_map"
+"delay" "0"
+"style" "0"
+"_tags" "dev glossy_reflections south_light"
+}
+// entity 3 -- static point light near the glossy north wall
+{
+"classname" "light"
+"origin" "160 400 180"
+"light" "250"
+"_color" "255 255 255"
+"_falloff_range" "640"
+"_light_size" "0"
+"_shadow_type" "static_light_map"
+"delay" "0"
+"style" "0"
+"_tags" "dev glossy_reflections north_light"
+}

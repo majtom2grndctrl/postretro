@@ -12,12 +12,13 @@ use postretro_level_format::octahedral::encode_unquantized_uv;
 use postretro_level_format::reflection_probes::{
     MAX_REFLECTION_PROBES, REFLECTION_PROBE_LIGHTS_PER_PROBE, REFLECTION_PROBE_LOBE_COUNT,
     REFLECTION_PROBE_NO_LIGHT, REFLECTION_PROBE_TILE_BORDER, ReflectionProbeLightShare,
-    ReflectionProbeRecord, ReflectionProbesSection, reflection_probe_distance_tile_bytes,
-    reflection_probe_lobe_weights, reflection_probe_tile_bytes,
+    ReflectionProbeRecord, ReflectionProbesSection, reflection_probe_colour_chain_bytes,
+    reflection_probe_distance_tile_bytes, reflection_probe_lobe_weights,
 };
 
 use super::FluidFaceDriftMap;
 use super::fog::fog_proximity;
+use super::reflection_hemisphere::{FLUID_REFLECTION_UP, reflection_lookup_about};
 use super::reflection_search::reflection_search;
 use super::reflection_style::{FluidTexelAxes, reflection_point};
 use crate::frame_uniforms::LightTermMask;
@@ -200,9 +201,9 @@ fn probe_layers_distinct(section: &ReflectionProbesSection) -> bool {
 /// than the cap, a tile dimension and border the decoder accepts, every
 /// probe on its own layer below the probe count, a colour format the probe
 /// array uploads, and colour and distance payloads of exactly one tile per
-/// probe. The loader already refuses anything else; a hand-built section
-/// past it reflects nothing rather than overrunning the table or failing
-/// texture creation. Every consumer reads this one answer (the table, the
+/// probe, the colour tile with its whole mip chain. The loader already
+/// refuses anything else; a hand-built section past it reflects nothing
+/// rather than overrunning the table or failing texture creation. Every consumer reads this one answer (the table, the
 /// probe indices, the draw predicate's bound face, and the renderer's
 /// install), so no face draws or samples a probe that is not there.
 pub fn usable_probe_section(
@@ -215,8 +216,12 @@ pub fn usable_probe_section(
             && probe_tile_header_usable(section)
             && probe_layers_distinct(section)
             && probe_tile_format_usable(section)
-            && reflection_probe_tile_bytes(section.atlas_format, section.tile_dimension)
-                .is_some_and(|bytes| bytes * probes == section.tiles.len())
+            && reflection_probe_colour_chain_bytes(
+                section.atlas_format,
+                section.tile_dimension,
+                section.colour_mip_count,
+            )
+            .is_some_and(|bytes| bytes * probes == section.tiles.len())
             && reflection_probe_distance_tile_bytes(section.distance_format, section.tile_dimension)
                 .is_some_and(|bytes| bytes * probes == section.distances.len())
     })
@@ -268,7 +273,7 @@ pub fn fill_probe_indices(
         face_start.push(faces);
         faces += volume.surface_faces.len();
     }
-    for binding in &section.bindings {
+    for binding in &section.fluid_bindings {
         let volume = binding.volume as usize;
         let face = binding.face as usize;
         let (Some(&start), Some(record)) = (face_start.get(volume), volumes.get(volume)) else {
@@ -294,10 +299,10 @@ pub fn volume_has_bound_face(section: Option<&ReflectionProbesSection>, volume: 
         return false;
     };
     let first = section
-        .bindings
+        .fluid_bindings
         .partition_point(|binding| (binding.volume as usize) < volume);
     section
-        .bindings
+        .fluid_bindings
         .get(first)
         .is_some_and(|binding| binding.volume as usize == volume)
 }
@@ -382,18 +387,13 @@ pub fn reflection_box_hit(origin: Vec3, ray: Vec3, box_min: Vec3, box_max: Vec3)
     origin + ray * t
 }
 
-/// The tile lookup direction: from the capture point to the reflected
-/// point (the distance search's hit, or the box hit), clamped to the horizon
-/// when it lies below the capture point. A point on the capture point itself
-/// has no direction and takes the reflected ray's.
+/// The tile lookup direction of an up-facing probe: from the capture point
+/// to the reflected point (the distance search's hit, or the box hit),
+/// clamped to the horizon when it lies below the capture point
+/// ([`reflection_lookup_about`] about [`FLUID_REFLECTION_UP`]). A point on
+/// the capture point itself has no direction and takes the reflected ray's.
 pub fn reflection_lookup(hit: Vec3, capture_point: Vec3, ray: Vec3) -> Vec3 {
-    let toward = hit - capture_point;
-    let level = Vec3::new(toward.x, toward.y.max(0.0), toward.z);
-    if level.dot(level) < FLUID_REFLECTION_DIRECTION_EPSILON {
-        Vec3::new(ray.x, ray.y.max(0.0), ray.z)
-    } else {
-        level
-    }
+    reflection_lookup_about(hit, capture_point, ray, FLUID_REFLECTION_UP)
 }
 
 /// Normalized tile UV for `direction`: the octahedral texel coordinate

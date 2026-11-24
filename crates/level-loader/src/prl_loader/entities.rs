@@ -366,10 +366,13 @@ impl EntityDecode {
 /// usable portal array spatial decode produced (`None` when the level has no
 /// usable portals): mover sealed-portal ids it cannot address are dropped
 /// here, so the kinematic geometry leaves this decode final.
+/// `geometry_face_count` is Geometry (id 17)'s face count, which reflection
+/// probes' world bindings index.
 pub(super) fn decode_entities(
     container: &PrlContainer,
     lights: &[MapLight],
     usable_portal_count: Option<usize>,
+    geometry_face_count: usize,
 ) -> Result<EntityDecode, PrlLoadError> {
     let read_section = |section: SectionId| container.read_section(section as u32);
 
@@ -497,6 +500,7 @@ pub(super) fn decode_entities(
     let reflection_probes = crate::prl_environment::decode_reflection_probes(
         read_section(SectionId::ReflectionProbes)?,
         &environment_volumes,
+        geometry_face_count,
     )?;
 
     // Required — carries the worldspawn fog pixel scale even with no fog volumes.

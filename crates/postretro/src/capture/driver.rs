@@ -143,6 +143,7 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
             cpu_windows.report(),
         )
         .with_lightmap_streaming(prepared.lightmap_streaming())
+        .with_reflection_probe_residency(prepared.reflection_probe_residency_report())
         .with_planar_reflection(prepared.planar_report());
         let staged_report = stage_measurement_report(
             report_path.expect("measurement report path was preflighted"),

@@ -3,6 +3,7 @@
 // See: context/plans/done/level-load-pipeline/index.md · context/lib/rendering_pipeline.md §4
 
 use super::dynamic_depth_cache::DynamicCacheTextures;
+use super::glossy_overlay::GlossyOverlayForm;
 use super::promoted_depth_cache::PromotedDepthTextures;
 use super::renderer_types::{PromotedBakedLightRecord, PromotedBakedLightState};
 use super::shadow_tier::ShadowTier;
@@ -286,6 +287,14 @@ pub(in crate::render) struct LevelResourceSet {
     pub(in crate::render) mesh_lights: LevelLightGroups,
     /// Kinematic-brush mover geometry and its group 2.
     pub(in crate::render) kinematic: kinematic_brush::KinematicLevelState,
+    /// This level's reflection probe records (arrays, share table, sums) and
+    /// the sums pass's group over them: `None` unless its id 54 binds a face,
+    /// fluid or world. Probe-term passes borrow them; they drop with the set.
+    pub(in crate::render) reflection_probes:
+        Option<reflection_probe_resources::ReflectionProbeResources>,
+    /// The glossy overlay's state: the world probe stream, its probe group
+    /// and the D_static target. `None` unless id 54 binds a world face.
+    pub(in crate::render) glossy: Option<glossy_overlay::GlossyLevelState>,
     /// This level's fluid surfaces; `None` until `install_fluid_surfaces`
     /// finds a drawable face.
     pub(in crate::render) fluid_surfaces: Option<fluid_surface::InstalledFluidSurfaces>,
@@ -342,6 +351,42 @@ impl LevelResourceSet {
         self.samplers.absorb(&mut textures.samplers);
     }
 
+    /// Material bucket `bucket`'s world material bind group, or the first
+    /// material's for a bucket past the set's materials: what forward and
+    /// the glossy overlay bind per bucket.
+    pub(in crate::render) fn material_bind_group(&self, bucket: u32) -> &wgpu::BindGroup {
+        &self
+            .gpu_textures
+            .get(bucket as usize)
+            .unwrap_or(&self.gpu_textures[0])
+            .bind_group
+    }
+
+    /// Whether material bucket `bucket` is glossy: its material passes the
+    /// glossy opt-in over its uploaded specular slot.
+    pub(in crate::render) fn bucket_is_glossy(&self, bucket: u32) -> bool {
+        self.loaded_textures
+            .get(bucket as usize)
+            .is_some_and(|texture| texture.reflects)
+    }
+
+    /// The glossy overlay form of material bucket `bucket`'s world
+    /// material, the one [`Self::material_bind_group`] binds: whether it can
+    /// march at any Surface Depth state, and whether it binds its own normal
+    /// map.
+    pub(in crate::render) fn glossy_overlay_form(&self, bucket: u32) -> GlossyOverlayForm {
+        let index = bucket as usize;
+        let material = self
+            .gpu_textures
+            .get(index)
+            .unwrap_or(&self.gpu_textures[0]);
+        let texture = self
+            .loaded_textures
+            .get(index)
+            .unwrap_or(&self.loaded_textures[0]);
+        GlossyOverlayForm::of(material.uniform_plan.can_march(), texture.normal_mapped)
+    }
+
     /// The world materials this set holds, taken out for a geometry
     /// reinstall that keeps them.
     pub(in crate::render) fn take_textures(&mut self) -> LevelTextures {
@@ -382,6 +427,17 @@ impl Renderer {
             .and_then(|level| level.fluid_surfaces.as_ref())
     }
 
+    /// The active level's reflection probes, `None` with no level or none
+    /// installed.
+    pub(in crate::render) fn reflection_probes(
+        &self,
+    ) -> Option<&reflection_probe_resources::ReflectionProbeResources> {
+        self.full()
+            .level
+            .as_ref()
+            .and_then(|level| level.reflection_probes.as_ref())
+    }
+
     /// Test view over the fluid pass and the active level's surfaces.
     #[cfg(test)]
     pub(in crate::render) fn fluid_test(&self) -> fluid_surface::FluidTestView<'_> {
@@ -392,6 +448,7 @@ impl Renderer {
                 .level
                 .as_ref()
                 .and_then(|level| level.fluid_surfaces.as_ref()),
+            probes: self.reflection_probes(),
         }
     }
 
@@ -409,6 +466,7 @@ impl Renderer {
             vertices: &[],
             vertex_spec_owners: &[],
             vertex_emissive_volumes: &[],
+            reflection_probes: None,
             emissive_volumes: &[],
             area_glow_lights: &[],
             indices: &[],

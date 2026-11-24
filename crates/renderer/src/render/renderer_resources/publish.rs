@@ -72,6 +72,11 @@ pub(in crate::render) fn rebuild_level_extent_groups(
     );
     full.sdf_shadow_pass
         .rebind_level_extent(device, &mut level.sdf_shadow, &full.depth_view);
+    if let Some(glossy) = level.glossy.as_mut() {
+        full.glossy_overlay
+            .level_layout()
+            .resize_target(device, glossy, extent);
+    }
     level.extent.extent = extent;
     level.extent.generation = full.scene_targets_generation;
 }
@@ -147,6 +152,7 @@ impl Renderer {
         };
         let before = gpu_creation_counts();
         self.reconcile_published_fluid_targets(extent_changed);
+        self.sync_glossy_target();
         // A set built at the kept tier and the current scene targets lends
         // its own and builds nothing here; anything built means the tier
         // moved since its build (an extent rebuild already counted above).

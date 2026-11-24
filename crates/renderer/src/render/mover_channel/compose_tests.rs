@@ -1019,6 +1019,7 @@ fn the_channel_table_is_ledgered_while_installed_and_gone_after_unload() {
                 vertices: &[],
                 vertex_spec_owners: &[],
                 vertex_emissive_volumes: &[],
+                reflection_probes: None,
                 emissive_volumes: &[],
                 area_glow_lights: &[],
                 indices: &[],

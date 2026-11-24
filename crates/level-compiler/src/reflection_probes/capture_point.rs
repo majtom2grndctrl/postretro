@@ -1,5 +1,5 @@
-// Reflection-probe capture points: where over the water a probe captures, and the tests that drop it.
-// See: context/lib/resource_management.md §5.1
+// Reflection-probe capture points: where in front of its faces a probe captures, and the tests that drop it.
+// See: context/lib/resource_management.md §5.1, §5.4
 
 use std::collections::HashSet;
 use std::fmt;
@@ -9,7 +9,8 @@ use postretro_level_format::environment_volumes::{EnvironmentBrush, EnvironmentV
 
 use crate::partition::{BspTree, find_leaf_for_point};
 
-use super::placement::{CAPTURE_LIFT_M, UpFacingFace};
+use super::facing::Facing;
+use super::placement::{CAPTURE_LIFT_M, ReflectorFace};
 
 /// A centroid moved onto the water lands this far inside the face it lands
 /// on, toward that face's own centroid (at most halfway): a point exactly on
@@ -19,31 +20,35 @@ use super::placement::{CAPTURE_LIFT_M, UpFacingFace};
 /// move at a slant to the wall lands closer, and
 /// [`PointClassifier::settle`] nudges it clear.
 pub(crate) const NEAREST_POINT_INSET_M: f64 = 0.02;
-/// A capture point needs this much horizontal room from solid. Capture rays
-/// ignore hits closer than the tracer's 1 mm ray epsilon, so a point on or
-/// within a millimetre of a wall would capture through it. A point is
-/// crowded on a side when a step this long along ±X or ±Z lands in solid or
-/// outside the hull; [`PointClassifier::settle`] moves a crowded point this
-/// far off the crowding side, and [`PointClassifier::fault`] counts a point
-/// still crowded as [`PointFault::Crowded`].
+/// A capture point needs this much room from solid in its faces' plane
+/// (horizontal, for water). Capture rays ignore hits closer than the
+/// tracer's 1 mm ray epsilon, so a point on or within a millimetre of a wall
+/// would capture through it. A point is crowded on a side when a step this
+/// long along either in-plane axis ([`Facing::in_plane_axes`]: ±X or ±Z when
+/// up) lands in solid or outside the hull; [`PointClassifier::settle`] moves
+/// a crowded point this far off the crowding side, and
+/// [`PointClassifier::fault`] counts a point still crowded as
+/// [`PointFault::Crowded`].
 pub(crate) const CAPTURE_CLEARANCE_M: f64 = 0.01;
-/// A centroid within this horizontal distance of a face counts as over it,
-/// so one lying on the shared edge of two pieces stays put.
+/// A centroid within this in-plane distance of a face counts as over it, so
+/// one lying on the shared edge of two pieces stays put.
 const OVER_WATER_EPSILON_M: f64 = 1.0e-6;
 
-/// Horizontal area centroid of `faces`, [`CAPTURE_LIFT_M`] above `plane`.
-/// A centroid not over any of their water moves to the nearest point on
-/// them, inset by [`NEAREST_POINT_INSET_M`]. `faces` is non-empty.
-pub(crate) fn capture_point_over(faces: &[&UpFacingFace], plane: f64) -> DVec3 {
+/// In-plane area centroid of `faces`, [`CAPTURE_LIFT_M`] off `plane` along
+/// their facing's normal (above it, for water). A centroid not over any of
+/// them moves to the nearest point on them, inset by
+/// [`NEAREST_POINT_INSET_M`]. `faces` is non-empty and of one facing.
+pub(crate) fn capture_point_over(faces: &[&ReflectorFace], plane: f64) -> DVec3 {
+    let facing = faces[0].facing;
     let mut area = 0.0;
     let mut weighted = DVec2::ZERO;
     for face in faces {
         let g = &face.geometry;
         area += g.area;
-        weighted += DVec2::new(g.centroid.x, g.centroid.z) * g.area;
+        weighted += facing.project(g.centroid) * g.area;
     }
     let centroid = weighted / area;
-    let mut nearest: Option<(f64, DVec2, &UpFacingFace)> = None;
+    let mut nearest: Option<(f64, DVec2, &ReflectorFace)> = None;
     for face in faces {
         let (point, distance) = nearest_point_on_polygon(centroid, &face.outline);
         // Strict: ties go to the earlier face, so the point is order-stable
@@ -56,7 +61,7 @@ pub(crate) fn capture_point_over(faces: &[&UpFacingFace], plane: f64) -> DVec3 {
     let horizontal = if distance <= OVER_WATER_EPSILON_M {
         centroid
     } else {
-        let toward = DVec2::new(face.geometry.centroid.x, face.geometry.centroid.z) - on_water;
+        let toward = facing.project(face.geometry.centroid) - on_water;
         let length = toward.length();
         if length > 0.0 {
             on_water + toward * (NEAREST_POINT_INSET_M / length).min(0.5)
@@ -64,11 +69,11 @@ pub(crate) fn capture_point_over(faces: &[&UpFacingFace], plane: f64) -> DVec3 {
             on_water
         }
     };
-    DVec3::new(horizontal.x, plane + CAPTURE_LIFT_M, horizontal.y)
+    facing.lift(horizontal, plane + CAPTURE_LIFT_M)
 }
 
-/// The point of polygon `outline` (horizontal `(x, z)`) nearest `p`, and the
-/// distance to it; 0 inside.
+/// The point of polygon `outline` (in-plane coordinates) nearest `p`, and
+/// the distance to it; 0 inside.
 pub(crate) fn nearest_point_on_polygon(p: DVec2, outline: &[DVec2]) -> (DVec2, f64) {
     if contains(outline, p) {
         return (p, 0.0);
@@ -111,7 +116,7 @@ fn contains(outline: &[DVec2], p: DVec2) -> bool {
 pub(crate) enum PointFault {
     InSolid,
     /// In open space within [`CAPTURE_CLEARANCE_M`] of a wall, and no move
-    /// that far off it stays in the box and over the water, or clears walls
+    /// that far off it stays in the box and over its faces, or clears walls
     /// along the other axis.
     Crowded,
     /// In open space within [`CAPTURE_CLEARANCE_M`] of walls on both sides
@@ -171,24 +176,27 @@ impl<'a> PointClassifier<'a> {
     ///
     /// `raw` itself in solid, outside the hull or inside a fluid drops with
     /// that fault, as does the stored point when the clamp moves it into one.
-    /// A stored point crowded on one side of an axis moves
-    /// [`CAPTURE_CLEARANCE_M`] toward the other, on X and Z independently;
-    /// the step back toward the wall then lands on the point it moved from,
-    /// which is clear, so a move leaves it at least that far off the wall.
-    /// The move must stay in the box and, from a point over `water`, over
-    /// `water`: when it cannot, staying over the water wins and the point
-    /// drops as [`PointFault::Crowded`]; crowded on both sides of an axis, or
-    /// moved within the clearance of a wall on the side it moved toward, it
-    /// drops as [`PointFault::Wedged`]. Either is in open space, so neither
-    /// reads as in solid. The moved point must otherwise pass [`Self::fault`]
-    /// as stored.
+    /// A stored point crowded on one side of an in-plane axis of `faces`'
+    /// facing (X and Z for water) moves [`CAPTURE_CLEARANCE_M`] toward the
+    /// other, on each axis independently; the step back toward the wall then
+    /// lands on the point it moved from, which is clear, so a move leaves it
+    /// at least that far off the wall. The move must stay in the box and,
+    /// from a point over `faces`, over `faces`: when it cannot, staying over
+    /// them wins and the point drops as [`PointFault::Crowded`]; crowded on
+    /// both sides of an axis, or moved within the clearance of a wall on the
+    /// side it moved toward, it drops as [`PointFault::Wedged`]. Either is in
+    /// open space, so neither reads as in solid. The moved point must
+    /// otherwise pass [`Self::fault`] as stored. `faces` is non-empty and of
+    /// one facing.
     pub(crate) fn settle(
         &self,
         raw: DVec3,
         box_min: Vec3,
         box_max: Vec3,
-        water: &[&UpFacingFace],
+        water: &[&ReflectorFace],
     ) -> Result<Vec3, (Vec3, PointFault)> {
+        let facing = water[0].facing;
+        let axes = facing.in_plane_axes();
         if let Some(fault) = self.own_fault(raw) {
             return Err((raw.as_vec3(), fault));
         }
@@ -198,7 +206,7 @@ impl<'a> PointClassifier<'a> {
             return Err((stored, fault));
         }
         let mut nudge = DVec3::ZERO;
-        for axis in [DVec3::X, DVec3::Z] {
+        for axis in axes {
             match (self.crowded(point, axis), self.crowded(point, -axis)) {
                 (false, false) => {}
                 (true, false) => nudge -= axis * CAPTURE_CLEARANCE_M,
@@ -211,7 +219,8 @@ impl<'a> PointClassifier<'a> {
         }
         let moved = (point + nudge).as_vec3();
         let in_box = moved.cmpge(box_min).all() && moved.cmple(box_max).all();
-        let keeps_water = !over_water(point, water) || over_water(moved.as_dvec3(), water);
+        let keeps_water =
+            !over_water(point, water, &facing) || over_water(moved.as_dvec3(), water, &facing);
         if !in_box || !keeps_water {
             return Err((stored, PointFault::Crowded));
         }
@@ -219,12 +228,12 @@ impl<'a> PointClassifier<'a> {
         // Crowded from the side it moved toward, it lies between walls closer
         // than twice the clearance: no move clears both.
         let wedged = || {
-            [DVec3::X, DVec3::Z].into_iter().any(|axis| {
+            axes.into_iter().any(|axis| {
                 let along = nudge.dot(axis);
                 along != 0.0 && self.crowded(landed, axis * along.signum())
             })
         };
-        match self.fault(landed) {
+        match self.fault(landed, &facing) {
             None => Ok(moved),
             Some(PointFault::Crowded) if wedged() => Err((stored, PointFault::Wedged)),
             Some(fault) => Err((moved, fault)),
@@ -232,12 +241,14 @@ impl<'a> PointClassifier<'a> {
     }
 
     /// The first fault of `point`, solid before hull before crowding before
-    /// fluid; `None` when it can hold a probe. A point crowded on any side
-    /// (see [`CAPTURE_CLEARANCE_M`]) is [`PointFault::Crowded`].
-    pub(crate) fn fault(&self, point: DVec3) -> Option<PointFault> {
+    /// fluid; `None` when it can hold a probe. A point crowded on any side in
+    /// `facing`'s plane (see [`CAPTURE_CLEARANCE_M`]) is
+    /// [`PointFault::Crowded`].
+    pub(crate) fn fault(&self, point: DVec3, facing: &Facing) -> Option<PointFault> {
+        let [u, v] = facing.in_plane_axes();
         match self.leaf_fault(point) {
             Some(fault) => Some(fault),
-            None if [DVec3::X, DVec3::NEG_X, DVec3::Z, DVec3::NEG_Z]
+            None if [u, -u, v, -v]
                 .into_iter()
                 .any(|step| self.crowded(point, step)) =>
             {
@@ -282,9 +293,10 @@ impl<'a> PointClassifier<'a> {
     }
 }
 
-/// Whether `point` lies over any of `faces`' water, horizontally.
-fn over_water(point: DVec3, faces: &[&UpFacingFace]) -> bool {
-    let p = DVec2::new(point.x, point.z);
+/// Whether `point` lies over any of `faces` in `facing`'s plane:
+/// horizontally over water.
+fn over_water(point: DVec3, faces: &[&ReflectorFace], facing: &Facing) -> bool {
+    let p = facing.project(point);
     faces
         .iter()
         .any(|face| nearest_point_on_polygon(p, &face.outline).1 <= OVER_WATER_EPSILON_M)
@@ -352,10 +364,13 @@ mod tests {
             let classifier =
                 PointClassifier::new(&fixture.tree, &fixture.exterior, &fixture.environment);
             let faces = fixture.up_faces();
-            let water: Vec<&UpFacingFace> = faces.iter().collect();
+            let water: Vec<&ReflectorFace> = faces.iter().collect();
             let (box_min, box_max) = engine_box([48.0, 48.0, 0.0], [216.0, 208.0, 96.0]);
             let raw = engine([144.3, 128.0, 32.0]) + DVec3::Y * CAPTURE_LIFT_M;
-            assert_eq!(classifier.fault(raw), Some(PointFault::Crowded));
+            assert_eq!(
+                classifier.fault(raw, &Facing::Up),
+                Some(PointFault::Crowded)
+            );
             (
                 raw,
                 classifier.settle(raw, box_min.as_vec3(), box_max.as_vec3(), &water),

@@ -672,7 +672,9 @@ fn forward_shader_shadowmask_visualization_mode_is_wired() {
         "mode 5 must visualize the union subtraction magnitude"
     );
     assert!(
-        src.contains("return vec4<f32>(shadowmask_union, base_color.a);"),
+        src.contains(
+            "return ForwardShaded(vec4<f32>(shadowmask_union, base_color.a), static_diffuse, vec3<f32>(0.0));"
+        ),
         "visualization mode should show the union term directly"
     );
     assert!(
@@ -684,7 +686,9 @@ fn forward_shader_shadowmask_visualization_mode_is_wired() {
     );
     assert!(
         src.contains("uniforms.sdf_shadow_mode == SHADOWMASK_RAW_POOL_VISIBILITY_MODE")
-            && src.contains("return vec4<f32>(g, g, g, base_color.a);")
+            && src.contains(
+                "return ForwardShaded(vec4<f32>(g, g, g, base_color.a), static_diffuse, vec3<f32>(0.0));"
+            )
             && src.contains(
                 "if use_baked_direct_static || uniforms.sdf_shadow_mode == SHADOWMASK_VISUALIZE_MODE || uniforms.sdf_shadow_mode == SHADOWMASK_RAW_POOL_VISIBILITY_MODE"
             ),

@@ -17,7 +17,8 @@ use super::capture::{
     F16_MIN_POSITIVE, SUPERSAMPLE_OFFSETS, TILE_INTERIOR, distance_bits, encode_distance_tile,
     inverse_l1_distance, octahedral_direction,
 };
-use super::capture_visibility::{CAPTURE_SHADOW_MARGIN, DistanceTile, warn_hidden_water};
+use super::capture_visibility::{CAPTURE_SHADOW_MARGIN, DistanceTile, warn_hidden_reflectors};
+use super::facing::Facing;
 use super::placement::PlacedProbe;
 use super::reflection_probes_test_fixtures::{
     GeometryBuilder, fluid_volume, rect, up_rect, volumes,
@@ -287,14 +288,16 @@ fn a_capture_point_that_sees_under_half_its_water_warns() {
         box_min: record.box_min,
         box_max: record.box_max,
         capture_point: record.capture_point,
+        facing: Facing::Up,
         bound_area: 0.0,
-        faces: section
-            .bindings
+        world_faces: Vec::new(),
+        fluid_faces: section
+            .fluid_bindings
             .iter()
             .map(|b| (b.volume, b.face))
             .collect(),
     };
-    warn_hidden_water(&section, &[derived], &l_pool());
+    warn_hidden_reflectors(&section, &[derived], &l_pool(), &[]);
     logs.assert_logged_once(LogLevel::Warn, "probe 0 of entity 5: its capture point");
     logs.assert_logged_once(
         LogLevel::Warn,
@@ -381,11 +384,11 @@ fn capture_shadow_margin_matches_the_fluid_shaders() {
 fn sight_holds_inside_the_capture_shadow_margin_and_fails_past_it() {
     // A surface at L1 2 in every direction: h = l1 / 2 − 1.
     let shell = tile_of(|_| 0.5);
-    let seen = |l1: f32| shell.sees(Vec3::ZERO, at(l1, 20.0));
+    let seen = |l1: f32| shell.sees(Vec3::ZERO, at(l1, 20.0), &Facing::Up);
     assert!(seen(1.9), "in front of the surface");
     assert!(seen(2.0 * (1.0 + 0.5 * CAPTURE_SHADOW_MARGIN)), "h = κ/2");
     assert!(!seen(2.0 * (1.0 + 2.0 * CAPTURE_SHADOW_MARGIN)), "h = 2κ");
     // A capture that stored no surface sees everything.
     let sky = tile_of(|_| 0.0);
-    assert!(sky.sees(Vec3::ZERO, at(40.0, 10.0)));
+    assert!(sky.sees(Vec3::ZERO, at(40.0, 10.0), &Facing::Up));
 }

@@ -376,6 +376,30 @@ impl Renderer {
         )
     }
 
+    /// Resident bytes of the active level's reflection probes and, beside
+    /// them, the glossy overlay's static-diffuse and floor-layer targets
+    /// while they exist: its report, or the empty report with no set active
+    /// or a set with neither. `None` only before full init.
+    pub fn reflection_probe_residency_report(&self) -> Option<ReflectionProbeResidencyReport> {
+        let full = self.full.as_ref()?;
+        let Some(level) = full.level.as_ref() else {
+            return Some(ReflectionProbeResidencyReport::EMPTY);
+        };
+        let report = level
+            .reflection_probes
+            .as_ref()
+            .map_or(ReflectionProbeResidencyReport::EMPTY, |probes| {
+                probes.residency_report()
+            });
+        Some(
+            level
+                .glossy
+                .iter()
+                .flat_map(|glossy| glossy.residency_rows())
+                .fold(report, ReflectionProbeResidencyReport::with_row),
+        )
+    }
+
     /// Borrow the full-phase state. Panics if called before `finish_full_init`
     /// — every caller is on a full-ready-gated path (Frontend/Loading/Running/
     /// UI/scene), so reaching here boot-only is a logic error, not a runtime case.

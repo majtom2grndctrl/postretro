@@ -224,7 +224,7 @@ fn kinematic_brush_shader_matches_forward_post_retro_sampling() {
         ddx_index < sample_index && ddy_index < sample_index,
         "the mover prelude must compute UV derivatives before sampling",
     );
-    for entry in ["fs_pixel", "fs_smooth"] {
+    for entry in ["mover_pixel_fragment", "mover_smooth_fragment"] {
         let calls = wgsl_call_fingerprint(
             extract_wgsl_fn(kinematic, entry),
             &[
@@ -245,7 +245,12 @@ fn kinematic_brush_shader_matches_forward_post_retro_sampling() {
             "{entry} samples its albedo through the Post Retro helper"
         );
     }
-    for function in ["mover_surface", "fs_pixel", "fs_smooth", "mover_emissive"] {
+    for function in [
+        "mover_surface",
+        "mover_pixel_fragment",
+        "mover_smooth_fragment",
+        "mover_emissive",
+    ] {
         assert!(
             !wgsl_call_fingerprint(extract_wgsl_fn(kinematic, function), &["textureSample"])
                 .iter()
@@ -317,12 +322,12 @@ fn forward_and_mover_share_the_specular_texel_functions() {
     // Each pass builds its point through the shared builder, from the
     // fragment's own UV, the marched UV, the albedo lattice and the
     // fragment's hoisted derivatives.
-    let forward_fs = squashed(include_str!("../shaders/forward.wgsl"), "fs_main");
+    let forward_fs = squashed(include_str!("../shaders/forward.wgsl"), "forward_shade");
     assert_eq!(forward_fs.matches("specular_texel_point(").count(), 1);
     let mover = include_str!("../shaders/kinematic_brush.wgsl");
     let surface = squashed(mover, "mover_surface");
-    let pixel_fs = squashed(mover, "fs_pixel");
-    let smooth_fs = squashed(mover, "fs_smooth");
+    let pixel_fs = squashed(mover, "mover_pixel_fragment");
+    let smooth_fs = squashed(mover, "mover_smooth_fragment");
     for fs in [&surface, &pixel_fs, &smooth_fs] {
         assert!(!fs.contains("specular_texel_point("));
     }
@@ -400,13 +405,27 @@ fn forward_and_mover_share_the_specular_texel_functions() {
          s.spec_texel.exponent,s.spec_texel.intensity,s.use_dynamic,s.use_specular,s.depth,);"
     ));
     assert!(pixel_fs.contains(
-        "returnvec4<f32>(mover_pixel_shade(base_color.rgb,s.lighting,dynamic,emissive,\
-         s.spec_texel),base_color.a,);"
+        "vec4<f32>(mover_pixel_shade(base_color.rgb,s.lighting,dynamic,emissive,\
+         s.spec_texel),base_color.a,),"
     ));
     assert!(smooth_fs.contains(
-        "returnvec4<f32>(mover_smooth_shade(base_color.rgb,s.lighting,dynamic,emissive,\
-         s.spec_texel),base_color.a,);"
+        "vec4<f32>(mover_smooth_shade(base_color.rgb,s.lighting,dynamic,emissive,\
+         s.spec_texel),base_color.a,),"
     ));
+    // Each entry's colour is its shading's, and the highlight-free entries
+    // write that same colour first.
+    for (entry, shading) in [
+        ("fs_pixel", "mover_pixel_fragment"),
+        ("fs_smooth", "mover_smooth_fragment"),
+    ] {
+        assert!(squashed(mover, entry).contains(&format!("return{shading}(in).colour;")));
+        assert!(
+            squashed(mover, &format!("{entry}_highlight_free")).contains(&format!(
+                "letshaded={shading}(in);returnMoverHighlightFreeOutput(shaded.colour,\
+                 mover_highlight_free(shaded));"
+            ))
+        );
+    }
     // Pixel mixes the tint into its tinted sum alone, the tinted term last,
     // so an untinted fragment keeps its pre-tint expression; smooth gives
     // its one specular sum the albedo or the tint colour.
@@ -880,8 +899,11 @@ fn kinematic_shader_uses_shared_material_helpers_for_promoted_static_specular() 
         "smooth keeps one specular sum"
     );
     // Pixel: an untinted texel adds its term into `total` right after the
-    // light's diffuse, as before tint; a tinted texel's term joins its own sum.
-    let split = "iftinted{tinted_total=tinted_total+term;}else{total=total+term;}";
+    // light's diffuse, as before tint, and into the untinted sum the
+    // highlight-free entry alone reads; a tinted texel's term joins its own
+    // sum.
+    let split = "iftinted{tinted_total=tinted_total+term;}else{total=total+term;\
+                 untinted_total=untinted_total+term;}";
     assert!(
         pixel_loop.contains(&format!(
             "letterm=mover_texel_specular(light,drive.color,drive.aim,spec_point,\
@@ -1043,20 +1065,33 @@ fn each_beauty_pipeline_builds_its_styles_entry_and_reports_the_style_it_selecte
         );
     }
     let squashed = |text: &str| -> String { text.split_whitespace().collect() };
-    let pass = squashed(include_str!("kinematic_brush.rs"));
+    let pass = squashed(concat!(
+        include_str!("kinematic_brush.rs"),
+        include_str!("kinematic_brush/beauty.rs")
+    ));
     for pin in [
-        // Creation: each style's pipeline takes that style's entry.
-        "pixel:build(SpecularStyle::Pixel),smooth:build(SpecularStyle::Smooth),",
-        "entry_point:Some(beauty_fragment_entry(style)),",
-        "SpecularStyle::Pixel=>&self.pixel,SpecularStyle::Smooth=>&self.smooth,",
+        // Creation: each style's pipeline in each output form takes that
+        // style's entry for that form.
+        "pixel:build(SpecularStyle::Pixel,outputs),smooth:build(SpecularStyle::Smooth,outputs),",
+        "colour:forms(ColourOutputs::Colour),highlight_free:forms(ColourOutputs::HighlightFree),",
+        "(SpecularStyle::Pixel,ColourOutputs::Colour)=>(\"KinematicBrushPipeline(pixel)\",\
+         beauty_fragment_entry(style),),",
+        "(SpecularStyle::Smooth,ColourOutputs::Colour)=>(\"KinematicBrushPipeline(smooth)\",\
+         beauty_fragment_entry(style),),",
+        "(SpecularStyle::Pixel,ColourOutputs::HighlightFree)=>(\
+         \"KinematicBrushPipeline(pixel,highlight-free)\",highlight_free_fragment_entry(style),)",
+        "(SpecularStyle::Smooth,ColourOutputs::HighlightFree)=>(\
+         \"KinematicBrushPipeline(smooth,highlight-free)\",highlight_free_fragment_entry(style),)",
+        "entry_point:Some(entry_point),",
+        "SpecularStyle::Pixel=>&forms.pixel,SpecularStyle::Smooth=>&forms.smooth,",
         // Selection: one style both binds the pipeline and is reported.
-        "pass.set_pipeline(self.beauty_pipelines.for_style(style));#[cfg(test)]\
+        "pass.set_pipeline(self.beauty_pipelines.for_style(style,outputs));#[cfg(test)]\
          self.bound_styles.lock().expect(\"bound_styles\").push((view.kind(),style));",
     ] {
         assert_eq!(
             pass.matches(pin).count(),
             1,
-            "kinematic_brush.rs pins {pin}"
+            "kinematic_brush.rs and beauty.rs pin {pin}"
         );
     }
     let record = pass
@@ -1067,10 +1102,11 @@ fn each_beauty_pipeline_builds_its_styles_entry_and_reports_the_style_it_selecte
     assert_eq!(record.matches("set_pipeline(").count(), 1);
 }
 
-// The mover pass builds both beauty pipelines and its depth pipeline when it
-// is built, at full init, and nothing later: exactly three render pipelines,
-// with cube-array shadows on and off (the no-cube source carries both
-// fragment entries).
+// The mover pass builds both beauty pipelines, each in its colour and
+// highlight-free forms, and its depth pipeline when it is built, at full
+// init, and nothing later: exactly five render pipelines, with cube-array
+// shadows on and off (the no-cube source carries every fragment entry). So a
+// tier change builds no mover pipeline (pin P28).
 #[test]
 fn building_the_mover_pass_creates_both_beauty_pipelines_and_its_depth_pipeline() {
     use crate::render::gpu_create::gpu_creation_counts;
@@ -1107,8 +1143,9 @@ fn building_the_mover_pass_creates_both_beauty_pipelines_and_its_depth_pipeline(
             "cube arrays {cube_array_supported}: the mover pipelines build: {error:?}"
         );
         assert_eq!(
-            built.pipelines, 3,
-            "cube arrays {cube_array_supported}: smooth beauty, pixel beauty and depth"
+            built.pipelines, 5,
+            "cube arrays {cube_array_supported}: smooth and pixel beauty, each in its \
+             colour and highlight-free forms, and depth"
         );
     }
 }

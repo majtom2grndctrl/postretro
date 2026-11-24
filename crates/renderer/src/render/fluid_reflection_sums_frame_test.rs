@@ -611,7 +611,8 @@ fn readback_lights(
             } else {
                 ((p + 3 * k) % 8) as u32
             };
-            let mut shares = [[0.0; 3]; 5];
+            let mut shares =
+                [[0.0; 3]; postretro_level_format::reflection_probes::REFLECTION_PROBE_LOBE_COUNT];
             for (lobe, share) in shares.iter_mut().enumerate() {
                 let base = ((p * 7 + lobe * 3 + k * 5) % 11) as f32 / 10.0;
                 *share = [base, (base * 0.7 + 0.1).min(1.0), (1.0 - base) * 0.8];
@@ -856,9 +857,9 @@ fn sums_prefilled_with_poison_render_like_cleared_sums_on_the_first_published_fr
             let id = level.build_off_main(renderer);
             let buffer = renderer
                 .level_set(id)
-                .and_then(|set| set.fluid_surfaces.as_ref())
-                .expect("the built set holds fluid surfaces")
-                .sums_buffer_for_test()
+                .and_then(|set| set.reflection_probes.as_ref())
+                .expect("the built set holds its probes")
+                .sums_buffer()
                 .clone();
             let bytes: Vec<u8> = std::iter::repeat_n(
                 fill.to_le_bytes(),

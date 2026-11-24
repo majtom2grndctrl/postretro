@@ -15,9 +15,12 @@ use postretro_render_cpu::fluid_surface::{
 
 use super::{planar_routing, reflection_pass};
 use crate::render::fluid_reflection_probes::{
-    FluidProbeResources, create_probe_index_buffer, installable_probe_section,
+    create_probe_index_buffer, fluid_probe_bind_group_entries,
 };
 use crate::render::gpu_create::GpuCreate;
+use crate::render::reflection_probe_resources::{
+    ReflectionProbeResources, installable_probe_section,
+};
 
 /// One installed level's fluid geometry and per-volume parameter buffer.
 pub(crate) struct InstalledFluidSurfaces {
@@ -34,11 +37,10 @@ pub(crate) struct InstalledFluidSurfaces {
     pub(super) probe_index_buffer: wgpu::Buffer,
     pub(super) index_buffer: wgpu::Buffer,
     pub(super) params_buffer: wgpu::Buffer,
-    /// The level's probe array, share table, distance array and live-lighting
-    /// sums, or their dummies, with the sums pass's group. Held so they drop
-    /// with the level; the frame reaches them through `params_bind_group` and
-    /// the sums pass's group alone.
-    pub(super) probes: FluidProbeResources,
+    /// The dummies group 4 binds on a level with no reflection probes, held
+    /// so they drop with the surfaces; `None` when it binds the level's own,
+    /// which the level set owns.
+    pub(super) _probe_dummies: Option<ReflectionProbeResources>,
     pub(super) params_bind_group: wgpu::BindGroup,
     /// The reflection pass's group 3, the parameter window and probe table
     /// over the same buffers; `None` for a level with no probe-bound face,
@@ -98,16 +100,14 @@ impl FluidLevelTargets {
 pub(crate) struct FluidLevelLayout {
     pub(super) params_bind_group_layout: wgpu::BindGroupLayout,
     pub(super) reflection_probe_layout: wgpu::BindGroupLayout,
-    /// The sums pass's own group layout: the level's group over its sums and
-    /// share table builds against it.
-    pub(super) sums_layout: wgpu::BindGroupLayout,
     pub(super) scene_group: crate::render::fluid_scene_inputs::FluidSceneGroupLayout,
 }
 
 impl FluidLevelLayout {
     /// The GPU half of a fluid install: upload what prep packed, touching no
     /// pass state. `None` (no surface face) allocates nothing. `volumes` and
-    /// `reflection_probes` are the ones `prepared` was built from.
+    /// `reflection_probes` are the ones `prepared` was built from; `probes`
+    /// is the level's upload of them, which group 4 borrows, else dummies.
     pub(crate) fn build_surfaces(
         &self,
         device: &wgpu::Device,
@@ -115,6 +115,7 @@ impl FluidLevelLayout {
         prepared: Option<PreparedFluidSurfaces>,
         volumes: &[EnvironmentVolumeRecord],
         reflection_probes: Option<&ReflectionProbesSection>,
+        probes: Option<&ReflectionProbeResources>,
     ) -> Option<InstalledFluidSurfaces> {
         let PreparedFluidSurfaces {
             mesh,
@@ -125,7 +126,12 @@ impl FluidLevelLayout {
         let reflection_probes = installable_probe_section(reflection_probes);
         let probe_index_buffer = create_probe_index_buffer(device, &probe_indices);
         // An install-time upload takes the raw queue, as the SH atlases do.
-        let probes = FluidProbeResources::new(device, queue, reflection_probes, &self.sums_layout);
+        let probe_dummies = probes
+            .is_none()
+            .then(|| ReflectionProbeResources::dummies(device, queue));
+        let probes = probes
+            .or(probe_dummies.as_ref())
+            .expect("group 4 binds the level's probes or the dummies");
         let slots = FluidSurfaceSlots::new(&mesh.volumes);
         let vertex_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Fluid Surface Vertex Buffer"),
@@ -150,8 +156,8 @@ impl FluidLevelLayout {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let [probe_array, probe_table, probe_distance] = probes.bind_group_entries();
-        let probe_sums = probes.sums_bind_group_entry();
+        let [probe_array, probe_table, probe_distance, probe_sums] =
+            fluid_probe_bind_group_entries(probes);
         let params_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Fluid Surface Params Bind Group (group 4)"),
             layout: &self.params_bind_group_layout,
@@ -171,7 +177,7 @@ impl FluidLevelLayout {
             ],
         });
         let reflection_probe_bind_group = has_probe_bound_face.then(|| {
-            let [_, probe_table, _] = probes.bind_group_entries();
+            let [_, probe_table, _, _] = fluid_probe_bind_group_entries(probes);
             reflection_pass::probe_bind_group(
                 device,
                 &self.reflection_probe_layout,
@@ -204,7 +210,7 @@ impl FluidLevelLayout {
             probe_index_buffer,
             index_buffer,
             params_buffer,
-            probes,
+            _probe_dummies: probe_dummies,
             params_bind_group,
             reflection_probe_bind_group,
             volumes: mesh.volumes,

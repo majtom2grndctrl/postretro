@@ -10,7 +10,7 @@ use postretro_level_format::environment_volumes::{
 };
 use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
 use postretro_level_format::reflection_probes::{
-    REFLECTION_PROBE_LIGHTS_PER_PROBE, REFLECTION_PROBE_LOBE_COUNT, ReflectionProbeBinding,
+    REFLECTION_PROBE_LIGHTS_PER_PROBE, REFLECTION_PROBE_LOBE_COUNT, ReflectionProbeFluidBinding,
     ReflectionProbeLightShare, ReflectionProbeRecord, ReflectionProbesSection,
 };
 use postretro_level_format::sh_volume::AnimationDescriptor;
@@ -347,6 +347,8 @@ pub(super) fn uniform_probe_section(
         tile_dimension: dimension,
         tile_border: 1,
         atlas_format: IRRADIANCE_FORMAT_RGBA16F,
+        colour_mip_count: 1,
+        world_bindings: Vec::new(),
         probes: layers
             .iter()
             .map(|&layer| ReflectionProbeRecord {
@@ -358,9 +360,9 @@ pub(super) fn uniform_probe_section(
                 lights: [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE],
             })
             .collect(),
-        bindings: bindings
+        fluid_bindings: bindings
             .iter()
-            .map(|&(face, probe)| ReflectionProbeBinding {
+            .map(|&(face, probe)| ReflectionProbeFluidBinding {
                 volume: 0,
                 face,
                 probe,
@@ -1045,6 +1047,51 @@ fn a_uniform_capture_reads_its_fresnel_composite_in_the_capture_encoding() {
     renderer.release_level_resources();
 }
 
+// Id 54 version 3 stores each probe's colour mips in sequence, which the
+// probe array uploads layer-major. A two-mip section whose 4² mips hold a
+// third colour installs (two probes, swapped layers, so a chain read out of
+// order would show) and water, sampling level 0 only, draws the same frame
+// as the one-mip section.
+#[test]
+fn a_two_mip_probe_section_installs_and_water_reads_mip_zero() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    renderer.set_fluid_reflection_style(FluidReflectionStyle::Smooth);
+    let mut pool = fluid_quad(-1.0, -0.5);
+    pool.surface_faces
+        .extend(fluid_quad(-0.5, 0.0).surface_faces);
+    let (green, red, blue) = ([0, 0x4000, 0], [0x4000, 0, 0x3800], [0, 0, 0x4000]);
+    let one_mip = uniform_probe_section(8, &[1, 0], &[red, green], &[(0, 0), (1, 1)]);
+    let two_mips = ReflectionProbesSection {
+        colour_mip_count: 2,
+        tiles: [red, green]
+            .iter()
+            .flat_map(|&rgb| {
+                let mut chain = uniform_rgba16f_tile(8, rgb);
+                chain.extend(uniform_rgba16f_tile(4, blue));
+                chain
+            })
+            .collect(),
+        ..one_mip.clone()
+    };
+    let look = FluidSurfaceLook {
+        has_bound_face: true,
+        ..FluidSurfaceLook::surface_only(0.5)
+    };
+    let mut frame = |section: Option<&ReflectionProbesSection>| {
+        renderer.install_fluid_surfaces(std::slice::from_ref(&pool), section);
+        renderer.set_fluid_surface_draws(&[look_draw(0, look)]);
+        capture_from(&mut renderer, GRAZING)
+    };
+    let today = frame(None);
+    let one = frame(Some(&one_mip));
+    let two = frame(Some(&two_mips));
+    assert_eq!(renderer.fluid_test().probe_array_layers(), Some(2));
+    assert!(one != today, "the bound faces reflect their probes");
+    assert!(one == two, "water reads level 0 whatever the chain holds");
+}
+
 // Acceptance row 34. One volume, three faces in one draw: the left quarter
 // binds probe 0, the next quarter probe 1, the right half nothing. The
 // probes sample distinct uniform captures, stored in swapped layers so the
@@ -1170,7 +1217,7 @@ fn a_draw_set_mixing_reflecting_and_reflection_free_volumes_draws_each_right() {
     ];
     let green = [0, 0x4000, 0];
     let mut section = uniform_probe_section(8, &[0], &[green], &[(0, 0)]);
-    section.bindings.push(ReflectionProbeBinding {
+    section.fluid_bindings.push(ReflectionProbeFluidBinding {
         volume: 1,
         face: 0,
         probe: 0,
@@ -1441,6 +1488,8 @@ fn a_probe_reads_darker_by_its_lights_share_when_its_descriptor_switches_off() {
             tile_dimension: dimension,
             tile_border: 1,
             atlas_format: IRRADIANCE_FORMAT_RGBA16F,
+            colour_mip_count: 1,
+            world_bindings: Vec::new(),
             probes: vec![ReflectionProbeRecord {
                 source_entity: 0,
                 box_min: [-8.0; 3],
@@ -1449,7 +1498,7 @@ fn a_probe_reads_darker_by_its_lights_share_when_its_descriptor_switches_off() {
                 layer: 0,
                 lights,
             }],
-            bindings: vec![ReflectionProbeBinding {
+            fluid_bindings: vec![ReflectionProbeFluidBinding {
                 volume: 0,
                 face: 0,
                 probe: 0,
@@ -1606,6 +1655,8 @@ fn pixel_style_reflects_once_per_water_texel_cell_and_smooth_per_pixel() {
         tile_dimension: dimension,
         tile_border: 1,
         atlas_format: IRRADIANCE_FORMAT_RGBA16F,
+        colour_mip_count: 1,
+        world_bindings: Vec::new(),
         probes: vec![ReflectionProbeRecord {
             source_entity: 0,
             box_min: [-8.0; 3],
@@ -1614,7 +1665,7 @@ fn pixel_style_reflects_once_per_water_texel_cell_and_smooth_per_pixel() {
             layer: 0,
             lights: [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE],
         }],
-        bindings: vec![ReflectionProbeBinding {
+        fluid_bindings: vec![ReflectionProbeFluidBinding {
             volume: 0,
             face: 0,
             probe: 0,
@@ -1808,6 +1859,8 @@ fn a_near_wall_distance_tile_samples_the_texel_the_cpu_search_looks_up() {
         tile_dimension: dimension,
         tile_border: 1,
         atlas_format: IRRADIANCE_FORMAT_RGBA16F,
+        colour_mip_count: 1,
+        world_bindings: Vec::new(),
         probes: vec![ReflectionProbeRecord {
             source_entity: 0,
             box_min: [-10.0, -1.0, -10.0],
@@ -1816,7 +1869,7 @@ fn a_near_wall_distance_tile_samples_the_texel_the_cpu_search_looks_up() {
             layer: 0,
             lights: [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE],
         }],
-        bindings: vec![ReflectionProbeBinding {
+        fluid_bindings: vec![ReflectionProbeFluidBinding {
             volume: 0,
             face: 0,
             probe: 0,

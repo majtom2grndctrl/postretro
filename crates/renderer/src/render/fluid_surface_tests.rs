@@ -2,6 +2,7 @@
 // See: context/lib/testing_guide.md
 
 use super::*;
+use crate::render::reflection_probe_sums;
 use postretro_render_cpu::fluid_surface::reflection::FLUID_PROBE_TABLE_BYTES;
 use postretro_render_cpu::fluid_surface::{
     FLUID_PARAMS_STRIDE, FLUID_SLOTS_PER_WINDOW, FluidSurfaceVertex,
@@ -14,9 +15,13 @@ const FLUID_WGSL: &str = concat!(
     "\n",
     include_str!("../shaders/fluid_motion.wgsl"),
     "\n",
+    include_str!("../shaders/reflection_probe_lobes.wgsl"),
+    "\n",
     include_str!("../shaders/fluid_reflection_lights.wgsl"),
     "\n",
     include_str!("../shaders/fluid_reflection.wgsl"),
+    "\n",
+    include_str!("../shaders/fluid_reflection_oracle.wgsl"),
     "\n",
     include_str!("../shaders/fluid_reflection_ray.wgsl"),
 );
@@ -848,7 +853,7 @@ fn fluid_pipeline_blends_over_the_scene_two_sided_without_writing_depth() {
 fn fluid_pass_records_between_skinned_meshes_and_billboards_on_its_own_gate() {
     let frame = &scene_source_with_fluid_passes();
     let skinned = frame
-        .find("label: Some(\"Skinned Mesh Pass\")")
+        .find("self.record_skinned_mesh_pass(")
         .expect("skinned mesh pass");
     let reflection = frame
         .find("self.record_fluid_reflection_pass(")
@@ -1797,11 +1802,11 @@ fn fluid_shade_fogs_from_the_outward_normal_and_the_reflecting_entry_returns_the
 // is not installed.
 #[test]
 fn the_install_filter_and_the_bound_face_predicate_agree() {
-    use crate::render::fluid_reflection_probes::installable_probe_section;
+    use crate::render::reflection_probe_resources::installable_probe_section;
     use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
     use postretro_level_format::reflection_probes::{
         REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1, REFLECTION_PROBE_LIGHTS_PER_PROBE,
-        ReflectionProbeBinding, ReflectionProbeLightShare, ReflectionProbeRecord,
+        ReflectionProbeFluidBinding, ReflectionProbeLightShare, ReflectionProbeRecord,
         reflection_probe_zero_distances,
     };
     use postretro_render_cpu::fluid_surface::reflection::volume_has_bound_face;
@@ -1809,6 +1814,8 @@ fn the_install_filter_and_the_bound_face_predicate_agree() {
         tile_dimension: dimension,
         tile_border: 1,
         atlas_format,
+        colour_mip_count: 1,
+        world_bindings: Vec::new(),
         probes: vec![ReflectionProbeRecord {
             source_entity: 0,
             box_min: [-1.0; 3],
@@ -1817,7 +1824,7 @@ fn the_install_filter_and_the_bound_face_predicate_agree() {
             layer: 0,
             lights: [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE],
         }],
-        bindings: vec![ReflectionProbeBinding {
+        fluid_bindings: vec![ReflectionProbeFluidBinding {
             volume: 0,
             face: 0,
             probe: 0,
@@ -1835,7 +1842,24 @@ fn the_install_filter_and_the_bound_face_predicate_agree() {
     };
     let mut layer_past = bc6h.clone();
     layer_past.probes[0].layer = 1;
+    // A colour chain of two mips, 8² then 4², carries both in sequence.
+    let two_mips = |tile_bytes: usize| ReflectionProbesSection {
+        colour_mip_count: 2,
+        tiles: vec![0; tile_bytes],
+        ..bc6h.clone()
+    };
+    let no_mips = ReflectionProbesSection {
+        colour_mip_count: 0,
+        ..bc6h.clone()
+    };
     let cases = [
+        ("BC6H two-mip chain", two_mips(4 * 16 + 16), true),
+        (
+            "two-mip chain missing its last mip",
+            two_mips(4 * 16),
+            false,
+        ),
+        ("colour mip count 0", no_mips, false),
         ("BC6H", bc6h, true),
         (
             "RGBA16F",
@@ -1965,9 +1989,25 @@ fn fluid_reflection_shader_constants_match_the_cpu_reference() {
             shader_u32("FLUID_REFLECTION_LIGHTS_PER_PROBE") as usize,
             REFLECTION_PROBE_LIGHTS_PER_PROBE
         );
-        // The lobe blend's `array<f32, 5>` and the entry's two `vec4<u32>` of
-        // shares are the format's lobe count.
-        assert_eq!(REFLECTION_PROBE_LOBE_COUNT, 5);
+        // The lobe count, the lobe blend's `array<f32, N>` and the entry's
+        // `vec4<u32>` of shares are the format's lobe count.
+        assert_eq!(
+            shader_u32("FLUID_REFLECTION_LOBES") as usize,
+            REFLECTION_PROBE_LOBE_COUNT
+        );
+        assert!(
+            code_only(FLUID_WGSL).contains(&format!(
+                "fnfluid_reflection_lobe_weights(direction:vec3<f32>)\
+                 ->array<f32,{REFLECTION_PROBE_LOBE_COUNT}>{{"
+            )),
+            "the lobe blend returns one weight per lobe"
+        );
+        assert!(code_only(FLUID_WGSL).contains(&format!(
+            "shares:array<vec4<u32>,{}>",
+            r::FLUID_PROBE_SHARE_WORDS / 4
+        )));
+        // Six lobes pad to the eight share words five did, so the entry's
+        // stride and the table's size hold.
         assert_eq!(r::FLUID_PROBE_SHARE_WORDS, 8);
     }
 }
@@ -1987,7 +2027,7 @@ fn fluid_reflection_shader_constants_match_the_cpu_reference() {
 fn fluid_reflection_wgsl_bodies_match_the_cpu_reference() {
     let wgsl = FLUID_WGSL;
     let cpu = include_str!("../../../render-cpu/src/fluid_surface/reflection.rs");
-    let pinned: [(&str, &str, &str, &str); 10] = [
+    let pinned: [(&str, &str, &str, &str); 9] = [
         (
             "fluid_reflection_mask_on",
             "fnfluid_reflection_mask_on(mask:u32)->bool{\
@@ -2057,21 +2097,6 @@ fn fluid_reflection_wgsl_bodies_match_the_cpu_reference() {
              letahead=Vec3::select(far.cmpgt(Vec3::ZERO),far,Vec3::splat(lead));\
              lett=ahead.x.min(ahead.y.min(ahead.z)).max(0.0);\
              origin+ray*t}",
-        ),
-        (
-            "fluid_reflection_lookup",
-            "fnfluid_reflection_lookup(hit:vec3<f32>,capture_point:vec3<f32>,ray:vec3<f32>)\
-             ->vec3<f32>{\
-             lettoward=hit-capture_point;\
-             letlevel=vec3<f32>(toward.x,max(toward.y,0.0),toward.z);\
-             returnselect(level,vec3<f32>(ray.x,max(ray.y,0.0),ray.z),\
-             dot(level,level)<FLUID_REFLECTION_DIRECTION_EPSILON);}",
-            "reflection_lookup",
-            "fnreflection_lookup(hit:Vec3,capture_point:Vec3,ray:Vec3)->Vec3{\
-             lettoward=hit-capture_point;\
-             letlevel=Vec3::new(toward.x,toward.y.max(0.0),toward.z);\
-             iflevel.dot(level)<FLUID_REFLECTION_DIRECTION_EPSILON{\
-             Vec3::new(ray.x,ray.y.max(0.0),ray.z)}else{level}}",
         ),
         (
             "fluid_reflection_tile_uv",
@@ -2149,7 +2174,7 @@ fn fluid_reflection_wgsl_bodies_match_the_cpu_reference() {
          letlayer=fluid_probes.probes[probe].layer;\
          letsearch=fluid_reflection_search(world_position,ray,fluid_probes.probes[probe].box_min,\
          fluid_probes.probes[probe].box_max,fluid_probes.probes[probe].capture_point,\
-         fluid_probes.tile.xy,layer);\
+         FLUID_REFLECTION_UP,fluid_probes.tile.xy,layer);\
          letuv=fluid_reflection_tile_uv(search.lookup,fluid_probes.tile.x,fluid_probes.tile.y);\
          letcapture=textureSampleLevel(fluid_probe_array,sh_atlas_sampler,uv,layer,0.0).rgb;\
          returnFluidReflectionSample(capture*fluid_reflection_ratio_from_sums(probe,search.lookup),\
@@ -2182,6 +2207,86 @@ fn fluid_reflection_wgsl_bodies_match_the_cpu_reference() {
     );
 }
 
+// The probe lookup's hemisphere is the CPU reference's in WGSL, pinned on both
+// sides: the level, the ray kept in the hemisphere and the lookup, each about
+// the bound face's axis; the axis is +Y within water's 1° up-facing test, else
+// the face's own normal (`select` in WGSL, `if` on the CPU). Water's lookup
+// and horizon floor are those about +Y (`reflection_search_up_tests`).
+#[test]
+fn fluid_reflection_hemisphere_wgsl_bodies_match_the_cpu_reference() {
+    use postretro_render_cpu::fluid_surface::reflection_hemisphere as h;
+    let cpu = include_str!("../../../render-cpu/src/fluid_surface/reflection_hemisphere.rs");
+    let pinned: [(&str, &str, &str, &str); 3] = [
+        (
+            "fluid_reflection_level",
+            "fnfluid_reflection_level(v:vec3<f32>,axis:vec3<f32>)->vec3<f32>{returnv-axis*min(\
+             dot(v,axis),0.0);}",
+            "reflection_level",
+            "fnreflection_level(v:Vec3,axis:Vec3)->Vec3{v-axis*v.dot(axis).min(0.0)}",
+        ),
+        (
+            "fluid_reflection_above_hemisphere",
+            "fnfluid_reflection_above_hemisphere(ray:vec3<f32>,axis:vec3<f32>)->vec3<f32>{\
+             letheight=dot(ray,axis);ifheight>=FLUID_REFLECTION_RAY_MIN_Y{returnray;}\
+             returnnormalize(ray-axis*height+axis*FLUID_REFLECTION_RAY_MIN_Y);}",
+            "reflection_above_hemisphere",
+            "fnreflection_above_hemisphere(ray:Vec3,axis:Vec3)->Vec3{letheight=ray.dot(axis);\
+             ifheight>=FLUID_REFLECTION_RAY_MIN_Y{returnray;}(ray-axis*height+axis*\
+             FLUID_REFLECTION_RAY_MIN_Y).normalize()}",
+        ),
+        (
+            "fluid_reflection_lookup",
+            "fnfluid_reflection_lookup(hit:vec3<f32>,capture_point:vec3<f32>,ray:vec3<f32>,\
+             axis:vec3<f32>)->vec3<f32>{letlevel=fluid_reflection_level(hit-capture_point,\
+             axis);returnselect(level,fluid_reflection_level(ray,axis),dot(level,level)\
+             <FLUID_REFLECTION_DIRECTION_EPSILON);}",
+            "reflection_lookup_about",
+            "fnreflection_lookup_about(hit:Vec3,capture_point:Vec3,ray:Vec3,axis:Vec3)->Vec3{\
+             letlevel=reflection_level(hit-capture_point,axis);iflevel.dot(level)\
+             <FLUID_REFLECTION_DIRECTION_EPSILON{reflection_level(ray,axis)}else{level}}",
+        ),
+    ];
+    for (wgsl_name, wgsl_body, cpu_name, cpu_body) in pinned {
+        assert_eq!(
+            code_only(wgsl_fn(FLUID_WGSL, wgsl_name)),
+            wgsl_body,
+            "WGSL `{wgsl_name}` drifted"
+        );
+        assert_eq!(
+            code_only(wgsl_fn(cpu, cpu_name)),
+            cpu_body,
+            "CPU `{cpu_name}` drifted"
+        );
+    }
+    assert_eq!(
+        code_only(wgsl_fn(FLUID_WGSL, "fluid_reflection_hemisphere_axis")),
+        "fnfluid_reflection_hemisphere_axis(normal:vec3<f32>)->vec3<f32>{returnselect(normal,\
+         FLUID_REFLECTION_UP,normal.y>=REFLECTION_UP_FACING_MIN_COS);}"
+    );
+    assert_eq!(
+        code_only(wgsl_fn(cpu, "reflection_hemisphere_axis")),
+        "fnreflection_hemisphere_axis(normal:Vec3)->Vec3{ifnormal.y>=\
+         REFLECTION_UP_FACING_MIN_COS{FLUID_REFLECTION_UP}else{normal}}"
+    );
+    assert_eq!(
+        shader_f32("REFLECTION_UP_FACING_MIN_COS"),
+        h::REFLECTION_UP_FACING_MIN_COS
+    );
+    assert_eq!(h::FLUID_REFLECTION_UP, glam::Vec3::Y);
+    assert!(
+        code_only(FLUID_WGSL)
+            .contains("constFLUID_REFLECTION_UP:vec3<f32>=vec3<f32>(0.0,1.0,0.0);")
+    );
+    assert_eq!(
+        code_only(wgsl_fn(
+            include_str!("../../../render-cpu/src/fluid_surface/reflection.rs"),
+            "reflection_lookup"
+        )),
+        "fnreflection_lookup(hit:Vec3,capture_point:Vec3,ray:Vec3)->Vec3{\
+         reflection_lookup_about(hit,capture_point,ray,FLUID_REFLECTION_UP)}"
+    );
+}
+
 // The distance search is the CPU `reflection_search` reference in WGSL,
 // pinned on both sides: h, the capture-shadow fade (its angle from the tile,
 // the turned tap, each side's gated edge, the fade), then the search (from
@@ -2196,27 +2301,155 @@ fn fluid_reflection_wgsl_bodies_match_the_cpu_reference() {
 fn fluid_reflection_search_wgsl_bodies_match_the_cpu_reference() {
     let wgsl = FLUID_WGSL;
     let cpu = include_str!("../../../render-cpu/src/fluid_surface/reflection_search.rs");
-    assert_eq!(
-        code_only(wgsl_fn(wgsl, "fluid_reflection_search_h")),
-        "fnfluid_reflection_search_h(q:vec3<f32>,capture_point:vec3<f32>,tile:vec2<u32>,\
-         layer:u32)->f32{\
-         lettoward=q-capture_point;\
-         letlevel=vec3<f32>(toward.x,max(toward.y,0.0),toward.z);\
-         letl1=abs(level.x)+abs(level.y)+abs(level.z);\
-         ifl1<FLUID_REFLECTION_SEARCH_EPSILON{return-1.0;}\
-         returnl1*textureSampleLevel(fluid_probe_distance,sh_atlas_sampler,\
-         fluid_reflection_tile_uv(level,tile.x,tile.y),layer,0.0).r-1.0;}"
-    );
-    assert_eq!(
-        code_only(wgsl_fn(cpu, "reflection_search_h")),
-        "fnreflection_search_h(q:Vec3,capture_point:Vec3,tile:[u32;2],\
-         distance:&implFn(Vec2)->f32,)->f32{\
-         lettoward=q-capture_point;\
-         letlevel=Vec3::new(toward.x,toward.y.max(0.0),toward.z);\
-         letl1=level.abs().element_sum();\
-         ifl1<FLUID_REFLECTION_SEARCH_EPSILON{return-1.0;}\
-         l1*distance(reflection_tile_uv(level,tile[0],tile[1]))-1.0}"
-    );
+    // Each WGSL function takes the bound face's hemisphere axis and mirrors
+    // the CPU's `_about` function; water passes `FLUID_REFLECTION_UP`.
+    let pinned: [(&str, &str, &str, &str); 5] = [
+        (
+            "fluid_reflection_search_h",
+            "fnfluid_reflection_search_h(q:vec3<f32>,capture_point:vec3<f32>,axis:vec3<f32>,\
+             tile:vec2<u32>,layer:u32)->f32{letlevel=fluid_reflection_level(q-capture_point,\
+             axis);letl1=abs(level.x)+abs(level.y)+abs(level.z);\
+             ifl1<FLUID_REFLECTION_SEARCH_EPSILON{return-1.0;}returnl1*textureSampleLevel(\
+             fluid_probe_distance,sh_atlas_sampler,fluid_reflection_tile_uv(level,tile.x,\
+             tile.y),layer,0.0).r-1.0;}",
+            "reflection_search_h_about",
+            "fnreflection_search_h_about(q:Vec3,capture_point:Vec3,axis:Vec3,tile:[u32;2],\
+             distance:&implFn(Vec2)->f32,)->f32{letlevel=reflection_level(q-capture_point,\
+             axis);letl1=level.abs().element_sum();ifl1<FLUID_REFLECTION_SEARCH_EPSILON{\
+             return-1.0;}l1*distance(reflection_tile_uv(level,tile[0],tile[1]))-1.0}",
+        ),
+        (
+            "fluid_reflection_shadow_tap",
+            "fnfluid_reflection_shadow_tap(capture_point:vec3<f32>,toward:vec3<f32>,turn:f32,\
+             axis:vec3<f32>,tile:vec2<u32>,layer:u32)->f32{letturn2=turn*turn;letsine=turn*(\
+             1.0-turn2/6.0*(1.0-turn2/20.0));letcosine=1.0-turn2/2.0*(1.0-turn2/12.0);\
+             letalong=axis*dot(toward,axis);letacross=toward-along;letturned=along+across*\
+             cosine+cross(axis,across)*sine;returnfluid_reflection_search_h(capture_point+\
+             turned,capture_point,axis,tile,layer);}",
+            "reflection_shadow_tap_about",
+            "fnreflection_shadow_tap_about(capture_point:Vec3,toward:Vec3,turn:f32,axis:Vec3,\
+             tile:[u32;2],distance:&implFn(Vec2)->f32,)->f32{letturn2=turn*turn;letsine=turn*(\
+             1.0-turn2/6.0*(1.0-turn2/20.0));letcosine=1.0-turn2/2.0*(1.0-turn2/12.0);\
+             letalong=axis*toward.dot(axis);letacross=toward-along;letturned=along+across*\
+             cosine+axis.cross(across)*sine;reflection_search_h_about(capture_point+turned,\
+             capture_point,axis,tile,distance)}",
+        ),
+        (
+            "fluid_reflection_shadow_edge",
+            "fnfluid_reflection_shadow_edge(capture_point:vec3<f32>,toward:vec3<f32>,angle:\
+             f32,side:f32,h_origin:f32,h_far:f32,h_opposite:f32,axis:vec3<f32>,tile:vec2<u32>,\
+             layer:u32)->f32{letstep=(h_far-h_opposite)/max(1.0+h_opposite,\
+             FLUID_REFLECTION_SEARCH_EPSILON);leth_lit=min(h_origin,0.0);letgate=smoothstep(\
+             FLUID_REFLECTION_SHADOW_GATE_START*angle,FLUID_REFLECTION_SHADOW_GATE_FULL*angle,\
+             step);ifh_far<=0.0||gate<=0.0{returnangle;}leth_half=fluid_reflection_shadow_tap(\
+             capture_point,toward,0.5*side,axis,tile,layer);varcrossing:f32;ifh_half>0.0{\
+             crossing=0.5*angle*h_lit/(h_lit-h_half);}else{crossing=0.5*angle+0.5*angle*\
+             h_half/(h_half-h_far);}returnangle+(crossing-angle)*gate;}",
+            "reflection_shadow_edge_about",
+            "fnreflection_shadow_edge_about(capture_point:Vec3,toward:Vec3,angle:f32,side:f32,\
+             h_origin:f32,h_far:f32,h_opposite:f32,axis:Vec3,tile:[u32;2],distance:&implFn(\
+             Vec2)->f32,)->f32{letstep=(h_far-h_opposite)/(1.0+h_opposite).max(\
+             FLUID_REFLECTION_SEARCH_EPSILON);leth_lit=h_origin.min(0.0);letgate=smoothstep(\
+             FLUID_REFLECTION_SHADOW_GATE_START*angle,FLUID_REFLECTION_SHADOW_GATE_FULL*angle,\
+             step,);ifh_far<=0.0||gate<=0.0{returnangle;}leth_half=\
+             reflection_shadow_tap_about(capture_point,toward,0.5*side,axis,tile,distance);\
+             letcrossing=ifh_half>0.0{0.5*angle*h_lit/(h_lit-h_half)}else{0.5*angle+0.5*angle*\
+             h_half/(h_half-h_far)};angle+(crossing-angle)*gate}",
+        ),
+        (
+            "fluid_reflection_shadow_fade",
+            "fnfluid_reflection_shadow_fade(origin:vec3<f32>,capture_point:vec3<f32>,axis:\
+             vec3<f32>,tile:vec2<u32>,h_origin:f32,layer:u32)->f32{letangle=\
+             fluid_reflection_shadow_fade_angle(tile);lettoward=origin-capture_point;\
+             leth_plus=fluid_reflection_shadow_tap(capture_point,toward,angle,axis,tile,layer)\
+             ;leth_minus=fluid_reflection_shadow_tap(capture_point,toward,-angle,axis,tile,\
+             layer);letedge=min(fluid_reflection_shadow_edge(capture_point,toward,angle,angle,\
+             h_origin,h_plus,h_minus,axis,tile,layer),fluid_reflection_shadow_edge(\
+             capture_point,toward,angle,-angle,h_origin,h_minus,h_plus,axis,tile,layer));\
+             returnsmoothstep(0.0,angle,edge);}",
+            "reflection_shadow_fade_about",
+            "fnreflection_shadow_fade_about(origin:Vec3,capture_point:Vec3,axis:Vec3,tile:[\
+             u32;2],h_origin:f32,distance:&implFn(Vec2)->f32,)->f32{letangle=\
+             reflection_shadow_fade_angle(tile);lettoward=origin-capture_point;leth_plus=\
+             reflection_shadow_tap_about(capture_point,toward,angle,axis,tile,distance);\
+             leth_minus=reflection_shadow_tap_about(capture_point,toward,-angle,axis,tile,\
+             distance);letedge=reflection_shadow_edge_about(capture_point,toward,angle,angle,\
+             h_origin,h_plus,h_minus,axis,tile,distance,).min(reflection_shadow_edge_about(\
+             capture_point,toward,angle,-angle,h_origin,h_minus,h_plus,axis,tile,distance,));\
+             smoothstep(0.0,angle,edge)}",
+        ),
+        (
+            "fluid_reflection_search",
+            "fnfluid_reflection_search(origin:vec3<f32>,ray:vec3<f32>,box_min:vec3<f32>,\
+             box_max:vec3<f32>,capture_point:vec3<f32>,axis:vec3<f32>,tile:vec2<u32>,layer:\
+             u32)->FluidReflectionSearch{letbox_hit=fluid_reflection_box_hit(origin,ray,\
+             box_min,box_max);lett_box=dot(box_hit-origin,ray);leth_origin=\
+             fluid_reflection_search_h(origin,capture_point,axis,tile,layer);leth_box=\
+             fluid_reflection_search_h(box_hit,capture_point,axis,tile,layer);ifh_origin>=\
+             FLUID_REFLECTION_SHADOW_MARGIN{returnFluidReflectionSearch(\
+             fluid_reflection_lookup(box_hit,capture_point,ray,axis),0.0);}letweight=\
+             fluid_reflection_shadow_fade(origin,capture_point,axis,tile,h_origin,layer)*(1.0-\
+             smoothstep(0.0,FLUID_REFLECTION_SHADOW_MARGIN,h_origin));ifh_origin>=0.0{\
+             returnFluidReflectionSearch(fluid_reflection_lookup(box_hit,capture_point,ray,\
+             axis),weight);}vart_front=0.0;varh_front=h_origin;vart_back=t_box;varh_back=\
+             h_box;letfrom_capture=origin-capture_point;letb=dot(from_capture,ray);for(vari:\
+             u32=0u;i<FLUID_REFLECTION_SEARCH_STEPS;i=i+1u){ifh_front<=-1.0{break;}letq=\
+             origin+ray*t_front;letlevel=fluid_reflection_level(q-capture_point,axis);\
+             letradius=length(level)/(h_front+1.0);letdisc=b*b-(dot(from_capture,from_capture)\
+             -radius*radius);ifdisc<0.0{break;}lett_next=-b+sqrt(disc);ift_next<=t_front||\
+             t_next>=t_box{break;}leth_next=fluid_reflection_search_h(origin+ray*t_next,\
+             capture_point,axis,tile,layer);ifh_next>=0.0{t_back=t_next;h_back=h_next;break;}\
+             t_front=t_next;h_front=h_next;}if!(h_back>=0.0){returnFluidReflectionSearch(\
+             fluid_reflection_lookup(box_hit,capture_point,ray,axis),weight);}vart_hit=t_back;\
+             for(varrefinement:u32=0u;refinement<FLUID_REFLECTION_SEARCH_REFINEMENTS;\
+             refinement=refinement+1u){ifh_back!=h_front{t_hit=t_front-h_front*(t_back-\
+             t_front)/(h_back-h_front);}else{t_hit=t_back;}ifrefinement+1u==\
+             FLUID_REFLECTION_SEARCH_REFINEMENTS{break;}leth_hit=fluid_reflection_search_h(\
+             origin+ray*t_hit,capture_point,axis,tile,layer);ifh_hit>=0.0{t_back=t_hit;h_back=\
+             h_hit;}else{t_front=t_hit;h_front=h_hit;}}returnFluidReflectionSearch(\
+             fluid_reflection_lookup(origin+ray*t_hit,capture_point,ray,axis),weight);}",
+            "reflection_search_about",
+            "fnreflection_search_about(origin:Vec3,ray:Vec3,box_min:Vec3,box_max:Vec3,\
+             capture_point:Vec3,axis:Vec3,tile:[u32;2],distance:implFn(Vec2)->f32,)->\
+             FluidReflectionSearch{leth=|q:Vec3|reflection_search_h_about(q,capture_point,\
+             axis,tile,&distance);letbox_hit=reflection_box_hit(origin,ray,box_min,box_max);\
+             lett_box=(box_hit-origin).dot(ray);leth_origin=h(origin);leth_box=h(box_hit);\
+             letends_at=|point:Vec3,status,weight|FluidReflectionSearch{point,lookup:\
+             reflection_lookup_about(point,capture_point,ray,axis),status,weight,};ifh_origin>\
+             =FLUID_REFLECTION_SHADOW_MARGIN{returnends_at(box_hit,\
+             FluidReflectionSearchStatus::CaptureShadow,0.0);}letweight=\
+             reflection_shadow_fade_about(origin,capture_point,axis,tile,h_origin,&distance)*(\
+             1.0-smoothstep(0.0,FLUID_REFLECTION_SHADOW_MARGIN,h_origin));ifh_origin>=0.0{\
+             returnends_at(box_hit,FluidReflectionSearchStatus::CaptureShadow,weight);}let(\
+             mutt_front,muth_front)=(0.0,h_origin);letmutback=None;letfrom_capture=origin-\
+             capture_point;letb=from_capture.dot(ray);for_in0..FLUID_REFLECTION_SEARCH_STEPS{\
+             ifh_front<=-1.0{break;}letq=origin+ray*t_front;letlevel=reflection_level(q-\
+             capture_point,axis);letradius=level.length()/(h_front+1.0);letdisc=b*b-(\
+             from_capture.dot(from_capture)-radius*radius);ifdisc<0.0{break;}lett_next=-b+\
+             disc.sqrt();ift_next<=t_front||t_next>=t_box{break;}leth_next=h(origin+ray*\
+             t_next);ifh_next>=0.0{back=Some((t_next,h_next));break;}(t_front,h_front)=(\
+             t_next,h_next);}let(mutt_back,muth_back)=matchback{Some(sample)=>sample,\
+             Noneifh_box>=0.0=>(t_box,h_box),None=>returnends_at(box_hit,\
+             FluidReflectionSearchStatus::BeyondBox,weight),};letmutt_hit=t_back;\
+             forrefinementin0..FLUID_REFLECTION_SEARCH_REFINEMENTS{t_hit=ifh_back!=h_front{\
+             t_front-h_front*(t_back-t_front)/(h_back-h_front)}else{t_back};ifrefinement+1==\
+             FLUID_REFLECTION_SEARCH_REFINEMENTS{break;}leth_hit=h(origin+ray*t_hit);ifh_hit>=\
+             0.0{(t_back,h_back)=(t_hit,h_hit);}else{(t_front,h_front)=(t_hit,h_hit);}}\
+             ends_at(origin+ray*t_hit,FluidReflectionSearchStatus::Hit,weight,)}",
+        ),
+    ];
+    for (wgsl_name, wgsl_body, cpu_name, cpu_body) in pinned {
+        assert_eq!(
+            code_only(wgsl_fn(wgsl, wgsl_name)),
+            wgsl_body,
+            "WGSL `{wgsl_name}` drifted"
+        );
+        assert_eq!(
+            code_only(wgsl_fn(cpu, cpu_name)),
+            cpu_body,
+            "CPU `{cpu_name}` drifted"
+        );
+    }
     // GLSL smoothstep on the CPU side; WGSL's builtin is the same polynomial.
     assert_eq!(
         code_only(wgsl_fn(cpu, "smoothstep")),
@@ -2235,138 +2468,34 @@ fn fluid_reflection_search_wgsl_bodies_match_the_cpu_reference() {
          FLUID_REFLECTION_SHADOW_FADE_TEXELS*FLUID_REFLECTION_HALF_TURN\
          /(tile[0]asf32-2.0*tile[1]asf32)}"
     );
-    assert_eq!(
-        code_only(wgsl_fn(wgsl, "fluid_reflection_shadow_tap")),
-        "fnfluid_reflection_shadow_tap(capture_point:vec3<f32>,toward:vec3<f32>,turn:f32,\
-         tile:vec2<u32>,layer:u32)->f32{letturn2=turn*turn;\
-         letsine=turn*(1.0-turn2/6.0*(1.0-turn2/20.0));\
-         letcosine=1.0-turn2/2.0*(1.0-turn2/12.0);\
-         letturned=vec3<f32>(toward.x*cosine+toward.z*sine,toward.y,\
-         toward.z*cosine-toward.x*sine);returnfluid_reflection_search_h(capture_point+turned,\
-         capture_point,tile,layer);}"
-    );
-    assert_eq!(
-        code_only(wgsl_fn(cpu, "reflection_shadow_tap")),
-        "fnreflection_shadow_tap(capture_point:Vec3,toward:Vec3,turn:f32,tile:[u32;2],\
-         distance:&implFn(Vec2)->f32,)->f32{letturn2=turn*turn;\
-         letsine=turn*(1.0-turn2/6.0*(1.0-turn2/20.0));\
-         letcosine=1.0-turn2/2.0*(1.0-turn2/12.0);\
-         letturned=Vec3::new(toward.x*cosine+toward.z*sine,toward.y,\
-         toward.z*cosine-toward.x*sine,);reflection_search_h(capture_point+turned,\
-         capture_point,tile,distance)}"
-    );
-    assert_eq!(
-        code_only(wgsl_fn(wgsl, "fluid_reflection_shadow_edge")),
-        "fnfluid_reflection_shadow_edge(capture_point:vec3<f32>,toward:vec3<f32>,angle:f32,\
-         side:f32,h_origin:f32,h_far:f32,h_opposite:f32,tile:vec2<u32>,layer:u32)->f32{\
-         letstep=(h_far-h_opposite)/max(1.0+h_opposite,FLUID_REFLECTION_SEARCH_EPSILON);\
-         leth_lit=min(h_origin,0.0);\
-         letgate=smoothstep(FLUID_REFLECTION_SHADOW_GATE_START*angle,\
-         FLUID_REFLECTION_SHADOW_GATE_FULL*angle,step);ifh_far<=0.0||gate<=0.0{returnangle;}\
-         leth_half=fluid_reflection_shadow_tap(capture_point,toward,0.5*side,tile,layer);\
-         varcrossing:f32;ifh_half>0.0{crossing=0.5*angle*h_lit/(h_lit-h_half);}else{\
-         crossing=0.5*angle+0.5*angle*h_half/(h_half-h_far);}\
-         returnangle+(crossing-angle)*gate;}"
-    );
-    assert_eq!(
-        code_only(wgsl_fn(cpu, "reflection_shadow_edge")),
-        "fnreflection_shadow_edge(capture_point:Vec3,toward:Vec3,angle:f32,side:f32,\
-         h_origin:f32,h_far:f32,h_opposite:f32,tile:[u32;2],distance:&implFn(Vec2)->f32,\
-         )->f32{\
-         letstep=(h_far-h_opposite)/(1.0+h_opposite).max(FLUID_REFLECTION_SEARCH_EPSILON);\
-         leth_lit=h_origin.min(0.0);\
-         letgate=smoothstep(FLUID_REFLECTION_SHADOW_GATE_START*angle,\
-         FLUID_REFLECTION_SHADOW_GATE_FULL*angle,step,);ifh_far<=0.0||gate<=0.0{returnangle;}\
-         leth_half=reflection_shadow_tap(capture_point,toward,0.5*side,tile,distance);\
-         letcrossing=ifh_half>0.0{0.5*angle*h_lit/(h_lit-h_half)}else{\
-         0.5*angle+0.5*angle*h_half/(h_half-h_far)};angle+(crossing-angle)*gate}"
-    );
-    assert_eq!(
-        code_only(wgsl_fn(wgsl, "fluid_reflection_shadow_fade")),
-        "fnfluid_reflection_shadow_fade(origin:vec3<f32>,capture_point:vec3<f32>,\
-         tile:vec2<u32>,h_origin:f32,layer:u32)->f32{\
-         letangle=fluid_reflection_shadow_fade_angle(tile);lettoward=origin-capture_point;\
-         leth_plus=fluid_reflection_shadow_tap(capture_point,toward,angle,tile,layer);\
-         leth_minus=fluid_reflection_shadow_tap(capture_point,toward,-angle,tile,layer);\
-         letedge=min(fluid_reflection_shadow_edge(capture_point,toward,angle,angle,h_origin,\
-         h_plus,h_minus,tile,layer),fluid_reflection_shadow_edge(capture_point,toward,angle,\
-         -angle,h_origin,h_minus,h_plus,tile,layer));returnsmoothstep(0.0,angle,edge);}"
-    );
-    assert_eq!(
-        code_only(wgsl_fn(cpu, "reflection_shadow_fade")),
-        "fnreflection_shadow_fade(origin:Vec3,capture_point:Vec3,tile:[u32;2],h_origin:f32,\
-         distance:&implFn(Vec2)->f32,)->f32{letangle=reflection_shadow_fade_angle(tile);\
-         lettoward=origin-capture_point;leth_plus=reflection_shadow_tap(capture_point,toward,\
-         angle,tile,distance);leth_minus=reflection_shadow_tap(capture_point,toward,-angle,\
-         tile,distance);letedge=reflection_shadow_edge(capture_point,toward,angle,angle,\
-         h_origin,h_plus,h_minus,tile,distance,).min(reflection_shadow_edge(capture_point,\
-         toward,angle,-angle,h_origin,h_minus,h_plus,tile,distance,));smoothstep(0.0,angle,\
-         edge)}"
-    );
-    assert_eq!(
-        code_only(wgsl_fn(wgsl, "fluid_reflection_search")),
-        "fnfluid_reflection_search(origin:vec3<f32>,ray:vec3<f32>,box_min:vec3<f32>,\
-         box_max:vec3<f32>,capture_point:vec3<f32>,tile:vec2<u32>,\
-         layer:u32)->FluidReflectionSearch{letbox_hit=fluid_reflection_box_hit(origin,ray,\
-         box_min,box_max);lett_box=dot(box_hit-origin,ray);\
-         leth_origin=fluid_reflection_search_h(origin,capture_point,tile,layer);\
-         leth_box=fluid_reflection_search_h(box_hit,capture_point,tile,layer);\
-         ifh_origin>=FLUID_REFLECTION_SHADOW_MARGIN{\
-         returnFluidReflectionSearch(fluid_reflection_lookup(box_hit,capture_point,ray),0.0);\
-         }letweight=fluid_reflection_shadow_fade(origin,capture_point,tile,h_origin,\
-         layer)*(1.0-smoothstep(0.0,FLUID_REFLECTION_SHADOW_MARGIN,h_origin));\
-         ifh_origin>=0.0{returnFluidReflectionSearch(fluid_reflection_lookup(box_hit,\
-         capture_point,ray),weight);}vart_front=0.0;varh_front=h_origin;vart_back=t_box;\
-         varh_back=h_box;letfrom_capture=origin-capture_point;letb=dot(from_capture,ray);\
-         for(vari:u32=0u;i<FLUID_REFLECTION_SEARCH_STEPS;i=i+1u){ifh_front<=-1.0{break;}\
-         letq=origin+ray*t_front;lettoward=q-capture_point;letlevel=vec3<f32>(toward.x,\
-         max(toward.y,0.0),toward.z);letradius=length(level)/(h_front+1.0);\
-         letdisc=b*b-(dot(from_capture,from_capture)-radius*radius);ifdisc<0.0{break;}\
-         lett_next=-b+sqrt(disc);ift_next<=t_front||t_next>=t_box{break;}\
-         leth_next=fluid_reflection_search_h(origin+ray*t_next,capture_point,tile,layer);\
-         ifh_next>=0.0{t_back=t_next;h_back=h_next;break;}t_front=t_next;h_front=h_next;}\
-         if!(h_back>=0.0){returnFluidReflectionSearch(fluid_reflection_lookup(box_hit,\
-         capture_point,ray),weight);}vart_hit=t_back;for(varrefinement:u32=0u;\
-         refinement<FLUID_REFLECTION_SEARCH_REFINEMENTS;refinement=refinement+1u){\
-         ifh_back!=h_front{t_hit=t_front-h_front*(t_back-t_front)/(h_back-h_front);}else{\
-         t_hit=t_back;}ifrefinement+1u==FLUID_REFLECTION_SEARCH_REFINEMENTS{break;}\
-         leth_hit=fluid_reflection_search_h(origin+ray*t_hit,capture_point,tile,layer);\
-         ifh_hit>=0.0{t_back=t_hit;h_back=h_hit;}else{t_front=t_hit;h_front=h_hit;}}\
-         returnFluidReflectionSearch(fluid_reflection_lookup(origin+ray*t_hit,capture_point,\
-         ray),weight);}"
-    );
-    assert_eq!(
-        code_only(wgsl_fn(cpu, "reflection_search")),
-        "fnreflection_search(origin:Vec3,ray:Vec3,box_min:Vec3,box_max:Vec3,\
-         capture_point:Vec3,tile:[u32;2],distance:implFn(Vec2)->f32,)->FluidReflectionSearch{\
-         leth=|q:Vec3|reflection_search_h(q,capture_point,tile,&distance);\
-         letbox_hit=reflection_box_hit(origin,ray,box_min,box_max);\
-         lett_box=(box_hit-origin).dot(ray);leth_origin=h(origin);leth_box=h(box_hit);\
-         letends_at=|point:Vec3,status,weight|FluidReflectionSearch{point,\
-         lookup:reflection_lookup(point,capture_point,ray),status,weight,};\
-         ifh_origin>=FLUID_REFLECTION_SHADOW_MARGIN{returnends_at(box_hit,\
-         FluidReflectionSearchStatus::CaptureShadow,0.0);}\
-         letweight=reflection_shadow_fade(origin,capture_point,tile,h_origin,\
-         &distance)*(1.0-smoothstep(0.0,FLUID_REFLECTION_SHADOW_MARGIN,h_origin));\
-         ifh_origin>=0.0{returnends_at(box_hit,FluidReflectionSearchStatus::CaptureShadow,\
-         weight);}let(mutt_front,muth_front)=(0.0,h_origin);letmutback=None;\
-         letfrom_capture=origin-capture_point;letb=from_capture.dot(ray);\
-         for_in0..FLUID_REFLECTION_SEARCH_STEPS{ifh_front<=-1.0{break;}\
-         letq=origin+ray*t_front;lettoward=q-capture_point;letlevel=Vec3::new(toward.x,\
-         toward.y.max(0.0),toward.z);letradius=level.length()/(h_front+1.0);\
-         letdisc=b*b-(from_capture.dot(from_capture)-radius*radius);ifdisc<0.0{break;}\
-         lett_next=-b+disc.sqrt();ift_next<=t_front||t_next>=t_box{break;}\
-         leth_next=h(origin+ray*t_next);ifh_next>=0.0{back=Some((t_next,h_next));break;}\
-         (t_front,h_front)=(t_next,h_next);}let(mutt_back,muth_back)=matchback{\
-         Some(sample)=>sample,Noneifh_box>=0.0=>(t_box,h_box),None=>returnends_at(box_hit,\
-         FluidReflectionSearchStatus::BeyondBox,weight),};letmutt_hit=t_back;\
-         forrefinementin0..FLUID_REFLECTION_SEARCH_REFINEMENTS{t_hit=ifh_back!=h_front{\
-         t_front-h_front*(t_back-t_front)/(h_back-h_front)}else{t_back};\
-         ifrefinement+1==FLUID_REFLECTION_SEARCH_REFINEMENTS{break;}\
-         leth_hit=h(origin+ray*t_hit);ifh_hit>=0.0{(t_back,h_back)=(t_hit,h_hit);}else{\
-         (t_front,h_front)=(t_hit,h_hit);}}ends_at(origin+ray*t_hit,\
-         FluidReflectionSearchStatus::Hit,weight,)}"
-    );
+    // Water's CPU entries are the search about +Y, the up-facing hemisphere.
+    for (name, call) in [
+        (
+            "reflection_search_h",
+            "reflection_search_h_about(q,capture_point,FLUID_REFLECTION_UP,tile,distance)}",
+        ),
+        (
+            "reflection_shadow_tap",
+            "reflection_shadow_tap_about(capture_point,toward,turn,FLUID_REFLECTION_UP,tile,\
+             distance,)}",
+        ),
+        (
+            "reflection_shadow_fade",
+            "reflection_shadow_fade_about(origin,capture_point,FLUID_REFLECTION_UP,tile,\
+             h_origin,distance,)}",
+        ),
+        (
+            "reflection_search",
+            "reflection_search_about(origin,ray,box_min,box_max,capture_point,\
+             FLUID_REFLECTION_UP,tile,distance,)}",
+        ),
+    ] {
+        assert!(
+            code_only(wgsl_fn(cpu, name)).ends_with(call),
+            "`{name}` is the search about +Y: {}",
+            code_only(wgsl_fn(cpu, name))
+        );
+    }
 }
 
 #[test]
@@ -2599,25 +2728,24 @@ fn fluid_reflection_live_lighting_wgsl_bodies_match_the_cpu_reference() {
     let pinned: [(&str, &str, &str, &str, &str); 7] = [
         (
             "fluid_reflection_lobe_weights",
-            "fnfluid_reflection_lobe_weights(direction:vec3<f32>)->array<f32,5>{\
+            "fnfluid_reflection_lobe_weights(direction:vec3<f32>)->array<f32,6>{\
              letpositive=max(direction,vec3<f32>(0.0));\
              letnegative=max(-direction,vec3<f32>(0.0));\
-             letdown=negative.y*negative.y*0.25;\
-             letweights=array<f32,5>(positive.y*positive.y,positive.x*positive.x+down,\
-             negative.x*negative.x+down,positive.z*positive.z+down,\
-             negative.z*negative.z+down,);\
-             letsum=weights[0]+weights[1]+weights[2]+weights[3]+weights[4];\
-             if!(sum>0.0){returnarray<f32,5>(1.0,0.0,0.0,0.0,0.0);}\
-             returnarray<f32,5>(weights[0]/sum,weights[1]/sum,weights[2]/sum,weights[3]/sum,\
-             weights[4]/sum);}",
+             letweights=array<f32,6>(positive.y*positive.y,positive.x*positive.x,\
+             negative.x*negative.x,positive.z*positive.z,negative.z*negative.z,\
+             negative.y*negative.y,);\
+             letsum=weights[0]+weights[1]+weights[2]+weights[3]+weights[4]+weights[5];\
+             if!(sum>0.0){returnarray<f32,6>(1.0,0.0,0.0,0.0,0.0,0.0);}\
+             returnarray<f32,6>(weights[0]/sum,weights[1]/sum,weights[2]/sum,weights[3]/sum,\
+             weights[4]/sum,weights[5]/sum);}",
             format,
             "reflection_probe_lobe_weights",
             "fnreflection_probe_lobe_weights(direction:[f32;3])->[f32;\
              REFLECTION_PROBE_LOBE_COUNT]{let[x,y,z]=direction;\
-             letpos=|v:f32|{letc=v.max(0.0);c*c};letdown=pos(-y)*0.25;\
-             letweights=[pos(y),pos(x)+down,pos(-x)+down,pos(z)+down,pos(-z)+down,];\
+             letpos=|v:f32|{letc=v.max(0.0);c*c};\
+             letweights=[pos(y),pos(x),pos(-x),pos(z),pos(-z),pos(-y)];\
              letsum:f32=weights.iter().sum();\
-             if!(sum.is_finite()&&sum>0.0){return[1.0,0.0,0.0,0.0,0.0];}\
+             if!(sum.is_finite()&&sum>0.0){return[1.0,0.0,0.0,0.0,0.0,0.0];}\
              weights.map(|w|w/sum)}",
         ),
         (
@@ -2666,13 +2794,14 @@ fn fluid_reflection_live_lighting_wgsl_bodies_match_the_cpu_reference() {
         ),
         (
             "fluid_reflection_light_share",
-            "fnfluid_reflection_light_share(shares:array<vec4<u32>,2>,lobes:array<f32,5>)\
+            "fnfluid_reflection_light_share(shares:array<vec4<u32>,2>,lobes:array<f32,6>)\
              ->vec3<f32>{\
              returnfluid_reflection_unpack_unorm10x3(shares[0].x)*lobes[0]\
              +fluid_reflection_unpack_unorm10x3(shares[0].y)*lobes[1]\
              +fluid_reflection_unpack_unorm10x3(shares[0].z)*lobes[2]\
              +fluid_reflection_unpack_unorm10x3(shares[0].w)*lobes[3]\
-             +fluid_reflection_unpack_unorm10x3(shares[1].x)*lobes[4];}",
+             +fluid_reflection_unpack_unorm10x3(shares[1].x)*lobes[4]\
+             +fluid_reflection_unpack_unorm10x3(shares[1].y)*lobes[5];}",
             cpu,
             "reflection_light_share",
             "fnreflection_light_share(shares:&[u32;FLUID_PROBE_SHARE_WORDS],\
@@ -3174,15 +3303,18 @@ fn fluid_pass_picks_variants_by_the_frames_group_0_mask() {
         .expect("the reflection pass records with the frame's mask and tier");
     assert!(snapshot < gate && gate < reflection && reflection < record);
     // The sums pass takes its dispatch by the same snapshot, before the
-    // reflection pass and the fluid pass.
+    // reflection pass and the fluid pass; its recorder hands both to the
+    // fluid pass's condition (`the_sums_dispatch_reads_the_fluid_passs_own_reflecting_draws`).
     let sums = frame
         .find(
-            "fluid_surface.has_probe_term_draws(self.fluid_surfaces(),frame_light_term_mask,\
-             frame_reflection_quality,)",
+            "self.record_reflection_probe_sums(encoder,render_world,frame_light_term_mask,\
+             frame_reflection_quality,);",
         )
         .expect("the sums dispatch reads the frame's mask and tier");
     assert!(snapshot < sums && sums < gate);
-    assert_eq!(frame.matches("frame_reflection_quality").count(), 5);
+    // Three more: forward's static-diffuse forms, the glossy floor layer's
+    // verdict and the glossy overlay.
+    assert_eq!(frame.matches("frame_reflection_quality").count(), 8);
 
     let source = include_str!("fluid_surface.rs");
     let reflection_source = include_str!("fluid_surface/reflection_pass.rs");
@@ -3491,10 +3623,9 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
     assert!(install.starts_with(
         "fninstall(&mutself,device:&wgpu::Device,queue:&crate::render::uploads::UploadQueue,"
     ));
-    assert!(
-        install
-            .ends_with("self.install_prepared(device,queue,prepared,volumes,reflection_probes)}")
-    );
+    assert!(install.ends_with(
+        "self.install_prepared(device,queue,prepared,volumes,reflection_probes,probes)}"
+    ));
     let install = code_only(wgsl_fn(source, "install_prepared"));
     assert!(install.starts_with(
         "fninstall_prepared(&mutself,device:&wgpu::Device,queue:&crate::render::uploads::UploadQueue,"
@@ -3855,12 +3986,20 @@ fn fluid_pass_declares_no_history_or_precomputed_intersection_binding() {
             include_str!("fluid_surface/install.rs"),
         ),
         (
-            "fluid_surface/probe_sums.rs",
-            include_str!("fluid_surface/probe_sums.rs"),
+            "reflection_probe_resources.rs",
+            include_str!("reflection_probe_resources.rs"),
+        ),
+        (
+            "reflection_probe_sums.rs",
+            include_str!("reflection_probe_sums.rs"),
+        ),
+        (
+            "renderer_probe_sums_frame.rs",
+            include_str!("renderer_probe_sums_frame.rs"),
         ),
         (
             "fluid_reflection_sums.wgsl",
-            probe_sums::composed_sums_shader_source(),
+            reflection_probe_sums::composed_sums_shader_source(),
         ),
     ] {
         let code = code_only(source).to_lowercase();
@@ -3872,8 +4011,9 @@ fn fluid_pass_declares_no_history_or_precomputed_intersection_binding() {
     // The sums pass's shader: the frame's clock, the roster-indexed
     // descriptors and their curve samples, the sums it writes and the share
     // table. Nothing named for history or intersections.
-    let sums_module = naga::front::wgsl::parse_str(probe_sums::composed_sums_shader_source())
-        .expect("sums shader parses");
+    let sums_module =
+        naga::front::wgsl::parse_str(reflection_probe_sums::composed_sums_shader_source())
+            .expect("sums shader parses");
     let mut sums_declared: Vec<(u32, u32, String)> = sums_module
         .global_variables
         .iter()
@@ -4057,7 +4197,10 @@ fn fluid_probe_layer_derives_from_the_face_binding_alone() {
         blend.contains("letbase=probe*FLUID_REFLECTION_LOBES;"),
         "{blend}"
     );
-    assert_eq!(blend.matches("fluid_probe_sums.lobes[base").count(), 5);
+    assert_eq!(
+        blend.matches("fluid_probe_sums.lobes[base").count(),
+        postretro_level_format::reflection_probes::REFLECTION_PROBE_LOBE_COUNT
+    );
 }
 
 // P3 and P4: the fluid grid takes the lattice the SH sampler reads. A
@@ -5021,6 +5164,24 @@ fn the_march_and_its_confidence_read_no_direction() {
         FS_REFLECTION_BODY,
         "{rule}: the reflection entry"
     );
+    // The glossy floor layer's march is this march, composed unmodified,
+    // and its entry is pinned whole beside water's: the scan covers it.
+    use crate::render::glossy_floor::GLOSSY_FLOOR_MARCH_SHADER_SOURCE as FLOOR;
+    assert_eq!(
+        code_only(wgsl_fn(FLOOR, "screen_march")),
+        SCREEN_MARCH_WGSL_BODY,
+        "{rule}: the floor layer's march body"
+    );
+    assert_eq!(
+        march_conditions(FLOOR),
+        march_conditions(SCREEN_MARCH_WGSL),
+        "{rule}: the floor layer's `if` conditions"
+    );
+    assert_eq!(
+        code_only(wgsl_fn(FLOOR, "glossy_floor_march")),
+        crate::render::glossy_floor::march_tests::GLOSSY_FLOOR_MARCH_BODY,
+        "{rule}: the floor layer's march entry"
+    );
 }
 
 /// Each `if` condition in `screen_march`, code only, in source order: every
@@ -5333,6 +5494,8 @@ fn the_ip_rules_are_commented_beside_the_march_the_composite_and_the_probe_looku
 const SUMS_WGSL: &str = concat!(
     include_str!("../shaders/fluid_reflection_sums.wgsl"),
     "\n",
+    include_str!("../shaders/reflection_probe_lobes.wgsl"),
+    "\n",
     include_str!("../shaders/fluid_reflection_lights.wgsl"),
 );
 
@@ -5420,24 +5583,40 @@ fn uses_name(code: &str, name: &str) -> bool {
     })
 }
 
-/// Of all production renderer code, only the fluid surface install binds the
-/// sums into group 4, only the sums pass dispatches over them, and only the
-/// probe resources name their group-4 binding. Their definitions in
-/// `fluid_reflection_probes.rs` do not count as uses.
+/// Of all production renderer code, only the fluid pass's group-4 entries
+/// and the glossy overlay's probe group (static world faces, bound by id 54)
+/// bind the level's sums into a render group, and only the fluid surface
+/// install builds the fluid group; only the sums pass dispatches over them,
+/// from one frame site; and only the fluid pass's probe bindings name their
+/// group-4 binding. Declarations do not count as uses.
 fn assert_the_sums_are_reached_only_by_their_owners() {
     let sources = production_renderer_sources();
     assert!(
         sources
             .iter()
-            .any(|(file, _)| file == "render/fluid_reflection_probes.rs"),
+            .any(|(file, _)| file == "render/reflection_probe_resources.rs"),
         "the scan reaches the renderer's sources"
     );
     for (name, owner) in [
-        ("sums_bind_group_entry", "render/fluid_surface/install.rs"),
-        ("sums_dispatch", "render/fluid_surface/probe_sums.rs"),
+        (
+            "sums_binding",
+            &[
+                "render/fluid_reflection_probes.rs",
+                "render/glossy_overlay/level.rs",
+            ][..],
+        ),
+        (
+            "fluid_probe_bind_group_entries",
+            &["render/fluid_surface/install.rs"],
+        ),
+        ("sums_dispatch", &["render/reflection_probe_sums.rs"]),
+        (
+            "record_reflection_probe_sums",
+            &["render/renderer_render_frame.rs"],
+        ),
         (
             "FLUID_PROBE_SUMS_BINDING",
-            "render/fluid_reflection_probes.rs",
+            &["render/fluid_reflection_probes.rs"],
         ),
     ] {
         let users: Vec<&str> = sources
@@ -5452,7 +5631,7 @@ fn assert_the_sums_are_reached_only_by_their_owners() {
             })
             .map(|(file, _)| file.as_str())
             .collect();
-        assert_eq!(users, [owner], "`{name}` is used only by {owner}");
+        assert_eq!(users, owner, "`{name}` is used only by {owner:?}");
     }
 }
 
@@ -5501,46 +5680,73 @@ fn the_sums_pass_records_after_the_flush_and_before_the_fluid_pass() {
         .contains(".write_animated_compose_descriptor(slot,")
     );
 
-    // The renderer: prefill, sums, fluid pass, in one recorded sequence.
+    // The renderer: prefill, pre-scene compute, sums, world forward, the
+    // fluid pass, in one recorded sequence (P5, P17, P20): every probe-term
+    // reader, the fluid pass and the glossy overlay after the skinned-mesh
+    // pass alike, reads this frame's sums.
     let scene_source = scene_source_with_fluid_passes();
     let scene = code_only(wgsl_fn(&scene_source, "record_scene_passes"));
     let prefill = scene.find("timing.begin_frame(encoder)").expect("prefill");
-    let sums = scene
-        .find(".record_probe_sums(encoder,")
-        .expect("the sums pass records into the frame's encoder");
+    let call = "self.record_reflection_probe_sums(encoder,render_world,\
+                frame_light_term_mask,frame_reflection_quality,);";
+    assert_eq!(scene.matches(call).count(), 1, "one sums call, the frame's");
+    assert_eq!(scene.matches("record_reflection_probe_sums(").count(), 1);
+    let sums = scene.find(call).expect("the sums recorder call");
+    let mut previous = prefill;
+    for (what, pass) in [
+        ("the pre-scene compute", "self.record_pre_scene_compute("),
+        ("the depth pre-pass", "self.record_depth_and_sdf_passes("),
+    ] {
+        let at = scene.find(pass).unwrap_or_else(|| panic!("{what} records"));
+        assert!(previous <= at && at < sums, "{what} precedes the sums");
+        previous = at;
+    }
+    let forward = scene
+        .find("self.record_world_forward_pass(")
+        .expect("world forward");
+    let skinned = scene
+        .find("self.record_skinned_mesh_pass(")
+        .expect("skinned-mesh pass");
     let fluid = scene
         .find("label:Some(\"FluidSurfacePass\")")
         .expect("fluid pass");
-    assert!(prefill < sums && sums < fluid, "prefill, sums, fluid");
-    assert_eq!(scene.matches(".record_probe_sums(").count(), 1);
+    assert!(
+        sums < forward && forward < skinned && skinned < fluid,
+        "sums, world forward, skinned meshes, fluid"
+    );
+    // The recorder dispatches once, into the frame's encoder, over the
+    // active level's probes and the frame's camera and SH groups.
+    let recorder = code_only(wgsl_fn(
+        include_str!("renderer_probe_sums_frame.rs"),
+        "record_reflection_probe_sums",
+    ));
+    assert!(recorder.starts_with(
+        "fnrecord_reflection_probe_sums(&self,encoder:&mutwgpu::CommandEncoder,\
+         render_world:bool,frame_light_term_mask:LightTermMask,\
+         frame_reflection_quality:FluidReflectionQuality,){"
+    ));
+    assert_eq!(
+        recorder
+            .matches(
+                "full.reflection_probe_sums.record(encoder,full.frame_timing.as_ref(),\
+                 &full.uniform_bind_group,self.level().sh_bind_group(),probes,);"
+            )
+            .count(),
+        1,
+        "{recorder}"
+    );
+    assert!(recorder.contains("letSome(probes)=self.reflection_probes()else{return;};"));
     // No other recorder dispatches it.
-    for (file, source) in [
-        (
-            "renderer_render_frame.rs",
-            include_str!("renderer_render_frame.rs"),
-        ),
-        ("renderer_capture.rs", include_str!("renderer_capture.rs")),
-        (
-            "renderer_pre_scene.rs",
-            include_str!("renderer_pre_scene.rs"),
-        ),
-        (
-            "renderer_world_less_capture.rs",
-            include_str!("renderer_world_less_capture.rs"),
-        ),
-        (
-            "planar_reflection/record.rs",
-            include_str!("planar_reflection/record.rs"),
-        ),
-    ] {
-        assert!(
-            !code_only(production(source)).contains("record_probe_sums("),
-            "{file} records the sums pass"
-        );
+    for (file, source) in production_renderer_sources() {
+        let code = code_only(&source);
+        let records = code.matches(".reflection_probe_sums.record(").count();
+        let expected = usize::from(file == "render/renderer_probe_sums_frame.rs");
+        assert_eq!(records, expected, "{file} records the sums pass");
     }
 
-    // Between the sums pass and the fluid pass: the SSR pass alone, and
-    // neither it nor anything else there writes a buffer.
+    // Between the sums pass and the fluid pass no command writes a
+    // descriptor or sample buffer: queue writes there land ahead of the
+    // submission, and nothing there records a copy, clear or compute pass.
     let between = &scene[sums..fluid];
     let reflection_source = include_str!("fluid_surface/reflection_pass.rs");
     let reflection_recorder = code_only(wgsl_fn(reflection_source, "record_fluid_reflection_pass"));
@@ -5551,7 +5757,6 @@ fn the_sums_pass_records_after_the_flush_and_before_the_fluid_pass() {
         ("the SSR draws", reflection_draws.as_str()),
     ] {
         for write in [
-            "write_buffer",
             "write_descriptor",
             "upload_descriptors_if_dirty",
             "set_active(",
@@ -5563,6 +5768,15 @@ fn the_sums_pass_records_after_the_flush_and_before_the_fluid_pass() {
         ] {
             assert!(!code.contains(write), "{what} must not `{write}`");
         }
+    }
+    for (what, code) in [
+        ("the SSR recorder", reflection_recorder.as_str()),
+        ("the SSR draws", reflection_draws.as_str()),
+    ] {
+        assert!(
+            !code.contains("write_buffer"),
+            "{what} must not write a buffer"
+        );
     }
     assert!(between.contains("self.record_fluid_reflection_pass(encoder,"));
 }
@@ -5578,12 +5792,9 @@ fn the_sums_pass_owns_a_labelled_timing_pair() {
         labels
             .contains("pass_labels[TIMING_PAIR_FLUID_REFLECTION_SUMS] = \"fluid_reflection_sums\"")
     );
-    let record = code_only(wgsl_fn(
-        include_str!("fluid_surface/probe_sums.rs"),
-        "record",
-    ));
+    let record = code_only(wgsl_fn(include_str!("reflection_probe_sums.rs"), "record"));
     assert!(
-        record.contains("label:Some(\"FluidReflectionSumsPass\"),"),
+        record.contains("label:Some(\"ReflectionProbeSumsPass\"),"),
         "{record}"
     );
     assert!(
@@ -5595,8 +5806,8 @@ fn the_sums_pass_owns_a_labelled_timing_pair() {
     );
     assert_eq!(record.matches("dispatch_workgroups(").count(), 1);
     // The frame hands it the frame's timing, the one the prefill wrote.
-    let frame = code_only(include_str!("renderer_fluid_frame.rs"));
-    assert!(frame.contains(".record_probe_sums(encoder,full.frame_timing.as_ref(),"));
+    let frame = code_only(include_str!("renderer_probe_sums_frame.rs"));
+    assert!(frame.contains(".reflection_probe_sums.record(encoder,full.frame_timing.as_ref(),"));
 }
 
 // Acceptance row 4, pin P6 by source: the dispatch condition is the fluid
@@ -5633,13 +5844,44 @@ fn the_sums_dispatch_reads_the_fluid_passs_own_reflecting_draws() {
     assert!(code_only(wgsl_fn(source, "record_draws")).contains(
         "for(slot,variant)ininstalled.slots.frame_draws(light_term_mask.bits(),quality){"
     ));
-    // The frame gates the dispatch on that condition alone, inside the fluid
-    // pass's own gate.
-    let block = code_only(&fluid_pass_block());
-    assert!(block.contains(
-        "ifself.full().fluid_surface.has_probe_term_draws(self.fluid_surfaces(),\
-         frame_light_term_mask,frame_reflection_quality,)&&letSome(installed)=self.fluid_surfaces(){"
-    ));
+    // The frame gates the dispatch on a world frame with that condition or
+    // the glossy overlay's probe-term draws, one function over both inputs;
+    // the fluid pass's own block no longer dispatches.
+    let recorder_source = include_str!("renderer_probe_sums_frame.rs");
+    let recorder = code_only(wgsl_fn(recorder_source, "record_reflection_probe_sums"));
+    assert!(
+        recorder.contains(
+            "if!render_world{return;}\
+             letfluid_probe_term_draws=self.full().fluid_surface.has_probe_term_draws(\
+             self.fluid_surfaces(),frame_light_term_mask,frame_reflection_quality,);\
+             letoverlay_probe_term_draws=self.glossy_overlay_probe_term_draws(\
+             render_world,frame_light_term_mask,frame_reflection_quality,);\
+             if!frame_dispatches_probe_sums(fluid_probe_term_draws,\
+             overlay_probe_term_draws){return;}"
+        ),
+        "{recorder}"
+    );
+    for screen_space in ["runs_screen_space", "has_reflecting_draws", "planar_route"] {
+        assert!(
+            !recorder.contains(screen_space),
+            "the sums gate reads `{screen_space}`"
+        );
+    }
+    assert_eq!(
+        code_only(wgsl_fn(recorder_source, "frame_dispatches_probe_sums")),
+        "fnframe_dispatches_probe_sums(fluid_probe_term_draws:bool,\
+         overlay_probe_term_draws:bool,)->bool{fluid_probe_term_draws||overlay_probe_term_draws}"
+    );
+    // The overlay's input is its own draw gate, the one the overlay pass
+    // records by (`overlay_gate_needs_tier_mask_ready_level_and_a_glossy_range`).
+    let overlay_source = include_str!("renderer_glossy_frame.rs");
+    assert!(
+        code_only(wgsl_fn(overlay_source, "record_glossy_overlay_pass")).contains(
+            "if!self.glossy_overlay_probe_term_draws(render_world,frame_light_term_mask,\
+             frame_reflection_quality,){return;}"
+        )
+    );
+    assert!(!code_only(&fluid_pass_block()).contains("probe_term_draws"));
 }
 
 // Acceptance row 5, IP fences (owner review to change, rendering_pipeline.md
@@ -5649,38 +5891,39 @@ fn the_sums_dispatch_reads_the_fluid_passs_own_reflecting_draws() {
 // written once at install.
 #[test]
 fn the_sums_ip_fences_hold() {
-    use crate::render::fluid_reflection_probes::{
-        FLUID_SUMS_PASS_SUMS_BINDING, fluid_sums_pass_bind_group_layout_entries,
+    use crate::render::reflection_probe_resources::{
+        PROBE_SUMS_PASS_SUMS_BINDING, probe_sums_pass_bind_group_layout_entries,
     };
     // One writable binding in the sums pass's layout: the sums.
-    let writable: Vec<(usize, u32)> = probe_sums::fluid_sums_pipeline_bind_group_layout_entries()
-        .iter()
-        .enumerate()
-        .flat_map(|(group, entries)| {
-            entries
-                .iter()
-                .filter(|entry| match entry.ty {
-                    wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only },
-                        ..
-                    } => !read_only,
-                    wgpu::BindingType::StorageTexture { access, .. } => {
-                        access != wgpu::StorageTextureAccess::ReadOnly
-                    }
-                    _ => false,
-                })
-                .map(move |entry| (group, entry.binding))
-                .collect::<Vec<_>>()
-        })
-        .collect();
+    let writable: Vec<(usize, u32)> =
+        reflection_probe_sums::probe_sums_pipeline_bind_group_layout_entries()
+            .iter()
+            .enumerate()
+            .flat_map(|(group, entries)| {
+                entries
+                    .iter()
+                    .filter(|entry| match entry.ty {
+                        wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only },
+                            ..
+                        } => !read_only,
+                        wgpu::BindingType::StorageTexture { access, .. } => {
+                            access != wgpu::StorageTextureAccess::ReadOnly
+                        }
+                        _ => false,
+                    })
+                    .map(move |entry| (group, entry.binding))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
     assert_eq!(
         writable,
         [(
-            probe_sums::FLUID_SUMS_OWN_GROUP as usize,
-            FLUID_SUMS_PASS_SUMS_BINDING
+            reflection_probe_sums::PROBE_SUMS_OWN_GROUP as usize,
+            PROBE_SUMS_PASS_SUMS_BINDING
         )]
     );
-    assert_eq!(fluid_sums_pass_bind_group_layout_entries().len(), 2);
+    assert_eq!(probe_sums_pass_bind_group_layout_entries().len(), 2);
     let sums_code = code_only(SUMS_WGSL);
     assert_eq!(sums_code.matches("read_write").count(), 1, "{sums_code}");
     assert!(sums_code.contains("var<storage,read_write>fluid_probe_sums:FluidProbeSums;"));
@@ -5688,8 +5931,8 @@ fn the_sums_ip_fences_hold() {
     assert!(!sums_code.contains("texture_storage"));
 
     // The capture's records: arrays sampled and copied into only, the share
-    // table uniform-only.
-    let probes = code_only(production(include_str!("fluid_reflection_probes.rs")));
+    // table uniform-only, every one written once at creation and never again.
+    let probes = code_only(production(include_str!("reflection_probe_resources.rs")));
     assert!(
         probes
             .contains("usage:wgpu::TextureUsages::TEXTURE_BINDING|wgpu::TextureUsages::COPY_DST,")
@@ -5698,7 +5941,7 @@ fn the_sums_ip_fences_hold() {
         assert!(!probes.contains(widened), "a probe array gains {widened}");
     }
     assert!(probes.contains(
-        "label:Some(\"FluidReflectionProbeTable\"),contents:&pack_probe_table(section),\
+        "label:Some(\"ReflectionProbeTable\"),contents:&pack_probe_table(section),\
          usage:wgpu::BufferUsages::UNIFORM,"
     ));
     assert_eq!(
@@ -5706,9 +5949,23 @@ fn the_sums_ip_fences_hold() {
         2,
         "one array usage"
     );
+    for write in [
+        "write_buffer",
+        "write_texture",
+        "copy_buffer_to",
+        "copy_texture_to",
+        "clear_buffer",
+        "clear_texture",
+    ] {
+        assert!(
+            !probes.contains(write),
+            "the probe records `{write}` after creation"
+        );
+    }
 
-    // Of the shaders, only the fluid surface module and the sums pass name
-    // the sums; never the SSR, planar, mover, model or world shaders.
+    // Of the shaders, only the fluid surface module, the sums pass and the
+    // glossy overlay (static world faces) name the sums; never the SSR,
+    // planar, mover, model or forward world shaders.
     let shaders = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shaders");
     let mut naming: Vec<String> = std::fs::read_dir(&shaders)
         .expect("shader directory")
@@ -5727,6 +5984,7 @@ fn the_sums_ip_fences_hold() {
             "fluid_reflection.wgsl",
             "fluid_reflection_sums.wgsl",
             "fluid_surface.wgsl",
+            "glossy_overlay.wgsl",
         ]
     );
     // Of the render layouts, only fluid group 4 holds the sums: the SSR
@@ -5737,8 +5995,8 @@ fn the_sums_ip_fences_hold() {
         .collect();
     assert_eq!(ssr_probe_group, [0, 2]);
     // No other renderer source reaches the sums: of all production code,
-    // only the fluid surface install binds them and only the sums pass
-    // dispatches over them.
+    // only the fluid pass's group 4 binds them and only the sums pass
+    // dispatches over them, from the frame's one site.
     assert_the_sums_are_reached_only_by_their_owners();
 
     // The fluid vertex streams: vertex-only, written once at install.
@@ -5752,7 +6010,7 @@ fn the_sums_ip_fences_hold() {
         include_str!("fluid_surface/install.rs"),
         include_str!("fluid_surface/reflection_pass.rs"),
         include_str!("fluid_surface/planar_routing.rs"),
-        include_str!("fluid_surface/probe_sums.rs"),
+        include_str!("reflection_probe_sums.rs"),
         include_str!("renderer_fluid_frame.rs"),
     ];
     for source in renderer_sources {
@@ -5830,8 +6088,9 @@ fn the_sums_pass_light_evaluation_reads_no_promotion_mask_or_sh() {
 
     // `uniforms.time` at the offset the frame's group-0 upload writes it,
     // the fluid shader's.
-    let sums_module = naga::front::wgsl::parse_str(probe_sums::composed_sums_shader_source())
-        .expect("sums shader parses");
+    let sums_module =
+        naga::front::wgsl::parse_str(reflection_probe_sums::composed_sums_shader_source())
+            .expect("sums shader parses");
     let fluid_module = validated_module();
     assert_eq!(
         struct_member_offsets(&sums_module, "Uniforms"),
@@ -5872,8 +6131,8 @@ fn the_sums_pass_and_blend_wgsl_match_the_cpu_references() {
         (
             SUMS_WGSL,
             "fluid_reflection_probe_sums",
-            "fnfluid_reflection_probe_sums(probe:u32)->array<vec3<f32>,5>{\
-             varsums=array<vec3<f32>,5>();\
+            "fnfluid_reflection_probe_sums(probe:u32)->array<vec3<f32>,6>{\
+             varsums=array<vec3<f32>,6>();\
              for(vari:u32=0u;i<FLUID_REFLECTION_LIGHTS_PER_PROBE;i=i+1u){\
              letlight=fluid_probes.probes[probe].lights[i];\
              if!fluid_reflection_light_present(light.roster_index){continue;}\
@@ -5884,7 +6143,8 @@ fn the_sums_pass_and_blend_wgsl_match_the_cpu_references() {
              sums[1]=sums[1]+fluid_reflection_unpack_unorm10x3(light.shares[0].y)*change;\
              sums[2]=sums[2]+fluid_reflection_unpack_unorm10x3(light.shares[0].z)*change;\
              sums[3]=sums[3]+fluid_reflection_unpack_unorm10x3(light.shares[0].w)*change;\
-             sums[4]=sums[4]+fluid_reflection_unpack_unorm10x3(light.shares[1].x)*change;}\
+             sums[4]=sums[4]+fluid_reflection_unpack_unorm10x3(light.shares[1].x)*change;\
+             sums[5]=sums[5]+fluid_reflection_unpack_unorm10x3(light.shares[1].y)*change;}\
              returnsums;}",
             "reflection_probe_sums",
             "fnreflection_probe_sums(probe_lights:&[FluidProbeLightGpu;\
@@ -5911,6 +6171,7 @@ fn the_sums_pass_and_blend_wgsl_match_the_cpu_references() {
              ratio=ratio+fluid_probe_sums.lobes[base+2u].xyz*lobes[2];\
              ratio=ratio+fluid_probe_sums.lobes[base+3u].xyz*lobes[3];\
              ratio=ratio+fluid_probe_sums.lobes[base+4u].xyz*lobes[4];\
+             ratio=ratio+fluid_probe_sums.lobes[base+5u].xyz*lobes[5];\
              returnmax(ratio,vec3<f32>(0.0));}",
             "reflection_ratio_from_sums",
             "fnreflection_ratio_from_sums(sums:&[Vec3;REFLECTION_PROBE_LOBE_COUNT],\
@@ -5986,11 +6247,13 @@ fn the_sums_pass_and_blend_wgsl_match_the_cpu_references() {
 }
 
 // Acceptance row 11: the sums pipeline builds at full init only; the sums and
-// the sums pass's group live in the level's probe resources, created only by
-// the fluid surface build; no pass or renderer-lifetime state holds them.
+// the sums pass's group live in the level's probe records, created only by the
+// level's probe build, which a level set's build and the main-thread oracle
+// both call; no pass or renderer-lifetime state holds them. The fluid install
+// borrows them, building only its dummies for a level with none.
 #[test]
 fn the_sums_live_with_the_level_and_their_pipeline_builds_at_full_init() {
-    let sums_pass = production(include_str!("fluid_surface/probe_sums.rs"));
+    let sums_pass = production(include_str!("reflection_probe_sums.rs"));
     let code = code_only(sums_pass);
     // Through the creation chokepoint (`gpu_create.rs`), so creation counts
     // see it.
@@ -6010,7 +6273,7 @@ fn the_sums_live_with_the_level_and_their_pipeline_builds_at_full_init() {
     // The pass holds its pipeline and layout, never the sums or a group.
     let pass_struct = {
         let start = code
-            .find("pub(crate)structFluidProbeSumsPass{")
+            .find("pub(crate)structReflectionProbeSumsPass{")
             .expect("sums pass struct");
         &code[start..start + code[start..].find('}').expect("struct end")]
     };
@@ -6021,19 +6284,34 @@ fn the_sums_live_with_the_level_and_their_pipeline_builds_at_full_init() {
     ] {
         assert!(!pass_struct.contains(held), "the sums pass holds `{held}`");
     }
-    let fluid = production(include_str!("fluid_surface.rs"));
-    let fluid_code = code_only(fluid);
-    assert_eq!(fluid_code.matches("FluidProbeSumsPass::new(").count(), 1);
-    assert!(
-        code_only(wgsl_fn(fluid, "new"))
-            .contains("probe_sums::FluidProbeSumsPass::new(device,camera_bgl,sh_bgl)")
-    );
+    // Built once, at full init, beside the fluid pass.
     let full_init = code_only(include_str!("renderer_full_init.rs"));
+    assert_eq!(
+        full_init
+            .matches(
+                "reflection_probe_sums::ReflectionProbeSumsPass::new(device,\
+                 &uniform_bind_group_layout,&sh_volume_resources.bind_group_layout,);"
+            )
+            .count(),
+        1
+    );
     assert!(full_init.contains("fluid_surface::FluidSurfacePass::new("));
+    for (file, source) in production_renderer_sources() {
+        let builds = code_only(&source)
+            .matches("ReflectionProbeSumsPass::new(")
+            .count();
+        let expected = usize::from(file == "render/renderer_full_init.rs");
+        assert_eq!(builds, expected, "{file} builds the sums pass");
+    }
+    // Neither the frame nor an install compiles a pipeline.
     for (file, source) in [
         (
             "renderer_render_frame.rs",
             include_str!("renderer_render_frame.rs"),
+        ),
+        (
+            "renderer_probe_sums_frame.rs",
+            include_str!("renderer_probe_sums_frame.rs"),
         ),
         (
             "renderer_fluid_frame.rs",
@@ -6045,70 +6323,123 @@ fn the_sums_live_with_the_level_and_their_pipeline_builds_at_full_init() {
             "fluid_surface/install.rs",
             include_str!("fluid_surface/install.rs"),
         ),
+        (
+            "reflection_probe_resources.rs",
+            include_str!("reflection_probe_resources.rs"),
+        ),
     ] {
         let code = code_only(production(source));
         for build in [
             "FluidSurfacePass::new(",
-            "FluidProbeSumsPass::new(",
+            "new_compute_pipeline(",
             "create_compute_pipeline(",
         ] {
             assert!(!code.contains(build), "{file} builds `{build}`");
         }
     }
 
-    // The sums buffer: created once, in the probe resources' constructor,
-    // which only the fluid surface build calls.
-    let probes = production(include_str!("fluid_reflection_probes.rs"));
+    // The sums buffer and the sums pass's group: created in the probe
+    // records' one constructor body, which the level's probe build alone
+    // calls for real probes and the fluid install alone calls for dummies.
+    let probes = production(include_str!("reflection_probe_resources.rs"));
     let probes_code = code_only(probes);
-    assert_eq!(
-        probes_code
-            .matches("label:Some(\"FluidReflectionProbeSums\"),")
-            .count(),
-        1
-    );
-    assert!(
-        code_only(wgsl_fn(probes, "new")).contains("label:Some(\"FluidReflectionProbeSums\"),")
-    );
-    assert!(
-        code_only(wgsl_fn(probes, "new"))
-            .contains("label:Some(\"FluidReflectionSumsPassBindGroup\"),")
-    );
-    let install = production(include_str!("fluid_surface/install.rs"));
-    assert!(code_only(wgsl_fn(install, "build_surfaces")).contains("FluidProbeResources::new("));
-    for (file, source) in [
-        ("fluid_surface.rs", fluid),
-        (
-            "fluid_surface/reflection_pass.rs",
-            production(include_str!("fluid_surface/reflection_pass.rs")),
-        ),
-        (
-            "fluid_surface/planar_routing.rs",
-            production(include_str!("fluid_surface/planar_routing.rs")),
-        ),
-        ("fluid_surface/probe_sums.rs", sums_pass),
-        (
-            "renderer_fluid_frame.rs",
-            include_str!("renderer_fluid_frame.rs"),
-        ),
-        ("level_build.rs", production(include_str!("level_build.rs"))),
+    let create = code_only(wgsl_fn(probes, "create"));
+    for label in [
+        "label:Some(\"ReflectionProbeSums\"),",
+        "label:Some(\"ReflectionProbeSumsPassBindGroup\"),",
     ] {
-        assert!(
-            !code_only(source).contains("FluidProbeResources::new("),
-            "{file}"
-        );
+        assert_eq!(probes_code.matches(label).count(), 1, "{label}");
+        assert!(create.contains(label), "{label}");
     }
-    // The fluid pass's own state names no sums buffer or group.
+    assert_eq!(probes_code.matches("Self::create(").count(), 2);
+    assert!(code_only(wgsl_fn(probes, "build")).contains(
+        "letprobes=ReflectionProbeResources::new(device,queue,section,&self.sums_layout);"
+    ));
+    assert!(code_only(wgsl_fn(probes, "build")).starts_with(
+        "fnbuild(&self,device:&wgpu::Device,\
+         queue:&dyncrate::render::queue_writes::QueueWrites,\
+         section:Option<&ReflectionProbesSection>,)->Option<ReflectionProbeResources>{\
+         letsection=level_probe_section(section)?;"
+    ));
+    let install = production(include_str!("fluid_surface/install.rs"));
+    assert!(
+        code_only(wgsl_fn(install, "build_surfaces"))
+            .contains("probes.is_none().then(||ReflectionProbeResources::dummies(device,queue));")
+    );
+    for (file, source) in production_renderer_sources() {
+        let code = code_only(&source);
+        let real = code.matches("ReflectionProbeResources::new(").count();
+        let dummies = code.matches("ReflectionProbeResources::dummies(").count();
+        let builds = code.matches(".level_layout().build(").count()
+            + code.matches(".reflection_probes.build(").count();
+        assert_eq!(
+            real,
+            usize::from(file == "render/reflection_probe_resources.rs"),
+            "{file} constructs probe records"
+        );
+        assert_eq!(
+            dummies,
+            usize::from(file == "render/fluid_surface/install.rs"),
+            "{file} constructs dummies"
+        );
+        // The level's probe build: the set build and the oracle's install.
+        let expected_builds =
+            usize::from(file == "render/level_build.rs" || file == "render/fluid_surface.rs");
+        assert_eq!(builds, expected_builds, "{file} builds a level's probes");
+    }
+    assert!(
+        code_only(wgsl_fn(
+            production(include_str!("level_build.rs")),
+            "build_geometry_set"
+        ))
+        .contains(
+            "set.reflection_probes=context.reflection_probes.build(&upload.device,\
+                 &upload.writes,extras.reflection_probes"
+        )
+    );
+    assert!(
+        code_only(wgsl_fn(
+            include_str!("fluid_surface.rs"),
+            "install_fluid_surfaces"
+        ))
+        .contains(
+            "level.reflection_probes=full.reflection_probe_sums.level_layout().build(device,\
+             queue.raw(),reflection_probes"
+        )
+    );
+    // The fluid pass's own state names no sums pass, buffer or group, and
+    // the fluid install holds only its dummies.
+    let fluid_code = code_only(production(include_str!("fluid_surface.rs")));
     let pass_struct = {
         let start = fluid_code
             .find("pub(crate)structFluidSurfacePass{")
             .expect("pass struct");
         &fluid_code[start..start + fluid_code[start..].find('}').expect("struct end")]
     };
-    assert!(pass_struct.contains("sums:probe_sums::FluidProbeSumsPass,"));
-    assert!(!pass_struct.contains("sums_bind_group"));
-    assert!(!pass_struct.contains("sums_buffer"));
+    for held in ["sums", "ReflectionProbe"] {
+        assert!(!pass_struct.contains(held), "the fluid pass holds `{held}`");
+    }
+    let install_code = code_only(install);
+    let installed_struct = {
+        let start = install_code
+            .find("pub(crate)structInstalledFluidSurfaces{")
+            .expect("installed struct");
+        &install_code[start..start + install_code[start..].find('}').expect("struct end")]
+    };
+    assert!(installed_struct.contains("_probe_dummies:Option<ReflectionProbeResources>,"));
+    assert_eq!(
+        installed_struct.matches("ReflectionProbeResources").count(),
+        1
+    );
+    // The level set owns the probe records.
+    let set = code_only(include_str!("level_resource_set.rs"));
+    assert!(set.contains(
+        "pub(incrate::render)reflection_probes:\
+         Option<reflection_probe_resources::ReflectionProbeResources>,"
+    ));
 
     // Across the whole renderer tree, not a hand-picked list: only the
-    // install binds the sums and only the sums pass dispatches over them.
+    // fluid pass's group 4 binds the sums and only the sums pass dispatches
+    // over them.
     assert_the_sums_are_reached_only_by_their_owners();
 }

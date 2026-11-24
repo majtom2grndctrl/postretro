@@ -44,6 +44,11 @@ pub struct LevelGeometry<'a> {
     /// `vertices.len()` (a level with no member face hands none) installs as
     /// all-zero: every face presents its texture strength alone.
     pub vertex_emissive_volumes: &'a [u32],
+    /// Id 54, whose world binding list stamps the glossy overlay's
+    /// per-vertex probe index stream at install. `None` for a level without
+    /// probes; a section binding no world face builds no stream.
+    pub reflection_probes:
+        Option<&'a postretro_level_format::reflection_probes::ReflectionProbesSection>,
     /// Id 60's volumes, whose no-script glow seeds the volume table at
     /// install; the frame's volume bridge owns every later write.
     pub emissive_volumes: &'a [postretro_level_format::emissive::EmissiveVolumeRecord],

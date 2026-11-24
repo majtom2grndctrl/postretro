@@ -7,6 +7,7 @@ use crate::render::gpu_create::GpuCreate;
 
 pub(crate) struct RendererPipelines {
     pub pipeline: wgpu::RenderPipeline,
+    pub forward_static_diffuse: ForwardStaticDiffusePipelines,
     pub wireframe_cull_status_layout: wgpu::BindGroupLayout,
     pub wireframe_cull_status_pipeline: wgpu::RenderPipeline,
     pub wireframe_visible_pipeline: wgpu::RenderPipeline,
@@ -60,124 +61,23 @@ pub(crate) fn build_renderer_pipelines(
         source: wgpu::ShaderSource::Wgsl(forward_source),
     });
 
-    let pipeline = device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("Textured Pipeline"),
-        layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &shader,
-            entry_point: Some("vs_main"),
-            buffers: &[
-                Some(wgpu::VertexBufferLayout {
-                    array_stride: postretro_render_data::geometry::WorldVertex::STRIDE
-                        as wgpu::BufferAddress,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        // position: vec3<f32> at offset 0
-                        wgpu::VertexAttribute {
-                            offset: 0,
-                            shader_location: 0,
-                            format: wgpu::VertexFormat::Float32x3,
-                        },
-                        // base_uv: vec2<f32> at offset 12
-                        wgpu::VertexAttribute {
-                            offset: 12,
-                            shader_location: 1,
-                            format: wgpu::VertexFormat::Float32x2,
-                        },
-                        // normal_oct: u16x2 at offset 20
-                        wgpu::VertexAttribute {
-                            offset: 20,
-                            shader_location: 2,
-                            format: wgpu::VertexFormat::Uint16x2,
-                        },
-                        // tangent_packed: u16x2 at offset 24
-                        wgpu::VertexAttribute {
-                            offset: 24,
-                            shader_location: 3,
-                            format: wgpu::VertexFormat::Uint16x2,
-                        },
-                        // lightmap_uv: u16x2 at offset 28 (block-local unorm UV)
-                        wgpu::VertexAttribute {
-                            offset: 28,
-                            shader_location: 4,
-                            format: wgpu::VertexFormat::Uint16x2,
-                        },
-                        // (lightmap_block, animated_block): u16x2 at offset 32 —
-                        // the vertex's lightmap cell block id + 1 and the face's
-                        // animated block id + 1 (0 = none for both).
-                        wgpu::VertexAttribute {
-                            offset: 32,
-                            shader_location: 5,
-                            format: wgpu::VertexFormat::Uint16x2,
-                        },
-                    ],
-                }),
-                // Slot 1: the forward-only owner stream, one entry per world
-                // vertex (`spec_owner_buffer`). Its own buffer leaves the 36-byte
-                // world vertex, and every other pipeline reading it, unchanged.
-                Some(wgpu::VertexBufferLayout {
-                    array_stride: SPEC_OWNER_STRIDE as wgpu::BufferAddress,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttribute {
-                            offset: 0,
-                            shader_location: 6,
-                            format: wgpu::VertexFormat::Uint16x4,
-                        },
-                        // The face's lightmap-to-mask texel offset, two
-                        // packed i16s the shader sign-extends.
-                        wgpu::VertexAttribute {
-                            offset: SPEC_OWNER_MASK_OFFSET_AT as wgpu::BufferAddress,
-                            shader_location: 7,
-                            format: wgpu::VertexFormat::Uint32,
-                        },
-                    ],
-                }),
-                // Slot 2: the forward-only emissive volume id, one `Uint32`
-                // per world vertex (volume index + 1, 0 = none). Depth,
-                // mover and fluid pipelines never bind it.
-                Some(wgpu::VertexBufferLayout {
-                    array_stride: super::emissive_volumes::EMISSIVE_VOLUME_STRIDE
-                        as wgpu::BufferAddress,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[wgpu::VertexAttribute {
-                        offset: 0,
-                        shader_location: super::emissive_volumes::EMISSIVE_VOLUME_SHADER_LOCATION,
-                        format: wgpu::VertexFormat::Uint32,
-                    }],
-                }),
-            ],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        },
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: Some(wgpu::Face::Back),
-            ..Default::default()
-        },
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: DEPTH_FORMAT,
-            // Pre-pass filled the buffer; Equal test → one shade per pixel.
-            // Write disabled to skip redundant rewrite of pre-pass values.
-            depth_write_enabled: Some(false),
-            depth_compare: Some(wgpu::CompareFunction::Equal),
-            stencil: wgpu::StencilState::default(),
-            bias: wgpu::DepthBiasState::default(),
-        }),
-        multisample: wgpu::MultisampleState::default(),
-        fragment: Some(wgpu::FragmentState {
-            module: &shader,
-            entry_point: Some("fs_main"),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: SCENE_COLOR_FORMAT,
-                blend: None,
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        }),
-        multiview_mask: None,
-        cache: None,
+    let scene_colour_target = Some(wgpu::ColorTargetState {
+        format: SCENE_COLOR_FORMAT,
+        blend: None,
+        write_mask: wgpu::ColorWrites::ALL,
     });
+    // The one-output form: every level without glossy faces, reflection
+    // quality off, and the planar mirror's world forward.
+    let pipeline = forward_pipeline(
+        device,
+        &pipeline_layout,
+        &shader,
+        "Textured Pipeline",
+        "fs_main",
+        std::slice::from_ref(&scene_colour_target),
+    );
+    let forward_static_diffuse =
+        ForwardStaticDiffusePipelines::new(device, &pipeline_layout, &shader, &scene_colour_target);
 
     // Wireframe: group 0 = uniforms, group 1 = per-leaf cull status from compute shader.
     let wireframe_cull_status_layout =
@@ -487,6 +387,7 @@ pub(crate) fn build_renderer_pipelines(
 
     RendererPipelines {
         pipeline,
+        forward_static_diffuse,
         wireframe_cull_status_layout,
         wireframe_cull_status_pipeline,
         wireframe_visible_pipeline,

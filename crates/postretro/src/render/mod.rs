@@ -29,12 +29,13 @@ pub use postretro_renderer::{
     LevelGeometryParts, LevelGeometryRangeError, LevelInstallError, LevelSetBuilder,
     LevelSetBuilderProbe, LevelSetId, LightTermMask, LightmapResidencyReport, LocatorDiagnostics,
     ModelCacheCommit, ModelCacheHandle, ModelCacheOffer, ModelContentKey, ModelEntryIdentity,
-    MoverOccluderAabb, MoverTravel, PendingLevelSet, PortalOverlayState, PresentHandle, Renderer,
-    ResidencyAllocation, ResidencyAllocationShape, ResidencyAllocationState, ResidencySource,
-    SPLASH_CLEAR_COLOR, SdfShadowMode, ShResidencyReport, ShSampleRegion, ShSampleRegionSets,
-    ShStreamingLifecycleSummary, SpatialCellSetDiagnostics, SpatialDiagnostics,
-    SpriteCollectionRegistration, StreamingReachLever, WorldWireframeMode, level_world_to_geometry,
-    lightmap_family_inputs, sprite_specular_exponent_is_valid, validate_level_geometry_ranges,
+    MoverOccluderAabb, MoverTravel, PendingLevelSet, PortalOverlayState, PresentHandle,
+    ReflectionProbeResidencyReport, Renderer, ResidencyAllocation, ResidencyAllocationShape,
+    ResidencyAllocationState, ResidencySource, SPLASH_CLEAR_COLOR, SdfShadowMode,
+    ShResidencyReport, ShSampleRegion, ShSampleRegionSets, ShStreamingLifecycleSummary,
+    SpatialCellSetDiagnostics, SpatialDiagnostics, SpriteCollectionRegistration,
+    StreamingReachLever, WorldWireframeMode, level_world_to_geometry, lightmap_family_inputs,
+    sprite_specular_exponent_is_valid, validate_level_geometry_ranges,
 };
 
 #[cfg(feature = "dev-tools")]

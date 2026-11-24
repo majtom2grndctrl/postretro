@@ -28,7 +28,7 @@ pub(crate) fn try_init_gpu_with_limits(required_limits: wgpu::Limits) -> Option<
     try_init_gpu_with(wgpu::Features::empty(), required_limits)
 }
 
-fn try_init_gpu_with(
+pub(crate) fn try_init_gpu_with(
     required_features: wgpu::Features,
     required_limits: wgpu::Limits,
 ) -> Option<GpuCtx> {

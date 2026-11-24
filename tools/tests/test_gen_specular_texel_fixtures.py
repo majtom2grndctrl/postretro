@@ -108,6 +108,36 @@ TINTED_P_MAP = [
 # alternates by cell column, mortar included.
 TINTED_T_MAP = ["TTTTUUUUTTTTUUUU"] * 16
 
+# concrete_satin regions: S seam, P panel. The seam runs along row 0 and
+# column 0.
+SATIN_MAP = ["S" * 16] + ["S" + "P" * 15] * 15
+
+# metal_polished and metal_fade_band diffuse: A even cell, B odd cell, by
+# 4-texel cell.
+POLISHED_MAP = [
+    "AAAABBBBAAAABBBB",
+    "AAAABBBBAAAABBBB",
+    "AAAABBBBAAAABBBB",
+    "AAAABBBBAAAABBBB",
+    "BBBBAAAABBBBAAAA",
+    "BBBBAAAABBBBAAAA",
+    "BBBBAAAABBBBAAAA",
+    "BBBBAAAABBBBAAAA",
+    "AAAABBBBAAAABBBB",
+    "AAAABBBBAAAABBBB",
+    "AAAABBBBAAAABBBB",
+    "AAAABBBBAAAABBBB",
+    "BBBBAAAABBBBAAAA",
+    "BBBBAAAABBBBAAAA",
+    "BBBBAAAABBBBAAAA",
+    "BBBBAAAABBBBAAAA",
+]
+
+# concrete_tile_grout regions: G grout, T tile, by 8-texel cell.
+TILE_ROW_GROUT = "G" * 16
+TILE_ROW_TILE = "GTTTTTTTGTTTTTTT"
+TILE_MAP = [TILE_ROW_GROUT if y % 8 == 0 else TILE_ROW_TILE for y in range(16)]
+
 
 def from_map(region_map, values):
     return [[values[c] for c in row] for row in region_map]
@@ -155,7 +185,39 @@ EXPECTED = {
         from_map(TINTED_P_MAP, {"M": 30, "S": 235, "B": 120}),
     ),
     "concrete_carved_tinted_gloss_t.png": ("grey", from_map(TINTED_T_MAP, {"T": 255, "U": 0})),
+    "concrete_satin.png": (
+        "rgb",
+        from_map(SATIN_MAP, {"S": (104, 98, 90), "P": (168, 158, 142)}),
+    ),
+    "concrete_satin_s.png": ("grey", uniform(255)),
+    "concrete_satin_p.png": ("grey", uniform(64)),
+    "metal_polished.png": (
+        "rgb",
+        from_map(POLISHED_MAP, {"A": (64, 68, 74), "B": (80, 84, 90)}),
+    ),
+    "metal_polished_s.png": ("grey", uniform(255)),
+    "metal_polished_p.png": ("grey", uniform(200)),
+    "metal_polished_t.png": ("grey", uniform(0)),
+    "metal_fade_band.png": (
+        "rgb",
+        from_map(POLISHED_MAP, {"A": (64, 68, 74), "B": (80, 84, 90)}),
+    ),
+    "metal_fade_band_s.png": ("grey", uniform(255)),
+    "metal_fade_band_p.png": ("grey", uniform(97)),
+    "metal_fade_band_t.png": ("grey", uniform(0)),
+    "concrete_tile_grout.png": (
+        "rgb",
+        from_map(TILE_MAP, {"G": (150, 146, 138), "T": (36, 44, 60)}),
+    ),
+    "concrete_tile_grout_s.png": ("grey", from_map(TILE_MAP, {"G": 0, "T": 255})),
+    "concrete_tile_grout_p.png": ("grey", uniform(200)),
+    "concrete_tile_grout_t.png": ("grey", uniform(0)),
 }
+
+# The reflection floor and the end of its fade band, as exponents
+# (level-format `glossy_opt_in.rs`).
+REFLECTION_FLOOR_EXPONENT = 8.0
+FULL_WEIGHT_EXPONENT = 16.0
 
 
 # --- An independent PNG reader. ---------------------------------------------
@@ -253,6 +315,10 @@ class GenSpecularTexelFixturesTest(unittest.TestCase):
             "concrete_carved_gloss",
             "glass_gloss_tiles",
             "concrete_carved_tinted_gloss",
+            "concrete_satin",
+            "metal_polished",
+            "metal_fade_band",
+            "concrete_tile_grout",
         )
         present = sorted(
             p.name for p in COMMITTED.iterdir() if p.name.startswith(stems)
@@ -286,6 +352,41 @@ class GenSpecularTexelFixturesTest(unittest.TestCase):
             for p, t in zip(p_row, t_row)
         }
         self.assertEqual(pairs, {(p, t) for p in "MSB" for t in "TU"})
+
+    def test_art_direction_fixtures_sit_where_their_rooms_need_them(self):
+        exponent = lambda p: min(max(2 / (1 - p / 255) ** 4 - 2, 1.0), 8192.0)
+        # Satin: highlights at a broad exponent, under the reflection floor.
+        self.assertTrue(3.0 < exponent(64) < 5.0)
+        self.assertLessEqual(exponent(64), REFLECTION_FLOOR_EXPONENT)
+        # Polished: past the fade band, so full weight.
+        self.assertGreater(exponent(200), FULL_WEIGHT_EXPONENT)
+        # Fade band: inside the band, near its middle in log2.
+        self.assertTrue(10.0 < exponent(97) < 13.0)
+        self.assertGreater(exponent(97), REFLECTION_FLOOR_EXPONENT)
+        self.assertLess(exponent(97), FULL_WEIGHT_EXPONENT)
+        # The band's byte edges: 84 is the last byte at or under the floor,
+        # 85 the first past it, 108 the first at full weight.
+        self.assertLessEqual(exponent(84), REFLECTION_FLOOR_EXPONENT)
+        self.assertGreater(exponent(85), REFLECTION_FLOOR_EXPONENT)
+        self.assertLess(exponent(107), FULL_WEIGHT_EXPONENT)
+        self.assertGreaterEqual(exponent(108), FULL_WEIGHT_EXPONENT)
+        # Polished and fade band differ only in `_p`.
+        for suffix in (".png", "_s.png", "_t.png"):
+            self.assertEqual(
+                EXPECTED["metal_polished" + suffix], EXPECTED["metal_fade_band" + suffix]
+            )
+        self.assertNotEqual(EXPECTED["metal_polished_p.png"], EXPECTED["metal_fade_band_p.png"])
+        # Tile and grout: the grout is painted through `_s` 0 alone. Its `_p`
+        # matches the tiles' and is past the floor, so `_p` never masks it.
+        _, tile_s = EXPECTED["concrete_tile_grout_s.png"]
+        _, tile_p = EXPECTED["concrete_tile_grout_p.png"]
+        pairs = {
+            (c, s, p)
+            for map_row, s_row, p_row in zip(TILE_MAP, tile_s, tile_p)
+            for c, s, p in zip(map_row, s_row, p_row)
+        }
+        self.assertEqual(pairs, {("G", 0, 200), ("T", 255, 200)})
+        self.assertGreater(exponent(200), FULL_WEIGHT_EXPONENT)
 
 
 if __name__ == "__main__":

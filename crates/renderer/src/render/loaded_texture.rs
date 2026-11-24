@@ -58,6 +58,14 @@ pub struct LoadedTexture {
     /// that is not a surface map. The uniform build picks the base
     /// mip's band and quantizes it with the material's level count.
     pub surface_relief: SurfaceReliefLevels,
+    /// Whether the material reflects its room: the glossy opt-in over the
+    /// specular slot's uploaded mip 0, the bytes the compiler judged
+    /// (`specular_slot_reflects`). Its bucket is then a glossy bucket.
+    pub reflects: bool,
+    /// Whether the normal slot holds the material's own normal map rather
+    /// than the 1×1 neutral placeholder: the glossy overlay reads a
+    /// placeholder's one texel instead of sampling it.
+    pub normal_mapped: bool,
 }
 
 /// Where [`load_textures`] spent its time, for the install's own log line.
@@ -183,7 +191,23 @@ pub(super) fn upload_prepared_texture(
         mip_count: plan.mip_count,
         // A model plan never consumes specular, so models stay flat.
         surface_relief: specular_surface_relief(&slots[1], plan.consume[1]),
+        reflects: specular_slot_reflects_in(&slots[1], plan.consume[1]),
+        normal_mapped: plan.consume[2] && slots[2].is_ok(),
     }
+}
+
+/// The glossy opt-in over the consumed specular slot's mip 0, the level
+/// `upload_slot_or_placeholder` uploads first. A slot the plan does not
+/// consume, or one that failed to read, binds a placeholder, which never
+/// reflects.
+fn specular_slot_reflects_in(slot_result: &Result<PrmSlot, PrmReadError>, consume: bool) -> bool {
+    let Ok(slot) = slot_result else {
+        return false;
+    };
+    consume
+        && slot_levels(slot).first().is_some_and(|&(_, _, mip0)| {
+            postretro_level_format::glossy_opt_in::specular_slot_reflects(slot.format, mip0)
+        })
 }
 
 /// The raw relief band of every mip of the specular slot, from the exact bytes

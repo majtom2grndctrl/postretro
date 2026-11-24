@@ -3066,3 +3066,224 @@ fn a_charged_first_shot_retried_after_a_failed_spawn_is_still_first() {
     );
     assert_eq!(held(&scene, enemy, 0), 1, "one hold, not a skipped shot");
 }
+
+// ---------------------------------------------------------------------------
+// Regressions from review, round 3
+// ---------------------------------------------------------------------------
+
+/// A composite on the rifle loop whose `offense` layer is a selector picking
+/// `attack`, with no clip moment.
+fn selector_firing(attack: &str) -> BehaviorActivityDescriptor {
+    let mut activity = act("shoot", None);
+    activity.layers = BTreeMap::from([(
+        "offense".to_string(),
+        BehaviorLayerDescriptor::Selector(vec![BehaviorSelectorEntry::Row(BehaviorSelectorRow {
+            when: None,
+            motion: None,
+            action: Some(untimed(attack)),
+        })]),
+    )]);
+    activity
+}
+
+/// `engage` holding an `offense` graph of `x` and `y`, each leading to the
+/// other after 150 ms.
+fn two_leaf_graph(
+    x: BehaviorActivityDescriptor,
+    y: BehaviorActivityDescriptor,
+    attacks: Vec<(&str, AttackParams)>,
+) -> BehaviorGraphDescriptor {
+    let offense = BehaviorLayerDescriptor::Graph(BehaviorGraphEnvelope {
+        initial: "x".to_string(),
+        activities: BTreeMap::from([("x".to_string(), x), ("y".to_string(), y)]),
+        transitions: BTreeMap::from([
+            ("x".to_string(), vec![edge("y", after_ms(150.0))]),
+            ("y".to_string(), vec![edge("x", after_ms(150.0))]),
+        ]),
+    });
+    let mut engage = resting();
+    engage.layers = BTreeMap::from([("offense".to_string(), offense)]);
+    clip_graph("engage", vec![("engage", engage)], vec![], attacks)
+}
+
+/// Per tick: the leaf path and the (parent, leaf) held counts after it.
+type HeldTrace = (Vec<String>, Vec<(u32, u32)>);
+
+/// The tick on which the path first ends in `/leaf` at or after `from`.
+fn leaf_entry(paths: &[String], leaf: &str, from: usize) -> usize {
+    let suffix = format!("/{leaf}");
+    from + paths[from..]
+        .iter()
+        .position(|path| path.ends_with(&suffix))
+        .unwrap_or_else(|| panic!("enters `{leaf}` after tick {from}: {paths:?}"))
+}
+
+// Regression: an attack a selector-form `offense` layer picks was not the
+// path's own attack, so its launched shot never ended its hold and its next
+// hold went uncounted.
+#[test]
+fn a_selector_offenses_hold_ends_on_its_shot_and_its_next_hold_counts() {
+    let graph = two_leaf_graph(
+        selector_firing(VOLLEY),
+        selector_firing(VOLLEY),
+        vec![(VOLLEY, rifle_attack())],
+    );
+    let mut scene = gunner_scene(single_rifle());
+    let enemy = spawn_gunner(&mut scene, 0, &graph, "engage");
+    let world = CollisionWorld::new();
+    let movers = low_door();
+    let (mut paths, mut counts, mut shots) = (Vec::new(), Vec::new(), Vec::new());
+    for tick in 0..30 {
+        // Open for one tick in `x`: the held volley fires.
+        let poses = if tick == 4 {
+            open_door()
+        } else {
+            closed_door()
+        };
+        let result = tick_full(&mut scene, &world, &movers, &poses, DT, |_| {});
+        shots.extend(record(&scene, enemy, tick, &result));
+        paths.push(scene.state(enemy));
+        counts.push((held(&scene, enemy, 0), held(&scene, enemy, 1)));
+    }
+    let y = leaf_entry(&paths, "y", 0);
+    assert!(paths[4].ends_with("/x") && y > 4, "fixture: {paths:?}");
+    assert_eq!(counts[3], (1, 1), "held in `x`: {counts:?}");
+    assert_eq!(ticks_of(&shots), vec![4], "fires the tick the door opens");
+    assert_from_muzzle(&shots[0], "the selector's volley");
+    assert_eq!(
+        counts[y],
+        (2, 1),
+        "its shot ended the hold, so held again in `y` the parent counts 2: {counts:?}"
+    );
+}
+
+/// The parent and leaf held counts of `x` holding the volley (a 0.3 m shot
+/// under the lip) and `y` firing the snipe on the long rifle at `long_radius`,
+/// over two visits to `x`.
+fn enclosing_trace(long_radius: f32) -> HeldTrace {
+    let graph = two_leaf_graph(
+        firing("shoot"),
+        act("shoot", Some(untimed(SNIPE))),
+        vec![
+            (VOLLEY, drawing(RIFLE, "burst")),
+            (SNIPE, drawing(LONG, "long")),
+        ],
+    );
+    let mut scene = two_rifle_scene(renamed(rifle(1, 0.0, 0.0, 30), LONG, long_radius));
+    scene.descriptors[0] = renamed(single_rifle(), RIFLE, 0.3);
+    let enemy = spawn_gunner(&mut scene, 0, &graph, "engage");
+    let lip = under_lip();
+    let (mut paths, mut counts) = (Vec::new(), Vec::new());
+    for _ in 0..40 {
+        tick_in(&mut scene, &lip);
+        paths.push(scene.state(enemy));
+        counts.push((held(&scene, enemy, 0), held(&scene, enemy, 1)));
+    }
+    (paths, counts)
+}
+
+// Regression: NM-7 across sibling leaves holding different attacks. `x`
+// holds attack A; in `y` attack C fires (its smaller shot clears) or is held
+// too. C firing does not end A's hold: the parent, never entered again, keeps
+// 1, and `x` entered afresh counts A once. C held is another attack's hold:
+// the parent counts it (2), and A held again in `x` is a new hold (3).
+#[test]
+fn an_enclosing_activity_counts_each_attacks_hold_across_sibling_leaves() {
+    let (paths, counts) = enclosing_trace(0.05);
+    let y = leaf_entry(&paths, "y", 0);
+    let x_again = leaf_entry(&paths, "x", y);
+    assert_eq!(counts[y - 1], (1, 1), "A held in `x`: {counts:?}");
+    assert_eq!(
+        counts[y],
+        (1, 0),
+        "C fires in `y`, holding nothing: {counts:?}"
+    );
+    assert_eq!(
+        counts[x_again],
+        (1, 1),
+        "A's hold still runs: `x` counts it afresh, the parent keeps 1: {counts:?}"
+    );
+
+    let (paths, counts) = enclosing_trace(0.3);
+    let y = leaf_entry(&paths, "y", 0);
+    let x_again = leaf_entry(&paths, "x", y);
+    assert_eq!(counts[y - 1], (1, 1), "A held in `x`: {counts:?}");
+    assert_eq!(
+        counts[y],
+        (2, 1),
+        "C held in `y` is another hold: {counts:?}"
+    );
+    // NM-7: A's hold never ended (only its own shot ends it), so the parent,
+    // not entered again, keeps its count; the re-entered leaf counts A afresh.
+    assert_eq!(
+        counts[x_again],
+        (2, 1),
+        "A still held after C's hold is the same hold at the parent: {counts:?}"
+    );
+}
+
+// Regression: one tick could carry a single withhold, so a started charge's
+// first shot held on the tick a request for another weapon was withheld lost
+// one of the two.
+#[test]
+fn two_attacks_withheld_on_one_tick_both_count_and_neither_spends() {
+    let mut charged = renamed(rifle(1, 0.0, 300.0, 30), RIFLE, 0.3);
+    charged.weapon.as_mut().unwrap().primary = serde_json::from_value(serde_json::json!({
+        "trigger": "press", "recoveryMs": 300,
+        "charge": { "minMs": 0, "fullMs": 50 },
+        "steps": [{ "kind": "shot" }],
+    }))
+    .expect("a valid charged action");
+    let graph = clip_graph(
+        "x",
+        vec![
+            ("x", firing("shoot")),
+            ("y", act("shoot", Some(untimed(SNIPE)))),
+        ],
+        vec![],
+        vec![
+            (VOLLEY, drawing(RIFLE, "burst")),
+            (SNIPE, drawing(LONG, "long")),
+        ],
+    );
+    let scene_with = |charged: EntityTypeDescriptor| {
+        let mut scene = two_rifle_scene(renamed(rifle(1, 0.0, 1000.0, 30), LONG, 0.3));
+        scene.descriptors[0] = charged;
+        let enemy = spawn_gunner(&mut scene, 0, &graph, "x");
+        (scene, enemy)
+    };
+    let release = {
+        let (mut scene, enemy) = scene_with(charged.clone());
+        let open = CollisionWorld::new();
+        let shots = run(&mut scene, enemy, 20, |_, _| &open);
+        assert!(!shots.is_empty(), "fixture: unobstructed, the charge fires");
+        shots[0].tick
+    };
+    assert!(
+        release > 0,
+        "fixture: the charge releases after its start tick"
+    );
+
+    let (mut scene, enemy) = scene_with(charged);
+    let lip = under_lip();
+    let shots = run(&mut scene, enemy, release + 1, |scene, tick| {
+        if tick == release {
+            // `y`'s snipe is requested on the charge's release tick.
+            scene.enter(enemy, "y");
+        }
+        &lip
+    });
+    assert!(shots.is_empty(), "nothing launches: {shots:?}");
+    assert_eq!(scene.state(enemy), "y", "fixture");
+    assert_eq!(
+        held(&scene, enemy, 0),
+        2,
+        "the snipe's withheld request and the charge's withheld first shot both count"
+    );
+    assert_eq!(magazine(&scene, enemy), 30, "the charge spent nothing");
+    assert_eq!(
+        scene.runtime.weapons.weapon(enemy, LONG).unwrap().magazine,
+        30,
+        "the snipe never started"
+    );
+}

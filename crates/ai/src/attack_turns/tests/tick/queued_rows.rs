@@ -738,7 +738,6 @@ fn a_marks_request_outranks_a_rests_which_outranks_a_pending_unmarked_attack() {
     let pending = PendingAttack {
         attack_name: "jab".to_string(),
         cooldown_ms: 0.0,
-        clip_moment: false,
         effect: AttackOutcome::Contact {
             damage: 1.0,
             damage_type: None,

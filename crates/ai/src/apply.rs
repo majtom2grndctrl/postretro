@@ -48,16 +48,18 @@ fn commit_attack_fire(
     registry.set_component(actor, brain).is_ok()
 }
 
-/// A launched projectile shot ends a near-path hold, so a later hold counts
-/// again. A contact strike leaves it: it never tested a near path.
+/// A launched projectile shot of `attack` ends that attack's near-path hold,
+/// so its next hold counts again. A contact strike, or another attack's shot,
+/// leaves it: neither ends this attack's hold.
 fn end_held_hold(
     registry: &mut postretro_entities::EntityRegistry,
     actor: postretro_entities::EntityId,
+    attack: &str,
 ) {
     let Ok(mut brain) = registry.get_component::<BrainComponent>(actor).cloned() else {
         return;
     };
-    brain.end_held_hold();
+    brain.end_held_hold(attack);
     let _ = registry.set_component(actor, brain);
 }
 
@@ -88,7 +90,6 @@ fn commit_withheld_start(
     registry: &mut postretro_entities::EntityRegistry,
     actor: postretro_entities::EntityId,
     withheld: &WithheldStart,
-    clip_moment: bool,
 ) {
     if !withheld.held {
         return;
@@ -96,10 +97,10 @@ fn commit_withheld_start(
     let Ok(mut brain) = registry.get_component::<BrainComponent>(actor).cloned() else {
         return;
     };
-    if clip_moment {
+    if withheld.clip_moment {
         brain.record_held_shot();
     } else {
-        brain.record_held_hold();
+        brain.record_held_hold(&withheld.attack_name);
     }
     let _ = registry.set_component(actor, brain);
 }
@@ -389,7 +390,6 @@ where
         // materialize a host-owned flight entity; the shared projectile stage
         // resolves its later contact through that same chokepoint.
         let mut weapon_request = None;
-        let mut request_clip_moment = false;
         // A fresh unmarked grant holds only if its attack starts this tick.
         let granted_attack = outcome
             .fresh_unmarked_grant
@@ -445,7 +445,6 @@ where
                 }
                 AttackOutcome::Projectile { request } => {
                     weapon_request = Some(request);
-                    request_clip_moment = pending.clip_moment;
                     false
                 }
             };
@@ -566,8 +565,11 @@ where
         if let Some(skipped) = advance.skipped {
             commit_skipped_shot(registry, outcome.id, skipped);
         }
-        if let Some(withheld) = advance.withheld.as_ref() {
-            commit_withheld_start(registry, outcome.id, withheld, request_clip_moment);
+        for withheld in [&advance.withheld_request, &advance.withheld]
+            .into_iter()
+            .flatten()
+        {
+            commit_withheld_start(registry, outcome.id, withheld);
         }
         if let Some(fire) = fire
             && commit_attack_fire(
@@ -577,13 +579,8 @@ where
                 fire.recovery_ms,
             )
         {
-            // Only the path's own attack ends its hold: a burst another
-            // attack started, still in flight after the path moved on, leaves
-            // the hold running (`attacksHeldInActivity` counts holds of the
-            // attack the activity proposes).
-            if path_attack(&outcome.brain) == Some(fire.attack_name.as_str()) {
-                end_held_hold(registry, outcome.id);
-            }
+            // Only the held attack's own launched shot ends its hold.
+            end_held_hold(registry, outcome.id, &fire.attack_name);
             projectile_spawns.push(EnemyProjectilePresentationSpawn {
                 projectile: fire.projectile,
                 descriptor_class: fire.canonical_weapon,
@@ -720,17 +717,6 @@ where
         events,
         projectile_spawns,
     }
-}
-
-/// The attack the active path's deepest activity with an action names: the
-/// attack whose shots its near-path holds count.
-fn path_attack(brain: &BrainComponent) -> Option<&str> {
-    (0..brain.active_depth()).rev().find_map(|depth| {
-        brain
-            .activity_at_depth(depth)
-            .and_then(|(_, activity)| activity.action.as_ref())
-            .map(|postretro_foundation::ActionVerb::Attack { name, .. }| name.as_str())
-    })
 }
 
 /// The brain's own draw this apply, planned before the launch.

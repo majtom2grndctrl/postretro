@@ -273,9 +273,6 @@ pub(crate) struct PendingAttack {
     attack_name: String,
     cooldown_ms: f32,
     effect: AttackOutcome,
-    /// Proposed on its clip moment's tick: a near-path hold whiffs the
-    /// moment, counted once, rather than starting a hold.
-    clip_moment: bool,
 }
 
 pub(crate) enum AttackOutcome {

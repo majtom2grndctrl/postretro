@@ -813,6 +813,7 @@ pub(super) fn evaluate(
                                 request: WeaponAttackRequest {
                                     canonical_weapon: resolved.canonical_weapon_name().to_string(),
                                     attack_name: name.clone(),
+                                    clip_moment: moment == clip_clock::Moment::Reached,
                                 },
                             },
                         ))
@@ -849,7 +850,6 @@ pub(super) fn evaluate(
                 attack_name,
                 cooldown_ms,
                 effect: outcome,
-                clip_moment: moment == clip_clock::Moment::Reached,
             });
         }
         // The enemy committed: a stance release left having struck nothing,

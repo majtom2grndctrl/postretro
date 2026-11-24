@@ -161,7 +161,6 @@ fn ready_attack() -> PendingAttack {
     PendingAttack {
         attack_name: ATTACK.to_string(),
         cooldown_ms: 100_000.0,
-        clip_moment: false,
         effect: AttackOutcome::Contact {
             damage: 1.0,
             damage_type: None,

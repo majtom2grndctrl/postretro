@@ -39,10 +39,11 @@ local BrainSdk = {}
 --- the pathfinder's cached verdict rather than ground-truth reachability), and
 --- `attacksFiredInActivity` (number; successful fires since the current
 --- activity entered, visible to guards on the next refresh), and
---- `targetVisible` (boolean; the shared debounced sightline verdict, which
---- static geometry and movers at their current pose block, false with no
---- target), and `timeSinceDamageMs` (number; `1e9`
---- before the first hit, then zero at a landed hit and monotonically aged back
+--- `targetVisible` (boolean; the eye's debounced line-of-sight verdict, shared
+--- by perception and the engine fire gate, which static geometry and movers at
+--- their current pose block, false with no target; the fire gate also tests the
+--- gun's near path, so it can read true while every shot is held), and
+--- `timeSinceDamageMs` (number; `1e9` before the first hit, then zero at a landed hit and monotonically aged back
 --- to that sentinel by AI ticks), and `timeSinceTargetVisible` (number; `1e9`
 --- before the first sighting, then zero while a selected target is visible and
 --- monotonically aged back to that sentinel), and `distanceToLastKnown`
@@ -65,7 +66,10 @@ local BrainSdk = {}
 --- `applyDamage` included; scope-relative like `timeInActivityMs`, resetting
 --- to 0 when that level is entered), and `awareness` (number; highest
 --- awareness of any candidate, 0 to 1, 1 once it has a target; a guard on a
---- decide reads the value that decide's acquisition check produced).
+--- decide reads the value that decide's acquisition check produced), and
+--- `attacksHeldInActivity` (number; shots the gun's near-path test held since
+--- the current activity entered, visible to guards on the next refresh;
+--- host-only).
 BrainSdk.brain = table.freeze({
   hasTarget = input("@brain.hasTarget"),
   targetDistance = input("@brain.targetDistance"),
@@ -92,6 +96,7 @@ BrainSdk.brain = table.freeze({
   activityRoll = input("@brain.activityRoll"),
   damageInActivity = input("@brain.damageInActivity"),
   awareness = input("@brain.awareness"),
+  attacksHeldInActivity = input("@brain.attacksHeldInActivity"),
 })
 
 --- Facts about one offered target, evaluated during acquisition.

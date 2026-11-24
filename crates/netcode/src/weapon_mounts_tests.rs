@@ -9,7 +9,7 @@ use log::Level;
 use postretro_entities::Transform;
 use postretro_entities::components::inventory::{Inventory, WIELDABLE_SLOT_CAPACITY};
 use postretro_entities::components::mesh::AttachmentBinding;
-use postretro_entities::data_descriptors::{InventoryDescriptor, WeaponMountDescriptor};
+use postretro_entities::data_descriptors::{InventoryDescriptor, MountDescriptor};
 use postretro_entities::provenance::{DescriptorComponentKind, DescriptorSpawnPath};
 use postretro_foundation::{
     ActivationTrigger, ProjectileBodyVisual, ProjectileDescriptor, ProjectileVisual,
@@ -34,7 +34,8 @@ pub(super) const PISTOL_EXO: &str = "models/pistol/exo_red.gltf";
 pub(super) const PISTOL_TROOPER: &str = "models/pistol/trooper.gltf";
 pub(super) const UNLOADED: &str = "models/never_loaded.gltf";
 
-pub(super) const PICKUP_MISSING: &str = "[Weapon mounts] entity `player` has no weaponMounts entry for weapon `pickup`; it mounts nothing";
+pub(super) const PICKUP_MISSING: &str =
+    "[Weapon mounts] entity `player` has no mounts entry for weapon `pickup`; it mounts nothing";
 
 pub(super) fn weapon(resolution: ResolutionMode) -> WeaponDescriptor {
     WeaponDescriptor {
@@ -111,13 +112,16 @@ pub(super) fn weapon_entity(name: &str) -> EntityTypeDescriptor {
     descriptor
 }
 
-pub(super) fn entry(weapon: &str, attachments: &[(&str, &str)]) -> WeaponMountDescriptor {
-    WeaponMountDescriptor {
-        weapon: weapon.to_string(),
-        attachments: attachments
-            .iter()
-            .map(|(socket, model)| (socket.to_string(), model.to_string()))
-            .collect(),
+pub(super) fn entry(weapon: &str, attachments: &[(&str, &str)]) -> MountDescriptor {
+    MountDescriptor {
+        item: weapon.to_string(),
+        attachments: Some(
+            attachments
+                .iter()
+                .map(|(socket, model)| (socket.to_string(), model.to_string()))
+                .collect(),
+        ),
+        muzzle_socket: None,
     }
 }
 
@@ -127,7 +131,7 @@ pub(super) fn character(
     name: &str,
     rig: &str,
     attachments: &[(&str, &str)],
-    table: Option<Vec<WeaponMountDescriptor>>,
+    table: Option<Vec<MountDescriptor>>,
 ) -> EntityTypeDescriptor {
     let mut descriptor = bare(name);
     descriptor.movement = Some(crate::predict_reconcile_harness_test_fixtures::player_descriptor());
@@ -142,7 +146,7 @@ pub(super) fn character(
         animations: HashMap::new(),
         default_state: None,
         locomotion: None,
-        weapon_mounts: table,
+        mounts: table,
     });
     descriptor.inventory = Some(InventoryDescriptor {
         loadout: vec!["rifle".to_string(), "pistol".to_string()],
@@ -777,15 +781,55 @@ fn a_picked_up_weapon_without_an_entry_warns_once_per_character_and_weapon_per_l
     );
 }
 
+// A `{ item, muzzleSocket }` entry names a body socket for an NPC's shot
+// origin. A pawn ignores it: the entry exists, so nothing warns it missing,
+// and it mounts nothing beyond the base attachments.
+#[test]
+fn a_pawn_with_a_muzzle_socket_entry_mounts_nothing_and_warns_nothing() {
+    let logs = LogCapture::start();
+    let mut descriptors = descriptors();
+    descriptors[0]
+        .mesh
+        .as_mut()
+        .unwrap()
+        .mounts
+        .as_mut()
+        .unwrap()
+        .push(MountDescriptor {
+            item: "pickup".to_string(),
+            attachments: None,
+            muzzle_socket: Some("cannon_tip".to_string()),
+        });
+    let store = store();
+    crate::scripting_systems::weapon_mounts::check_weapon_mount_tables(&descriptors, &store);
+    let mut registry = EntityRegistry::new();
+    let pawn = materialized_pawn(&mut registry, &descriptors, "player");
+
+    write(
+        &mut registry,
+        pawn,
+        "player",
+        &descriptors,
+        Some("pickup"),
+        &store,
+    );
+    assert_eq!(
+        mounted(&registry, pawn),
+        pairs(&[("back", BACKPACK), ("hand_r", GRIP_TAPE)]),
+        "the muzzle entry mounts nothing; the base attachments stay"
+    );
+    logs.assert_not_logged(Level::Warn, "pickup");
+}
+
 #[test]
 fn a_loadout_weapon_warned_at_install_does_not_warn_again_at_first_wield() {
     let logs = LogCapture::start();
     let mut descriptors = descriptors();
     // A table that lacks the pistol, which the loadout carries.
-    descriptors[0].mesh.as_mut().unwrap().weapon_mounts =
+    descriptors[0].mesh.as_mut().unwrap().mounts =
         Some(vec![entry("rifle", &[("hand_r", RIFLE_EXO)])]);
     let store = store();
-    let pistol_missing = "[Weapon mounts] entity `player` has no weaponMounts entry for weapon `pistol`; it mounts nothing";
+    let pistol_missing = "[Weapon mounts] entity `player` has no mounts entry for weapon `pistol`; it mounts nothing";
 
     crate::scripting_systems::weapon_mounts::check_weapon_mount_tables(&descriptors, &store);
     logs.assert_logged_once(Level::Warn, pistol_missing);
@@ -848,7 +892,7 @@ fn an_entry_socket_the_rig_lacks_warns_once_and_the_entry_other_sockets_still_mo
 fn an_entry_model_missing_from_the_preload_warns_once_and_the_other_sockets_still_mount() {
     let logs = LogCapture::start();
     let mut descriptors = descriptors();
-    descriptors[0].mesh.as_mut().unwrap().weapon_mounts = Some(vec![
+    descriptors[0].mesh.as_mut().unwrap().mounts = Some(vec![
         entry("rifle", &[("hand_r", UNLOADED), ("back", SLING)]),
         entry("pistol", &[("hand_r", PISTOL_EXO)]),
     ]);
@@ -882,7 +926,7 @@ fn an_entry_model_missing_from_the_preload_warns_once_and_the_other_sockets_stil
 fn an_entry_on_a_socket_the_rig_lacks_reports_the_socket_and_not_its_unloaded_model() {
     let logs = LogCapture::start();
     let mut descriptors = descriptors();
-    descriptors[1].mesh.as_mut().unwrap().weapon_mounts = Some(vec![entry(
+    descriptors[1].mesh.as_mut().unwrap().mounts = Some(vec![entry(
         "pistol",
         &[("hand_r", PISTOL_TROOPER), ("hip", UNLOADED)],
     )]);
@@ -956,7 +1000,7 @@ fn an_entry_naming_no_weapon_never_mounts_and_the_other_entries_still_mount() {
         .mesh
         .as_mut()
         .unwrap()
-        .weapon_mounts
+        .mounts
         .as_mut()
         .unwrap()
         .push(entry("retired_rifle", &[("hand_r", PISTOL_EXO)]));
@@ -980,6 +1024,6 @@ fn an_entry_naming_no_weapon_never_mounts_and_the_other_entries_still_mount() {
     );
     logs.assert_logged_once(
         Level::Warn,
-        "[Weapon mounts] entity `player` has a weaponMounts entry for `retired_rifle`, which names no weapon; the entry never mounts",
+        "[Weapon mounts] entity `player` has a mounts entry for `retired_rifle`, which names no weapon; the entry never mounts",
     );
 }

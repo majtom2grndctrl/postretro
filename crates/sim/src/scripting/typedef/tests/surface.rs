@@ -1226,7 +1226,7 @@ fn anonymous_particle_state_is_absent_from_both_sdk_type_surfaces() {
 fn mesh_sdk_fields_match_the_keys_the_descriptor_readers_accept() {
     use crate::scripting::typedef::register_all;
     use postretro_entities::ctx::ScriptCtx;
-    use postretro_entities::data_descriptors::{MESH_DESCRIPTOR_KEYS, WEAPON_MOUNT_KEYS};
+    use postretro_entities::data_descriptors::{MESH_DESCRIPTOR_KEYS, MOUNT_KEYS};
     use postretro_scripting_core::primitives_registry::TypeShape;
     use std::collections::BTreeSet;
 
@@ -1253,7 +1253,7 @@ fn mesh_sdk_fields_match_the_keys_the_descriptor_readers_accept() {
             .collect::<BTreeSet<_>>()
     );
     assert_eq!(
-        sdk_fields("WeaponMountDescriptor"),
-        WEAPON_MOUNT_KEYS.iter().copied().collect::<BTreeSet<_>>()
+        sdk_fields("MountDescriptor"),
+        MOUNT_KEYS.iter().copied().collect::<BTreeSet<_>>()
     );
 }

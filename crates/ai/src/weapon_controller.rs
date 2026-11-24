@@ -16,6 +16,7 @@ use postretro_foundation::{
 
 use crate::ai_host::AiHost;
 use crate::brain_programs::BrainPrograms;
+use crate::npc_launch::ShotLaunch;
 use crate::sim::ProjectileSource;
 use crate::weapon::execution::{
     ActivationCommand, WeaponActivationCheckpoint, advance_authoritative_weapon_resource,
@@ -23,7 +24,9 @@ use crate::weapon::execution::{
 };
 use crate::weapon::{FireButtonState, ProjectileLaunch, freeze_weapon_shot};
 
-#[derive(Debug, Clone, Copy)]
+/// Where a shot starts and which way it flies. Compute's is the eye's; the
+/// launch may replace it with the fired weapon's muzzle aim.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct WeaponAim {
     pub origin: Vec3,
     pub direction: Vec3,
@@ -32,6 +35,40 @@ pub(crate) struct WeaponAim {
 pub(crate) struct WeaponAttackRequest {
     pub canonical_weapon: String,
     pub attack_name: String,
+    /// Proposed on its clip moment: a held first shot whiffs that moment.
+    pub clip_moment: bool,
+}
+
+/// A due burst shot that launched nothing: the enemy was not aiming, or the
+/// near-path test held it. It spent its shot and restarts the attack's
+/// cooldown as a fired shot does (`entity_model.md` §2, Weapon mounts).
+pub(crate) struct SkippedShot {
+    pub attack_name: String,
+    pub recovery_ms: f32,
+    /// The near-path test held it; `false` when the enemy was not aiming.
+    pub held: bool,
+}
+
+/// An attack whose first shot could not launch, so its activation did not
+/// start: nothing spent, no cooldown, its turn grant released as unstarted.
+pub(crate) struct WithheldStart {
+    pub attack_name: String,
+    /// The attack started on its clip moment: the hold whiffs that moment and
+    /// counts once, rather than starting a hold.
+    pub clip_moment: bool,
+    /// The near-path test held it; `false` when the enemy was not aiming.
+    pub held: bool,
+}
+
+/// What one actor's weapon advance did this tick.
+#[derive(Default)]
+pub(crate) struct WeaponAdvance {
+    pub fired: Option<CommittedWeaponFire>,
+    pub skipped: Option<SkippedShot>,
+    /// The request's attack, withheld before it could cancel a burst in flight.
+    pub withheld_request: Option<WithheldStart>,
+    /// A started attack whose first shot, due this tick, was withheld.
+    pub withheld: Option<WithheldStart>,
 }
 
 pub(crate) struct CommittedWeaponFire {
@@ -48,6 +85,12 @@ struct AiWeapon {
     descriptor: Arc<WeaponDescriptor>,
     component: WeaponComponent,
     attack_name: Option<String>,
+    /// The running activation started on its attack's clip moment.
+    clip_moment: bool,
+    /// The running activation has yet to reach its first shot: one that
+    /// cannot launch then leaves the attack unstarted, however many charge
+    /// ticks came first.
+    first_shot_due: bool,
 }
 
 #[derive(Default)]
@@ -136,6 +179,8 @@ impl AiWeaponControllers {
                                     Some(canonical),
                                 ),
                                 attack_name: None,
+                                clip_moment: false,
+                                first_shot_due: false,
                             },
                         );
                     }
@@ -192,28 +237,93 @@ impl AiWeaponControllers {
             .and(weapon.attack_name.as_deref())
     }
 
+    /// The weapon whose execution this actor has in flight, if any.
+    pub(crate) fn active_weapon(&self, actor: EntityId) -> Option<&str> {
+        self.actors.get(&actor)?.active.as_deref()
+    }
+
     pub(crate) fn cancel_activations(&mut self) {
         for actor in self.actors.values_mut() {
             actor.cancel_all();
         }
     }
 
-    /// Charging and waits commit every valid tick. Only an actual failed
-    /// materialization restores the shot transaction; passive regen stays paid.
+    /// Charging and waits commit every valid tick. Each due shot asks `launch`
+    /// where it leaves, at its projectile's radius: a launched shot that fails
+    /// to materialize restores the shot transaction; a shot that cannot launch
+    /// (not aiming, or held by the near-path test) is skipped and keeps its
+    /// spend, unless it was the activation's first, which then does not start.
+    /// Passive regen stays paid.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn advance_actor<H: AiHost + ?Sized>(
         &mut self,
         registry: &mut EntityRegistry,
         actor: EntityId,
         request: Option<WeaponAttackRequest>,
         aim: Option<WeaponAim>,
+        launch: &dyn Fn(&str, f32) -> ShotLaunch,
         dt_ms: f32,
         host: &mut H,
-    ) -> Option<CommittedWeaponFire> {
-        let actor_weapons = self.actors.get_mut(&actor)?;
+    ) -> WeaponAdvance {
+        let mut outcome = WeaponAdvance::default();
+        let Some(actor_weapons) = self.actors.get_mut(&actor) else {
+            return outcome;
+        };
         if aim.is_none() {
             actor_weapons.cancel_all();
         }
-        let request = request.filter(|_| aim.is_some());
+        let mut request = request.filter(|_| aim.is_some());
+        // A request for another weapon cancels the burst in flight, so a first
+        // shot due on the start tick is decided before that cancel, on a dry
+        // run of the start (the shot's own scaled radius included): one that
+        // cannot launch leaves the attack unstarted and the running burst
+        // untouched. A start with no shot due this tick (a charge, a weapon
+        // that refuses to start) is not decided here; its first shot is
+        // decided when it comes due. Only weapon-switch ticks pay the dry run.
+        if let Some(requested) = request.as_ref()
+            && actor_weapons
+                .active
+                .as_ref()
+                .is_some_and(|active| active != &requested.canonical_weapon)
+            && actor_weapons
+                .weapons
+                .get(&requested.canonical_weapon)
+                .is_some_and(|weapon| weapon.component.state.activation_cursor().is_none())
+        {
+            let decision = actor_weapons
+                .weapons
+                .get_mut(&requested.canonical_weapon)
+                .and_then(|weapon| {
+                    // Advanced for real and restored whole: the dry run needs
+                    // no copy of the component.
+                    let checkpoint = WeaponActivationCheckpoint::capture(&weapon.component);
+                    let advanced = advance_weapon_activation(
+                        &mut weapon.component,
+                        start_command(self.tick, actor),
+                        dt_ms,
+                        false,
+                        true,
+                    );
+                    let radius = advanced.shot.map(|attempt| {
+                        freeze_weapon_shot(&weapon.component, attempt)
+                            .projectile
+                            .map_or(0.0, |projectile| projectile.radius)
+                    });
+                    checkpoint.restore(&mut weapon.component);
+                    radius
+                })
+                .map(|radius| launch(&requested.canonical_weapon, radius));
+            if let Some(decision) = decision
+                && !matches!(decision, ShotLaunch::Launch(_))
+            {
+                outcome.withheld_request = Some(WithheldStart {
+                    attack_name: requested.attack_name.clone(),
+                    clip_moment: requested.clip_moment,
+                    held: decision == ShotLaunch::Held,
+                });
+                request = None;
+            }
+        }
         if let Some(request) = request.as_ref()
             && actor_weapons
                 .active
@@ -227,7 +337,6 @@ impl AiWeaponControllers {
             previous.component.cancel_activation();
             previous.attack_name = None;
         }
-        let mut committed = None;
         for (canonical, weapon) in &mut actor_weapons.weapons {
             let starts = request
                 .as_ref()
@@ -260,21 +369,13 @@ impl AiWeaponControllers {
                 });
             }
             let checkpoint = WeaponActivationCheckpoint::capture(&weapon.component);
-            let command = ActivationCommand {
-                tick: self.tick,
-                pawn: actor.to_raw(),
-                real_command: true,
+            let command = activation_command(
+                self.tick,
+                actor,
                 input,
-                controller_starts: false,
-                primary: FireButtonState {
-                    pressed: starts.is_some(),
-                    active: starts.is_some() || weapon.attack_name.is_some(),
-                },
-                secondary: FireButtonState {
-                    pressed: false,
-                    active: false,
-                },
-            };
+                starts.is_some(),
+                starts.is_some() || weapon.attack_name.is_some(),
+            );
             let advanced = advance_weapon_activation(
                 &mut weapon.component,
                 command,
@@ -284,18 +385,56 @@ impl AiWeaponControllers {
             );
             if advanced.initiated.is_some() {
                 actor_weapons.active = Some(canonical.clone());
+                weapon.first_shot_due = true;
+                weapon.clip_moment = starts.is_some_and(|request| request.clip_moment);
             }
             if let Some(attempt) = advanced.shot {
                 let shot = freeze_weapon_shot(&weapon.component, attempt);
-                let aim = aim.expect("a live AI execution retains an aim");
+                debug_assert!(aim.is_some(), "a live AI execution retains an aim");
                 let projectile = shot
                     .projectile
                     .as_ref()
                     .expect("AI sync admits projectile weapons");
-                let launch = ProjectileLaunch {
+                let attack_name = weapon
+                    .attack_name
+                    .clone()
+                    .expect("AI execution retains its initiating attack");
+                let first_shot = std::mem::take(&mut weapon.first_shot_due);
+                let shot_aim = match launch(canonical, projectile.radius) {
+                    ShotLaunch::Launch(aim) => aim,
+                    decision => {
+                        let held = decision == ShotLaunch::Held;
+                        if first_shot {
+                            // The first shot could not launch: the attack does
+                            // not start, so nothing is spent, and a charge
+                            // that led up to it ends with it.
+                            checkpoint.restore(&mut weapon.component);
+                            weapon.component.cancel_activation();
+                            outcome.withheld = Some(WithheldStart {
+                                attack_name,
+                                held,
+                                clip_moment: weapon.clip_moment,
+                            });
+                        } else {
+                            outcome.skipped = Some(SkippedShot {
+                                attack_name,
+                                recovery_ms: shot.activation.recovery_ms,
+                                held,
+                            });
+                        }
+                        if weapon.component.state.activation_cursor().is_none() {
+                            weapon.attack_name = None;
+                            if actor_weapons.active.as_ref() == Some(canonical) {
+                                actor_weapons.active = None;
+                            }
+                        }
+                        continue;
+                    }
+                };
+                let projectile_launch = ProjectileLaunch {
                     sounds: Some(shot.sounds.clone()),
-                    origin: aim.origin,
-                    direction: aim.direction,
+                    origin: shot_aim.origin,
+                    direction: shot_aim.direction,
                     speed: projectile.speed,
                     radius: projectile.radius,
                     range: shot.activation.values.range,
@@ -305,7 +444,7 @@ impl AiWeaponControllers {
                         postretro_foundation::knockback_impulse(
                             push.speed,
                             push.upward_bias,
-                            aim.direction,
+                            shot_aim.direction,
                         )
                     }),
                     credit_source: shot.credit_source.clone(),
@@ -322,22 +461,22 @@ impl AiWeaponControllers {
                     attackerless: false,
                 };
                 if let Some(projectile) =
-                    host.spawn_projectile(registry, actor, actor, launch, source)
+                    host.spawn_projectile(registry, actor, actor, projectile_launch, source)
                 {
-                    committed = Some(CommittedWeaponFire {
+                    outcome.fired = Some(CommittedWeaponFire {
                         sounds: shot.sounds.clone(),
                         action: Arc::clone(shot.action()),
                         shot_id: shot.activation.shot_id,
                         projectile,
                         canonical_weapon: canonical.clone(),
-                        attack_name: weapon
-                            .attack_name
-                            .clone()
-                            .expect("AI execution retains its initiating attack"),
+                        attack_name,
                         recovery_ms: shot.activation.recovery_ms,
                     });
                 } else {
+                    // Nothing launched: the same shot is retried, still first
+                    // if it was.
                     checkpoint.restore(&mut weapon.component);
+                    weapon.first_shot_due = first_shot;
                 }
             }
             if weapon.component.state.activation_cursor().is_none() {
@@ -347,7 +486,7 @@ impl AiWeaponControllers {
                 }
             }
         }
-        committed
+        outcome
     }
 
     #[cfg(test)]
@@ -371,4 +510,40 @@ impl AiWeaponControllers {
             .get_mut(canonical)
             .map(|weapon| &mut weapon.component)
     }
+}
+
+/// The AI's command for one weapon this tick: the primary lane only, pressed
+/// on a start and held while an attack runs.
+fn activation_command(
+    tick: u32,
+    actor: EntityId,
+    input: ActivationInput,
+    pressed: bool,
+    active: bool,
+) -> ActivationCommand {
+    ActivationCommand {
+        tick,
+        pawn: actor.to_raw(),
+        real_command: true,
+        input,
+        controller_starts: false,
+        primary: FireButtonState { pressed, active },
+        secondary: FireButtonState {
+            pressed: false,
+            active: false,
+        },
+    }
+}
+
+/// The command that starts an activation this tick, as the advance below
+/// builds it for a request.
+fn start_command(tick: u32, actor: EntityId) -> ActivationCommand {
+    let input = ActivationInput {
+        initiation: Some(ActivationToken {
+            start_tick: tick,
+            lane: ActivationLane::Primary,
+        }),
+        ..ActivationInput::default()
+    };
+    activation_command(tick, actor, input, true, true)
 }

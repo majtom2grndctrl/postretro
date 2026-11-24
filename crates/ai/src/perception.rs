@@ -191,8 +191,10 @@ pub(super) fn perceive_target(
     })
 }
 
-/// The engine-floor fire gate. It intentionally has no graph or cooldown
-/// dependency: the caller layers those gates around this one shared verdict.
+/// The engine-floor fire gate's eye half. It intentionally has no graph or
+/// cooldown dependency: the caller layers those gates around this one shared
+/// verdict. The gun's near-path half runs at the launch
+/// (`npc_launch::NpcShooter::decide`), which perception never reads.
 pub(super) fn fire_gate(perception: Option<EnemyTargetPerception>) -> bool {
     perception.is_some_and(|perception| perception.visible)
 }

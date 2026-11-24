@@ -15,7 +15,21 @@
   "nodes": [
     {
       "mesh": 0,
-      "name": "AR_4"
+      "name": "AR_4",
+      "children": [
+        1
+      ]
+    },
+    {
+      "name": "muzzle",
+      "translation": [
+        -0.03157,
+        0.24838,
+        0.05213
+      ],
+      "extras": {
+        "socket": "muzzle"
+      }
     }
   ],
   "materials": [

@@ -1,4 +1,4 @@
-//! The dev player's `mesh.weaponMounts` against the committed bakes, read
+//! The dev player's `mesh.mounts` against the committed bakes, read
 //! from the table rather than a directory: each listed model is a declared
 //! (VERIFIED) fit on exo_red's `hand_r`, sits beside its weapon's viewmodel as
 //! `exo_red.gltf` with its own `exo_red.bin`, and is never a viewmodel. The
@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use postretro_entities::data_descriptors::WeaponMountDescriptor;
+use postretro_entities::data_descriptors::MountDescriptor;
 use postretro_model::gltf_loader::{LoadedModel, load_model};
 use postretro_model::mount::{
     MountThresholds, REFERENCE_MOUNT_CLIP, REFERENCE_MOUNT_TIME, check_declared_weapon_mount,
@@ -47,14 +47,14 @@ fn player(descriptors: &[EntityTypeDescriptor]) -> &EntityTypeDescriptor {
         .expect("the dev mod registers the player")
 }
 
-fn player_table(descriptors: &[EntityTypeDescriptor]) -> &[WeaponMountDescriptor] {
+fn player_table(descriptors: &[EntityTypeDescriptor]) -> &[MountDescriptor] {
     player(descriptors)
         .mesh
         .as_ref()
         .expect("the dev player has a mesh")
-        .weapon_mounts
+        .mounts
         .as_deref()
-        .expect("the dev player declares mesh.weaponMounts")
+        .expect("the dev player declares mesh.mounts")
 }
 
 fn weapon_viewmodel<'a>(descriptors: &'a [EntityTypeDescriptor], weapon: &str) -> Option<&'a str> {
@@ -99,7 +99,7 @@ fn buffer_uris(gltf: &Path) -> Result<Vec<String>, String> {
 /// beside its entry weapon's viewmodel as [`BAKE_FILE`] over [`BAKE_BUFFER`],
 /// and is no weapon's viewmodel.
 fn table_violations(
-    table: &[WeaponMountDescriptor],
+    table: &[MountDescriptor],
     descriptors: &[EntityTypeDescriptor],
     holder_name: &str,
     holder: &LoadedModel,
@@ -111,8 +111,8 @@ fn table_violations(
         .collect();
     let mut violations = Vec::new();
     for entry in table {
-        let weapon = entry.weapon.as_str();
-        let mut sockets: Vec<_> = entry.attachments.iter().collect();
+        let weapon = entry.item.as_str();
+        let mut sockets: Vec<_> = entry.attachments.iter().flatten().collect();
         sockets.sort();
         for (socket, model) in sockets {
             let mut fail =
@@ -211,7 +211,7 @@ fn every_dev_player_weapon_mount_is_a_verified_exo_red_bake_beside_its_viewmodel
 fn dev_player_weapon_mount_table_covers_exactly_the_dev_arsenal() {
     let descriptors = dev_descriptors();
     let table = player_table(&descriptors);
-    let named: Vec<&str> = table.iter().map(|entry| entry.weapon.as_str()).collect();
+    let named: Vec<&str> = table.iter().map(|entry| entry.item.as_str()).collect();
     let covered: BTreeSet<&str> = named.iter().copied().collect();
     assert_eq!(
         named.len(),
@@ -244,7 +244,7 @@ fn dev_player_level_install_warns_about_no_missing_weapon_mount_entry() {
         );
         logs.assert_not_logged(
             log::Level::Warn,
-            "[Weapon mounts] entity `player` has no weaponMounts entry",
+            "[Weapon mounts] entity `player` has no mounts entry",
         );
     }
 }
@@ -258,9 +258,10 @@ fn a_weapon_mount_entry_repointed_at_a_viewmodel_fails_the_table_check() {
     let rifle_viewmodel = weapon_viewmodel(&descriptors, "reference_rifle")
         .expect("the reference rifle has a viewmodel")
         .to_string();
-    let table = [WeaponMountDescriptor {
-        weapon: "reference_rifle".to_string(),
-        attachments: [(MOUNT_SOCKET.to_string(), rifle_viewmodel)].into(),
+    let table = [MountDescriptor {
+        item: "reference_rifle".to_string(),
+        attachments: Some([(MOUNT_SOCKET.to_string(), rifle_viewmodel)].into()),
+        muzzle_socket: None,
     }];
     let violations = table_violations(
         &table,
@@ -327,9 +328,10 @@ fn a_listed_bake_re_exported_without_extras_mount_fails_the_table_check() {
         std::fs::copy(source_folder.join(file), folder.join(file))
             .unwrap_or_else(|error| panic!("{file} copies: {error}"));
     }
-    let table = [WeaponMountDescriptor {
-        weapon: "reference_rifle".to_string(),
-        attachments: [(MOUNT_SOCKET.to_string(), model.to_string())].into(),
+    let table = [MountDescriptor {
+        item: "reference_rifle".to_string(),
+        attachments: Some([(MOUNT_SOCKET.to_string(), model.to_string())].into()),
+        muzzle_socket: None,
     }];
 
     let violations = table_violations(
@@ -343,5 +345,155 @@ fn a_listed_bake_re_exported_without_extras_mount_fails_the_table_check() {
     assert!(
         violations[0].contains("declares no extras.mount"),
         "{violations:?}"
+    );
+}
+
+/// The dev NPCs that carry an AR_4 rifle, each on the bake fitted to its rig.
+const AR_4_NPCS: [&str; 3] = ["limitator", "rifle_trooper", "rifle_warrior"];
+
+fn descriptor_named<'a>(
+    descriptors: &'a [EntityTypeDescriptor],
+    name: &str,
+) -> &'a EntityTypeDescriptor {
+    descriptors
+        .iter()
+        .find(|descriptor| descriptor.canonical_name.as_deref() == Some(name))
+        .unwrap_or_else(|| panic!("the dev mod registers `{name}`"))
+}
+
+// The limitator and the rifle squads mount their rifle through `mesh.mounts`:
+// each composes exactly one `hand_r` attachment, the AR_4 bake named for its
+// own rig, and no dev descriptor names an AR_4 bake as a base attachment.
+#[test]
+fn dev_npcs_compose_one_hand_attachment_naming_their_own_rig_ar_4_bake() {
+    use postretro_sim::scripting::builtins::npc_mounts::compose_attachments;
+
+    let descriptors = dev_descriptors();
+    for name in AR_4_NPCS {
+        let descriptor = descriptor_named(&descriptors, name);
+        let mesh = descriptor.mesh.as_ref().expect("the NPC has a mesh");
+        let rig = mesh
+            .model
+            .split('/')
+            .nth(1)
+            .expect("a rig's model sits in its own folder");
+        assert_eq!(
+            compose_attachments(descriptor, mesh),
+            vec![("hand_r".to_string(), format!("models/ar_4/{rig}.gltf"))],
+            "{name} mounts its own rig's AR_4 bake and nothing else"
+        );
+    }
+    for descriptor in &descriptors {
+        let Some(mesh) = descriptor.mesh.as_ref() else {
+            continue;
+        };
+        for (socket, model) in &mesh.attachments {
+            assert!(
+                !model.starts_with("models/ar_4/"),
+                "{:?} names an AR_4 bake on base socket {socket}; NPCs mount them through mesh.mounts",
+                descriptor.canonical_name
+            );
+        }
+    }
+}
+
+// Each AR_4 bake carries the rigid `muzzle` node at its barrel tip that an
+// NPC's shot origin reads.
+#[test]
+fn every_ar_4_bake_loads_with_a_rigid_muzzle_socket() {
+    use postretro_model::gltf_loader::SocketBinding;
+
+    let folder = content_path(&dev_content_root(), "models/ar_4");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&folder).expect("the AR_4 bake folder exists") {
+        let path = entry.expect("readable entry").path();
+        if path.extension().is_none_or(|ext| ext != "gltf") {
+            continue;
+        }
+        let model = load_model(&path).unwrap_or_else(|error| panic!("{path:?} loads: {error}"));
+        assert!(
+            matches!(
+                model.sockets.get("muzzle"),
+                Some(SocketBinding::RigidRest(_))
+            ),
+            "{path:?} carries a rigid `muzzle` socket"
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 3, "limitator, trooper and warrior bakes");
+}
+
+// The built-in-weapon fixture: `cannon_brute` mounts nothing for its cannon
+// (the entry names a body socket, not a bake), and the muzzle resolver reads
+// that socket on the real, loaded model.
+#[test]
+fn cannon_brute_mounts_no_attachment_and_resolves_its_muzzle_to_the_body_socket() {
+    use crate::scripting_systems::hit_zones::{HitZoneStore, ModelLoadWarningOwner};
+    use postretro_sim::scripting::builtins::npc_mounts::{compose_attachments, npc_muzzle_mount};
+    use postretro_sim::scripting_systems::muzzle_pose::MuzzleMount;
+
+    let descriptors = dev_descriptors();
+    let brute = descriptor_named(&descriptors, "cannon_brute");
+    let mesh = brute.mesh.as_ref().expect("the cannon brute has a mesh");
+    assert!(
+        compose_attachments(brute, mesh).is_empty(),
+        "a muzzleSocket entry mounts nothing"
+    );
+    let weapons = brute.behavior.as_ref().unwrap().attack_weapons();
+    assert_eq!(weapons, ["arm_cannon", "arm_cannon_burst"]);
+
+    let mut store = HitZoneStore::new();
+    store.insert_from_load(
+        &mesh.model,
+        &dev_content_root(),
+        ModelLoadWarningOwner::GameSide,
+    );
+    for weapon in ["arm_cannon", "arm_cannon_burst"] {
+        assert_eq!(
+            npc_muzzle_mount(brute, weapon, &store),
+            Some(MuzzleMount::BodySocket("cannon_tip")),
+            "{weapon}"
+        );
+    }
+    assert_eq!(
+        npc_muzzle_mount(brute, "arm_cannon", &HitZoneStore::new()),
+        None,
+        "no body loaded, no muzzle"
+    );
+}
+
+// The brute's attack leaves from the raised cannon: at the release's first
+// tick (`smash_strike` at time 0, the pose `smash_windup` ends on) the barrel,
+// `cannon_tip`'s local +Y, points within 35 degrees of the model's +Z front and
+// near level. The mutant has no shoot clip; `punch` points the cannon 41 degrees
+// off front and 40 down at its strike, so the fixture does not use it.
+#[test]
+fn cannon_brute_attack_clip_points_the_cannon_forward_at_the_shot() {
+    use glam::Vec3;
+    use postretro_model::mount::resolve_socket_frame;
+
+    let descriptors = dev_descriptors();
+    let brute = descriptor_named(&descriptors, "cannon_brute");
+    let mesh = brute.mesh.as_ref().unwrap();
+    let strike = mesh
+        .animations
+        .get("smash_strike")
+        .expect("the release plays the smash_strike state");
+    let frame = resolve_socket_frame(
+        &content_path(&dev_content_root(), &mesh.model),
+        &strike.clip,
+        "cannon_tip",
+        0.0,
+    )
+    .expect("cannon_tip resolves under the strike clip");
+    let barrel = frame.matrix.y_axis.truncate().normalize();
+    let from_front = barrel.dot(Vec3::Z).clamp(-1.0, 1.0).acos().to_degrees();
+    assert!(
+        from_front < 35.0,
+        "the barrel points {from_front:.0} degrees off the front at the shot: {barrel}"
+    );
+    assert!(
+        barrel.y.abs() < 0.35,
+        "the barrel is near level at the shot: {barrel}"
     );
 }

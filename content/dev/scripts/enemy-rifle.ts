@@ -63,7 +63,7 @@ export const enemyRifleBurstEntity = defineEntity({
 });
 
 // One look for every enemy rifle shot.
-function enemyRifleProjectile(): ProjectileDescriptor {
+export function enemyRifleProjectile(): ProjectileDescriptor {
   return {
     speed: 20,
     radius: 0.15,

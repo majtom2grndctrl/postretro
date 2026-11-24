@@ -21,6 +21,7 @@ mod life_states;
 mod loading_manifest;
 mod maps;
 mod mesh;
+mod mounts;
 mod movement_core;
 mod movement_crouch_forgiveness;
 mod movement_dash;
@@ -40,6 +41,5 @@ mod sounds;
 mod stance_handles;
 mod ui_bridge;
 mod ui_bridge_drains;
-mod weapon_mounts;
 
 mod activation;

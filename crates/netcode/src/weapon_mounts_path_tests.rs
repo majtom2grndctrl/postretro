@@ -349,7 +349,7 @@ fn a_switch_swaps_entries_and_returns_base_attachments_on_host_and_client() {
         }
     }
     // One warning per peer for the pickup, however many pawns wield it.
-    let pickup = "[Weapon mounts] entity `player` has no weaponMounts entry for weapon `pickup`; it mounts nothing";
+    let pickup = "[Weapon mounts] entity `player` has no mounts entry for weapon `pickup`; it mounts nothing";
     assert_eq!(
         logs.records()
             .iter()

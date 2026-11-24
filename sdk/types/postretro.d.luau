@@ -59,8 +59,8 @@ export type MeshDescriptor = {
   model: string,
   --- Optional socket-name → content-relative prop-model map. Both socket names and model paths must be non-empty. Attachments are presentation-only and follow their holder's authored socket.
   attachments: { [string]: string }?,
-  --- Optional per-weapon mounts fitted to this model's rig: for each weapon the character may wield, the props it holds while that weapon is active. While a weapon is active its entry's sockets replace `attachments` on the same sockets; when the weapon leaves, those sockets return to `attachments`. A weapon with no entry mounts nothing. Omit the table for a character whose weapon is part of its model: it mounts no weapon and logs nothing. Declaring it, even empty, warns about each wielded weapon it lacks. Each weapon appears at most once. Presentation only: fire origin and hit tests ignore it. A hot-reload edit applies at the next level load.
-  weaponMounts: {WeaponMountDescriptor}?,
+  --- Optional per-weapon table fitted to this model's rig, one entry per weapon: `{ item, attachments }` (props mounted on sockets) or `{ item, muzzleSocket }` (exactly one). A player mounts its active weapon's entry; its sockets replace `attachments` on the same sockets, and return to `attachments` when the weapon leaves. An NPC mounts the entry of every weapon its attacks name, entries winning over `attachments`; two attack weapons may share a socket only with one model, or the load fails. Mounts draw on every peer, composed from the descriptors. On the host an NPC's shots start at the fired weapon's mounted bake `muzzle` socket, or at the entry's `muzzleSocket`, and the gun's near path from that point gates the shot; a player's fire origin ignores mounts, and hit tests ignore them. A weapon built into the body uses `{ item, muzzleSocket }`. Declaring the table makes a missing entry (a loadout weapon, or an attack weapon) warn at load; omit it for a character with no mounted weapon. Each weapon appears at most once. A hot-reload edit applies at the next level load.
+  mounts: {MountDescriptor}?,
   --- Per-model skinned pool-shadow receiver-bias multiplier. Defaults to 1.0; must be finite and in 0.0..=4.0. Set 0.0 to disable the receiver offset for this model.
   shadowBiasScale: number?,
   --- When true, hides this mesh from the main view: it renders only into shadow-depth passes and, at Reflection quality very high and ultra, the water mirror. Optional; defaults to false. For player descriptors this applies only to the owning local view; peer viewers render the avatar forward.
@@ -73,12 +73,14 @@ export type MeshDescriptor = {
   locomotion: LocomotionDescriptor?,
 }
 
---- One entry of `MeshDescriptor.weaponMounts`: the props a character mounts while it wields one weapon, each baked for this character's rig (`postretro-tool solve-weapon-mount`). Unknown keys are rejected.
-export type WeaponMountDescriptor = {
+--- One entry of `MeshDescriptor.mounts`: either the props a character mounts for one weapon, each baked for this character's rig (`postretro-tool solve-weapon-mount`), or the body socket a built-in weapon's NPC shots leave from. Unknown keys are rejected.
+export type MountDescriptor = {
   --- The weapon this entry mounts for: the value `defineEntity` returned for a descriptor declaring a weapon block, as in `components.inventory.loadout`. The SDK lowers it to the weapon's canonical name.
-  weapon: WeaponEntityDescriptor,
-  --- Socket-name → content-relative prop-model map, mounted while this weapon is active. Must be non-empty; each model path uses forward slashes and stays inside the content root.
-  attachments: { [string]: string },
+  item: WeaponEntityDescriptor,
+  --- Socket-name → content-relative prop-model map, mounted while a player wields this weapon, or always on an NPC whose attacks name it. Must be non-empty; each model path uses forward slashes and stays inside the content root. Exactly one of `attachments` and `muzzleSocket` is required; naming both or neither rejects load.
+  attachments: { [string]: string }?,
+  --- A socket on the character's own body model that this weapon's shots leave from, for a weapon built into the body. The entry mounts nothing. Must be a non-empty socket name. Exactly one of `attachments` and `muzzleSocket` is required; naming both or neither rejects load.
+  muzzleSocket: string?,
 }
 
 --- Authored per-archetype locomotion calibration attached to `MeshDescriptor.locomotion`. Sibling to the per-state `travelSpeed` override.
@@ -730,7 +732,7 @@ export type WeaponDescriptor = {
   viewmodel: string?,
   --- Optional sound keys for this weapon's events, played whoever wields it. Each key names a sound under the mod's `sounds/` directory without its extension (`sfx/pistol_fire`). Presentation only; resolved fire/impact keys accompany observer cues, while weapon tuning excludes sound keys.
   sounds: WeaponSounds?,
-  --- Optional per-weapon first-person placement. Position uses metres from screen center (right/up/forward map to +X/+Y/-Z) and rotation uses degrees. Whole-value resolution is per-instance (future) > this field > character (future) > mod `defaultWeaponPlacement` > legacy BASE_OFFSET with zero rotation. v1 supplies no character or per-instance placement. It never changes a third-person weapon mount (`mesh.weaponMounts`).
+  --- Optional per-weapon first-person placement. Position uses metres from screen center (right/up/forward map to +X/+Y/-Z) and rotation uses degrees. Whole-value resolution is per-instance (future) > this field > character (future) > mod `defaultWeaponPlacement` > legacy BASE_OFFSET with zero rotation. v1 supplies no character or per-instance placement. It never changes a third-person weapon mount (`mesh.mounts`).
   placement: WeaponPlacementDescriptor?,
   --- Optional model-local [x, y, z] offset in metres in the viewmodel's own frame. Omit it to spawn projectiles at the camera eye; when set, it moves the projectile spawn to the barrel while still converging on the crosshair. Author values come from the viewmodel rigid `muzzle` socket read.
   muzzleOffset: {number}?,
@@ -1755,7 +1757,7 @@ export type ModManifest = {
   input: ModInput?,
   --- Mod-global switching policy. Optional; omission preserves immediate direct selection, zero cycle dwell, and reload interruption.
   switching: SwitchingDescriptor?,
-  --- Optional mod-global first-person weapon placement. It is the lowest authored tier in whole-value resolution: per-instance (future) > per-weapon > character (future) > this default > legacy BASE_OFFSET with zero rotation. v1 supplies no character or per-instance placement. It never changes a third-person weapon mount (`mesh.weaponMounts`).
+  --- Optional mod-global first-person weapon placement. It is the lowest authored tier in whole-value resolution: per-instance (future) > per-weapon > character (future) > this default > legacy BASE_OFFSET with zero rotation. v1 supplies no character or per-instance placement. It never changes a third-person weapon mount (`mesh.mounts`).
   defaultWeaponPlacement: WeaponPlacementDescriptor?,
   --- Engine-global entity-type registrations. Optional; survive level unload and are committed only after manifest validation and required durable-identity validation succeed.
   entities: {EntityTypeDescriptor}?,
@@ -3317,10 +3319,10 @@ declare function fire(reaction: Reaction<any> | string): {SequenceStep}
 --- matched against `ModMapEntry.tags`; omit scoping for every level.
 declare function scopeReactions<S>(tags: {string}, list: {Reaction<S>}): {Reaction<S>}
 
---- An entity descriptor returned by `defineEntity` that declares a weapon block and can be referenced from an inventory loadout or from `mesh.weaponMounts[].weapon`.
+--- An entity descriptor returned by `defineEntity` that declares a weapon block and can be referenced from an inventory loadout or from `mesh.mounts[].item`.
 export type WeaponEntityDescriptor = EntityTypeDescriptor & { components: EntityTypeComponents & { weapon: WeaponDescriptor } }
 --- Lowers `components.inventory.loadout` and
---- `components.mesh.weaponMounts[].weapon` weapon descriptor references to
+--- `components.mesh.mounts[].item` weapon descriptor references to
 --- their canonical names after validating each reference by value.
 declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- Pure identity builder for the mod manifest consumed from the chunk return.
@@ -4092,7 +4094,7 @@ export type BrainInputs = {
   targetReachable: RuntimeGuardNode,
   --- Successful attack fires since the currently-evaluated activity was entered. It is scope-relative and a fire becomes visible on the next tick's guard refresh (number).
   attacksFiredInActivity: RuntimeGuardNode,
-  --- `true` when the selected target is clear on the enemy's shared, debounced sightline, which static geometry and movers at their current pose block (a closed door hides the target); false with no target. This is the LOS verdict the engine fire gate also reads, before its range, cooldown, and facing requirements (boolean).
+  --- `true` when the selected target is clear on the enemy's shared, debounced sightline, which static geometry and movers at their current pose block (a closed door hides the target); false with no target. This is the eye's line-of-sight verdict, which perception and the engine fire gate share, before the gate's range, cooldown, and facing requirements. The fire gate also tests the gun's near path, so `targetVisible` can read true while every shot is held (see `attacksHeldInActivity`) (boolean).
   targetVisible: RuntimeGuardNode,
   --- Milliseconds since this enemy last took damage. A fresh never-hit brain reads `1e9`; a landed hit resets it to zero and later AI ticks monotonically age it back to that sentinel (number).
   timeSinceDamageMs: RuntimeGuardNode,
@@ -4116,6 +4118,8 @@ export type BrainInputs = {
   damageInActivity: RuntimeGuardNode,
   --- Highest awareness of any candidate, 0 to 1; 1 once it has a target. A guard on a decide reads the value that decide's acquisition check produced (number).
   awareness: RuntimeGuardNode,
+  --- Shots the gun's near-path test held since the currently-evaluated activity was entered: a clip moment that whiffed on a blocked near path, a burst shot skipped on one, or an attack with no clip moment when it becomes held (counted once per hold, and again at each activity entry while still held). Visible on the next tick's guard refresh. An eye-sight failure, a missing muzzle, a shot withheld while the enemy is not aiming, and an obstacle past the near distance count nothing. Host-only (number).
+  attacksHeldInActivity: RuntimeGuardNode,
 }
 
 --- Pre-wrapped guard input leaves for the fixed `@brain.*` namespace.

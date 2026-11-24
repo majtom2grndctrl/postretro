@@ -108,9 +108,9 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "Optional socket-name → content-relative prop-model map. Both socket names and model paths must be non-empty. Attachments are presentation-only and follow their holder's authored socket.",
         )
         .field(
-            "weaponMounts?",
-            "Vec<WeaponMountDescriptor>",
-            "Optional per-weapon mounts fitted to this model's rig: for each weapon the character may wield, the props it holds while that weapon is active. While a weapon is active its entry's sockets replace `attachments` on the same sockets; when the weapon leaves, those sockets return to `attachments`. A weapon with no entry mounts nothing. Omit the table for a character whose weapon is part of its model: it mounts no weapon and logs nothing. Declaring it, even empty, warns about each wielded weapon it lacks. Each weapon appears at most once. Presentation only: fire origin and hit tests ignore it. A hot-reload edit applies at the next level load.",
+            "mounts?",
+            "Vec<MountDescriptor>",
+            "Optional per-weapon table fitted to this model's rig, one entry per weapon: `{ item, attachments }` (props mounted on sockets) or `{ item, muzzleSocket }` (exactly one). A player mounts its active weapon's entry; its sockets replace `attachments` on the same sockets, and return to `attachments` when the weapon leaves. An NPC mounts the entry of every weapon its attacks name, entries winning over `attachments`; two attack weapons may share a socket only with one model, or the load fails. Mounts draw on every peer, composed from the descriptors. On the host an NPC's shots start at the fired weapon's mounted bake `muzzle` socket, or at the entry's `muzzleSocket`, and the gun's near path from that point gates the shot; a player's fire origin ignores mounts, and hit tests ignore them. A weapon built into the body uses `{ item, muzzleSocket }`. Declaring the table makes a missing entry (a loadout weapon, or an attack weapon) warn at load; omit it for a character with no mounted weapon. Each weapon appears at most once. A hot-reload edit applies at the next level load.",
         )
         .field("shadowBiasScale?", "number", "Per-model skinned pool-shadow receiver-bias multiplier. Defaults to 1.0; must be finite and in 0.0..=4.0. Set 0.0 to disable the receiver offset for this model.")
         .field("shadowOnly?", "bool", "When true, hides this mesh from the main view: it renders only into shadow-depth passes and, at Reflection quality very high and ultra, the water mirror. Optional; defaults to false. For player descriptors this applies only to the owning local view; peer viewers render the avatar forward.")
@@ -131,10 +131,11 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         )
         .finish();
     registry
-        .register_type("WeaponMountDescriptor")
-        .doc("One entry of `MeshDescriptor.weaponMounts`: the props a character mounts while it wields one weapon, each baked for this character's rig (`postretro-tool solve-weapon-mount`). Unknown keys are rejected.")
-        .field("weapon", "WeaponEntityDescriptor", "The weapon this entry mounts for: the value `defineEntity` returned for a descriptor declaring a weapon block, as in `components.inventory.loadout`. The SDK lowers it to the weapon's canonical name.")
-        .field("attachments", "MeshAttachments", "Socket-name → content-relative prop-model map, mounted while this weapon is active. Must be non-empty; each model path uses forward slashes and stays inside the content root.")
+        .register_type("MountDescriptor")
+        .doc("One entry of `MeshDescriptor.mounts`: either the props a character mounts for one weapon, each baked for this character's rig (`postretro-tool solve-weapon-mount`), or the body socket a built-in weapon's NPC shots leave from. Unknown keys are rejected.")
+        .field("item", "WeaponEntityDescriptor", "The weapon this entry mounts for: the value `defineEntity` returned for a descriptor declaring a weapon block, as in `components.inventory.loadout`. The SDK lowers it to the weapon's canonical name.")
+        .field("attachments?", "MeshAttachments", "Socket-name → content-relative prop-model map, mounted while a player wields this weapon, or always on an NPC whose attacks name it. Must be non-empty; each model path uses forward slashes and stays inside the content root. Exactly one of `attachments` and `muzzleSocket` is required; naming both or neither rejects load.")
+        .field("muzzleSocket?", "String", "A socket on the character's own body model that this weapon's shots leave from, for a weapon built into the body. The entry mounts nothing. Must be a non-empty socket name. Exactly one of `attachments` and `muzzleSocket` is required; naming both or neither rejects load.")
         .finish();
     registry
         .register_type("LocomotionDescriptor")
@@ -617,7 +618,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("creditSource?", "String", "Optional combat attribution source id for this weapon. Must be non-empty ASCII, at most 64 bytes, and use only [A-Za-z0-9_.:-]. Omit to use the resolved canonical weapon name at spawn.")
         .field("viewmodel?", "String", "Optional content-relative model rendered as this weapon's first-person viewmodel. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal.")
         .field("sounds?", "WeaponSounds", "Optional sound keys for this weapon's events, played whoever wields it. Each key names a sound under the mod's `sounds/` directory without its extension (`sfx/pistol_fire`). Presentation only; resolved fire/impact keys accompany observer cues, while weapon tuning excludes sound keys.")
-        .field("placement?", "WeaponPlacementDescriptor", "Optional per-weapon first-person placement. Position uses metres from screen center (right/up/forward map to +X/+Y/-Z) and rotation uses degrees. Whole-value resolution is per-instance (future) > this field > character (future) > mod `defaultWeaponPlacement` > legacy BASE_OFFSET with zero rotation. v1 supplies no character or per-instance placement. It never changes a third-person weapon mount (`mesh.weaponMounts`).")
+        .field("placement?", "WeaponPlacementDescriptor", "Optional per-weapon first-person placement. Position uses metres from screen center (right/up/forward map to +X/+Y/-Z) and rotation uses degrees. Whole-value resolution is per-instance (future) > this field > character (future) > mod `defaultWeaponPlacement` > legacy BASE_OFFSET with zero rotation. v1 supplies no character or per-instance placement. It never changes a third-person weapon mount (`mesh.mounts`).")
         .field("muzzleOffset?", "[f32; 3]", "Optional model-local [x, y, z] offset in metres in the viewmodel's own frame. Omit it to spawn projectiles at the camera eye; when set, it moves the projectile spawn to the barrel while still converging on the crosshair. Author values come from the viewmodel rigid `muzzle` socket read.")
         .field("resource?", "WeaponResource", "Optional weapon resource tuning. Omit to preserve unlimited-fire behavior.")
         .field("lowerMs?", "u32", "Lowering duration in milliseconds. Optional; defaults to 0, which repoints within the same tick.")

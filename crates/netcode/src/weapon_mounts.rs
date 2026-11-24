@@ -22,7 +22,7 @@ use crate::scripting_systems::weapon_mounts::{
 const DEFAULT_WIELDER_CLASS: &str = "player";
 
 /// Recompose `pawn`'s mounted attachments from the wielder descriptor named
-/// `wielder_class`: its base `mesh.attachments`, then its `mesh.weaponMounts`
+/// `wielder_class`: its base `mesh.attachments`, then its `mesh.mounts`
 /// entry for the active weapon, the entry winning per socket. Only the shared
 /// active-weapon identity and the pawn's class feed it, so every peer resolves
 /// the same mount from its own descriptors and nothing crosses the wire.
@@ -113,12 +113,17 @@ fn compose_mounted_attachments<'a>(
         .map(|(socket, model)| (socket.as_str(), model.as_str()))
         .collect();
     // No active weapon, or no table: the base attachments alone, silently.
-    let (Some(weapon), Some(_)) = (active_weapon_archetype, wielder_mesh.weapon_mounts.as_ref())
-    else {
+    let (Some(weapon), Some(_)) = (active_weapon_archetype, wielder_mesh.mounts.as_ref()) else {
         return mounted;
     };
-    let Some(entry) = wielder_mesh.weapon_mount(weapon) else {
+    let Some(entry) = wielder_mesh.mount(weapon) else {
         warn_missing_weapon_mount_entry(hit_zone_store, wielder_class, weapon);
+        return mounted;
+    };
+
+    // A `muzzleSocket` entry names a body socket for an NPC's shot origin and
+    // mounts nothing; a pawn ignores it, and its fire origin is unchanged.
+    let Some(entry_attachments) = entry.attachments.as_ref() else {
         return mounted;
     };
 
@@ -129,7 +134,7 @@ fn compose_mounted_attachments<'a>(
         warn_weapon_mount_holder_missing(hit_zone_store, wielder_class, weapon, holder_model);
         return mounted;
     };
-    let mut sockets: Vec<(&String, &String)> = entry.attachments.iter().collect();
+    let mut sockets: Vec<(&String, &String)> = entry_attachments.iter().collect();
     sockets.sort_unstable();
     for (socket, model) in sockets {
         // A socket the rig lacks is reported ahead of its model: nothing could

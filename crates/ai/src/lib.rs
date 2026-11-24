@@ -25,6 +25,7 @@ mod graph_eval;
 mod heading;
 mod launch;
 mod leap;
+mod npc_launch;
 mod pawn_index;
 mod perception;
 mod steering;
@@ -191,7 +192,9 @@ pub(crate) struct EnemyOutcome {
     pub(crate) position: Vec3,
     pub(crate) target: Option<TargetPawn>,
     /// Canonical enemy-eye/target-aim LOS endpoints. Passing them as data keeps
-    /// combat positioning registry-decoupled and aligned with the fire gate.
+    /// combat positioning registry-decoupled and aligned with the fire gate's
+    /// eye half; slot scoring does not test the gun's near path.
+    /// See: context/lib/entity_model.md §7c
     pub(crate) enemy_eye_offset: Vec3,
     pub(crate) target_aim: Option<Vec3>,
     pub(crate) brain: BrainComponent,
@@ -233,7 +236,9 @@ pub(crate) struct EnemyOutcome {
     /// activity-count commit waits for apply to revalidate the target against
     /// earlier outcomes in the same batch.
     attack: Option<PendingAttack>,
-    /// Current selected-target aim for an already accepted weapon sequence.
+    /// Current selected-target aim for an already accepted weapon sequence:
+    /// the eye's. The launch re-origins each shot at the fired weapon's muzzle
+    /// when it has one (`npc_launch`).
     weapon_aim: Option<weapon_controller::WeaponAim>,
     /// The selected offense action's standoff before and after this tick's
     /// transition. Combat slots are path-relative, not root-graph-relative.
@@ -824,6 +829,11 @@ where
         blocked_warned,
         weapons,
         turns,
+        npc_launch::LaunchInputs {
+            world: sight_world.as_ref(),
+            descriptors,
+            store: clips,
+        },
         host,
     )
 }

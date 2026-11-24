@@ -14,15 +14,18 @@ Do not commit the built `.prl` unless a later workflow explicitly asks for compi
 - **Corridor corners**: south-side 90-degree obstacle run. Use for waypoint snap, bounded turn-rate, and lookahead evaluation.
 - **Straight run**: east-side long lane with low side rails. Use for acceleration/deceleration and walk-cycle reading.
 - **Arena ring**: north-side open area with the `player_spawn` centered and 4 `reference_enemy` spawns on a 432 Quake-unit rim. At 1 Quake unit = 0.0254 m, that is about 10.97 m, inside the reference enemy 16 m detection range, so the wave should actively chase and produce path, velocity, and destination overlay data.
-- **Crossfire raiders**: three low-tolerance `crossfire_raider` spawns in the northwest corner, about 20 m from the arena wave. They hold their own ground and reach the arena as a group, and they can still take damage in the crossfire tests.
-- **Rifle troopers**: three `rifle_trooper` spawns in the southeast corner, faction `rifle.troopers`.
-- **Rifle warriors**: three `rifle_warrior` spawns in the southwest corner, faction `rifle.warriors`. Each squad is hostile to the other and to the raiders, and both are mesh-only characters bound to the shared clip library.
+- **Crossfire raiders**: three low-tolerance `crossfire_raider` spawns tucked into the far northwest corner. They hold their own ground and reach the arena as a group, and they can still take damage in the crossfire tests.
+- **Rifle troopers**: four `rifle_trooper` spawns and two `cannon_brute`s (the arm-cannon mutant, whose shots leave its `cannon_tip` body socket) spread across the southeast corner, faction `rifle.troopers`.
+- **Rifle warriors**: four `rifle_warrior` spawns spread across the southwest corner, faction `rifle.warriors`. Each squad is hostile to the other and to the raiders, and both are mesh-only characters bound to the shared clip library.
 - **Pose fixture enemy**: a `pose_fixture_enemy` beside the player start. It uses the content-facing copy of the model crate's three-joint `joint_zones` test fixture. Its no-op animation clip lets its AI target acquisition drive E21 aim pose inputs and the fixture's `poseMask`/`aimBendWeight` extras; the `hand_r` socket carries the rigid attachment marker so it visibly follows the bent leaf joint. It is a deliberately tiny triangle marker, not final character art.
+- **Chest-high cover**: three standalone 52-unit (about 1.32 m), 3 m walls on each rifle corner's west and north edges, well clear of the spawns and of each other, so cover never pens a squad in. A trooper's rifle sits above the lip, so it fires over; the cannon brute's cannon sits below it, so its near-path gate holds those shots (`brain.attacksHeldInActivity`). Use for the NPC weapon mount cover checks.
 - **Narrow doorway**: northeast barrier with a 35 Quake-unit opening. That is about 0.89 m, just over the default 0.8 m nav-agent diameter.
 
 ## Faction Layout
 
-Each faction starts in its own area: the unfactioned arena wave around the player start, raiders northwest, troopers southeast, warriors southwest. Keep open floor between groups when adding placements, so they meet rather than spawn mixed.
+Each faction starts in its own corner: the unfactioned arena wave around the player start, raiders far northwest, troopers and the cannon brute southeast, warriors southwest. The limitator no longer appears here: its dark texture reads poorly, and the rifle squads cover the same behavior. Squad members spawn 5-8 m apart across about 15 m of their corner, so a burst at an enemy rarely crosses a squadmate; packed spawns, or cover that pens a squad together, set squadmates' shots into each other and they turn on one another. Keep open floor between groups when adding placements, so they meet rather than spawn mixed.
+
+Each faction corner has a warm `light_spot` aimed straight down from just under the domed ceiling (which sits lowest over the northwest corner, about 177 units) and two colored ceiling-wash `light`s, one pink and one cyan, matching the map's pink and cyan ambient lights (`light` 8, 750-unit reach) but placed outside their linked groups. Each pair sits 8+ m apart at about 60-65% of the ceiling height above it, roughly 65-110 units under the dome. Find them by their `faction corner ceiling wash: <faction> <color>` names.
 
 ## Diagnostics Check
 

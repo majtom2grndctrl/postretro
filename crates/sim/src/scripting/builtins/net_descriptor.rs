@@ -749,7 +749,7 @@ mod tests {
                 animations,
                 default_state,
                 locomotion: None,
-                weapon_mounts: None,
+                mounts: None,
             }),
             health: None,
             behavior: None,
@@ -1470,7 +1470,7 @@ mod tests {
             animations: Default::default(),
             default_state: None,
             locomotion: None,
-            weapon_mounts: None,
+            mounts: None,
         });
         descriptor
     }

@@ -2754,7 +2754,7 @@ mod tests {
                 animations: HashMap::new(),
                 default_state: None,
                 locomotion: None,
-                weapon_mounts: None,
+                mounts: None,
             }),
             health: None,
             behavior: None,

@@ -39,7 +39,7 @@ fn deferred_reload(
 fn a_switch_after_a_deferred_table_edit_mounts_the_pre_edit_entry_until_the_next_level_load() {
     let before = descriptors();
     let mut edited = before.clone();
-    edited[0].mesh.as_mut().unwrap().weapon_mounts =
+    edited[0].mesh.as_mut().unwrap().mounts =
         Some(vec![entry("pistol", &[("hand_r", PISTOL_TROOPER)])]);
     let active = deferred_reload(&before, &edited);
     let store = store();
@@ -92,7 +92,7 @@ fn a_loadout_weapon_added_with_its_entry_in_one_reload_mounts_nothing_until_the_
         .mesh
         .as_mut()
         .unwrap()
-        .weapon_mounts
+        .mounts
         .as_mut()
         .unwrap()
         .push(entry("pickup", &[("hand_r", PISTOL_TROOPER)]));

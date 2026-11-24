@@ -34,6 +34,20 @@
             162.890732
           ]
         }
+      },
+      "children": [
+        1
+      ]
+    },
+    {
+      "name": "muzzle",
+      "translation": [
+        -0.11138,
+        0.71611,
+        0.04609
+      ],
+      "extras": {
+        "socket": "muzzle"
       }
     }
   ],

@@ -440,7 +440,7 @@ fn cannon_brute_mounts_no_attachment_and_resolves_its_muzzle_to_the_body_socket(
         "a muzzleSocket entry mounts nothing"
     );
     let weapons = brute.behavior.as_ref().unwrap().attack_weapons();
-    assert_eq!(weapons, ["arm_cannon"]);
+    assert_eq!(weapons, ["arm_cannon", "arm_cannon_burst"]);
 
     let mut store = HitZoneStore::new();
     store.insert_from_load(
@@ -448,10 +448,13 @@ fn cannon_brute_mounts_no_attachment_and_resolves_its_muzzle_to_the_body_socket(
         &dev_content_root(),
         ModelLoadWarningOwner::GameSide,
     );
-    assert_eq!(
-        npc_muzzle_mount(brute, "arm_cannon", &store),
-        Some(MuzzleMount::BodySocket("cannon_tip")),
-    );
+    for weapon in ["arm_cannon", "arm_cannon_burst"] {
+        assert_eq!(
+            npc_muzzle_mount(brute, weapon, &store),
+            Some(MuzzleMount::BodySocket("cannon_tip")),
+            "{weapon}"
+        );
+    }
     assert_eq!(
         npc_muzzle_mount(brute, "arm_cannon", &HitZoneStore::new()),
         None,

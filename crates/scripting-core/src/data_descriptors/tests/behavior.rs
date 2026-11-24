@@ -499,6 +499,8 @@ pub(super) fn shipped_reference_descriptor_from_typescript(
         "attack-tokens.ts",
         "enemy-rifle.ts",
         "arm-cannon.ts",
+        "rifle-squads.ts",
+        "limitator.ts",
     ] {
         std::fs::write(
             directory.join(module),

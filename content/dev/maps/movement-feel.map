@@ -195,6 +195,60 @@
 ( 1616 1616 -16 ) ( -1416 1616 0 ) ( -1416 1616 -16 ) concrete_pavement_036 0 0 0 1 1
 ( 1616 -1016 -16 ) ( 1616 1616 0 ) ( 1616 1616 -16 ) concrete_pavement_036 0 0 0 1 1
 }
+// chest-high cover
+{
+( 1180 -760 0 ) ( 1180 -960 52 ) ( 1180 -960 0 ) concrete_pavement_036 0 0 0 1 1
+( 1180 -960 0 ) ( 1196 -960 52 ) ( 1196 -960 0 ) concrete_pavement_036 0 0 0 1 1
+( 1180 -960 0 ) ( 1196 -760 0 ) ( 1180 -760 0 ) concrete_pavement_036 0 0 0 1 1
+( 1180 -760 52 ) ( 1196 -960 52 ) ( 1180 -960 52 ) concrete_pavement_036 0 0 0 1 1
+( 1196 -760 0 ) ( 1180 -760 52 ) ( 1180 -760 0 ) concrete_pavement_036 0 0 0 1 1
+( 1196 -960 0 ) ( 1196 -760 52 ) ( 1196 -760 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// chest-high cover
+{
+( 1260 -624 0 ) ( 1260 -640 52 ) ( 1260 -640 0 ) concrete_pavement_036 0 0 0 1 1
+( 1260 -640 0 ) ( 1460 -640 52 ) ( 1460 -640 0 ) concrete_pavement_036 0 0 0 1 1
+( 1260 -640 0 ) ( 1460 -624 0 ) ( 1260 -624 0 ) concrete_pavement_036 0 0 0 1 1
+( 1260 -624 52 ) ( 1460 -640 52 ) ( 1260 -640 52 ) concrete_pavement_036 0 0 0 1 1
+( 1460 -624 0 ) ( 1260 -624 52 ) ( 1260 -624 0 ) concrete_pavement_036 0 0 0 1 1
+( 1460 -640 0 ) ( 1460 -624 52 ) ( 1460 -624 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// chest-high cover
+{
+( 1000 -484 0 ) ( 1000 -500 52 ) ( 1000 -500 0 ) concrete_pavement_036 0 0 0 1 1
+( 1000 -500 0 ) ( 1100 -500 52 ) ( 1100 -500 0 ) concrete_pavement_036 0 0 0 1 1
+( 1000 -500 0 ) ( 1100 -484 0 ) ( 1000 -484 0 ) concrete_pavement_036 0 0 0 1 1
+( 1000 -484 52 ) ( 1100 -500 52 ) ( 1000 -500 52 ) concrete_pavement_036 0 0 0 1 1
+( 1100 -484 0 ) ( 1000 -484 52 ) ( 1000 -484 0 ) concrete_pavement_036 0 0 0 1 1
+( 1100 -500 0 ) ( 1100 -484 52 ) ( 1100 -484 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// chest-high cover
+{
+( -1046 -760 0 ) ( -1046 -960 52 ) ( -1046 -960 0 ) concrete_pavement_036 0 0 0 1 1
+( -1046 -960 0 ) ( -1030 -960 52 ) ( -1030 -960 0 ) concrete_pavement_036 0 0 0 1 1
+( -1046 -960 0 ) ( -1030 -760 0 ) ( -1046 -760 0 ) concrete_pavement_036 0 0 0 1 1
+( -1046 -760 52 ) ( -1030 -960 52 ) ( -1046 -960 52 ) concrete_pavement_036 0 0 0 1 1
+( -1030 -760 0 ) ( -1046 -760 52 ) ( -1046 -760 0 ) concrete_pavement_036 0 0 0 1 1
+( -1030 -960 0 ) ( -1030 -760 52 ) ( -1030 -760 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// chest-high cover
+{
+( -1340 -624 0 ) ( -1340 -640 52 ) ( -1340 -640 0 ) concrete_pavement_036 0 0 0 1 1
+( -1340 -640 0 ) ( -1140 -640 52 ) ( -1140 -640 0 ) concrete_pavement_036 0 0 0 1 1
+( -1340 -640 0 ) ( -1140 -624 0 ) ( -1340 -624 0 ) concrete_pavement_036 0 0 0 1 1
+( -1340 -624 52 ) ( -1140 -640 52 ) ( -1340 -640 52 ) concrete_pavement_036 0 0 0 1 1
+( -1140 -624 0 ) ( -1340 -624 52 ) ( -1340 -624 0 ) concrete_pavement_036 0 0 0 1 1
+( -1140 -640 0 ) ( -1140 -624 52 ) ( -1140 -624 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// chest-high cover
+{
+( -900 -484 0 ) ( -900 -500 52 ) ( -900 -500 0 ) concrete_pavement_036 0 0 0 1 1
+( -900 -500 0 ) ( -800 -500 52 ) ( -800 -500 0 ) concrete_pavement_036 0 0 0 1 1
+( -900 -500 0 ) ( -800 -484 0 ) ( -900 -484 0 ) concrete_pavement_036 0 0 0 1 1
+( -900 -484 52 ) ( -800 -500 52 ) ( -900 -500 52 ) concrete_pavement_036 0 0 0 1 1
+( -800 -484 0 ) ( -900 -484 52 ) ( -900 -484 0 ) concrete_pavement_036 0 0 0 1 1
+( -800 -500 0 ) ( -800 -484 52 ) ( -800 -484 0 ) concrete_pavement_036 0 0 0 1 1
+}
 }
 // entity 1
 {
@@ -787,13 +841,6 @@
 "_tb_group" "9"
 }
 // Limitator — ranged enemy holding the AR_4 rifle (hand_r attachment).
-{
-"classname" "limitator"
-"origin" "-216 900 192"
-"angles" "0 90 0"
-"_tags" "enemy limitator"
-"_tb_group" "9"
-}
 // entity 32
 {
 "classname" "func_group"
@@ -806,24 +853,24 @@
 // entity 33
 {
 "classname" "crossfire_raider"
-"origin" "-1200 1200 192"
-"angles" "0 0 0"
+"origin" "-1300 1500 192"
+"angles" "0 315 0"
 "_tags" "enemy crossfire_raider"
 "_tb_group" "12"
 }
 // entity 34
 {
 "classname" "crossfire_raider"
-"origin" "-1200 1344 192"
-"angles" "0 0 0"
+"origin" "-1300 1340 192"
+"angles" "0 315 0"
 "_tags" "enemy crossfire_raider"
 "_tb_group" "12"
 }
 // entity 35
 {
 "classname" "crossfire_raider"
-"origin" "-1056 1344 192"
-"angles" "0 0 0"
+"origin" "-1140 1500 192"
+"angles" "0 315 0"
 "_tags" "enemy crossfire_raider"
 "_tb_group" "12"
 }
@@ -957,37 +1004,55 @@
 }
 {
 "classname" "rifle_trooper"
-"origin" "1300 -700 192"
+"origin" "1500 -900 48"
 "angles" "0 135 0"
 "_tags" "enemy rifle_trooper"
 }
 {
 "classname" "rifle_trooper"
-"origin" "1300 -850 192"
+"origin" "1500 -720 48"
 "angles" "0 135 0"
 "_tags" "enemy rifle_trooper"
 }
 {
 "classname" "rifle_trooper"
-"origin" "1450 -700 192"
+"origin" "1320 -900 48"
 "angles" "0 135 0"
 "_tags" "enemy rifle_trooper"
 }
 {
+"classname" "rifle_trooper"
+"origin" "1320 -720 48"
+"angles" "0 135 0"
+"_tags" "enemy rifle_trooper"
+}
+{
+"classname" "cannon_brute"
+"origin" "1410 -810 48"
+"angles" "0 135 0"
+"_tags" "enemy cannon_brute"
+}
+{
 "classname" "rifle_warrior"
-"origin" "-1200 -700 192"
+"origin" "-1300 -900 48"
 "angles" "0 45 0"
 "_tags" "enemy rifle_warrior"
 }
 {
 "classname" "rifle_warrior"
-"origin" "-1200 -850 192"
+"origin" "-1300 -720 48"
 "angles" "0 45 0"
 "_tags" "enemy rifle_warrior"
 }
 {
 "classname" "rifle_warrior"
-"origin" "-1050 -850 192"
+"origin" "-1120 -900 48"
+"angles" "0 45 0"
+"_tags" "enemy rifle_warrior"
+}
+{
+"classname" "rifle_warrior"
+"origin" "-1120 -720 48"
 "angles" "0 45 0"
 "_tags" "enemy rifle_warrior"
 }

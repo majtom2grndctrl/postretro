@@ -1971,6 +1971,14 @@ fn fluid_reflection_shader_constants_match_the_cpu_reference() {
             shader_f32("FLUID_REFLECTION_SHADOW_MARGIN"),
             s::FLUID_REFLECTION_SHADOW_MARGIN
         );
+        // The glossy overlay's alone: water's shader has no plane depth.
+        assert_eq!(
+            shader_const_in(ABOUT_WGSL, "FLUID_REFLECTION_SHADOW_PLANE_DEPTH", "f32")
+                .parse::<f32>()
+                .expect("an f32 literal"),
+            postretro_render_cpu::fluid_surface::reflection_search_about::
+                FLUID_REFLECTION_SHADOW_PLANE_DEPTH
+        );
         assert_eq!(
             shader_f32("FLUID_REFLECTION_HALF_TURN"),
             s::FLUID_REFLECTION_HALF_TURN
@@ -2495,88 +2503,113 @@ fn fluid_reflection_search_wgsl_bodies_match_the_cpu_reference() {
 
 // The search about a face's hemisphere axis, the glossy overlay's, is the CPU
 // `reflection_search_about` reference in WGSL, pinned on both sides, as
-// water's up-only search is pinned to `reflection_search`: h, the capture-shadow fade (its angle from the tile,
-// the turned tap, each side's gated edge, the fade), then the search (from
-// the unclamped origin: two independent taps, the depth margin and the fade,
-// K sphere steps, the box-hit bracket, M false-position estimates). The CPU's
-// `ends_at` closure is the WGSL's three returns through
-// `fluid_reflection_lookup_about`; its `Option` back end is the WGSL's back end
-// starting at the box hit, which a closing sphere step overwrites. The status
-// and the hit point are CPU diagnostics; the shader keeps the lookup and the
-// weight.
+// water's up-only search is pinned to `reflection_search`: the capture-shadow
+// tests' offset and h (the search's level within the plane depth behind the
+// capture point's plane, the origin's true position deeper), the search's h,
+// the capture-shadow fade (its angle from the tile, the turned tap, each
+// side's gated edge, the fade), then the search (from the unclamped origin:
+// two independent taps, the search's own tap at a deep origin, the depth
+// margin and the fade by the larger h, K sphere steps, the box-hit bracket, M
+// false-position estimates). The CPU's `ends_at` closure is the WGSL's three returns through
+// `fluid_reflection_lookup_about`; its `Option` back end is the WGSL's back
+// end starting at the box hit, which a closing sphere step overwrites. The
+// status and the hit point are CPU diagnostics; the shader keeps the lookup
+// and the weight.
 #[test]
 fn fluid_reflection_search_about_wgsl_bodies_match_the_cpu_reference() {
     let wgsl = ABOUT_WGSL;
     let cpu = include_str!("../../../render-cpu/src/fluid_surface/reflection_search_about.rs");
     // Each WGSL function takes the bound face's hemisphere axis and mirrors
     // the CPU's `_about` function.
-    let pinned: [(&str, &str, &str, &str); 5] = [
+    let pinned: [(&str, &str, &str, &str); 7] = [
+        (
+            "fluid_reflection_shadow_level",
+            "fnfluid_reflection_shadow_level(v:vec3<f32>,axis:vec3<f32>)->vec3<f32>{returnv-axis*\
+             clamp(dot(v,axis),-FLUID_REFLECTION_SHADOW_PLANE_DEPTH,0.0);}",
+            "reflection_shadow_level",
+            "fnreflection_shadow_level(v:Vec3,axis:Vec3)->Vec3{v-axis*v.dot(axis).clamp(-\
+             FLUID_REFLECTION_SHADOW_PLANE_DEPTH,0.0)}",
+        ),
         (
             "fluid_reflection_search_h_about",
-            "fnfluid_reflection_search_h_about(q:vec3<f32>,capture_point:vec3<f32>,axis:vec3<f32>,\
-             tile:vec2<u32>,layer:u32)->f32{letlevel=fluid_reflection_level(q-capture_point,\
-             axis);letl1=abs(level.x)+abs(level.y)+abs(level.z);\
-             ifl1<FLUID_REFLECTION_SEARCH_EPSILON{return-1.0;}returnl1*textureSampleLevel(\
-             fluid_probe_distance,sh_atlas_sampler,fluid_reflection_tile_uv(level,tile.x,\
-             tile.y),layer,0.0).r-1.0;}",
+            "fnfluid_reflection_search_h_about(q:vec3<f32>,capture_point:vec3<f32>,axis:vec3<f32>\
+             ,tile:vec2<u32>,layer:u32)->f32{letlevel=fluid_reflection_level(q-capture_point,\
+             axis);letl1=abs(level.x)+abs(level.y)+abs(level.z);ifl1<\
+             FLUID_REFLECTION_SEARCH_EPSILON{return-1.0;}returnl1*textureSampleLevel(\
+             fluid_probe_distance,sh_atlas_sampler,fluid_reflection_tile_uv(level,tile.x,tile.y),\
+             layer,0.0).r-1.0;}",
             "reflection_search_h_about",
             "fnreflection_search_h_about(q:Vec3,capture_point:Vec3,axis:Vec3,tile:[u32;2],\
-             distance:&implFn(Vec2)->f32,)->f32{letlevel=reflection_level(q-capture_point,\
-             axis);letl1=level.abs().element_sum();ifl1<FLUID_REFLECTION_SEARCH_EPSILON{\
-             return-1.0;}l1*distance(reflection_tile_uv(level,tile[0],tile[1]))-1.0}",
+             distance:&implFn(Vec2)->f32,)->f32{letlevel=reflection_level(q-capture_point,axis);\
+             letl1=level.abs().element_sum();ifl1<FLUID_REFLECTION_SEARCH_EPSILON{return-1.0;}l1*\
+             distance(reflection_tile_uv(level,tile[0],tile[1]))-1.0}",
+        ),
+        (
+            "fluid_reflection_shadow_h_about",
+            "fnfluid_reflection_shadow_h_about(q:vec3<f32>,capture_point:vec3<f32>,axis:vec3<f32>\
+             ,tile:vec2<u32>,layer:u32)->f32{letlevel=fluid_reflection_shadow_level(q-\
+             capture_point,axis);letl1=abs(level.x)+abs(level.y)+abs(level.z);ifl1<\
+             FLUID_REFLECTION_SEARCH_EPSILON{return-1.0;}returnl1*textureSampleLevel(\
+             fluid_probe_distance,sh_atlas_sampler,fluid_reflection_tile_uv(level,tile.x,tile.y),\
+             layer,0.0).r-1.0;}",
+            "reflection_shadow_h_about",
+            "fnreflection_shadow_h_about(q:Vec3,capture_point:Vec3,axis:Vec3,tile:[u32;2],\
+             distance:&implFn(Vec2)->f32,)->f32{letlevel=reflection_shadow_level(q-capture_point,\
+             axis);letl1=level.abs().element_sum();ifl1<FLUID_REFLECTION_SEARCH_EPSILON{return-\
+             1.0;}l1*distance(reflection_tile_uv(level,tile[0],tile[1]))-1.0}",
         ),
         (
             "fluid_reflection_shadow_tap_about",
-            "fnfluid_reflection_shadow_tap_about(capture_point:vec3<f32>,toward:vec3<f32>,turn:f32,\
-             axis:vec3<f32>,tile:vec2<u32>,layer:u32)->f32{letturn2=turn*turn;letsine=turn*(\
-             1.0-turn2/6.0*(1.0-turn2/20.0));letcosine=1.0-turn2/2.0*(1.0-turn2/12.0);\
-             letalong=axis*dot(toward,axis);letacross=toward-along;letturned=along+across*\
-             cosine+cross(axis,across)*sine;returnfluid_reflection_search_h_about(capture_point+\
-             turned,capture_point,axis,tile,layer);}",
+            "fnfluid_reflection_shadow_tap_about(capture_point:vec3<f32>,toward:vec3<f32>,\
+             turn:f32,axis:vec3<f32>,tile:vec2<u32>,layer:u32)->f32{letturn2=turn*turn;letsine=\
+             turn*(1.0-turn2/6.0*(1.0-turn2/20.0));letcosine=1.0-turn2/2.0*(1.0-turn2/12.0);\
+             letalong=axis*dot(toward,axis);letacross=toward-along;letturned=along+across*cosine+\
+             cross(axis,across)*sine;returnfluid_reflection_shadow_h_about(capture_point+turned,\
+             capture_point,axis,tile,layer);}",
             "reflection_shadow_tap_about",
             "fnreflection_shadow_tap_about(capture_point:Vec3,toward:Vec3,turn:f32,axis:Vec3,\
              tile:[u32;2],distance:&implFn(Vec2)->f32,)->f32{letturn2=turn*turn;letsine=turn*(\
-             1.0-turn2/6.0*(1.0-turn2/20.0));letcosine=1.0-turn2/2.0*(1.0-turn2/12.0);\
-             letalong=axis*toward.dot(axis);letacross=toward-along;letturned=along+across*\
-             cosine+axis.cross(across)*sine;reflection_search_h_about(capture_point+turned,\
+             1.0-turn2/6.0*(1.0-turn2/20.0));letcosine=1.0-turn2/2.0*(1.0-turn2/12.0);letalong=\
+             axis*toward.dot(axis);letacross=toward-along;letturned=along+across*cosine+\
+             axis.cross(across)*sine;reflection_shadow_h_about(capture_point+turned,\
              capture_point,axis,tile,distance)}",
         ),
         (
             "fluid_reflection_shadow_edge_about",
-            "fnfluid_reflection_shadow_edge_about(capture_point:vec3<f32>,toward:vec3<f32>,angle:\
-             f32,side:f32,h_origin:f32,h_far:f32,h_opposite:f32,axis:vec3<f32>,tile:vec2<u32>,\
-             layer:u32)->f32{letstep=(h_far-h_opposite)/max(1.0+h_opposite,\
+            "fnfluid_reflection_shadow_edge_about(capture_point:vec3<f32>,toward:vec3<f32>,\
+             angle:f32,side:f32,h_origin:f32,h_far:f32,h_opposite:f32,axis:vec3<f32>,tile:vec2<\
+             u32>,layer:u32)->f32{letstep=(h_far-h_opposite)/max(1.0+h_opposite,\
              FLUID_REFLECTION_SEARCH_EPSILON);leth_lit=min(h_origin,0.0);letgate=smoothstep(\
              FLUID_REFLECTION_SHADOW_GATE_START*angle,FLUID_REFLECTION_SHADOW_GATE_FULL*angle,\
-             step);ifh_far<=0.0||gate<=0.0{returnangle;}leth_half=fluid_reflection_shadow_tap_about(\
-             capture_point,toward,0.5*side,axis,tile,layer);varcrossing:f32;ifh_half>0.0{\
-             crossing=0.5*angle*h_lit/(h_lit-h_half);}else{crossing=0.5*angle+0.5*angle*\
-             h_half/(h_half-h_far);}returnangle+(crossing-angle)*gate;}",
+             step);ifh_far<=0.0||gate<=0.0{returnangle;}leth_half=\
+             fluid_reflection_shadow_tap_about(capture_point,toward,0.5*side,axis,tile,layer);\
+             varcrossing:f32;ifh_half>0.0{crossing=0.5*angle*h_lit/(h_lit-h_half);}else{crossing=\
+             0.5*angle+0.5*angle*h_half/(h_half-h_far);}returnangle+(crossing-angle)*gate;}",
             "reflection_shadow_edge_about",
             "fnreflection_shadow_edge_about(capture_point:Vec3,toward:Vec3,angle:f32,side:f32,\
-             h_origin:f32,h_far:f32,h_opposite:f32,axis:Vec3,tile:[u32;2],distance:&implFn(\
-             Vec2)->f32,)->f32{letstep=(h_far-h_opposite)/(1.0+h_opposite).max(\
+             h_origin:f32,h_far:f32,h_opposite:f32,axis:Vec3,tile:[u32;2],distance:&implFn(Vec2)-\
+             >f32,)->f32{letstep=(h_far-h_opposite)/(1.0+h_opposite).max(\
              FLUID_REFLECTION_SEARCH_EPSILON);leth_lit=h_origin.min(0.0);letgate=smoothstep(\
              FLUID_REFLECTION_SHADOW_GATE_START*angle,FLUID_REFLECTION_SHADOW_GATE_FULL*angle,\
-             step,);ifh_far<=0.0||gate<=0.0{returnangle;}leth_half=\
-             reflection_shadow_tap_about(capture_point,toward,0.5*side,axis,tile,distance);\
-             letcrossing=ifh_half>0.0{0.5*angle*h_lit/(h_lit-h_half)}else{0.5*angle+0.5*angle*\
-             h_half/(h_half-h_far)};angle+(crossing-angle)*gate}",
+             step,);ifh_far<=0.0||gate<=0.0{returnangle;}leth_half=reflection_shadow_tap_about(\
+             capture_point,toward,0.5*side,axis,tile,distance);letcrossing=ifh_half>0.0{0.5*\
+             angle*h_lit/(h_lit-h_half)}else{0.5*angle+0.5*angle*h_half/(h_half-h_far)};angle+(\
+             crossing-angle)*gate}",
         ),
         (
             "fluid_reflection_shadow_fade_about",
-            "fnfluid_reflection_shadow_fade_about(origin:vec3<f32>,capture_point:vec3<f32>,axis:\
-             vec3<f32>,tile:vec2<u32>,h_origin:f32,layer:u32)->f32{letangle=\
-             fluid_reflection_shadow_fade_angle(tile);lettoward=origin-capture_point;\
-             leth_plus=fluid_reflection_shadow_tap_about(capture_point,toward,angle,axis,tile,layer)\
-             ;leth_minus=fluid_reflection_shadow_tap_about(capture_point,toward,-angle,axis,tile,\
-             layer);letedge=min(fluid_reflection_shadow_edge_about(capture_point,toward,angle,angle,\
-             h_origin,h_plus,h_minus,axis,tile,layer),fluid_reflection_shadow_edge_about(\
+            "fnfluid_reflection_shadow_fade_about(origin:vec3<f32>,capture_point:vec3<f32>,\
+             axis:vec3<f32>,tile:vec2<u32>,h_origin:f32,layer:u32)->f32{letangle=\
+             fluid_reflection_shadow_fade_angle(tile);lettoward=origin-capture_point;leth_plus=\
+             fluid_reflection_shadow_tap_about(capture_point,toward,angle,axis,tile,layer);\
+             leth_minus=fluid_reflection_shadow_tap_about(capture_point,toward,-angle,axis,tile,\
+             layer);letedge=min(fluid_reflection_shadow_edge_about(capture_point,toward,angle,\
+             angle,h_origin,h_plus,h_minus,axis,tile,layer),fluid_reflection_shadow_edge_about(\
              capture_point,toward,angle,-angle,h_origin,h_minus,h_plus,axis,tile,layer));\
              returnsmoothstep(0.0,angle,edge);}",
             "reflection_shadow_fade_about",
-            "fnreflection_shadow_fade_about(origin:Vec3,capture_point:Vec3,axis:Vec3,tile:[\
-             u32;2],h_origin:f32,distance:&implFn(Vec2)->f32,)->f32{letangle=\
+            "fnreflection_shadow_fade_about(origin:Vec3,capture_point:Vec3,axis:Vec3,tile:[u32;\
+             2],h_origin:f32,distance:&implFn(Vec2)->f32,)->f32{letangle=\
              reflection_shadow_fade_angle(tile);lettoward=origin-capture_point;leth_plus=\
              reflection_shadow_tap_about(capture_point,toward,angle,axis,tile,distance);\
              leth_minus=reflection_shadow_tap_about(capture_point,toward,-angle,axis,tile,\
@@ -2588,29 +2621,31 @@ fn fluid_reflection_search_about_wgsl_bodies_match_the_cpu_reference() {
         (
             "fluid_reflection_search_about",
             "fnfluid_reflection_search_about(origin:vec3<f32>,ray:vec3<f32>,box_min:vec3<f32>,\
-             box_max:vec3<f32>,capture_point:vec3<f32>,axis:vec3<f32>,tile:vec2<u32>,layer:\
-             u32)->FluidReflectionSearch{letbox_hit=fluid_reflection_box_hit(origin,ray,\
-             box_min,box_max);lett_box=dot(box_hit-origin,ray);leth_origin=\
-             fluid_reflection_search_h_about(origin,capture_point,axis,tile,layer);leth_box=\
-             fluid_reflection_search_h_about(box_hit,capture_point,axis,tile,layer);ifh_origin>=\
-             FLUID_REFLECTION_SHADOW_MARGIN{returnFluidReflectionSearch(\
-             fluid_reflection_lookup_about(box_hit,capture_point,ray,axis),0.0);}letweight=\
-             fluid_reflection_shadow_fade_about(origin,capture_point,axis,tile,h_origin,layer)*(1.0-\
-             smoothstep(0.0,FLUID_REFLECTION_SHADOW_MARGIN,h_origin));ifh_origin>=0.0{\
+             box_max:vec3<f32>,capture_point:vec3<f32>,axis:vec3<f32>,tile:vec2<u32>,layer:u32)->\
+             FluidReflectionSearch{letbox_hit=fluid_reflection_box_hit(origin,ray,box_min,\
+             box_max);lett_box=dot(box_hit-origin,ray);leth_shadow=\
+             fluid_reflection_shadow_h_about(origin,capture_point,axis,tile,layer);leth_box=\
+             fluid_reflection_search_h_about(box_hit,capture_point,axis,tile,layer);varh_origin=\
+             h_shadow;ifdot(origin-capture_point,axis)<-FLUID_REFLECTION_SHADOW_PLANE_DEPTH{\
+             h_origin=fluid_reflection_search_h_about(origin,capture_point,axis,tile,layer);}\
+             leth_depth=max(h_shadow,h_origin);ifh_depth>=FLUID_REFLECTION_SHADOW_MARGIN{\
              returnFluidReflectionSearch(fluid_reflection_lookup_about(box_hit,capture_point,ray,\
-             axis),weight);}vart_front=0.0;varh_front=h_origin;vart_back=t_box;varh_back=\
-             h_box;letfrom_capture=origin-capture_point;letb=dot(from_capture,ray);for(vari:\
-             u32=0u;i<FLUID_REFLECTION_SEARCH_STEPS;i=i+1u){ifh_front<=-1.0{break;}letq=\
-             origin+ray*t_front;letlevel=fluid_reflection_level(q-capture_point,axis);\
-             letradius=length(level)/(h_front+1.0);letdisc=b*b-(dot(from_capture,from_capture)\
-             -radius*radius);ifdisc<0.0{break;}lett_next=-b+sqrt(disc);ift_next<=t_front||\
-             t_next>=t_box{break;}leth_next=fluid_reflection_search_h_about(origin+ray*t_next,\
-             capture_point,axis,tile,layer);ifh_next>=0.0{t_back=t_next;h_back=h_next;break;}\
-             t_front=t_next;h_front=h_next;}if!(h_back>=0.0){returnFluidReflectionSearch(\
-             fluid_reflection_lookup_about(box_hit,capture_point,ray,axis),weight);}vart_hit=t_back;\
-             for(varrefinement:u32=0u;refinement<FLUID_REFLECTION_SEARCH_REFINEMENTS;\
-             refinement=refinement+1u){ifh_back!=h_front{t_hit=t_front-h_front*(t_back-\
-             t_front)/(h_back-h_front);}else{t_hit=t_back;}ifrefinement+1u==\
+             axis),0.0);}letweight=fluid_reflection_shadow_fade_about(origin,capture_point,axis,\
+             tile,h_shadow,layer)*(1.0-smoothstep(0.0,FLUID_REFLECTION_SHADOW_MARGIN,h_depth));\
+             ifh_depth>=0.0{returnFluidReflectionSearch(fluid_reflection_lookup_about(box_hit,\
+             capture_point,ray,axis),weight);}vart_front=0.0;varh_front=h_origin;vart_back=t_box;\
+             varh_back=h_box;letfrom_capture=origin-capture_point;letb=dot(from_capture,ray);for(\
+             vari:u32=0u;i<FLUID_REFLECTION_SEARCH_STEPS;i=i+1u){ifh_front<=-1.0{break;}letq=\
+             origin+ray*t_front;letlevel=fluid_reflection_level(q-capture_point,axis);letradius=\
+             length(level)/(h_front+1.0);letdisc=b*b-(dot(from_capture,from_capture)-radius*\
+             radius);ifdisc<0.0{break;}lett_next=-b+sqrt(disc);ift_next<=t_front||t_next>=t_box{\
+             break;}leth_next=fluid_reflection_search_h_about(origin+ray*t_next,capture_point,\
+             axis,tile,layer);ifh_next>=0.0{t_back=t_next;h_back=h_next;break;}t_front=t_next;\
+             h_front=h_next;}if!(h_back>=0.0){returnFluidReflectionSearch(\
+             fluid_reflection_lookup_about(box_hit,capture_point,ray,axis),weight);}vart_hit=\
+             t_back;for(varrefinement:u32=0u;refinement<FLUID_REFLECTION_SEARCH_REFINEMENTS;\
+             refinement=refinement+1u){ifh_back!=h_front{t_hit=t_front-h_front*(t_back-t_front)/(\
+             h_back-h_front);}else{t_hit=t_back;}ifrefinement+1u==\
              FLUID_REFLECTION_SEARCH_REFINEMENTS{break;}leth_hit=fluid_reflection_search_h_about(\
              origin+ray*t_hit,capture_point,axis,tile,layer);ifh_hit>=0.0{t_back=t_hit;h_back=\
              h_hit;}else{t_front=t_hit;h_front=h_hit;}}returnFluidReflectionSearch(\
@@ -2618,31 +2653,32 @@ fn fluid_reflection_search_about_wgsl_bodies_match_the_cpu_reference() {
             "reflection_search_about",
             "fnreflection_search_about(origin:Vec3,ray:Vec3,box_min:Vec3,box_max:Vec3,\
              capture_point:Vec3,axis:Vec3,tile:[u32;2],distance:implFn(Vec2)->f32,)->\
-             FluidReflectionSearch{leth=|q:Vec3|reflection_search_h_about(q,capture_point,\
-             axis,tile,&distance);letbox_hit=reflection_box_hit(origin,ray,box_min,box_max);\
-             lett_box=(box_hit-origin).dot(ray);leth_origin=h(origin);leth_box=h(box_hit);\
-             letends_at=|point:Vec3,status,weight|FluidReflectionSearch{point,lookup:\
-             reflection_lookup_about(point,capture_point,ray,axis),status,weight,};ifh_origin>\
-             =FLUID_REFLECTION_SHADOW_MARGIN{returnends_at(box_hit,\
+             FluidReflectionSearch{leth=|q:Vec3|reflection_search_h_about(q,capture_point,axis,\
+             tile,&distance);letbox_hit=reflection_box_hit(origin,ray,box_min,box_max);lett_box=(\
+             box_hit-origin).dot(ray);leth_shadow=reflection_shadow_h_about(origin,capture_point,\
+             axis,tile,&distance);leth_box=h(box_hit);leth_origin=if(origin-capture_point).dot(\
+             axis)<-FLUID_REFLECTION_SHADOW_PLANE_DEPTH{h(origin)}else{h_shadow};leth_depth=\
+             h_shadow.max(h_origin);letends_at=|point:Vec3,status,weight|FluidReflectionSearch{\
+             point,lookup:reflection_lookup_about(point,capture_point,ray,axis),status,weight,};\
+             ifh_depth>=FLUID_REFLECTION_SHADOW_MARGIN{returnends_at(box_hit,\
              FluidReflectionSearchStatus::CaptureShadow,0.0);}letweight=\
-             reflection_shadow_fade_about(origin,capture_point,axis,tile,h_origin,&distance)*(\
-             1.0-smoothstep(0.0,FLUID_REFLECTION_SHADOW_MARGIN,h_origin));ifh_origin>=0.0{\
+             reflection_shadow_fade_about(origin,capture_point,axis,tile,h_shadow,&distance)*(\
+             1.0-smoothstep(0.0,FLUID_REFLECTION_SHADOW_MARGIN,h_depth));ifh_depth>=0.0{\
              returnends_at(box_hit,FluidReflectionSearchStatus::CaptureShadow,weight);}let(\
              mutt_front,muth_front)=(0.0,h_origin);letmutback=None;letfrom_capture=origin-\
              capture_point;letb=from_capture.dot(ray);for_in0..FLUID_REFLECTION_SEARCH_STEPS{\
              ifh_front<=-1.0{break;}letq=origin+ray*t_front;letlevel=reflection_level(q-\
              capture_point,axis);letradius=level.length()/(h_front+1.0);letdisc=b*b-(\
              from_capture.dot(from_capture)-radius*radius);ifdisc<0.0{break;}lett_next=-b+\
-             disc.sqrt();ift_next<=t_front||t_next>=t_box{break;}leth_next=h(origin+ray*\
-             t_next);ifh_next>=0.0{back=Some((t_next,h_next));break;}(t_front,h_front)=(\
-             t_next,h_next);}let(mutt_back,muth_back)=matchback{Some(sample)=>sample,\
-             Noneifh_box>=0.0=>(t_box,h_box),None=>returnends_at(box_hit,\
-             FluidReflectionSearchStatus::BeyondBox,weight),};letmutt_hit=t_back;\
-             forrefinementin0..FLUID_REFLECTION_SEARCH_REFINEMENTS{t_hit=ifh_back!=h_front{\
-             t_front-h_front*(t_back-t_front)/(h_back-h_front)}else{t_back};ifrefinement+1==\
-             FLUID_REFLECTION_SEARCH_REFINEMENTS{break;}leth_hit=h(origin+ray*t_hit);ifh_hit>=\
-             0.0{(t_back,h_back)=(t_hit,h_hit);}else{(t_front,h_front)=(t_hit,h_hit);}}\
-             ends_at(origin+ray*t_hit,FluidReflectionSearchStatus::Hit,weight,)}",
+             disc.sqrt();ift_next<=t_front||t_next>=t_box{break;}leth_next=h(origin+ray*t_next);\
+             ifh_next>=0.0{back=Some((t_next,h_next));break;}(t_front,h_front)=(t_next,h_next);}\
+             let(mutt_back,muth_back)=matchback{Some(sample)=>sample,Noneifh_box>=0.0=>(t_box,\
+             h_box),None=>returnends_at(box_hit,FluidReflectionSearchStatus::BeyondBox,weight),};\
+             letmutt_hit=t_back;forrefinementin0..FLUID_REFLECTION_SEARCH_REFINEMENTS{t_hit=\
+             ifh_back!=h_front{t_front-h_front*(t_back-t_front)/(h_back-h_front)}else{t_back};\
+             ifrefinement+1==FLUID_REFLECTION_SEARCH_REFINEMENTS{break;}leth_hit=h(origin+ray*\
+             t_hit);ifh_hit>=0.0{(t_back,h_back)=(t_hit,h_hit);}else{(t_front,h_front)=(t_hit,\
+             h_hit);}}ends_at(origin+ray*t_hit,FluidReflectionSearchStatus::Hit,weight,)}",
         ),
     ];
     for (wgsl_name, wgsl_body, cpu_name, cpu_body) in pinned {

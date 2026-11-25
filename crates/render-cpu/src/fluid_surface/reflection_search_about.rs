@@ -2,7 +2,9 @@
 // overlay's, whose faces bind probes of any facing. GPU-free CPU reference
 // for `fluid_reflection_about.wgsl`, which mirrors it and a test pins.
 // Water's search, up-facing only, is `reflection_search`; about +Y the two
-// agree bit for bit (`reflection_search_up_tests.rs`).
+// agree bit for bit from every origin within δ of the capture point's plane
+// (`reflection_search_up_tests.rs`). Deeper, on a probe's farther bound plane,
+// the capture-shadow tests read the origin's true position.
 // See: context/lib/rendering_pipeline.md §7.3a (Reflection, Glossy world faces)
 
 use glam::{Vec2, Vec3};
@@ -37,11 +39,51 @@ pub fn reflection_search_h_about(
     l1 * distance(reflection_tile_uv(level, tile[0], tile[1])) - 1.0
 }
 
-/// h at the origin turned about the capture point's `axis` (its vertical,
-/// for an up-facing probe) by `turn` radians, keeping its distance from the
-/// capture point. `toward` is the origin minus the capture point. The fluid
-/// shader calls no trig: the turn's sine and cosine are their Taylor series
-/// to the fifth and fourth order, within 1e-8 of exact at the fade's ≈3°.
+/// δ: how far behind the capture point's plane, along its axis, a
+/// capture-shadow test still reads at that plane (m). A probe captures 2 mm
+/// in front of its frontmost bound plane, so every fragment there, and every
+/// fragment of a probe binding one plane, tests exactly as the search reads
+/// it; twice the lift leaves room for the plane's 1 mm tolerance. A fragment
+/// deeper, on a farther bound plane (a lower floor in an authored box over
+/// two heights), tests from its true position, less δ so the test runs on
+/// without a step.
+pub const FLUID_REFLECTION_SHADOW_PLANE_DEPTH: f32 = 0.004;
+
+/// The offset `v` from the capture point as a capture-shadow test reads it:
+/// [`reflection_level`] within δ behind the capture point's plane, so a
+/// fragment on the frontmost bound plane tests at that plane bit for bit;
+/// deeper, its true direction, which the full-sphere tile holds, lifted by δ.
+/// The search's own taps keep [`reflection_level`].
+pub fn reflection_shadow_level(v: Vec3, axis: Vec3) -> Vec3 {
+    v - axis * v.dot(axis).clamp(-FLUID_REFLECTION_SHADOW_PLANE_DEPTH, 0.0)
+}
+
+/// [`reflection_search_h_about`] for the capture-shadow tests: `v` read
+/// through [`reflection_shadow_level`], so a fragment on a bound plane
+/// behind the capture point's tests whether the capture point saw it, not
+/// the point over it on the capture point's plane.
+pub fn reflection_shadow_h_about(
+    q: Vec3,
+    capture_point: Vec3,
+    axis: Vec3,
+    tile: [u32; 2],
+    distance: &impl Fn(Vec2) -> f32,
+) -> f32 {
+    let level = reflection_shadow_level(q - capture_point, axis);
+    let l1 = level.abs().element_sum();
+    if l1 < FLUID_REFLECTION_SEARCH_EPSILON {
+        return -1.0;
+    }
+    l1 * distance(reflection_tile_uv(level, tile[0], tile[1])) - 1.0
+}
+
+/// The capture-shadow h ([`reflection_shadow_h_about`]) at the origin turned
+/// about the capture point's `axis` (its vertical, for an up-facing probe)
+/// by `turn` radians, keeping its distance from the capture point and its
+/// height along the axis. `toward` is the origin minus the capture point.
+/// The fluid shader calls no trig: the turn's sine and cosine are their
+/// Taylor series to the fifth and fourth order, within 1e-8 of exact at the
+/// fade's ≈3°.
 /// About +Y the turn is exactly `(x·cos + z·sin, y, z·cos − x·sin)`.
 pub fn reflection_shadow_tap_about(
     capture_point: Vec3,
@@ -57,7 +99,7 @@ pub fn reflection_shadow_tap_about(
     let along = axis * toward.dot(axis);
     let across = toward - along;
     let turned = along + across * cosine + axis.cross(across) * sine;
-    reflection_search_h_about(capture_point + turned, capture_point, axis, tile, distance)
+    reflection_shadow_h_about(capture_point + turned, capture_point, axis, tile, distance)
 }
 
 /// One side's shadow edge for the fade, in radians from the origin: at most
@@ -166,7 +208,16 @@ pub fn reflection_shadow_fade_about(
 ///    independent of the search's, fade the term beside the shadow
 ///    ([`reflection_shadow_fade_about`]); within κ the term also fades out by
 ///    depth, looked up toward the box hit. The compiler's hidden-water
-///    warning tests the same raw water point against the same cutoff.
+///    warning tests the same raw water point against the same cutoff. The
+///    shadow tests read the origin through [`reflection_shadow_level`]: an
+///    origin on a bound plane more than δ behind the capture point's (a
+///    lower floor sharing the probe) tests from its true position, so an
+///    object the capture point saw between them withholds the term. Such an
+///    origin also takes the search's own tap, read over the capture point's
+///    plane as every search tap is; the larger of the two h withholds the
+///    term and fades it by depth, so a lower floor only ever loses term
+///    against the plane's reading, and the search starts only where both
+///    say the origin is in front.
 /// 2. Up to K sphere steps from the origin; the first sample behind a
 ///    surface closes the bracket. A sample in a capture miss, a step that
 ///    stalls, and a step reaching the box hit stop stepping.
@@ -199,21 +250,27 @@ pub fn reflection_search_about(
     let h = |q: Vec3| reflection_search_h_about(q, capture_point, axis, tile, &distance);
     let box_hit = reflection_box_hit(origin, ray, box_min, box_max);
     let t_box = (box_hit - origin).dot(ray);
-    let h_origin = h(origin);
+    let h_shadow = reflection_shadow_h_about(origin, capture_point, axis, tile, &distance);
     let h_box = h(box_hit);
+    let h_origin = if (origin - capture_point).dot(axis) < -FLUID_REFLECTION_SHADOW_PLANE_DEPTH {
+        h(origin)
+    } else {
+        h_shadow
+    };
+    let h_depth = h_shadow.max(h_origin);
     let ends_at = |point: Vec3, status, weight| FluidReflectionSearch {
         point,
         lookup: reflection_lookup_about(point, capture_point, ray, axis),
         status,
         weight,
     };
-    if h_origin >= FLUID_REFLECTION_SHADOW_MARGIN {
+    if h_depth >= FLUID_REFLECTION_SHADOW_MARGIN {
         return ends_at(box_hit, FluidReflectionSearchStatus::CaptureShadow, 0.0);
     }
     let weight =
-        reflection_shadow_fade_about(origin, capture_point, axis, tile, h_origin, &distance)
-            * (1.0 - smoothstep(0.0, FLUID_REFLECTION_SHADOW_MARGIN, h_origin));
-    if h_origin >= 0.0 {
+        reflection_shadow_fade_about(origin, capture_point, axis, tile, h_shadow, &distance)
+            * (1.0 - smoothstep(0.0, FLUID_REFLECTION_SHADOW_MARGIN, h_depth));
+    if h_depth >= 0.0 {
         return ends_at(box_hit, FluidReflectionSearchStatus::CaptureShadow, weight);
     }
 

@@ -1,8 +1,10 @@
 // Tests: water's search (up-only, `reflection_search`) and the search about
 // a bound face's axis (`reflection_search_about`, the glossy overlay's) agree
-// bit for bit about +Y over real captured tiles and random rays, so an
-// up-facing glossy floor reads what water reads; and a wall's and a ceiling's
-// lookups stay in their own hemisphere.
+// bit for bit about +Y over real captured tiles and random rays from any
+// origin within δ of the capture point's plane, so an up-facing glossy floor
+// on its probe's frontmost plane reads what water reads; deeper origins (a
+// lower bound floor) differ in the capture-shadow weight alone. A wall's and
+// a ceiling's lookups stay in their own hemisphere.
 // See: context/lib/rendering_pipeline.md §7.3a (Reflection, Glossy world faces)
 
 use glam::{Vec2, Vec3};
@@ -18,7 +20,8 @@ use crate::fluid_surface::reflection_hemisphere::{
     reflection_hemisphere_axis, reflection_level, reflection_lookup_about,
 };
 use crate::fluid_surface::reflection_search_about::{
-    reflection_search_about, reflection_shadow_tap_about,
+    FLUID_REFLECTION_SHADOW_PLANE_DEPTH, reflection_search_about, reflection_shadow_level,
+    reflection_shadow_tap_about,
 };
 
 // ---- Up-facing parity -------------------------------------------------------
@@ -55,13 +58,23 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(4096))]
 
     // About +Y, the search about an axis is water's search: from any origin
-    // (at the water, above or below it, inside the box or past it) along any
-    // ray, floored above the horizon or not, both return the same hit point,
-    // lookup, tile UV, status and weight, bit for bit.
+    // no more than δ below the capture point (on the water, which lies 2 mm
+    // below it, or above it; inside the box or past it) along any ray,
+    // floored above the horizon or not, both return the same hit point,
+    // lookup, tile UV, status and weight, bit for bit. Deeper, as a lower
+    // bound floor lies, the capture-shadow tests also read the origin's true
+    // position, where water's read it over the capture point's plane alone:
+    // the weight may differ, but it is 0 wherever water's is withheld past
+    // the margin, and wherever the search runs on past the shadow its hit
+    // point, lookup and status are water's.
     #[test]
     fn the_search_about_up_is_waters_search_bit_for_bit(
         scene in 0usize..3,
-        at in (0.0f32..1.0, -0.6f32..0.6, 0.0f32..1.0),
+        at in (
+            0.0f32..1.0,
+            prop_oneof![Just(0.0f32), -0.6f32..0.6],
+            0.0f32..1.0,
+        ),
         overshoot in (-0.5f32..0.5, -0.5f32..0.5),
         ray in finite_unit(),
         floored in any::<bool>(),
@@ -94,7 +107,18 @@ proptest! {
             TILE,
             distance,
         );
-        assert_same_search(about, water, &format!("{origin} along {ray}"));
+        let case = format!("{origin} along {ray}");
+        if origin.y - scene.capture.y >= -FLUID_REFLECTION_SHADOW_PLANE_DEPTH {
+            assert_same_search(about, water, &case);
+        } else if about.status != FluidReflectionSearchStatus::CaptureShadow {
+            assert_eq!(about.status, water.status, "{case}");
+            assert_eq!(about.point.to_array(), water.point.to_array(), "{case}");
+            assert_eq!(about.lookup.to_array(), water.lookup.to_array(), "{case}");
+        } else if reflection_search_h(origin, scene.capture, TILE, &distance)
+            >= FLUID_REFLECTION_SHADOW_MARGIN
+        {
+            assert_eq!(about.weight, 0.0, "{case}");
+        }
     }
 
     // The hemisphere helpers about +Y are water's horizon clamps exactly.
@@ -119,12 +143,39 @@ proptest! {
                 reflection_lookup(hit, capture, ray).to_array()
             );
         }
+        // A shadow tap keeps its offset's height (exactly, about +Y), so one
+        // within δ below the capture point reads water's tap.
         let distance = |uv: Vec2| 0.25 + 0.5 * uv.x * uv.y;
-        for turn in [0.05f32, -0.05, 0.025] {
-            assert_eq!(
-                reflection_shadow_tap_about(capture, v, turn, FLUID_REFLECTION_UP, TILE, &distance),
-                reflection_shadow_tap(capture, v, turn, TILE, &distance)
-            );
+        if v.y >= -FLUID_REFLECTION_SHADOW_PLANE_DEPTH {
+            for turn in [0.05f32, -0.05, 0.025] {
+                let up = FLUID_REFLECTION_UP;
+                assert_eq!(
+                    reflection_shadow_tap_about(capture, v, turn, up, TILE, &distance),
+                    reflection_shadow_tap(capture, v, turn, TILE, &distance)
+                );
+            }
+        }
+    }
+
+    // About any axis, the capture-shadow tests' offset is the search's level
+    // bit for bit within δ behind the capture point's plane, so a fragment on
+    // a probe's frontmost bound plane tests its capture shadow as before;
+    // deeper it is the true offset lifted by δ, continuous at δ.
+    #[test]
+    fn the_shadow_offset_is_the_level_within_the_plane_depth_and_true_beyond_it(
+        v in (-5.0f32..5.0, -5.0f32..5.0, -5.0f32..5.0),
+        axis in finite_unit(),
+        on_plane in -FLUID_REFLECTION_SHADOW_PLANE_DEPTH..0.0f32,
+    ) {
+        let v = Vec3::from(v);
+        let depth = FLUID_REFLECTION_SHADOW_PLANE_DEPTH;
+        for v in [v, v - axis * (v.dot(axis) - on_plane)] {
+            let shadow = reflection_shadow_level(v, axis);
+            if v.dot(axis) >= -depth {
+                assert_eq!(shadow.to_array(), reflection_level(v, axis).to_array(), "{v}");
+            } else {
+                assert_eq!(shadow.to_array(), (v - axis * -depth).to_array(), "{v}");
+            }
         }
     }
 }
@@ -251,7 +302,9 @@ fn wall_and_ceiling_lookups_reach_below_the_capture_point_and_never_behind_the_f
 
 // The shadow fade turns its taps about the face's axis, keeping each tap's
 // height along it: about a wall's normal a tap never leaves the wall's
-// distance from the capture point along that normal.
+// distance from the capture point along that normal. A tap behind the
+// capture point's plane by more than δ (here, about +Y, 0.4 m below it)
+// reads below the plane, toward where the turned offset truly lies.
 #[test]
 fn shadow_taps_turn_about_the_faces_axis() {
     let captured = std::cell::RefCell::new(Vec::new());
@@ -265,8 +318,8 @@ fn shadow_taps_turn_about_the_faces_axis() {
         let h = reflection_shadow_tap_about(capture, toward, 0.05, axis, TILE, &distance);
         assert_eq!(h, -1.0, "a capture miss");
         let uv = captured.borrow_mut().pop().expect("one tap");
-        // The tap read toward the turned offset, clamped into the
-        // hemisphere: its UV is that direction's.
+        // The tap read toward the turned offset as the capture-shadow
+        // tests read it: its UV is that direction's.
         let turn2 = 0.05f32 * 0.05;
         let (sine, cosine) = (
             0.05 * (1.0 - turn2 / 6.0 * (1.0 - turn2 / 20.0)),
@@ -277,10 +330,17 @@ fn shadow_taps_turn_about_the_faces_axis() {
         let turned = along + across * cosine + axis.cross(across) * sine;
         assert!((turned.dot(axis) - toward.dot(axis)).abs() < 1.0e-6);
         assert!((turned.length() - toward.length()).abs() < 1.0e-5);
-        let expected = reflection_tile_uv(reflection_level(turned, axis), TILE[0], TILE[1]);
+        let read = reflection_shadow_level(turned, axis);
+        let expected = reflection_tile_uv(read, TILE[0], TILE[1]);
         assert!(
             (uv - expected).length() < 1.0e-6,
             "about {axis}: {uv} against {expected}"
         );
+        if toward.dot(axis) < 0.0 {
+            assert!(read.dot(axis) < -0.39, "about {axis}: {read}");
+        }
     }
 }
+
+#[path = "reflection_search_two_height_tests.rs"]
+mod two_height;

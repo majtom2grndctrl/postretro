@@ -226,7 +226,7 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
                 );
                 raw = dynamic.tinted_specular;
                 added = mover_pixel_shade(
-                    base_color.rgb, vec3<f32>(0.0), MoverPixelDirect(vec3<f32>(0.0), raw),
+                    base_color.rgb, vec3<f32>(0.0), MoverPixelDirect(vec3<f32>(0.0), raw, vec3<f32>(0.0)),
                     vec3<f32>(0.0), spec_texel,
                 );
             }

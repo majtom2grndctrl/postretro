@@ -21,10 +21,13 @@ mod fluid_reflection_probes;
 mod fluid_scene_inputs;
 mod fluid_surface;
 mod fog_pass;
+mod forward_pipelines;
 mod frame_timing;
 mod ghost_depth;
 mod ghost_order;
 mod ghost_pipeline;
+mod glossy_floor;
+mod glossy_overlay;
 pub(crate) mod gpu_create;
 pub(crate) mod install_pipelines;
 mod install_prep;
@@ -46,6 +49,9 @@ mod mover_travel;
 mod planar_reflection;
 mod promoted_depth_cache;
 pub(crate) mod queue_writes;
+mod reflection_probe_residency;
+mod reflection_probe_resources;
+mod reflection_probe_sums;
 pub(crate) mod residency;
 mod rigid_occluder_depth;
 mod screen_effects;
@@ -153,6 +159,40 @@ mod geometry_ranges;
 mod geometry_ranges_gpu_test;
 #[cfg(test)]
 mod ghost_depth_frame_test;
+#[cfg(test)]
+mod glossy_floor_frame_test;
+#[cfg(test)]
+mod glossy_floor_frame_test_fixtures;
+#[cfg(test)]
+mod glossy_floor_grazing_frame_test;
+#[cfg(test)]
+mod glossy_floor_layer_frame_test;
+#[cfg(test)]
+mod glossy_overlay_frame_test;
+#[cfg(test)]
+mod glossy_overlay_frame_test_fixtures;
+#[cfg(test)]
+mod glossy_overlay_gate_frame_fixtures;
+#[cfg(test)]
+mod glossy_overlay_guard_frame_test;
+#[cfg(test)]
+mod glossy_overlay_lifecycle_frame_test;
+#[cfg(test)]
+mod glossy_overlay_mirror_frame_test;
+#[cfg(test)]
+mod glossy_overlay_room_frame_test;
+#[cfg(test)]
+mod glossy_overlay_room_frame_test_fixtures;
+#[cfg(test)]
+mod glossy_overlay_style_frame_test;
+#[cfg(test)]
+mod glossy_overlay_two_height_frame_test;
+#[cfg(test)]
+mod glossy_overlay_water_frame_test;
+#[cfg(test)]
+mod glossy_overlay_weights_frame_test;
+#[cfg(test)]
+mod glossy_probe_mips_gpu_test;
 mod level_build;
 mod level_resource_set;
 #[cfg(test)]
@@ -163,12 +203,16 @@ mod pipeline_layout;
 mod renderer_capture;
 mod renderer_debug_ui;
 mod renderer_diagnostics;
+mod renderer_dynamic_frame;
 mod renderer_dynamic_shadow_passes;
 mod renderer_extent;
 mod renderer_fluid_frame;
+mod renderer_forward_frame;
 mod renderer_frame;
 mod renderer_full_init;
 mod renderer_geometry;
+mod renderer_glossy_floor_frame;
+mod renderer_glossy_frame;
 mod renderer_init;
 mod renderer_init_pipelines;
 mod renderer_init_resources;
@@ -180,6 +224,7 @@ mod renderer_models;
 #[cfg(feature = "dev-tools")]
 mod renderer_playback;
 mod renderer_pre_scene;
+mod renderer_probe_sums_frame;
 mod renderer_render_frame;
 mod renderer_resources;
 mod renderer_shadow_passes;
@@ -261,6 +306,10 @@ use dynamic_depth_cache::{DynamicDepthCacheGpu, DynamicDepthCachePlan};
 use fog_pass::FogPass;
 use frame_timing::FrameTiming;
 pub use geometry_install_marks::GeometryInstallTiming;
+pub use glossy_floor::{
+    GLOSSY_FLOOR_LAYER, GLOSSY_FLOOR_LAYER_DEPTH, GLOSSY_HIGHLIGHT_FREE, GLOSSY_SCENE_COLOUR_CHAIN,
+};
+pub use glossy_overlay::GLOSSY_STATIC_DIFFUSE;
 pub use level_build::{
     LevelBuildError, LevelBuildEvent, LevelBuildPart, LevelBuildSnapshotInputs, LevelGeometryParts,
     LevelSetBuilder, LevelSetBuilderProbe, PendingLevelSet, SmokeCollectionRequest,
@@ -279,6 +328,10 @@ pub use model_cache::{
     ModelEntryIdentity,
 };
 use promoted_depth_cache::{PromotedDepthCache, PromotedDepthCacheFramePlan};
+pub use reflection_probe_residency::{
+    REFLECTION_PROBE_COLOUR, REFLECTION_PROBE_DISTANCE, REFLECTION_PROBE_SHARE_TABLE,
+    REFLECTION_PROBE_SUMS, ReflectionProbeResidencyReport,
+};
 #[cfg(feature = "dev-tools")]
 pub use renderer_playback::PlaybackDrainCounters;
 pub use renderer_render_frame::{FrameScene, ShDrainFrameResult};
@@ -347,9 +400,9 @@ pub use renderer_types::{
     CaptureGpuTimingState, CaptureGpuTimingWindow, CapturePromotionPin, CapturePromotionRow,
     CellOverlayState, ClearColor, DEFAULT_AMBIENT_FLOOR, DEFAULT_DYNAMIC_DIRECT_SCALE,
     DEFAULT_INDIRECT_SCALE, GpuTimingSupport, LevelGeometry, LevelGeometryLightmapStreaming,
-    LevelGeometryShStorage, LocatorDiagnostics, PortalOverlayState, PresentChoice, PresentHandle,
-    RUNTIME_DYNAMIC_LIGHT_RESERVE, Renderer, SPLASH_CLEAR_COLOR, SpatialCellSetDiagnostics,
-    SpatialDiagnostics, WorldWireframeMode,
+    LevelGeometryShStorage, LevelReflectionProbes, LocatorDiagnostics, PortalOverlayState,
+    PresentChoice, PresentHandle, RUNTIME_DYNAMIC_LIGHT_RESERVE, Renderer, SPLASH_CLEAR_COLOR,
+    SpatialCellSetDiagnostics, SpatialDiagnostics, WorldWireframeMode,
 };
 pub(crate) use renderer_types::{GpuTexture, POST_RETRO_ANISO_CLAMP};
 pub use rigid_occluder_depth::MoverOccluderAabb;
@@ -368,6 +421,7 @@ pub use sh_diagnostics::{MarkerMode, ShDiagnosticsState};
 pub use sh_volume::DeltaVolumeMeta;
 
 // Internal init/render helpers used by the `impl Renderer` files via `use super::*`.
+use forward_pipelines::*;
 use renderer_full_init::*;
 use renderer_init_pipelines::*;
 use renderer_init_resources::*;

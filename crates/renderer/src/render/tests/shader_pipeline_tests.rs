@@ -74,7 +74,7 @@ fn forward_reads_the_emissive_volume_table_only_inside_the_glow_branch() {
         .map(|line| line.split("//").next().unwrap_or(""))
         .collect::<Vec<_>>()
         .join("\n");
-    let fs_main = wgsl_function(&code, "fs_main");
+    let fs_main = wgsl_function(&code, "forward_shade");
     let branch = wgsl_item(fs_main, "if material.emissive_strength > 0.0 {");
     assert!(
         branch

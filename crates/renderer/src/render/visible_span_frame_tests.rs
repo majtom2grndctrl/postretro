@@ -2,7 +2,7 @@
 //! See: context/lib/rendering_pipeline.md (§5, §7.1–7.3).
 
 use super::{ClearColor, Renderer, ShSampleRegionSets};
-use crate::compute_cull::IndirectDrawCommand;
+use crate::indirect_draw_plan::IndirectDrawCommand;
 use glam::{Mat4, Vec3};
 use postretro_level_loader::{MapLight, ShDrainBatch};
 use postretro_render_data::geometry::BucketRange;

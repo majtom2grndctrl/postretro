@@ -18,7 +18,9 @@ pub use diagnostics::{
 };
 pub(super) use full_renderer::FullRenderer;
 pub(super) use full_renderer::sh_sampler_lattice;
-pub use level_geometry::{LevelGeometry, LevelGeometryLightmapStreaming, LevelGeometryShStorage};
+pub use level_geometry::{
+    LevelGeometry, LevelGeometryLightmapStreaming, LevelGeometryShStorage, LevelReflectionProbes,
+};
 pub(super) use promoted_lights::animated_baked_promotion_weight;
 pub use promoted_lights::{CapturePromotionPin, CapturePromotionRow};
 pub(crate) use promoted_lights::{
@@ -373,6 +375,30 @@ impl Renderer {
             full.level
                 .as_ref()
                 .map_or(&NO_ACTIVE_SET, |level| &level.lightmap_residency_report),
+        )
+    }
+
+    /// Resident bytes of the active level's reflection probes and, beside
+    /// them, the glossy overlay's static-diffuse and floor-layer targets
+    /// while they exist: its report, or the empty report with no set active
+    /// or a set with neither. `None` only before full init.
+    pub fn reflection_probe_residency_report(&self) -> Option<ReflectionProbeResidencyReport> {
+        let full = self.full.as_ref()?;
+        let Some(level) = full.level.as_ref() else {
+            return Some(ReflectionProbeResidencyReport::EMPTY);
+        };
+        let report = level
+            .reflection_probes
+            .as_ref()
+            .map_or(ReflectionProbeResidencyReport::EMPTY, |probes| {
+                probes.residency_report()
+            });
+        Some(
+            level
+                .glossy
+                .iter()
+                .flat_map(|glossy| glossy.residency_rows())
+                .fold(report, ReflectionProbeResidencyReport::with_row),
         )
     }
 

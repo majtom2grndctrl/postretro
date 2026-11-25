@@ -8,7 +8,7 @@ use postretro_level_format::environment_volumes::{
 use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
 use postretro_level_format::reflection_probes::{
     REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1, REFLECTION_PROBE_LIGHTS_PER_PROBE,
-    ReflectionProbeBinding, ReflectionProbeLightShare, ReflectionProbeRecord,
+    ReflectionProbeFluidBinding, ReflectionProbeLightShare, ReflectionProbeRecord,
     ReflectionProbesSection, reflection_probe_zero_distances,
 };
 use postretro_level_loader::{CellData, CellLocatorChild, LevelWorld, PortalData};
@@ -197,7 +197,7 @@ fn probes_binding_every_face(volumes: &[EnvironmentVolumeRecord]) -> ReflectionP
         .iter()
         .enumerate()
         .flat_map(|(volume, record)| {
-            (0..record.surface_faces.len()).map(move |face| ReflectionProbeBinding {
+            (0..record.surface_faces.len()).map(move |face| ReflectionProbeFluidBinding {
                 volume: volume as u32,
                 face: face as u32,
                 probe: 0,
@@ -208,6 +208,8 @@ fn probes_binding_every_face(volumes: &[EnvironmentVolumeRecord]) -> ReflectionP
         tile_dimension: 4,
         tile_border: 1,
         atlas_format: IRRADIANCE_FORMAT_BC6H,
+        colour_mip_count: 1,
+        world_bindings: Vec::new(),
         probes: vec![ReflectionProbeRecord {
             source_entity: 0,
             box_min: [-50.0, -1.0, -50.0],
@@ -216,7 +218,7 @@ fn probes_binding_every_face(volumes: &[EnvironmentVolumeRecord]) -> ReflectionP
             layer: 0,
             lights: [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE],
         }],
-        bindings,
+        fluid_bindings: bindings,
         tiles: vec![0; 16],
         distance_format: REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
         distances: reflection_probe_zero_distances(1, 4),

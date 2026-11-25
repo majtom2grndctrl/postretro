@@ -1,0 +1,1342 @@
+{
+ "before": "8dda8a34a",
+ "after": "ca71993bf (HEAD f5b479b44: production source unchanged)",
+ "g1": [
+  {
+   "map": "a11y-strobe-test",
+   "variant": "ra",
+   "id54": false,
+   "sections": 35,
+   "problems": []
+  },
+  {
+   "map": "anim-demo",
+   "variant": "ra",
+   "id54": false,
+   "sections": 28,
+   "problems": []
+  },
+  {
+   "map": "animated-layer-spill",
+   "variant": "ra",
+   "id54": false,
+   "sections": 30,
+   "problems": []
+  },
+  {
+   "map": "area-light-panel",
+   "variant": "ra",
+   "id54": false,
+   "sections": 25,
+   "problems": []
+  },
+  {
+   "map": "area-lights-ab-grid",
+   "variant": "ra",
+   "id54": false,
+   "sections": 29,
+   "problems": []
+  },
+  {
+   "map": "area-lights-ab-panel",
+   "variant": "ra",
+   "id54": false,
+   "sections": 27,
+   "problems": []
+  },
+  {
+   "map": "area-lights-demo",
+   "variant": "ra",
+   "id54": false,
+   "sections": 32,
+   "problems": []
+  },
+  {
+   "map": "campaign-test",
+   "variant": "ra",
+   "probes": 1,
+   "fluid_bindings": 1,
+   "stored_shares": 1,
+   "id54": true,
+   "sections": 41,
+   "problems": []
+  },
+  {
+   "map": "campaign-test",
+   "variant": "rg",
+   "probes": 1,
+   "fluid_bindings": 1,
+   "stored_shares": 1,
+   "id54": true,
+   "sections": 41,
+   "problems": []
+  },
+  {
+   "map": "closet-reveal",
+   "variant": "ra",
+   "id54": false,
+   "sections": 36,
+   "problems": []
+  },
+  {
+   "map": "combat-demo",
+   "variant": "ra",
+   "id54": false,
+   "sections": 30,
+   "problems": []
+  },
+  {
+   "map": "coop-activation-test-luau",
+   "variant": "ra",
+   "id54": false,
+   "sections": 33,
+   "problems": []
+  },
+  {
+   "map": "coop-activation-test",
+   "variant": "ra",
+   "id54": false,
+   "sections": 33,
+   "problems": []
+  },
+  {
+   "map": "coop-presentation-test",
+   "variant": "ra",
+   "id54": false,
+   "sections": 38,
+   "problems": []
+  },
+  {
+   "map": "e24-environment-test",
+   "variant": "ra",
+   "probes": 13,
+   "fluid_bindings": 18,
+   "stored_shares": 0,
+   "id54": true,
+   "sections": 32,
+   "problems": []
+  },
+  {
+   "map": "e24-environment-test",
+   "variant": "rg",
+   "probes": 13,
+   "fluid_bindings": 18,
+   "stored_shares": 0,
+   "id54": true,
+   "sections": 32,
+   "problems": []
+  },
+  {
+   "map": "emissive-volumes-demo",
+   "variant": "ra",
+   "id54": false,
+   "sections": 29,
+   "problems": []
+  },
+  {
+   "map": "emissive-volumes-stress-0",
+   "variant": "ra",
+   "id54": false,
+   "sections": 29,
+   "problems": []
+  },
+  {
+   "map": "emissive-volumes-stress-1",
+   "variant": "ra",
+   "id54": false,
+   "sections": 29,
+   "problems": []
+  },
+  {
+   "map": "emissive-volumes-stress-256-anim16",
+   "variant": "ra",
+   "id54": false,
+   "sections": 30,
+   "problems": []
+  },
+  {
+   "map": "emissive-volumes-stress-256",
+   "variant": "ra",
+   "id54": false,
+   "sections": 29,
+   "problems": []
+  },
+  {
+   "map": "enemy-movers",
+   "variant": "ra",
+   "id54": false,
+   "sections": 31,
+   "problems": []
+  },
+  {
+   "map": "gate-heavily-lit",
+   "variant": "ra",
+   "id54": false,
+   "sections": 29,
+   "problems": []
+  },
+  {
+   "map": "ghost-links-luau",
+   "variant": "ra",
+   "id54": false,
+   "sections": 41,
+   "problems": []
+  },
+  {
+   "map": "ghost-links",
+   "variant": "ra",
+   "id54": false,
+   "sections": 41,
+   "problems": []
+  },
+  {
+   "map": "glossy-reflections-test",
+   "variant": "ra",
+   "id54": false,
+   "sections": 36,
+   "problems": []
+  },
+  {
+   "map": "glossy-reflections-test",
+   "variant": "rg",
+   "id54": false,
+   "sections": 37,
+   "problems": [
+    "id 54 present False/True"
+   ]
+  },
+  {
+   "map": "kinematic-platform",
+   "variant": "ra",
+   "id54": false,
+   "sections": 38,
+   "problems": []
+  },
+  {
+   "map": "lightmap-runtime-floor-verification",
+   "variant": "ra",
+   "id54": false,
+   "sections": 26,
+   "problems": []
+  },
+  {
+   "map": "movement-feel",
+   "variant": "ra",
+   "id54": false,
+   "sections": 30,
+   "problems": []
+  },
+  {
+   "map": "mover-closet-kinematic-receiver",
+   "variant": "ra",
+   "probes": 1,
+   "fluid_bindings": 1,
+   "stored_shares": 0,
+   "id54": true,
+   "sections": 34,
+   "problems": []
+  },
+  {
+   "map": "mover-closet-kinematic-receiver",
+   "variant": "rg",
+   "probes": 1,
+   "fluid_bindings": 1,
+   "stored_shares": 0,
+   "id54": true,
+   "sections": 34,
+   "problems": []
+  },
+  {
+   "map": "mover-closet-no-door-kinematic-receiver",
+   "variant": "ra",
+   "probes": 1,
+   "fluid_bindings": 1,
+   "stored_shares": 0,
+   "id54": true,
+   "sections": 34,
+   "problems": []
+  },
+  {
+   "map": "mover-closet-no-door-kinematic-receiver",
+   "variant": "rg",
+   "probes": 1,
+   "fluid_bindings": 1,
+   "stored_shares": 0,
+   "id54": true,
+   "sections": 34,
+   "problems": []
+  },
+  {
+   "map": "mover-closet-no-door",
+   "variant": "ra",
+   "probes": 1,
+   "fluid_bindings": 1,
+   "stored_shares": 0,
+   "id54": true,
+   "sections": 31,
+   "problems": []
+  },
+  {
+   "map": "mover-closet-no-door",
+   "variant": "rg",
+   "probes": 1,
+   "fluid_bindings": 1,
+   "stored_shares": 0,
+   "id54": true,
+   "sections": 31,
+   "problems": []
+  },
+  {
+   "map": "mover-closet-static-door",
+   "variant": "ra",
+   "probes": 1,
+   "fluid_bindings": 1,
+   "stored_shares": 0,
+   "id54": true,
+   "sections": 31,
+   "problems": []
+  },
+  {
+   "map": "mover-closet-static-door",
+   "variant": "rg",
+   "probes": 1,
+   "fluid_bindings": 1,
+   "stored_shares": 0,
+   "id54": true,
+   "sections": 31,
+   "problems": []
+  },
+  {
+   "map": "mover-closet",
+   "variant": "ra",
+   "probes": 1,
+   "fluid_bindings": 1,
+   "stored_shares": 0,
+   "id54": true,
+   "sections": 33,
+   "problems": []
+  },
+  {
+   "map": "mover-closet",
+   "variant": "rg",
+   "probes": 1,
+   "fluid_bindings": 1,
+   "stored_shares": 0,
+   "id54": true,
+   "sections": 33,
+   "problems": []
+  },
+  {
+   "map": "mover-pins",
+   "variant": "ra",
+   "id54": false,
+   "sections": 32,
+   "problems": []
+  },
+  {
+   "map": "mover-setpiece",
+   "variant": "ra",
+   "id54": false,
+   "sections": 32,
+   "problems": []
+  },
+  {
+   "map": "occlusion-test",
+   "variant": "ra",
+   "id54": false,
+   "sections": 37,
+   "problems": []
+  },
+  {
+   "map": "probe-tiles-convex-room",
+   "variant": "ra",
+   "id54": false,
+   "sections": 27,
+   "problems": []
+  },
+  {
+   "map": "reflection-lake-test",
+   "variant": "ra",
+   "probes": 1,
+   "fluid_bindings": 33,
+   "stored_shares": 0,
+   "id54": true,
+   "sections": 30,
+   "problems": []
+  },
+  {
+   "map": "reflection-lake-test",
+   "variant": "rg",
+   "probes": 1,
+   "fluid_bindings": 33,
+   "stored_shares": 0,
+   "id54": true,
+   "sections": 30,
+   "problems": []
+  },
+  {
+   "map": "reflection-probes-test",
+   "variant": "ra",
+   "probes": 3,
+   "fluid_bindings": 8,
+   "stored_shares": 9,
+   "id54": true,
+   "sections": 39,
+   "problems": []
+  },
+  {
+   "map": "reflection-probes-test",
+   "variant": "rg",
+   "probes": 3,
+   "fluid_bindings": 8,
+   "stored_shares": 9,
+   "id54": true,
+   "sections": 39,
+   "problems": []
+  },
+  {
+   "map": "script_light_membership_fixture",
+   "variant": "ra",
+   "id54": false,
+   "sections": 32,
+   "problems": []
+  },
+  {
+   "map": "sdf-shadow-test",
+   "variant": "ra",
+   "id54": false,
+   "sections": 24,
+   "problems": []
+  },
+  {
+   "map": "seam-pair-a",
+   "variant": "ra",
+   "id54": false,
+   "sections": 32,
+   "problems": []
+  },
+  {
+   "map": "seam-pair-b",
+   "variant": "ra",
+   "id54": false,
+   "sections": 32,
+   "problems": []
+  },
+  {
+   "map": "sh-streaming-hinted-door",
+   "variant": "ra",
+   "id54": false,
+   "sections": 22,
+   "problems": []
+  },
+  {
+   "map": "shadowmask-groups-capture",
+   "variant": "ra",
+   "id54": false,
+   "sections": 27,
+   "problems": []
+  },
+  {
+   "map": "soft_shadow_test",
+   "variant": "ra",
+   "id54": false,
+   "sections": 27,
+   "problems": []
+  },
+  {
+   "map": "spawner-test",
+   "variant": "ra",
+   "id54": false,
+   "sections": 39,
+   "problems": []
+  },
+  {
+   "map": "specular-shadowmask-capture",
+   "variant": "ra",
+   "id54": false,
+   "sections": 27,
+   "problems": []
+  },
+  {
+   "map": "specular-texel-sharpness",
+   "variant": "ra",
+   "id54": false,
+   "sections": 32,
+   "problems": []
+  },
+  {
+   "map": "splash-damage-demo",
+   "variant": "ra",
+   "id54": false,
+   "sections": 28,
+   "problems": []
+  },
+  {
+   "map": "stress-env-volumes",
+   "variant": "ra",
+   "probes": 256,
+   "fluid_bindings": 382,
+   "stored_shares": 68,
+   "id54": true,
+   "sections": 41,
+   "problems": []
+  },
+  {
+   "map": "stress-env-volumes",
+   "variant": "rg",
+   "probes": 256,
+   "fluid_bindings": 382,
+   "stored_shares": 68,
+   "id54": true,
+   "sections": 41,
+   "problems": []
+  },
+  {
+   "map": "switch-demo",
+   "variant": "ra",
+   "id54": false,
+   "sections": 32,
+   "problems": []
+  },
+  {
+   "map": "teleporters-baseline",
+   "variant": "ra",
+   "id54": false,
+   "sections": 39,
+   "problems": []
+  },
+  {
+   "map": "teleporters-luau",
+   "variant": "ra",
+   "id54": false,
+   "sections": 40,
+   "problems": []
+  },
+  {
+   "map": "teleporters-stress-baseline",
+   "variant": "ra",
+   "id54": false,
+   "sections": 31,
+   "problems": []
+  },
+  {
+   "map": "teleporters-stress",
+   "variant": "ra",
+   "id54": false,
+   "sections": 32,
+   "problems": []
+  },
+  {
+   "map": "teleporters",
+   "variant": "ra",
+   "id54": false,
+   "sections": 40,
+   "problems": []
+  },
+  {
+   "map": "test_animated_weight_maps_cap",
+   "variant": "ra",
+   "id54": false,
+   "sections": 26,
+   "problems": []
+  },
+  {
+   "map": "test_animated_weight_maps_mixed",
+   "variant": "ra",
+   "id54": false,
+   "sections": 30,
+   "problems": []
+  },
+  {
+   "map": "test_animated_weight_maps_occluded",
+   "variant": "ra",
+   "id54": false,
+   "sections": 27,
+   "problems": []
+  },
+  {
+   "map": "test_animated_weight_maps_single",
+   "variant": "ra",
+   "id54": false,
+   "sections": 26,
+   "problems": []
+  },
+  {
+   "map": "test_mover_light_gate",
+   "variant": "ra",
+   "id54": false,
+   "sections": 34,
+   "problems": []
+  },
+  {
+   "map": "trap-pools",
+   "variant": "ra",
+   "id54": false,
+   "sections": 22,
+   "problems": []
+  },
+  {
+   "map": "trap-volley",
+   "variant": "ra",
+   "id54": false,
+   "sections": 28,
+   "problems": []
+  },
+  {
+   "map": "trap-wave-luau",
+   "variant": "ra",
+   "id54": false,
+   "sections": 29,
+   "problems": []
+  },
+  {
+   "map": "trap-wave",
+   "variant": "ra",
+   "id54": false,
+   "sections": 29,
+   "problems": []
+  },
+  {
+   "map": "trigger-event-spike-trap",
+   "variant": "ra",
+   "id54": false,
+   "sections": 22,
+   "problems": []
+  },
+  {
+   "map": "vault-test",
+   "variant": "ra",
+   "probes": 1,
+   "fluid_bindings": 1,
+   "stored_shares": 0,
+   "id54": true,
+   "sections": 29,
+   "problems": []
+  },
+  {
+   "map": "vault-test",
+   "variant": "rg",
+   "probes": 1,
+   "fluid_bindings": 1,
+   "stored_shares": 0,
+   "id54": true,
+   "sections": 29,
+   "problems": []
+  },
+  {
+   "map": "wedge-shared-plane",
+   "variant": "ra",
+   "id54": false,
+   "sections": 19,
+   "problems": []
+  },
+  {
+   "map": "wieldable-pickup-drop",
+   "variant": "ra",
+   "id54": false,
+   "sections": 27,
+   "problems": []
+  }
+ ],
+ "row1": {
+  "test": "crates/level-compiler/tests/reflection_probe_water_parity_ab.rs::every_water_probe_places_and_captures_as_the_build_before_glossy_reflections",
+  "result": "passed",
+  "probes_matched": 280,
+  "maps": 11
+ },
+ "captures": {
+  "w-lake-centre-high-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-centre-high-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-centre-low-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-centre-low-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-centre-medium-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-centre-medium-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-centre-off-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-centre-off-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-centre-ultra-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-centre-ultra-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-centre-very_high-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-centre-very_high-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-lamp-high-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-lamp-high-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-lamp-low-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-lamp-low-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-lamp-medium-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-lamp-medium-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-lamp-off-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-lamp-off-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-lamp-ultra-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-lamp-ultra-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-lamp-very_high-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-lamp-very_high-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-spawn-high-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-spawn-high-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-spawn-low-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-spawn-low-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-spawn-medium-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-spawn-medium-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-spawn-off-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-spawn-off-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-spawn-ultra-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-spawn-ultra-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-spawn-very_high-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-lake-spawn-very_high-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-mid-high-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-mid-high-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-mid-low-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-mid-low-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-mid-medium-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-mid-medium-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-mid-off-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-mid-off-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-mid-ultra-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-mid-ultra-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-mid-very_high-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-mid-very_high-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-near-high-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-near-high-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-near-low-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-near-low-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-near-medium-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-near-medium-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-near-off-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-near-off-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-near-ultra-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-near-ultra-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-near-very_high-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-near-very_high-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-test-high-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-test-high-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-test-low-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-test-low-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-test-medium-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-test-medium-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-test-off-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-test-off-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-test-ultra-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-test-ultra-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-test-very_high-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-test-very_high-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-under-high-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-under-high-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-under-low-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-under-low-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-under-medium-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-under-medium-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-under-off-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-under-off-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-under-ultra-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-under-ultra-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-under-very_high-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-parity-under-very_high-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-across-high-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-across-high-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-across-low-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-across-low-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-across-medium-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-across-medium-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-across-off-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-across-off-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-across-ultra-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-across-ultra-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-across-very_high-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-across-very_high-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-canal-high-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-canal-high-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-canal-low-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-canal-low-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-canal-medium-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-canal-medium-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-canal-off-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-canal-off-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-canal-ultra-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-canal-ultra-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-canal-very_high-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-canal-very_high-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-down-high-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-down-high-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-down-low-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-down-low-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-down-medium-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-down-medium-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-down-off-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-down-off-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-down-ultra-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-down-ultra-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-down-very_high-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "w-probes-down-very_high-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "g-glossy-across-1080-off-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "g-glossy-across-1080-off-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "g-glossy-across-4k-off-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "g-glossy-across-4k-off-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "g-glossy-back-1080-off-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "g-glossy-back-1080-off-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "g-glossy-back-4k-off-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "g-glossy-back-4k-off-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "g-glossy-down-1080-off-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "g-glossy-down-1080-off-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "g-glossy-down-4k-off-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "g-glossy-down-4k-off-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "g-glossy-level-1080-off-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "g-glossy-level-1080-off-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "g-glossy-level-4k-off-pixel": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  },
+  "g-glossy-level-4k-off-smooth": {
+   "identical_bytes": true,
+   "max": 0,
+   "diff_pixels": 0
+  }
+ },
+ "not_baked": [
+  "stress-env-volumes-baseline",
+  "stress-street",
+  "stress-warren",
+  "stress-warren-crates",
+  "stress-warren-hallway-inspection",
+  "stress-warren-hallway-inspection-mini",
+  "stress-warren-lit",
+  "stress-warren-maze-crates",
+  "stress-warren-mini",
+  "stress-warren-overflow",
+  "stress-warren-showcase"
+ ]
+}

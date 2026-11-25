@@ -10,7 +10,8 @@ use log::Level;
 use postretro_level_format::reflection_probes::ReflectionProbesSection;
 use postretro_test_log_capture::LogCapture;
 
-use super::capture_exclusion::{BrushFaces, ProbeExclusion};
+use super::capture_brushes::BrushFaces;
+use super::capture_exclusion::ProbeExclusion;
 use super::capture_exclusion_test_fixtures::{
     CEILING_DEPTH, CaptureFixture, PILLAR_TEXTURE, ROOM_MAX, pillar, pool_entity, textured_room,
 };
@@ -70,6 +71,7 @@ fn scene<'a>(inputs: &ReflectionProbeInputs<'a>) -> ExclusionScene<'a> {
         face_brush: inputs.face_brushes,
         geometry: inputs.geometry,
         environment_volumes: inputs.environment_volumes,
+        world_faces: &[],
     }
 }
 
@@ -143,7 +145,7 @@ fn placed_probes_are_identical_with_the_filter_on_and_off() {
                 )
             })
             .collect();
-        (probes, section.bindings.clone())
+        (probes, section.fluid_bindings.clone())
     };
     assert_eq!(placement(&filtered), placement(&unfiltered));
     let record = &filtered.probes[0];

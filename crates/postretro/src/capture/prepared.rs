@@ -563,6 +563,12 @@ impl PreparedCapture {
         self.renderer.lightmap_residency_report().cloned()
     }
 
+    pub(super) fn reflection_probe_residency_report(
+        &self,
+    ) -> Option<crate::render::ReflectionProbeResidencyReport> {
+        self.renderer.reflection_probe_residency_report()
+    }
+
     pub(super) const fn lightmap_streaming(&self) -> CaptureLightmapResidency {
         self.lightmap_residency
     }

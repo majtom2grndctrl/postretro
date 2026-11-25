@@ -21,6 +21,7 @@ use super::exclusion::{
     classify_probes_within_boxes, excluded_by_rule, floor_ratio, size_threshold, thin_floor,
     water_width,
 };
+use super::facing::Facing;
 use super::hit::SceneTracer;
 use super::placement::{PlacedProbe, PlacementScene, place_probes};
 use super::placement_test_fixtures::{
@@ -76,6 +77,7 @@ impl ExclusionFixture {
             place_probes(
                 &environment,
                 &map.reflection_volumes,
+                &[],
                 &PlacementScene {
                     tracer: &tracer,
                     bounds: &bounds,
@@ -105,6 +107,7 @@ impl ExclusionFixture {
                 face_brush: &self.face_brush,
                 geometry: &self.geometry,
                 environment_volumes: &self.environment,
+                world_faces: &[],
             },
             &self.probes,
             &ExclusionConstants::PRODUCTION,
@@ -121,6 +124,7 @@ impl ExclusionFixture {
                 face_brush: &self.face_brush,
                 geometry: &self.geometry,
                 environment_volumes: &self.environment,
+                world_faces: &[],
             },
             &self.probes,
         )
@@ -215,8 +219,10 @@ fn probe(bound_area: f64, faces: Vec<(u32, u32)>) -> PlacedProbe {
         box_min: [-100.0; 3],
         box_max: [100.0; 3],
         capture_point: [0.0; 3],
+        facing: Facing::Up,
         bound_area,
-        faces,
+        fluid_faces: faces,
+        world_faces: Vec::new(),
     }
 }
 
@@ -237,6 +243,7 @@ fn classify_with(brushes: &[BrushVolume], overrides: &[ReflectionCapture], width
             face_brush: &[],
             geometry: &geometry,
             environment_volumes: &environment,
+            world_faces: &[],
         },
         &[probe(width * width, Vec::new())],
     )
@@ -270,6 +277,7 @@ fn quad_brush_excluded(hull_min: [f64; 3], hull_max: [f64; 3], center: Vec3, deg
             face_brush: &[Some(0)],
             geometry: &geometry,
             environment_volumes: &environment,
+            world_faces: &[],
         },
         &[probe(100.0, vec![(0, 0)])],
     );
@@ -460,6 +468,7 @@ fn stage_sets_keep_only_brushes_touching_the_projection_box_floor_ignored() {
         face_brush: &[],
         geometry: &geometry,
         environment_volumes: &environment,
+        world_faces: &[],
     };
     let probes = [PlacedProbe {
         box_min: [0.0; 3],
@@ -815,7 +824,12 @@ fn deck_between_two_bound_planes_is_kept_over_the_lower_water_and_excluded_under
         );
         assert_eq!(fixture.probes.len(), 1, "{:?}", fixture.probes);
         assert!(fixture.probes[0].authored);
-        assert_eq!(fixture.probes[0].faces.len(), 2, "{:?}", fixture.probes[0]);
+        assert_eq!(
+            fixture.probes[0].fluid_faces.len(),
+            2,
+            "{:?}",
+            fixture.probes[0]
+        );
         let brush = fixture.brush(deck.0, deck.1);
         let excluded = fixture.only_probe_excluded();
         assert_eq!(!excluded.contains(&brush), kept, "{deck:?}: {excluded:?}");

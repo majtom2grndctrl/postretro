@@ -13,8 +13,7 @@ use crate::project::MARKER_FILE;
 
 use super::readme::{render_bundle_manifest, render_readme};
 use super::{
-    BIN_DIR, RELEASE_ENGINE_STEM, SDK_BUNDLE_NAME, STARTER_MOD, STARTER_TEMPLATE,
-    TSCONFIG_TEMPLATE,
+    BIN_DIR, RELEASE_ENGINE_STEM, SDK_BUNDLE_NAME, STARTER_MOD, STARTER_TEMPLATE, TSCONFIG_TEMPLATE,
 };
 
 /// The binaries a bundle ships. Each is built elsewhere and named by a flag.

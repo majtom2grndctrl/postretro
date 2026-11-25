@@ -187,102 +187,124 @@ impl MeshPass {
             immediate_size: 0,
         });
 
-        let pipeline = device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Skinned Mesh Pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                // Vertex layout BUILT HERE from `SkinnedVertex`'s fields
-                // (postretro-model stays wgpu-free). Offsets:
-                //   position       Float32x3  @ 0
-                //   base_uv        Unorm16x2  @ 12  → vec2<f32> (0..1, decoded)
-                //   normal_oct     Uint16x2   @ 16
-                //   tangent_packed Uint16x2   @ 20
-                //   joints (u8x4)  Uint8x4    @ 24  → vec4<u32>
-                //   weights (u8x4) Unorm8x4   @ 28  → vec4<f32> (0..1)
-                // Stride 32. The tangent attribute is carried (committed layout)
-                // but unused by the SH-lit fragment because there is no
-                // normal-map pass yet; committing it now lets depth-only,
-                // lighting, and normal-map passes reuse this vertex layout
-                // without a format change.
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<postretro_model::mesh::SkinnedVertex>()
-                        as wgpu::BufferAddress,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttribute {
-                            offset: 0,
-                            shader_location: 0,
-                            format: wgpu::VertexFormat::Float32x3,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 12,
-                            shader_location: 1,
-                            // base_uv is u16-quantized (gltf_loader::quantize_uv:
-                            // 0..1 → 0..65535). Unorm16x2 hardware-decodes it back
-                            // to vec2<f32> (0..1), matching the shader's
-                            // `@location(1) base_uv: vec2<f32>` and forward.wgsl's
-                            // UV convention. (Uint16x2 here surfaced as vec2<u32>
-                            // and failed pipeline validation against the float UV.)
-                            format: wgpu::VertexFormat::Unorm16x2,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 16,
-                            shader_location: 2,
-                            format: wgpu::VertexFormat::Uint16x2,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 20,
-                            shader_location: 3,
-                            format: wgpu::VertexFormat::Uint16x2,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 24,
-                            shader_location: 4,
-                            format: wgpu::VertexFormat::Uint8x4,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 28,
-                            shader_location: 5,
-                            format: wgpu::VertexFormat::Unorm8x4,
-                        },
-                    ],
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                // glTF front faces are CCW; engine forward pipeline matches.
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
-                ..Default::default()
-            },
-            // The mesh is NOT in the world depth pre-pass, so it depth-tests
-            // (`Less`) against the world depth AND writes its own depth so it
-            // self-occludes correctly. Recorded in a dedicated render pass that
-            // loads the existing depth attachment writably (see render/mod.rs).
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: depth_format,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Less),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: crate::render::SCENE_COLOR_FORMAT,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            multiview_mask: None,
-            cache: None,
+        // The colour pipeline in each output form: the scene colour alone, and
+        // at the floor layer's tiers the scene colour written twice, the second
+        // as the highlight-free colour (`fs_main_highlight_free`).
+        let colour_pipeline =
+            |label: &str, entry: &str, targets: &[Option<wgpu::ColorTargetState>]| {
+                device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("vs_main"),
+                        // Vertex layout BUILT HERE from `SkinnedVertex`'s fields
+                        // (postretro-model stays wgpu-free). Offsets:
+                        //   position       Float32x3  @ 0
+                        //   base_uv        Unorm16x2  @ 12  → vec2<f32> (0..1, decoded)
+                        //   normal_oct     Uint16x2   @ 16
+                        //   tangent_packed Uint16x2   @ 20
+                        //   joints (u8x4)  Uint8x4    @ 24  → vec4<u32>
+                        //   weights (u8x4) Unorm8x4   @ 28  → vec4<f32> (0..1)
+                        // Stride 32. The tangent attribute is carried (committed layout)
+                        // but unused by the SH-lit fragment because there is no
+                        // normal-map pass yet; committing it now lets depth-only,
+                        // lighting, and normal-map passes reuse this vertex layout
+                        // without a format change.
+                        buffers: &[Some(wgpu::VertexBufferLayout {
+                            array_stride: std::mem::size_of::<postretro_model::mesh::SkinnedVertex>(
+                            ) as wgpu::BufferAddress,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &[
+                                wgpu::VertexAttribute {
+                                    offset: 0,
+                                    shader_location: 0,
+                                    format: wgpu::VertexFormat::Float32x3,
+                                },
+                                wgpu::VertexAttribute {
+                                    offset: 12,
+                                    shader_location: 1,
+                                    // base_uv is u16-quantized (gltf_loader::quantize_uv:
+                                    // 0..1 → 0..65535). Unorm16x2 hardware-decodes it back
+                                    // to vec2<f32> (0..1), matching the shader's
+                                    // `@location(1) base_uv: vec2<f32>` and forward.wgsl's
+                                    // UV convention. (Uint16x2 here surfaced as vec2<u32>
+                                    // and failed pipeline validation against the float UV.)
+                                    format: wgpu::VertexFormat::Unorm16x2,
+                                },
+                                wgpu::VertexAttribute {
+                                    offset: 16,
+                                    shader_location: 2,
+                                    format: wgpu::VertexFormat::Uint16x2,
+                                },
+                                wgpu::VertexAttribute {
+                                    offset: 20,
+                                    shader_location: 3,
+                                    format: wgpu::VertexFormat::Uint16x2,
+                                },
+                                wgpu::VertexAttribute {
+                                    offset: 24,
+                                    shader_location: 4,
+                                    format: wgpu::VertexFormat::Uint8x4,
+                                },
+                                wgpu::VertexAttribute {
+                                    offset: 28,
+                                    shader_location: 5,
+                                    format: wgpu::VertexFormat::Unorm8x4,
+                                },
+                            ],
+                        })],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    },
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleList,
+                        // glTF front faces are CCW; engine forward pipeline matches.
+                        front_face: wgpu::FrontFace::Ccw,
+                        cull_mode: Some(wgpu::Face::Back),
+                        ..Default::default()
+                    },
+                    // The mesh is NOT in the world depth pre-pass, so it depth-tests
+                    // (`Less`) against the world depth AND writes its own depth so it
+                    // self-occludes correctly. Recorded in a dedicated render pass that
+                    // loads the existing depth attachment writably (see render/mod.rs).
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: depth_format,
+                        depth_write_enabled: Some(true),
+                        depth_compare: Some(wgpu::CompareFunction::Less),
+                        stencil: wgpu::StencilState::default(),
+                        bias: wgpu::DepthBiasState::default(),
+                    }),
+                    multisample: wgpu::MultisampleState::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some(entry),
+                        targets,
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            };
+        let colour = Some(wgpu::ColorTargetState {
+            format: crate::render::SCENE_COLOR_FORMAT,
+            blend: None,
+            write_mask: wgpu::ColorWrites::ALL,
         });
+        let highlight_free = Some(wgpu::ColorTargetState {
+            format: crate::render::glossy_floor::highlight_free_format(device.features()),
+            blend: None,
+            write_mask: wgpu::ColorWrites::ALL,
+        });
+        let pipeline = colour_pipeline(
+            "Skinned Mesh Pipeline",
+            "fs_main",
+            std::slice::from_ref(&colour),
+        );
+        let highlight_free_pipeline = colour_pipeline(
+            "Skinned Mesh Pipeline (highlight-free)",
+            "fs_main_highlight_free",
+            &[colour, highlight_free],
+        );
 
         let depth_pipeline = crate::render::mesh_depth::create_skinned_depth_pipeline(
             device,
@@ -367,6 +389,7 @@ impl MeshPass {
 
         Self {
             pipeline,
+            highlight_free_pipeline,
             depth_pipeline,
             ghost_pipelines,
             palette_buffer,

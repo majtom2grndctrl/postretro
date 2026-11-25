@@ -44,9 +44,23 @@ pub enum RenderStage {
     ShadowReach,
     /// Depth pre-pass and SDF shadow.
     DepthSdf,
+    /// The live-lighting sums dispatch (`rendering_pipeline.md` §7.3a).
+    /// Absent on a frame that draws no probe term.
+    ReflectionProbeSums,
     Forward,
     KinematicBrush,
     SkinnedMesh,
+    /// The glossy overlay (`rendering_pipeline.md` §7.3a Glossy world
+    /// faces): its coplanar-mover guard, the floor layer's chain and march,
+    /// and its own pass. Absent on a frame that records no overlay.
+    GlossyOverlay,
+    /// The coplanar-mover guard. Absent on a frame with no mover draw.
+    GlossyMoverGuard,
+    /// The floor layer's scene-colour chain. Absent on a frame that runs no
+    /// floor layer.
+    GlossySceneColourChain,
+    /// The floor layer's march. Absent on a frame that runs no floor layer.
+    GlossyFloorMarch,
     /// Unlit translucent ghost draws (`rendering_pipeline.md` §7.9): the
     /// ghost depth seed, then one sorted ghost pass (skinned and mover
     /// ghosts, each a depth-only draw then its colour draw), then the
@@ -94,9 +108,14 @@ impl StageSet for RenderStage {
         Self::ShadowDepth,
         Self::ShadowReach,
         Self::DepthSdf,
+        Self::ReflectionProbeSums,
         Self::Forward,
         Self::KinematicBrush,
         Self::SkinnedMesh,
+        Self::GlossyOverlay,
+        Self::GlossyMoverGuard,
+        Self::GlossySceneColourChain,
+        Self::GlossyFloorMarch,
         Self::GhostMesh,
         Self::PlanarReflection,
         Self::FluidSurface,
@@ -135,9 +154,14 @@ impl StageSet for RenderStage {
             Self::ShadowDepth => "rec_shadow_depth",
             Self::ShadowReach => "rec_shadow_reach",
             Self::DepthSdf => "rec_depth_sdf",
+            Self::ReflectionProbeSums => "rec_reflection_probe_sums",
             Self::Forward => "rec_forward",
             Self::KinematicBrush => "rec_kinematic_brush",
             Self::SkinnedMesh => "rec_skinned_mesh",
+            Self::GlossyOverlay => "rec_glossy_overlay",
+            Self::GlossyMoverGuard => "rec_glossy_mover_guard",
+            Self::GlossySceneColourChain => "rec_glossy_scene_colour_chain",
+            Self::GlossyFloorMarch => "rec_glossy_floor_march",
             Self::GhostMesh => "rec_ghost_mesh",
             Self::PlanarReflection => "rec_planar",
             Self::FluidSurface => "rec_fluid_surface",
@@ -166,6 +190,9 @@ impl StageSet for RenderStage {
             | Self::DirectShCompose => Some(Self::PreScene),
             Self::CullDiagnostics => Some(Self::Cull),
             Self::ShadowReach => Some(Self::ShadowDepth),
+            Self::GlossyMoverGuard | Self::GlossySceneColourChain | Self::GlossyFloorMarch => {
+                Some(Self::GlossyOverlay)
+            }
             Self::UiTextSpansPrepared => Some(Self::Ui),
             _ => Some(Self::Record),
         }
@@ -234,6 +261,61 @@ mod tests {
         // site stays one line.
         let record = include_str!("planar_reflection/record.rs");
         assert!(record.contains("cpu.scope(RenderStage::PlanarReflection)"));
+    }
+
+    #[test]
+    fn glossy_stages_record_inside_their_passes_after_each_gate() {
+        assert_eq!(
+            RenderStage::ReflectionProbeSums.parent(),
+            Some(RenderStage::Record)
+        );
+        assert_eq!(
+            RenderStage::GlossyOverlay.parent(),
+            Some(RenderStage::Record)
+        );
+        for stage in [
+            RenderStage::GlossyMoverGuard,
+            RenderStage::GlossySceneColourChain,
+            RenderStage::GlossyFloorMarch,
+        ] {
+            assert_eq!(
+                stage.parent(),
+                Some(RenderStage::GlossyOverlay),
+                "{stage:?}"
+            );
+            assert_eq!(stage.kind(), StageKind::Time, "{stage:?}");
+        }
+        // Each scope opens past its pass's gate, so a frame that records
+        // none reports the stage absent, never zero.
+        let squash = |source: &str| source.split_whitespace().collect::<String>();
+        let sums = squash(include_str!("renderer_probe_sums_frame.rs"));
+        let gate = sums
+            .find("letSome(probes)=self.reflection_probes()else{return;};")
+            .expect("the sums gate");
+        let scope = sums
+            .find("self.cpu_frame.scope(RenderStage::ReflectionProbeSums)")
+            .expect("the sums scope");
+        assert!(gate < scope);
+        let overlay = squash(include_str!("renderer_glossy_frame.rs"));
+        let gate = overlay
+            .find("glossy_overlay_probe_term_draws(render_world,")
+            .expect("the overlay gate");
+        for stage in ["GlossyOverlay", "GlossyMoverGuard"] {
+            let scope = overlay
+                .find(&format!("self.cpu_frame.scope(RenderStage::{stage})"))
+                .unwrap_or_else(|| panic!("the {stage} scope"));
+            assert!(gate < scope, "{stage}");
+        }
+        let floor = squash(include_str!("renderer_glossy_floor_frame.rs"));
+        for stage in ["GlossySceneColourChain", "GlossyFloorMarch"] {
+            assert_eq!(
+                floor
+                    .matches(&format!("self.cpu_frame.scope(RenderStage::{stage})"))
+                    .count(),
+                1,
+                "{stage}"
+            );
+        }
     }
 
     #[test]

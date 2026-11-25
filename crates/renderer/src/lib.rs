@@ -1,8 +1,10 @@
 // Renderer crate root: GPU-owned passes, uploads, culling, and presentation.
 // See: context/lib/rendering_pipeline.md
 
+mod bvh_cull_estimate;
 mod candidate_cull;
 mod compute_cull;
+mod indirect_draw_plan;
 mod lighting;
 mod render;
 mod visible_span_draws;

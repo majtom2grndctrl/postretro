@@ -11,7 +11,7 @@ use postretro_level_format::environment_volumes::EnvironmentVolumeRecord;
 use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_RGBA16F, f32_to_f16_bits};
 use postretro_level_format::reflection_probes::{
     REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1, REFLECTION_PROBE_LIGHTS_PER_PROBE,
-    REFLECTION_PROBE_LOBE_COUNT, ReflectionProbeBinding, ReflectionProbeLightShare,
+    REFLECTION_PROBE_LOBE_COUNT, ReflectionProbeFluidBinding, ReflectionProbeLightShare,
     ReflectionProbeRecord, ReflectionProbesSection, reflection_probe_zero_distances,
 };
 use postretro_level_format::sh_volume::{AnimationDescriptor, OctahedralShVolumeSection};
@@ -139,11 +139,13 @@ pub(super) fn probe_section(
         tile_dimension: PROBE_TILE,
         tile_border: 1,
         atlas_format: IRRADIANCE_FORMAT_RGBA16F,
+        colour_mip_count: 1,
+        world_bindings: Vec::new(),
         distances: reflection_probe_zero_distances(probes.len(), PROBE_TILE),
         probes,
-        bindings: bindings
+        fluid_bindings: bindings
             .iter()
-            .map(|&(volume, face, probe)| ReflectionProbeBinding {
+            .map(|&(volume, face, probe)| ReflectionProbeFluidBinding {
                 volume,
                 face,
                 probe,
@@ -298,6 +300,7 @@ fn with_sh_level<R>(
         vertices: &[],
         vertex_spec_owners: &[],
         vertex_emissive_volumes: &[],
+        reflection_probes: None,
         emissive_volumes: &[],
         area_glow_lights: &[],
         indices: &[],
@@ -432,7 +435,7 @@ pub(super) fn frame_split_at_upload(
 
 /// Sums-pass dispatches recorded so far.
 pub(super) fn dispatches(renderer: &Renderer) -> u32 {
-    renderer.full().fluid_surface.probe_sums_dispatches()
+    renderer.full().reflection_probe_sums.dispatches()
 }
 
 /// The per-fragment oracle: the reflecting variant with the kept
@@ -559,9 +562,9 @@ pub(super) fn read_sums(renderer: &Renderer, buffer: &wgpu::Buffer) -> Vec<[f32;
 /// The active level's sums, read back.
 pub(super) fn read_active_sums(renderer: &Renderer) -> Vec<[f32; 4]> {
     let buffer = renderer
-        .fluid_surfaces()
-        .expect("a fluid level is installed")
-        .sums_buffer_for_test()
+        .reflection_probes()
+        .expect("a level with probes is installed")
+        .sums_buffer()
         .clone();
     read_sums(renderer, &buffer)
 }
@@ -570,9 +573,9 @@ pub(super) fn read_active_sums(renderer: &Renderer) -> Vec<[f32; 4]> {
 /// the next frame's commands.
 pub(super) fn prefill_active_sums(renderer: &Renderer, value: f32) {
     let buffer = renderer
-        .fluid_surfaces()
-        .expect("a fluid level is installed")
-        .sums_buffer_for_test();
+        .reflection_probes()
+        .expect("a level with probes is installed")
+        .sums_buffer();
     let bytes: Vec<u8> = std::iter::repeat_n(value.to_le_bytes(), FLUID_PROBE_SUMS_BYTES / 4)
         .flatten()
         .collect();

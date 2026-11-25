@@ -63,7 +63,9 @@ default. Its README gives the method and the recorded counts.
 Generates the exact-value specular fixtures in `content/dev/textures/test/` used by the
 `specular-texel-sharpness` dev map: a `_p` smoothness ramp, a `_t` tint inlay, a carved `_h`+`_p` gloss tile
 (`concrete_carved_gloss`), a `glass_gloss_tiles` set and a tinted carved gloss tile
-(`concrete_carved_tinted_gloss`), five fixtures in all, each 16×16 with its `_s` sibling. Standard library only, no randomness;
+(`concrete_carved_tinted_gloss`), plus four art-direction materials for the side rooms of the
+`glossy-reflections-test` dev map (`concrete_satin`, `metal_polished`, `metal_fade_band`,
+`concrete_tile_grout`), nine fixtures in all, each 16×16 with its `_s` sibling. Standard library only, no randomness;
 siblings are untagged linear grey. Its test checks every byte. Run with
 `python3 tools/gen_specular_texel_fixtures.py`; its tests run with
 `python3 -m unittest discover -s tools/tests -p test_gen_specular_texel_fixtures.py`.

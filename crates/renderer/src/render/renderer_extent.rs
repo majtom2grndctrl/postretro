@@ -134,6 +134,10 @@ impl Renderer {
             &full.depth_view,
             full.screen_effects.scene_color_view(),
         );
+        // The glossy floor march reads scene depth through its own group.
+        full.glossy_overlay
+            .floor_mut()
+            .rebuild_scene_inputs(device, &full.depth_view);
         // The SDF shadow target is half the scene.
         full.sdf_shadow_pass.resize(device, width, height);
         // Only the active set's extent-bound groups follow: its spot group 5
@@ -144,6 +148,9 @@ impl Renderer {
             super::renderer_resources::rebuild_level_extent_groups(device, full, &mut level, scene);
             full.level = Some(level);
         }
+        // The active set's glossy targets follow the new extent at the kept
+        // tier, each built once.
+        self.sync_glossy_target();
         // After fluid group 5 holds the new scene depth: the planar layer, its
         // group 5 and the mirror targets follow it at the new extent.
         self.rebuild_planar_layer();

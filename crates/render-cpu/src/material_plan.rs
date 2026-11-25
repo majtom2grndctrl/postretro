@@ -120,6 +120,17 @@ impl MaterialUniformPlan {
         )
     }
 
+    /// Whether the shader can march this material at any switch state: its
+    /// uniform at `On` carries the has-depth bit and a positive depth
+    /// ([`crate::surface_depth::surface_depth_has_map`]). `Off` packs the flat
+    /// row, so a plan this is false for never marches, and a pipeline built
+    /// without the march draws it exactly: the march's own first early-out
+    /// returns the flat result.
+    pub fn can_march(self) -> bool {
+        let on = self.surface_depth_uniform(crate::surface_depth::SurfaceDepthQuality::On);
+        crate::surface_depth::surface_depth_has_map(on.march_word(), on.depth.depth_meters)
+    }
+
     /// The exact 32 bytes this material uploads at `quality`.
     ///
     /// Deterministic and total: the same plan and state always produce the same
@@ -364,6 +375,36 @@ mod material_uniform_tests {
                 plan.uniform_bytes(quality)[8..].iter().all(|&b| b == 0),
                 "{quality:?} must leave a map-less material on the flat path",
             );
+        }
+    }
+
+    /// A plan that cannot march leaves the march off at every switch state,
+    /// so a march-free pipeline draws it exactly; one that can marches at On.
+    #[test]
+    fn a_plan_marches_at_some_state_only_where_it_can_march() {
+        let mid_gray =
+            MaterialUniformPlan::new(Material::Concrete, 0.0, true, 11, SurfaceReliefLevels::FLAT);
+        let no_map = MaterialUniformPlan::new(Material::Concrete, 0.0, false, 11, STONES);
+        let flat_prefix = MaterialUniformPlan::new(Material::Glass, 0.0, true, 4, STONES);
+        for (plan, can) in [
+            (carving_plan(), true),
+            (mid_gray, false),
+            (no_map, false),
+            (flat_prefix, false),
+        ] {
+            assert_eq!(plan.can_march(), can, "{plan:?}");
+            for quality in SurfaceDepthQuality::ALL {
+                let packed = plan.surface_depth_uniform(quality);
+                let marches = crate::surface_depth::surface_depth_has_map(
+                    packed.march_word(),
+                    packed.depth.depth_meters,
+                );
+                assert_eq!(
+                    marches,
+                    can && quality == SurfaceDepthQuality::On,
+                    "{plan:?} at {quality:?}"
+                );
+            }
         }
     }
 

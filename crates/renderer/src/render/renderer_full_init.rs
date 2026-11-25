@@ -170,6 +170,7 @@ pub(crate) fn build_full_renderer(
 
     let RendererPipelines {
         pipeline,
+        forward_static_diffuse,
         wireframe_cull_status_layout,
         wireframe_cull_status_pipeline,
         wireframe_visible_pipeline,
@@ -276,6 +277,21 @@ pub(crate) fn build_full_renderer(
         &depth_view,
         screen_effects.scene_color_view(),
     );
+    // The sums pass binds the camera and SH layouts; the sums and its group
+    // over them belong to each level. See: context/lib/rendering_pipeline.md §7.3a
+    let glossy_overlay = glossy_overlay::GlossyOverlayPass::new(
+        device,
+        &uniform_bind_group_layout,
+        &texture_bind_group_layout,
+        forward_static_diffuse,
+        &kinematic_brush,
+        &depth_view,
+    );
+    let reflection_probe_sums = reflection_probe_sums::ReflectionProbeSumsPass::new(
+        device,
+        &uniform_bind_group_layout,
+        &sh_volume_resources.bind_group_layout,
+    );
     // Every planar pipeline builds here at every tier, so a tier change
     // compiles nothing. See: context/lib/rendering_pipeline.md §7.3a
     let planar_reflection = planar_reflection::PlanarReflectionPass::new(
@@ -332,6 +348,7 @@ pub(crate) fn build_full_renderer(
         next_level_set_id: 0,
         extent_rebuilds: 0,
         reflection_tier_rebuilds: 0,
+        glossy_target_builds: 0,
         scene_targets_generation: 0,
         build_token: std::sync::Arc::new(()),
         pending_textures: None,
@@ -371,6 +388,8 @@ pub(crate) fn build_full_renderer(
         kinematic_brush,
         kinematic_ghost,
         fluid_surface,
+        reflection_probe_sums,
+        glossy_overlay,
         planar_reflection,
         rigid_occluder_depth,
         promoted_depth_cache,

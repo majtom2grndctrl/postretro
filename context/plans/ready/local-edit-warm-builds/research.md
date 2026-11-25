@@ -80,7 +80,7 @@ The rival, a cell-bounded closure, needs a "can see" relation. The only sound on
   - `delta_sh_entry_cache_key` and `chunk_light_list_cache_key_with_version` fold `geometry_content_hash`.
   - `cell_residency_set_cache_key` folds the whole portal, locator and cell data.
   - `mover_probe_bounce`, `mover_absent_bounces` and `sh_base_bake_time` fold id 34's `volume_key`.
-  - `reflection_probes/stage_key.rs::cache_key` hashes the packed id 34 and others.
+  - `reflection_probes/stage_key.rs::cache_key`: one whole-stage entry; see §Reflection probes.
   - `direct_cache_key` (id 35), both billboard scatter keys, `weight_map_cache_key` and the mover gate's `probe_key_prefix` fold the whole geometry; the probe-direct `MemoPrefix` folds `fold_occluding_geometry`.
   - The ShadowmaskAtlas cut-face owner estimate is uncached and re-runs on any `shadowmask_atlas` miss. Its owner sets span a cut parent's sub-faces across layers.
 - **Exempt whole-section stages, cold timings** (dev profile, 4-core container):
@@ -92,6 +92,37 @@ The rival, a cell-bounded closure, needs a "can see" relation. The only sound on
   | ChunkLightList | 0.05 s | 0.20 s |
 
   Navmesh and cell visibility grow with arena size. A genre-scale map that shows them taking a real share of a local edit's time becomes a follow-up.
+
+## Reflection probes
+
+Read at 0b7054c3, after the `glossy-world-reflections` merge. The stage serves water and, with `--glossy-reflections`, static world faces.
+
+- **One entry.** `bake_or_load_with` looks up one `StageCache` entry holding the whole id-54 section and the share reports. Placement, the glossy census, exclusion classification and transparent faces run before the lookup on every build. A hit skips only `capture_probes`.
+- **Key.** `cache_key` folds the geometry in face order, BVH `index_offset`s, each probe's `source_entity`, fluid and id-17 world faces, its facing, transparent and excluded faces and excluded brush indices, the glossy gate, `prefilter::key_bytes`, `TRACER_EPOCH`, and the lighting sections ids 22, 25, 27, 34, 45, 59 and 62, SDF lights and `.prm` keys.
+- **Lighting dependence.** `CaptureScene::shade` reads the lightmap, the SH volume with its depth tiles, SH deltas and animated direct, so any light edit misses the entry today.
+- **Tracer.** `SceneTracer::nearest` is its own closest-hit loop over the shared BVH. `hit_order` ties by triangle index, in global face order. `FaceMask` holds `index_offset`s from id-17 faces. `capture_fill::nearest_on_face` and `capture_bounds::nearest_held` also tie by index. Capture and box-fit rays run to the level diagonal + 1 m. Shadow rays use the shared `segment_clear`.
+- **Global couplings.**
+  - `placement_cap.rs::keep_largest` keeps the largest probes by bound area, map-wide; ties go to pool order, derived probes by first id-17 member.
+  - `Facings::facing_of` takes the first face seen as a facing's basis, within 1°, not transitively.
+  - Plane-height clusters chain over every unclaimed face of a facing.
+  - `prefilter.rs::colour_mip_count`: one world-face probe gives every probe the full mip chain.
+  - id-54 world bindings carry id-17 face indices and probe ordinals.
+- **Per probe (for the 256² brief).** No probe reads another's output. Exclusion scope is the box's footprint, without its floor. Transparent faces span each bound plane map-wide. The prefilter is per probe and deterministic at any worker count.
+- **Progress.** One unit is a probe tile row. A hit publishes no total. The prefilter advances no unit.
+- **Fixtures.** stress-street and stress-warren-crates hold no fluid or reflection volume, so their timings never exercise this stage.
+- **Cost** (`scratch/probe-capture-cost`, `measurements/probe-capture-cost/`; glossy at 27c25a13d, dev profile, `-j 6`, i9-9980HK):
+  - The whole stage takes 0.13–0.46 s per cold build, at most 2.2% of the build.
+  - Capture costs about 19–52 ms per probe, at 63,504 rays per probe (126² interior × 4 supersamples). The prefilter, run only with a world-face probe, rivals or exceeds capture. Key hashing takes 50–190 ms, more than placement, and ran even under `--no-cache` when measured; since b3bd04f94 a build with no cache skips it.
+  - Glossy probes miss about half their rays (behind their own reflector plane); water probes hit 97–100%.
+  - Re-shading recorded hits without re-tracing costs 46–67% of capture, so records would save at most about half of it.
+- **Why per-ray records wait.** A capture ray's answer is richer than an SH hit, so a record would need more than a triangle: the outcome kind (miss, hit, leak guard, fill from a CSG-removed brush side); shadow rays to SDF lights from each hit; material, glow and emissive inputs; and a reach that grows with the map's bounds. At 4 B per ray, records run about 250 KB per probe at 128², about 1 MiB at 256². By extrapolation, 256 probes at 256² cost about 20–50 s of capture, with the prefilter as built growing about 16× per probe. Records don't help the prefilter, since a light edit changes nearly every probe's rows. The 256² brief owns the design, after its prefilter rewrite.
+- **IP read for that brief (owner, 2026-11-24).** Tencent WO2026113651A1 claims 10–13 re-shade a probe's stored hit information on a light change. They depend on render-method claim 1, which the compiler never performs, and runtime cube-map G-buffer relighting predates them (§IP). Fences then: a record names what a ray reached and stores no texture, material, normal or colour; re-evaluation runs only in the compiler; the runtime never rewrites or re-shades a tile.
+
+## Footprint
+
+- **Spared sets already pass the default.** `done/occluder-first-partition/measurement/10/round2/rebake/*.log` report spared sets of 2.21–3.59 GiB against the 2 GiB default `--cache-max-size`. `done/mover-channel-bounded-bake/` saw far more.
+- **Records at 4 B per ray, before compression** (ray counts from §SH dependency spread): stress-street about 299 MiB, stress-warren-crates about 943 MiB.
+- Priced against the budget less the spared set, records at the old default fit in no workspace that has built several maps, so SH would always bake whole. The owner chose to raise the default and keep records unspared, over sparing records with their map or sparing only the current map's.
 
 ## Fixed warm costs
 
@@ -151,7 +182,7 @@ The rival, a cell-bounded closure, needs a "can see" relation. The only sound on
 - **Stabilise the BSP instead of decoupling identity.** Rejected as the primary lever. It is a partition-quality trade, and identity decoupling is needed anyway for packing and seeds.
 - **8 B per ray (triangle and distance).** The owner chose 4 B (triangle, with distance re-intersected), compressed and streamed.
 - **Stable identity only, SH left as one entry.** Rejected. SH costs 68–69 s on every light or geometry edit (§Measurements), so the 45 s edit targets fail without SH locality.
-- **Per-light grain for direct layers.** Rejected. The genre's dense, neon lighting puts most brush edits inside several lights' reach, and per-light keys re-bake each of those lights whole. On stress-street a lamp edit sits inside its own lamp's reach and its neighbours'; the 23-instance edit, which touches every lamp, re-baked about 127 s of lightmap. Per-sample grain re-derives each texel's segments from its chart-local seed and re-traces only those meeting changed triangles. It stays exact without stored hits, because direct visibility is any-hit. The first slice measures how many lights a one-instance edit reaches.
+- **Per-light grain for direct layers.** Rejected. The genre's dense, neon lighting puts most brush edits inside several lights' reach, and per-light keys re-bake each of those lights whole. On stress-street a lamp edit sits inside its own lamp's reach and its neighbours'; the 23-instance edit, which touches every lamp, re-baked about 127 s of lightmap. Per-sample grain re-derives each texel's segments from its chart-local seed and re-traces only those meeting changed triangles. It stays exact without stored hits, because direct visibility is any-hit. A sun or other directional light reaches the whole map, so under per-light grain every brush edit would re-bake its whole layer. The first slice measures how many lights a one-instance edit reaches.
 
 ## IP
 
@@ -171,6 +202,11 @@ Engineering research on 2026-11-23; not legal advice.
 - Bala, Dorsey & Teller (EGWR 1999).
 - Chen, "Incremental radiosity" (SIGGRAPH 1990).
 - Drettakis & Sillion (SIGGRAPH 1997).
+
+**Tencent WO2026113651A1, claims 10–13 (reflection-probe records, for the 256² brief).** Read from `done/reflection-probes/ip-check.md` §1 and `done/reflection-probe-fluid-pass-performance/ip-check.md`.
+- Claims 10–13 update a probe's stored lighting when an update condition holds, by re-shading stored texture or G-buffer information. They depend on claim 1, a method that parallax-corrects a probe and renders a reflection image. The compiler performs no step of claim 1.
+- Prior art: FFXV (SIGGRAPH 2016 talk) cites Far Cry 4 (McAuley, GDC 2015) for cube maps that store a mini G-buffer and relight at run time. Both predate the 2024-11-28 priority. The incremental ray-tracing papers above cover re-evaluating cached rays.
+- Fences for that brief: as §Reflection probes, IP read (owner, 2026-11-24).
 
 **Cited-by patent.** NVIDIA US11922567B2 is live. Its claim 1 covers server-computed indirect lighting sent to a client, which does not reach a build cache.
 
@@ -203,3 +239,8 @@ Orderings the Acceptance rows cite.
 | RW-15 | Kill mid-record write | build killed after some record chunks, before SH entry → rebuild | Equals cold; re-trace ≤ re-trace set + direct diff samples + rays of chunks failing digest |
 | RW-16 | Two worktrees, one map | W1 edits e1, W2 edits e2, built alternately on one cache | Each equals its cold build; each re-traces at most the union of e1's and e2's re-trace sets and direct diff samples |
 | RW-17 | Default budget fit | empty cache, default `--cache-max-size` → cold stress-street → warm one-brush edit | Spared set plus ray records priced under the budget; SH local; no ceiling or eviction warning |
+| RW-18 | Populated workspace fit | every `content/dev` map built → default `--cache-max-size` → cold stress-warren-crates → warm one-brush edit | Records priced under the ceiling beside every map's spared set; SH local; no ceiling or eviction warning |
+| RW-19 | Cross-map record eviction | cold A → build map B at a budget whose sweep evicts A's ray records → A no-op → A one-brush edit → A second edit | No-op: every entry hits, nothing traced, no eviction cost named. First edit: SH traces whole, and the Build Summary names the eviction. Second edit: local. Equals cold throughout |
+| RW-20 | Referenced chunks outlive debris | cold A → several warm edits of A, each leaving orphaned chunks → a sweep that must reclaim less than the orphans hold → A edit | No chunk A's newest entry references is evicted; the edit is local; equals cold |
+| RW-21 | Referenced chunks outlive every orphaned entry | cold A → warm edit of A → cold B → warm edits of B, orphaning B chunks and lightmap and SH entries younger than A's referenced chunks → a sweep that must reclaim more than A's orphaned chunks hold and less than every map's orphaned entries hold → A edit | No chunk A's newest entry references is evicted; A's edit is local; equals cold |
+| RW-22 | Reordered re-save, probe maps | cold glossy-reflections-test (glossy on, area lights present, a probe with exclusions) and cold reflection-lake-test → re-save writing every brush's sides and the brushes in reverse order, the fluid brush's included → warm | The reflection-probe stage re-runs whole and serves no stale entry; id 54 equals the cold build's, its bindings in the re-saved map's numbering |

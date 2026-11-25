@@ -459,7 +459,7 @@ fn planar_selection_never_takes_a_plane_with_no_bound_probe() {
         .reflection_probes
         .as_mut()
         .expect("the fixture binds its water")
-        .bindings
+        .fluid_bindings
         .clear();
     let mut no_section = world(WATER_ROOM);
     no_section.reflection_probes = None;
@@ -703,7 +703,7 @@ fn planar_manifest_less_reflecting_volumes_are_the_probe_bound_fluid_ones() {
         .reflection_probes
         .as_mut()
         .expect("the fixture binds its water")
-        .bindings
+        .fluid_bindings
         .retain(|binding| binding.volume != 0);
     assert_eq!(probe_bound_fluid_volumes(&world), vec![1]);
     world.environment_volumes.volumes[1].fluid = String::new();

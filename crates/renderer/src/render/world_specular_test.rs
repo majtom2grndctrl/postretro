@@ -981,7 +981,7 @@ fn squashed_code(src: &str) -> String {
 
 #[test]
 fn forward_fs_main_builds_the_specular_point_through_the_shared_builder() {
-    let fs = squashed_code(wgsl_function(FORWARD_WGSL, "fs_main"));
+    let fs = squashed_code(wgsl_function(FORWARD_WGSL, "forward_shade"));
     assert!(
         fs.contains("letddx=dpdx(in.uv);letddy=dpdy(in.uv);")
             && fs.contains(
@@ -1749,7 +1749,7 @@ fn specular_texel_shader_constants_match_the_cpu_reference() {
 /// tinted texel's highlight out of the albedo multiply.
 #[test]
 fn forward_fs_main_reads_sharpness_and_tint_from_one_slot_sample() {
-    let fs = squashed_code(wgsl_function(FORWARD_WGSL, "fs_main"));
+    let fs = squashed_code(wgsl_function(FORWARD_WGSL, "forward_shade"));
     assert_eq!(
         fs.matches("spec_texture").count(),
         1,

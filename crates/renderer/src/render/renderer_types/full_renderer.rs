@@ -51,6 +51,10 @@ pub(in crate::render) struct FullRenderer {
     /// (the tier moved after the set's build): the counted fallback beside
     /// `extent_rebuilds`.
     pub(in crate::render) reflection_tier_rebuilds: u64,
+    /// Publishes that built the published set's glossy targets, which no
+    /// set's build makes: the counted fallback a glossy level's publish takes
+    /// above reflection quality off.
+    pub(in crate::render) glossy_target_builds: u64,
     /// Bumped each time the scene-sized targets are recreated. A set records
     /// the generation its extent-bound groups bind, so its publish rebuilds
     /// them when the targets changed since, even at an equal extent.
@@ -177,6 +181,11 @@ pub(in crate::render) struct FullRenderer {
     pub(in crate::render) kinematic_ghost: kinematic_ghost::KinematicGhostPass,
     /// Translucent fluid surfaces; idle until a level with fluid faces installs.
     pub(in crate::render) fluid_surface: fluid_surface::FluidSurfacePass,
+    /// The live-lighting sums pass over the active level's reflection
+    /// probes, dispatched once ahead of every probe-term reader.
+    pub(in crate::render) reflection_probe_sums: reflection_probe_sums::ReflectionProbeSumsPass,
+    /// The glossy world overlay and forward's static-diffuse forms.
+    pub(in crate::render) glossy_overlay: glossy_overlay::GlossyOverlayPass,
     /// Planar water reflection: the mirror view, its targets and pipelines,
     /// built at full init at every tier.
     pub(in crate::render) planar_reflection: planar_reflection::PlanarReflectionPass,

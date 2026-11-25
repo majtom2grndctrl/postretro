@@ -23,7 +23,7 @@ use postretro_level_format::prm::{
 };
 use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
 use postretro_level_format::reflection_probes::{
-    REFLECTION_PROBE_TILE_BORDER, REFLECTION_PROBE_TILE_DIMENSION, ReflectionProbeBinding,
+    REFLECTION_PROBE_TILE_BORDER, REFLECTION_PROBE_TILE_DIMENSION, ReflectionProbeFluidBinding,
     ReflectionProbeLightShare, ReflectionProbesSection,
 };
 use postretro_level_format::sh_reconstruct::Level;
@@ -99,7 +99,8 @@ pub(super) fn uniform_block(width: u16, height: u16, irradiance: f32) -> Lightma
 /// The decoded tile texel a direction lands on.
 pub(super) fn tile_texel(section: &ReflectionProbesSection, layer: usize, direction: Vec3) -> Vec3 {
     let dimension = section.tile_dimension;
-    let decoded = decode_bc6h_rgb_to_f32_rgba(section.tile(layer), dimension, dimension).unwrap();
+    let decoded =
+        decode_bc6h_rgb_to_f32_rgba(section.colour_tile(layer, 0), dimension, dimension).unwrap();
     let [x, y] = irradiance_tile_texel_coord(
         direction.normalize().to_array(),
         REFLECTION_PROBE_TILE_DIMENSION,
@@ -131,6 +132,8 @@ pub(super) struct Extras {
     pub emissive_volumes: Vec<postretro_level_format::emissive::EmissiveVolumeRecord>,
     /// Id 62, when the room has an area light.
     pub area_glow: Option<postretro_level_format::area_glow::AreaGlowSection>,
+    /// `prl-build --glossy-reflections`.
+    pub glossy_reflections: bool,
 }
 
 impl Default for Extras {
@@ -147,6 +150,7 @@ impl Default for Extras {
             emissive: Vec::new(),
             emissive_volumes: Vec::new(),
             area_glow: None,
+            glossy_reflections: false,
         }
     }
 }
@@ -249,6 +253,7 @@ pub(super) fn with_inputs<R>(
         emissive_volumes: &extras.emissive_volumes,
         area_glow: extras.area_glow.as_ref(),
         prm_root: room.prm_dir.path(),
+        glossy_reflections: extras.glossy_reflections,
     })
 }
 
@@ -444,8 +449,8 @@ fn probe_over_a_pool_with_a_red_floor_reads_red_straight_down() {
     assert_eq!(probe.lights, [ReflectionProbeLightShare::UNUSED; 4]);
     assert!((probe.capture_point[1] - 0.502).abs() < 1e-5, "{probe:?}");
     assert_eq!(
-        section.bindings,
-        vec![ReflectionProbeBinding {
+        section.fluid_bindings,
+        vec![ReflectionProbeFluidBinding {
             volume: 0,
             face: 0,
             probe: 0
@@ -613,6 +618,7 @@ fn stage_key_under(
         let probes = place_probes(
             environment,
             inputs.reflection_volumes,
+            &[],
             &PlacementScene {
                 tracer: &tracer,
                 bounds: &bounds,
@@ -893,6 +899,29 @@ fn unchanged_inputs_hit_the_stage_cache_with_the_same_section() {
         .collect();
     assert_eq!(covered.len(), 2, "{covered:?}");
     assert_eq!(covered[0], covered[1]);
+}
+
+// A build with no cache computes no key, so it logs no lookup; one with a
+// cache logs its miss, then its hit.
+#[test]
+fn only_a_build_with_a_cache_logs_its_lookup() {
+    use log::Level as LogLevel;
+    use postretro_test_log_capture::LogCapture;
+
+    let room = every_term_room();
+    let environment = pool();
+    let dir = tempfile::tempdir().unwrap();
+    let cache = StageCache::new(dir.path()).unwrap();
+    let control = BakeControl::unrestricted();
+    let logs = LogCapture::start();
+    with_inputs(&room, &environment, |inputs| {
+        bake_or_load_reflection_probes(inputs, None, &control).unwrap();
+        logs.assert_not_logged(LogLevel::Info, "[cache] reflection_probes");
+        bake_or_load_reflection_probes(inputs, Some(&cache), &control).unwrap();
+        logs.assert_logged_once(LogLevel::Info, "[cache] reflection_probes miss");
+        bake_or_load_reflection_probes(inputs, Some(&cache), &control).unwrap();
+        logs.assert_logged_once(LogLevel::Info, "[cache] reflection_probes hit");
+    });
 }
 
 /// The stage's error for `room`, or `None` when it bakes.

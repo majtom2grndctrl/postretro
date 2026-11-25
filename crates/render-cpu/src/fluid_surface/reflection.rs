@@ -12,8 +12,8 @@ use postretro_level_format::octahedral::encode_unquantized_uv;
 use postretro_level_format::reflection_probes::{
     MAX_REFLECTION_PROBES, REFLECTION_PROBE_LIGHTS_PER_PROBE, REFLECTION_PROBE_LOBE_COUNT,
     REFLECTION_PROBE_NO_LIGHT, REFLECTION_PROBE_TILE_BORDER, ReflectionProbeLightShare,
-    ReflectionProbeRecord, ReflectionProbesSection, reflection_probe_distance_tile_bytes,
-    reflection_probe_lobe_weights, reflection_probe_tile_bytes,
+    ReflectionProbeRecord, ReflectionProbesSection, reflection_probe_colour_chain_bytes,
+    reflection_probe_distance_tile_bytes, reflection_probe_lobe_weights,
 };
 
 use super::FluidFaceDriftMap;
@@ -200,9 +200,9 @@ fn probe_layers_distinct(section: &ReflectionProbesSection) -> bool {
 /// than the cap, a tile dimension and border the decoder accepts, every
 /// probe on its own layer below the probe count, a colour format the probe
 /// array uploads, and colour and distance payloads of exactly one tile per
-/// probe. The loader already refuses anything else; a hand-built section
-/// past it reflects nothing rather than overrunning the table or failing
-/// texture creation. Every consumer reads this one answer (the table, the
+/// probe, the colour tile with its whole mip chain. The loader already
+/// refuses anything else; a hand-built section past it reflects nothing
+/// rather than overrunning the table or failing texture creation. Every consumer reads this one answer (the table, the
 /// probe indices, the draw predicate's bound face, and the renderer's
 /// install), so no face draws or samples a probe that is not there.
 pub fn usable_probe_section(
@@ -215,8 +215,12 @@ pub fn usable_probe_section(
             && probe_tile_header_usable(section)
             && probe_layers_distinct(section)
             && probe_tile_format_usable(section)
-            && reflection_probe_tile_bytes(section.atlas_format, section.tile_dimension)
-                .is_some_and(|bytes| bytes * probes == section.tiles.len())
+            && reflection_probe_colour_chain_bytes(
+                section.atlas_format,
+                section.tile_dimension,
+                section.colour_mip_count,
+            )
+            .is_some_and(|bytes| bytes * probes == section.tiles.len())
             && reflection_probe_distance_tile_bytes(section.distance_format, section.tile_dimension)
                 .is_some_and(|bytes| bytes * probes == section.distances.len())
     })
@@ -268,7 +272,7 @@ pub fn fill_probe_indices(
         face_start.push(faces);
         faces += volume.surface_faces.len();
     }
-    for binding in &section.bindings {
+    for binding in &section.fluid_bindings {
         let volume = binding.volume as usize;
         let face = binding.face as usize;
         let (Some(&start), Some(record)) = (face_start.get(volume), volumes.get(volume)) else {
@@ -294,10 +298,10 @@ pub fn volume_has_bound_face(section: Option<&ReflectionProbesSection>, volume: 
         return false;
     };
     let first = section
-        .bindings
+        .fluid_bindings
         .partition_point(|binding| (binding.volume as usize) < volume);
     section
-        .bindings
+        .fluid_bindings
         .get(first)
         .is_some_and(|binding| binding.volume as usize == volume)
 }
@@ -382,10 +386,13 @@ pub fn reflection_box_hit(origin: Vec3, ray: Vec3, box_min: Vec3, box_max: Vec3)
     origin + ray * t
 }
 
-/// The tile lookup direction: from the capture point to the reflected
+/// Water's tile lookup direction: from the capture point to the reflected
 /// point (the distance search's hit, or the box hit), clamped to the horizon
 /// when it lies below the capture point. A point on the capture point itself
-/// has no direction and takes the reflected ray's.
+/// has no direction and takes the reflected ray's. A glossy face of any
+/// facing clamps about its own axis instead
+/// ([`reflection_lookup_about`](super::reflection_hemisphere::reflection_lookup_about)),
+/// which about +Y returns this bit for bit.
 pub fn reflection_lookup(hit: Vec3, capture_point: Vec3, ray: Vec3) -> Vec3 {
     let toward = hit - capture_point;
     let level = Vec3::new(toward.x, toward.y.max(0.0), toward.z);
@@ -616,6 +623,23 @@ pub fn reflection_ratio_from_sums(
     ratio.max(Vec3::ZERO)
 }
 
+/// Water's live-lighting scale: [`reflection_ratio_from_sums`] over the first
+/// five lobes, at the six-lobe stride. Water binds only up-facing probes,
+/// whose −Y share the compiler leaves 0, so the −Y sum is exactly 0 and its
+/// term adds exactly 0: the two return the same bits whenever `sums`' last
+/// lobe is 0.
+pub fn reflection_ratio_from_up_sums(
+    sums: &[Vec3; REFLECTION_PROBE_LOBE_COUNT],
+    direction: Vec3,
+) -> Vec3 {
+    let lobes = reflection_probe_lobe_weights(direction.to_array());
+    let mut ratio = Vec3::ONE;
+    for (sum, weight) in sums.iter().zip(lobes).take(REFLECTION_PROBE_LOBE_COUNT - 1) {
+        ratio += *sum * weight;
+    }
+    ratio.max(Vec3::ZERO)
+}
+
 /// One probe's sums as the sums buffer stores them: each lobe's RGB in a
 /// `vec4`, the fourth lane 0.
 pub fn pack_probe_sums(
@@ -730,7 +754,7 @@ pub fn reflection_fragment(
     let capture = sample(
         probe.layer,
         reflection_tile_uv(search.lookup, tile[0], tile[1]),
-    ) * reflection_ratio_from_sums(&sums, search.lookup);
+    ) * reflection_ratio_from_up_sums(&sums, search.lookup);
     let band = fog_proximity(fragment.camera, fragment.world_position, outward);
     let fresnel = reflection_fresnel(view.dot(outward), fragment.reflectivity) * band;
     reflection_layered_composite(surface, capture, search.weight, screen, fresnel)

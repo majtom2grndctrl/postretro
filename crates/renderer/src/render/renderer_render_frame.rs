@@ -3,6 +3,7 @@
 // See: context/lib/rendering_pipeline.md §1
 
 use super::cpu_stages::RenderStage;
+use super::glossy_floor::ColourOutputs;
 use super::*;
 use postretro_level_loader::{ShDrainBatch, ShDrainOutcome};
 
@@ -531,205 +532,51 @@ impl Renderer {
         // and never touches this target.
         let scene_color = self.full().screen_effects.scene_color_view().clone();
 
-        {
-            let _forward_scope = cpu.scope(RenderStage::Forward);
-            let forward_ts = self
-                .full()
-                .frame_timing
-                .as_ref()
-                .map(|t| t.render_pass_writes(TIMING_PAIR_FORWARD));
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Textured Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &scene_color,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(clear_color.into()),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.full().depth_view,
-                    // Forward pass uses `depth_compare: Equal` with depth
-                    // writes disabled — the depth buffer is read-only here.
-                    // Task 5 of sdf-static-occluder-shadows samples this
-                    // same depth texture via group 5 binding 4 (the
-                    // bilateral upsample's depth-aware weights); wgpu
-                    // requires `depth_ops: None` so the attachment doesn't
-                    // alias a writable resource with a sampled-texture
-                    // binding. The depth contents the pre-pass wrote
-                    // persist for the wireframe pass that follows.
-                    depth_ops: None,
-                    stencil_ops: None,
-                }),
-                timestamp_writes: forward_ts,
-                ..Default::default()
-            });
+        // The live-lighting sums, once, ahead of every probe-term reader.
+        self.record_reflection_probe_sums(
+            encoder,
+            render_world,
+            frame_light_term_mask,
+            frame_reflection_quality,
+        );
+        // One floor-layer verdict for the frame: forward, the mover and
+        // skinned-mesh passes write the highlight-free colour, and the chain
+        // records, together or not at all.
+        let floor_layer = self.glossy_floor_layer_draws(
+            render_world,
+            frame_light_term_mask,
+            frame_reflection_quality,
+        );
+        self.record_world_forward_pass(
+            encoder,
+            &scene_color,
+            clear_color,
+            render_world,
+            frame_reflection_quality,
+            floor_layer,
+        );
 
-            if render_world && self.level().has_geometry && self.level().index_count > 0 {
-                render_pass.set_pipeline(&self.full().pipeline);
-                render_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
-                render_pass.set_bind_group(2, &self.level().lighting_bind_group, &[]);
-                render_pass.set_bind_group(3, self.level().sh_bind_group(), &[]);
-                render_pass.set_bind_group(4, &self.level().lightmap_resources.bind_group, &[]);
-                render_pass.set_bind_group(5, &self.level().extent.spot_shadow, &[]);
-                render_pass.set_bind_group(
-                    LIGHTMAP_BLOCK_TABLE_GROUP,
-                    &self.level().lightmap_resources.block_table_bind_group,
-                    &[],
-                );
-                render_pass.set_vertex_buffer(0, self.level().vertex_buffer.slice(..));
-                render_pass.set_vertex_buffer(1, self.level().spec_owner_buffer.slice(..));
-                render_pass.set_vertex_buffer(2, self.level().emissive_volumes.vertex.slice(..));
-                render_pass.set_index_buffer(
-                    self.level().index_buffer.slice(..),
-                    wgpu::IndexFormat::Uint32,
-                );
+        // The opaque dynamic objects: movers, then skinned meshes.
+        self.record_mover_pass(encoder, &scene_color, render_world, floor_layer);
+        self.record_skinned_mesh_pass(
+            encoder,
+            &scene_color,
+            render_world,
+            world_mesh_frame_plan,
+            floor_layer,
+        );
 
-                if let Some(cull) = &self.level().compute_cull {
-                    let gpu_textures = &self.level().gpu_textures;
-                    cull.draw_indirect(
-                        &mut render_pass,
-                        Some(&|pass, bucket| {
-                            let bind_group = if (bucket as usize) < gpu_textures.len() {
-                                &gpu_textures[bucket as usize].bind_group
-                            } else {
-                                &gpu_textures[0].bind_group
-                            };
-                            pass.set_bind_group(1, bind_group, &[]);
-                        }),
-                    );
-                }
-            }
-        }
-
-        // Kinematic brush movers: local-space PRL brush payloads drawn as
-        // dynamic objects after opaque world geometry and before skinned meshes.
-        // Their depth is already in the pre-pass, so they test `Equal` with
-        // the depth attachment read-only, as the world forward pass does.
-        // They use the mesh dynamic-object lighting bindings (baked SH
-        // indirect/static direct + runtime dynamic direct).
-        if render_world
-            && self
-                .full()
-                .kinematic_brush
-                .has_draws(&self.level().kinematic)
-        {
-            let _kinematic_scope = cpu.scope(RenderStage::KinematicBrush);
-            let frame_light_term_mask = self.frame_light_term_mask();
-            {
-                let Self { queue, full, .. } = self;
-                let full = full
-                    .as_mut()
-                    .expect("renderer full-init must complete before full-ready paths run");
-                let level = full
-                    .level
-                    .as_mut()
-                    .expect("a level-gated renderer path requires an active level set");
-                // Total records bound the loop; the dynamic-tier count marks the promoted specular tail.
-                full.kinematic_brush.write_light_params(
-                    queue,
-                    level.total_light_count,
-                    level.light_count,
-                    level.light_count + level.animated_baked_light_count as u32,
-                    full.mesh_dynamic_time,
-                    frame_light_term_mask.bits(),
-                    full.ambient_floor,
-                    full.frame_indirect_scale,
-                );
-            }
-            let kinematic_ts = self
-                .full()
-                .frame_timing
-                .as_ref()
-                .map(|t| t.render_pass_writes(TIMING_PAIR_KINEMATIC_BRUSH));
-            let mut mover_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Kinematic Brush Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &scene_color,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.full().depth_view,
-                    depth_ops: None,
-                    stencil_ops: None,
-                }),
-                timestamp_writes: kinematic_ts,
-                ..Default::default()
-            });
-            mover_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
-            mover_pass.set_bind_group(4, self.level().sh_mesh_bind_group(), &[]);
-            self.full().kinematic_brush.record_draws(
-                &mut mover_pass,
-                &self.level().kinematic,
-                &self.level().gpu_textures,
-                MoverView::Main,
-                self.full().frame_specular_style,
-            );
-        }
-
-        // Skinned-mesh forward pass — after the opaque world forward, before
-        // billboards. Its own render pass so it can WRITE depth (the forward pass
-        // holds the depth attachment read-only). Loads the existing color + depth
-        // so the mesh composites over the world and depth-tests (`Less`).
-        //
-        // Reads the `mesh_frame_plan` PLANNED + UPLOADED earlier in this frame
-        // (the pose/upload hoist, before the shadow loop). NO re-plan, NO
-        // re-upload here — `record_draws` only records draws against the buffers
-        // the hoist populated, the SAME buffers the skinned-depth shadow pass
-        // read, so an entity and its shadow share one pose (no one-frame lag).
-        if render_world
-            && let Some(plan) = world_mesh_frame_plan
-            && plan.has_forward_draws()
-        {
-            let _skinned_scope = cpu.scope(RenderStage::SkinnedMesh);
-            let skinned_ts = self
-                .full()
-                .frame_timing
-                .as_ref()
-                .map(|t| t.render_pass_writes(TIMING_PAIR_SKINNED_MESH));
-            let mut mesh_enc = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Skinned Mesh Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &scene_color,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.full().depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: skinned_ts,
-                ..Default::default()
-            });
-            mesh_enc.set_bind_group(0, &self.full().uniform_bind_group, &[]);
-            // Group 4 = SH irradiance volume (baked indirect) + the mesh-only
-            // dynamic-direct params uniform (binding 16). The mesh SUPERSET bind
-            // group: shared SH entries the forward/billboard/fog passes hold PLUS
-            // the dynamic-direct knobs (group 3 = instance data; group 2
-            // unallocated).
-            mesh_enc.set_bind_group(4, self.level().sh_mesh_bind_group(), &[]);
-            self.full().mesh_pass.record_draws(
-                &mut mesh_enc,
-                &self.level().models,
-                &self.level().mesh_lights,
-                plan,
-            );
-        }
+        // The glossy overlay: after every opaque pass, so a mover or character
+        // over a glossy face fails its Equal test, and before the Ghost Pass
+        // and every translucent pass, which draw over its result undimmed.
+        self.record_glossy_overlay_pass(
+            encoder,
+            &scene_color,
+            render_world,
+            frame_light_term_mask,
+            frame_reflection_quality,
+            floor_layer,
+        );
 
         // Ghosts: unlit, translucent, after every opaque pass so they depth-test
         // against the whole opaque scene, and before fluid so a submerged
@@ -1113,6 +960,7 @@ impl Renderer {
                 &self.level().models,
                 &self.level().mesh_lights,
                 plan,
+                ColourOutputs::Colour,
             );
         }
 

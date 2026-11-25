@@ -1,48 +1,14 @@
-// Reflection-probe capture exclusion's underside rule: downward faces over a probe's bound water.
+// Reflection-probe capture exclusion's underside rule: downward faces over a probe's bound water and glossy floor.
 // See: context/lib/resource_management.md §5.2
 
 use glam::{DVec2, DVec3};
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 
 use super::exclusion::ExclusionScene;
-use super::placement::{FaceGeometry, PLANE_TOLERANCE_M, PlacedProbe};
-
-/// An orthonormal frame of the reflector: heights along its normal, 2D
-/// coordinates in its plane.
-pub(super) struct PlaneBasis {
-    pub(super) normal: DVec3,
-    u: DVec3,
-    v: DVec3,
-}
-
-impl PlaneBasis {
-    pub(super) fn new(normal: DVec3) -> Self {
-        let normal = normal.normalize();
-        // The world axis least aligned with the normal, made perpendicular.
-        let a = normal.abs();
-        let helper = if a.x <= a.y && a.x <= a.z {
-            DVec3::X
-        } else if a.y <= a.z {
-            DVec3::Y
-        } else {
-            DVec3::Z
-        };
-        let u = (helper - normal * helper.dot(normal)).normalize();
-        Self {
-            normal,
-            u,
-            v: normal.cross(u),
-        }
-    }
-
-    fn height(&self, p: DVec3) -> f64 {
-        p.dot(self.normal)
-    }
-
-    fn project(&self, p: DVec3) -> DVec2 {
-        DVec2::new(p.dot(self.u), p.dot(self.v))
-    }
-}
+use super::placement::{
+    FaceGeometry, PLANE_TOLERANCE_M, PlacedProbe, ReflectorFace, ReflectorSource,
+};
+use super::plane_basis::PlaneBasis;
 
 /// An axis-aligned rectangle in the reflector's plane.
 #[derive(Debug, Clone, Copy)]
@@ -74,42 +40,65 @@ impl Rect {
     }
 }
 
-/// One bound water face in the reflector's frame.
-pub(super) struct WaterFace {
+/// One bound reflector face, water or a glossy floor, in the reflector's
+/// frame.
+pub(super) struct BoundFace {
     height: f64,
     outline: Vec<DVec2>,
     bounds: Rect,
 }
 
-/// The probe's bound water faces; a face id 52 does not hold is skipped.
-pub(super) fn bound_water(
+impl BoundFace {
+    fn of(points: &[DVec3], geometry: &FaceGeometry, basis: &PlaneBasis) -> Self {
+        let outline: Vec<DVec2> = points.iter().map(|&p| basis.project(p)).collect();
+        Self {
+            height: basis.height(geometry.centroid),
+            bounds: Rect::around(outline.iter().copied()),
+            outline,
+        }
+    }
+}
+
+/// The probe's bound reflector faces: its water, a face id 52 does not hold
+/// skipped, then its glossy world faces among `world_faces` (ascending by
+/// source, as placement offered them), a face not among them skipped. Only
+/// probes facing up classify, so a world face here is a glossy floor, its
+/// polygon its outline in `facing`'s plane at its centroid's height.
+pub(super) fn bound_reflectors(
     environment: &EnvironmentVolumesSection,
+    world_faces: &[ReflectorFace],
     probe: &PlacedProbe,
     basis: &PlaneBasis,
-) -> Vec<WaterFace> {
-    probe
-        .faces
-        .iter()
-        .filter_map(|&(volume, face)| {
-            let surface = environment
-                .volumes
-                .get(volume as usize)?
-                .surface_faces
-                .get(face as usize)?;
-            let points: Vec<DVec3> = surface
-                .vertices
-                .iter()
-                .map(|v| DVec3::from(v.position.map(f64::from)))
-                .collect();
-            let geometry = FaceGeometry::from_polygon(&points)?;
-            let outline: Vec<DVec2> = points.iter().map(|&p| basis.project(p)).collect();
-            Some(WaterFace {
-                height: basis.height(geometry.centroid),
-                bounds: Rect::around(outline.iter().copied()),
-                outline,
-            })
-        })
-        .collect()
+) -> Vec<BoundFace> {
+    let water = probe.fluid_faces.iter().filter_map(|&(volume, face)| {
+        let surface = environment
+            .volumes
+            .get(volume as usize)?
+            .surface_faces
+            .get(face as usize)?;
+        let points: Vec<DVec3> = surface
+            .vertices
+            .iter()
+            .map(|v| DVec3::from(v.position.map(f64::from)))
+            .collect();
+        let geometry = FaceGeometry::from_polygon(&points)?;
+        Some(BoundFace::of(&points, &geometry, basis))
+    });
+    let world = probe.world_faces.iter().filter_map(|&face| {
+        let source = ReflectorSource::World { face };
+        let at = world_faces
+            .binary_search_by_key(&source, |f| f.source)
+            .ok()?;
+        let face = &world_faces[at];
+        let height = face.plane_height();
+        let points: Vec<DVec3> = face
+            .outline
+            .iter()
+            .map(|&q| face.facing.lift(q, height))
+            .collect();
+        Some(BoundFace::of(&points, &face.geometry, basis))
+    });
+    water.chain(world).collect()
 }
 
 /// A surviving face pointing down toward the reflector.
@@ -171,15 +160,16 @@ pub(super) fn downward_faces(
     per_brush
 }
 
-/// Whether any of a brush's downward faces overhangs any bound water face.
+/// Whether any of a brush's downward faces overhangs any bound reflector
+/// face.
 pub(super) fn has_underside(
     faces: &[DownwardFace],
-    water: &[WaterFace],
+    reflector: &[BoundFace],
     basis: &PlaneBasis,
 ) -> bool {
     faces
         .iter()
-        .any(|face| water.iter().any(|w| overhangs(face, w, basis)))
+        .any(|face| reflector.iter().any(|w| overhangs(face, w, basis)))
 }
 
 /// Whether the face's part above the water plane overlaps the water face in
@@ -187,7 +177,7 @@ pub(super) fn has_underside(
 /// on average (area over its longest span) than [`PLANE_TOLERANCE_M`], so a
 /// face meeting the water only along an edge, f32 rounding aside, does not
 /// count. "Above" starts that tolerance over the plane.
-fn overhangs(face: &DownwardFace, water: &WaterFace, basis: &PlaneBasis) -> bool {
+fn overhangs(face: &DownwardFace, water: &BoundFace, basis: &PlaneBasis) -> bool {
     let floor = water.height + PLANE_TOLERANCE_M;
     if face.top <= floor || !face.bounds.overlaps(&water.bounds) {
         return false;

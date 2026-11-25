@@ -1,0 +1,24 @@
+{
+  "map": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/7dacbf8e-a146-48c6-bc94-d7f57e2739b7/scratchpad/mb/content/dev/maps/e24-environment-test.prl",
+  "camera": {
+    "position": [
+      -4.8768,
+      1.6,
+      -44.2976
+    ],
+    "yaw_deg": 0.0,
+    "pitch_deg": -89.0,
+    "fov_deg": 100.0
+  },
+  "resolution": [
+    3840,
+    2160
+  ],
+  "output": "/Users/dhiester/Projects/Personal/postretro/measurements/fluid-base-pass-cost/metal/runs/near-4k-before-m17f.png",
+  "measurement": {
+    "report": "/Users/dhiester/Projects/Personal/postretro/measurements/fluid-base-pass-cost/metal/runs/glossy-task6-near-4k-before-m17f-r1.report.json",
+    "warmup_frames": 300,
+    "sample_frames": 300
+  },
+  "light_term_mask": 383
+}

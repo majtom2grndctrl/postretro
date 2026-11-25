@@ -10,7 +10,7 @@ use postretro_level_format::reflection_probes::{
 
 use super::capture_exclusion::ProbeExclusion;
 use super::shading::{CaptureScene, ShadeScratch};
-use super::share::{ShareSums, sample_solid_angle};
+use super::share::{ShareHemisphere, ShareSums, sample_solid_angle};
 use crate::bc6h::encode_bc6h_rgb_from_f32_rgba;
 
 /// Interior texels per tile edge: the tile minus its wrap border.
@@ -72,14 +72,15 @@ pub(crate) fn inverse_l1_distance(distance: Option<f32>, direction: Vec3) -> f32
 /// Capture one interior row. Each supersample's radiance is the static
 /// result plus every animated light's unit term at its reference value
 /// (`references`, by roster index), and the same sample, weighted by the
-/// solid angle it stands for, feeds the share sums, which keep only the upper
-/// hemisphere the water reads; the tile keeps every direction. The same ray's
+/// solid angle it stands for, feeds the share sums, which keep only the
+/// `hemisphere` the probe's faces read; the tile keeps every direction. The same ray's
 /// hit distance feeds the distance tile, summed in the fixed supersample order
 /// so the bytes never depend on the worker count. Primary rays skip the
 /// probe's `exclusion`; with nothing excluded the row is the unfiltered one.
 pub(crate) fn capture_row(
     scene: &CaptureScene<'_>,
     capture_point: Vec3,
+    hemisphere: ShareHemisphere,
     exclusion: &ProbeExclusion<'_>,
     row: u32,
     references: &[[f32; 3]],
@@ -111,6 +112,7 @@ pub(crate) fn capture_row(
                         * Vec3::from(references.get(light as usize).copied().unwrap_or([0.0; 3]))
                 });
             out.shares.add(
+                hemisphere,
                 direction,
                 sample_solid_angle(u, v, TILE_INTERIOR, samples),
                 capture,
@@ -153,7 +155,13 @@ pub(crate) fn distance_bits(w: f32) -> u16 {
 
 /// The tile as row-major RGBA f32, border included.
 fn bordered_rgba(rows: &[&[Vec3]]) -> Vec<f32> {
-    bordered(rows)
+    bordered_rgba_at(rows, REFLECTION_PROBE_TILE_DIMENSION)
+}
+
+/// A `dimension`² tile (a colour mip's) as row-major RGBA f32, border
+/// included, from its `dimension − 2` interior rows.
+pub(crate) fn bordered_rgba_at(rows: &[&[Vec3]], dimension: u32) -> Vec<f32> {
+    bordered_at(rows, dimension)
         .into_iter()
         .flat_map(|texel| [texel.x, texel.y, texel.z, 1.0])
         .collect()
@@ -162,7 +170,11 @@ fn bordered_rgba(rows: &[&[Vec3]]) -> Vec<f32> {
 /// Every tile texel, row-major, border included: each copies its interior
 /// source by the SH atlas's wrap rule.
 fn bordered<T: Copy>(rows: &[&[T]]) -> Vec<T> {
-    let dimension = REFLECTION_PROBE_TILE_DIMENSION;
+    bordered_at(rows, REFLECTION_PROBE_TILE_DIMENSION)
+}
+
+/// [`bordered`] for a `dimension`² tile.
+fn bordered_at<T: Copy>(rows: &[&[T]], dimension: u32) -> Vec<T> {
     let mut tile = Vec::with_capacity((dimension * dimension) as usize);
     for y in 0..dimension {
         for x in 0..dimension {

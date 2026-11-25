@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::render::cpu_stages::RenderStage;
+use crate::render::glossy_floor::ColourOutputs;
 
 fn color_attachment(
     view: &wgpu::TextureView,
@@ -348,6 +349,7 @@ fn record_planar_passes(
             &level.kinematic,
             &level.gpu_textures,
             mover_view,
+            ColourOutputs::Colour,
             full.frame_specular_style,
         );
     }

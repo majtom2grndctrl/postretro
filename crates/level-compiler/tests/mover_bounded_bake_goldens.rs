@@ -33,18 +33,22 @@ const CAPTURE_ENV: &str = "POSTRETRO_CAPTURE_MOVER_GOLDENS";
 /// never change the bytes. Recaptured on `area-lights` for AlphaLights (id 18)
 /// v5. Its version word was the only byte that moved: the closet's low build,
 /// with that word patched back to 4, reproduced the original digest.
+/// Recaptured on `glossy-world-reflections` for ReflectionProbes (id 54) v3
+/// (six lobes, colour mip count, split fluid and world bindings): a section
+/// A/B of the closet at low and high against the pre-branch compiler
+/// (8dda8a34a) differed in id 54 alone.
 fn golden(fixture: &str, fidelity: &str) -> &'static str {
     match (fixture, fidelity) {
-        ("closet", "low") => "a9d2a5476472929f2a29f52dfeae427fb23ba1cf226ef38987d6f4f6ffa01494",
-        ("closet", "high") => "906a1c9cc803f209f7b7f3ca6553ced19d007c657277aed94e0860eb13f0d74a",
+        ("closet", "low") => "16f1ce54df6a918d1f9f75420f3919dc7942040659175ad48c49d55b39d4e5f6",
+        ("closet", "high") => "587b0f180f21a433f740bb2869c43668f36a46069e460b32f02c79662ac07de2",
         ("closet-two-doors", "low") => {
-            "1e2820007cae82196d2444ced937ae170767a2dac8e14e49a42fce837dbf9224"
+            "c5f4dc815174ea133ac3acc3b1d47dec9025a50e64f158fc98e9dd796087eaf1"
         }
         ("closet-two-doors", "high") => {
-            "fd1c46fafde0e3a6bd55e4a073ac50ba62ff9345b52e91daa39884ddec486d9d"
+            "98c7cda853dd1f61948502684f367bc223cee8d11b5efdafc5204ba946bfb86d"
         }
         ("closet-two-doors-corrupt-high", "low") => {
-            "46151af9e5f6a64cae33a88ce40672274b9b69b7068fb4c4e16afccb4163660c"
+            "353f7339f1c6dc4b7db832c50a8c138c868823d4859904dc8b26923a4cb54d04"
         }
         _ => panic!("no golden for {fixture} at {fidelity}"),
     }

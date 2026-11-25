@@ -22,6 +22,7 @@ use super::hit::{FaceMask, RAY_EPSILON, SceneTracer, SurfaceHit};
 use super::placement::PlacedProbe;
 use super::placement_test_fixtures::{engine, engine_box, textured_box_brush};
 use super::shading::{CaptureScene, ShadeScratch};
+use super::share::ShareHemisphere;
 use super::tests::{alpha_light, tile_texel};
 use crate::bake_control::BakeControl;
 use crate::bvh_build::build_bvh;
@@ -219,7 +220,17 @@ fn the_wall_behind_an_excluded_pillar_keeps_its_sdf_shadow() {
 fn rows(scene: &CaptureScene<'_>, probe: &PlacedProbe, excluded: &[u32]) -> Vec<RowCapture> {
     let filter = exclusion(scene, probe, excluded);
     (0..TILE_INTERIOR)
-        .map(|row| capture_row(scene, probe.capture_point_vec3(), &filter, row, &[]).unwrap())
+        .map(|row| {
+            capture_row(
+                scene,
+                probe.capture_point_vec3(),
+                ShareHemisphere::Up,
+                &filter,
+                row,
+                &[],
+            )
+            .unwrap()
+        })
         .collect()
 }
 

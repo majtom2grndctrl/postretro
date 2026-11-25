@@ -79,6 +79,14 @@ impl FaceMask {
     fn contains(&self, index_offset: u32) -> bool {
         self.offsets.binary_search(&index_offset).is_ok()
     }
+
+    /// Every face of `self` and of `other`.
+    pub(crate) fn union(&self, other: &FaceMask) -> FaceMask {
+        let mut offsets = [self.offsets.as_slice(), other.offsets.as_slice()].concat();
+        offsets.sort_unstable();
+        offsets.dedup();
+        FaceMask { offsets }
+    }
 }
 
 /// A masked trace: the first kept front face in hit order ([`hit_order`]),
@@ -115,7 +123,7 @@ impl PrimitiveMask for Unmasked {
     }
 }
 
-/// `mask`'s faces skipped, but those also in `ignored` ignored.
+/// `ignored`'s faces ignored, and the rest of `mask`'s skipped.
 struct Masking<'m> {
     mask: &'m FaceMask,
     ignored: &'m FaceMask,
@@ -124,12 +132,12 @@ struct Masking<'m> {
 impl PrimitiveMask for Masking<'_> {
     #[inline]
     fn treatment(&self, index_offset: u32) -> Treatment {
-        if !self.mask.contains(index_offset) {
-            Treatment::Kept
-        } else if self.ignored.contains(index_offset) {
+        if self.ignored.contains(index_offset) {
             Treatment::Ignored
-        } else {
+        } else if self.mask.contains(index_offset) {
             Treatment::Skipped
+        } else {
+            Treatment::Kept
         }
     }
 }
@@ -185,9 +193,10 @@ impl<'a> SceneTracer<'a> {
 
     /// [`Self::closest_hit`] past `min_distance` with `mask`'s faces skipped,
     /// and beside it the first skipped front face before that hit (or
-    /// anywhere within `max_distance` on a miss). Faces of `mask` also in
-    /// `ignored` are neither kept nor reported: an exclusion trace drops a
-    /// hull the ray passes beside this way. A re-trace from an excluded
+    /// anywhere within `max_distance` on a miss). Faces in `ignored`, in
+    /// `mask` or not, are neither kept nor reported, as if absent: an
+    /// exclusion trace drops a hull the ray passes beside this way, and a
+    /// glossy probe's reflector plane is absent from its primary rays. A re-trace from an excluded
     /// hull's exit passes the exit's distance as `min_distance`, so a kept
     /// face just past the exit is never stepped over.
     pub(crate) fn closest_hit_masked(

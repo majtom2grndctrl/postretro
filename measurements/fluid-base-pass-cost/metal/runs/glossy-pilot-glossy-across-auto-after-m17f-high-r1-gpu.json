@@ -1,0 +1,366 @@
+{
+  "source": "/var/folders/2d/gsn5t4bx2vsfbf_vybxvc86m0000gn/T/fluid-base-pass-traces/glossy-pilot-glossy-across-auto-after-m17f-high-r1-gpu.xml",
+  "camera_frames": 1,
+  "frame_count_pass": "Streamed SH Compose",
+  "once_per_frame_counts": {
+    "UI Pass": 0,
+    "Screen Effects Resolve Pass": 0,
+    "Textured Pass": 601,
+    "Depth Pre-Pass": 603,
+    "Screen Effects Capture Tonemap Pass": 1,
+    "Streamed SH Compose": 1
+  },
+  "sum_labelled_passes_per_frame_ms": 3996.7409,
+  "all_passes_per_frame_ms": {
+    "Textured Pass": 2953.841,
+    "Glossy Overlay Pass": 282.9797,
+    "BVH Cull Pass": 205.4651,
+    "Bloom Bright Pass": 127.5143,
+    "Per-frame Upload Copies": 87.7279,
+    "Bloom Horizontal Gaussian Pass": 67.1152,
+    "Bloom Vertical Gaussian Pass": 55.3318,
+    "Depth Pre-Pass": 40.5818,
+    "Bloom Downsample Pass": 39.0674,
+    "Bloom Upsample Pass": 38.6793,
+    "Capture Measurement Encoder": 35.2728,
+    "(wgpu internal) Signal": 22.9968,
+    "Bloom Scene Composite Pass": 20.6759,
+    "Reflection Probe Sums Pass": 9.5612,
+    "(wgpu internal) PendingWrites": 3.7351,
+    "Streamed SH Upload Copies": 2.7475,
+    "(wgpu internal) Transit": 1.5903,
+    "PNG Readback Encoder": 0.8898,
+    "Streamed Direct SH Promotion": 0.4386,
+    "Streamed SH Compose": 0.3415,
+    "Screen Effects Capture Tonemap Pass": 0.1662,
+    "Frame Capture Encoder": 0.0219
+  },
+  "encoder_counts": {
+    "(wgpu internal) PendingWrites": 1,
+    "(wgpu internal) Signal": 301,
+    "(wgpu internal) Transit": 12,
+    "BVH Cull Pass": 603,
+    "Bloom Bright Pass": 590,
+    "Bloom Downsample Pass": 2405,
+    "Bloom Horizontal Gaussian Pass": 2971,
+    "Bloom Scene Composite Pass": 304,
+    "Bloom Upsample Pass": 2410,
+    "Bloom Vertical Gaussian Pass": 3003,
+    "Capture Measurement Encoder": 602,
+    "Depth Pre-Pass": 603,
+    "Frame Capture Encoder": 1,
+    "Glossy Overlay Pass": 459,
+    "PNG Readback Encoder": 1,
+    "Per-frame Upload Copies": 603,
+    "Reflection Probe Sums Pass": 603,
+    "Screen Effects Capture Tonemap Pass": 1,
+    "Streamed Direct SH Promotion": 1,
+    "Streamed SH Compose": 1,
+    "Streamed SH Upload Copies": 2,
+    "Textured Pass": 601
+  },
+  "reported": {
+    "Fluid Surface Pass": {
+      "encoders": 0,
+      "total_ms": 0.0,
+      "per_frame_ms": 0.0,
+      "per_encoder_ms": null,
+      "per_encoder_median_ms": null
+    },
+    "Fluid Reflection Cell Pass": {
+      "encoders": 0,
+      "total_ms": 0.0,
+      "per_frame_ms": 0.0,
+      "per_encoder_ms": null,
+      "per_encoder_median_ms": null
+    },
+    "Fluid Reflection Sums Pass": {
+      "encoders": 0,
+      "total_ms": 0.0,
+      "per_frame_ms": 0.0,
+      "per_encoder_ms": null,
+      "per_encoder_median_ms": null
+    },
+    "Reflection Probe Sums Pass": {
+      "encoders": 603,
+      "total_ms": 9.561,
+      "per_frame_ms": 9.5612,
+      "per_encoder_ms": 0.0159,
+      "per_encoder_median_ms": 0.0129
+    },
+    "Glossy Overlay Pass": {
+      "encoders": 459,
+      "total_ms": 282.98,
+      "per_frame_ms": 282.9797,
+      "per_encoder_ms": 0.6165,
+      "per_encoder_median_ms": 0.5854
+    },
+    "Fluid Reflection Pass": {
+      "encoders": 0,
+      "total_ms": 0.0,
+      "per_frame_ms": 0.0,
+      "per_encoder_ms": null,
+      "per_encoder_median_ms": null
+    },
+    "Textured Pass": {
+      "encoders": 601,
+      "total_ms": 2953.841,
+      "per_frame_ms": 2953.841,
+      "per_encoder_ms": 4.9149,
+      "per_encoder_median_ms": 4.7728
+    },
+    "Depth Pre-Pass": {
+      "encoders": 603,
+      "total_ms": 40.582,
+      "per_frame_ms": 40.5818,
+      "per_encoder_ms": 0.0673,
+      "per_encoder_median_ms": 0.0556
+    },
+    "Streamed SH Compose": {
+      "encoders": 1,
+      "total_ms": 0.342,
+      "per_frame_ms": 0.3415,
+      "per_encoder_ms": 0.3415,
+      "per_encoder_median_ms": 0.3415
+    },
+    "Fog Raymarch Pass": {
+      "encoders": 0,
+      "total_ms": 0.0,
+      "per_frame_ms": 0.0,
+      "per_encoder_ms": null,
+      "per_encoder_median_ms": null
+    },
+    "Fog Composite Pass": {
+      "encoders": 0,
+      "total_ms": 0.0,
+      "per_frame_ms": 0.0,
+      "per_encoder_ms": null,
+      "per_encoder_median_ms": null
+    },
+    "Skinned Mesh Pass": {
+      "encoders": 0,
+      "total_ms": 0.0,
+      "per_frame_ms": 0.0,
+      "per_encoder_ms": null,
+      "per_encoder_median_ms": null
+    },
+    "Kinematic Brush Pass": {
+      "encoders": 0,
+      "total_ms": 0.0,
+      "per_frame_ms": 0.0,
+      "per_encoder_ms": null,
+      "per_encoder_median_ms": null
+    },
+    "Screen Effects Capture Tonemap Pass": {
+      "encoders": 1,
+      "total_ms": 0.166,
+      "per_frame_ms": 0.1662,
+      "per_encoder_ms": 0.1662,
+      "per_encoder_median_ms": 0.1662
+    }
+  },
+  "expected_frames": 600,
+  "frame_count_matches_expected": true,
+  "steady": {
+    "available": true,
+    "reference_pass": "Textured Pass",
+    "frames": 301,
+    "passes": {
+      "Fluid Surface Pass": {
+        "encoders": 0,
+        "per_frame_ms": 0.0,
+        "per_encoder_ms": null,
+        "per_encoder_median_ms": null
+      },
+      "Fluid Reflection Cell Pass": {
+        "encoders": 0,
+        "per_frame_ms": 0.0,
+        "per_encoder_ms": null,
+        "per_encoder_median_ms": null
+      },
+      "Fluid Reflection Sums Pass": {
+        "encoders": 0,
+        "per_frame_ms": 0.0,
+        "per_encoder_ms": null,
+        "per_encoder_median_ms": null
+      },
+      "Reflection Probe Sums Pass": {
+        "encoders": 301,
+        "per_frame_ms": 0.0166,
+        "per_encoder_ms": 0.0166,
+        "per_encoder_median_ms": 0.0131
+      },
+      "Glossy Overlay Pass": {
+        "encoders": 219,
+        "per_frame_ms": 0.4486,
+        "per_encoder_ms": 0.6166,
+        "per_encoder_median_ms": 0.5855
+      },
+      "Fluid Reflection Pass": {
+        "encoders": 0,
+        "per_frame_ms": 0.0,
+        "per_encoder_ms": null,
+        "per_encoder_median_ms": null
+      },
+      "Textured Pass": {
+        "encoders": 301,
+        "per_frame_ms": 4.9036,
+        "per_encoder_ms": 4.9036,
+        "per_encoder_median_ms": 4.7692
+      },
+      "Depth Pre-Pass": {
+        "encoders": 301,
+        "per_frame_ms": 0.0678,
+        "per_encoder_ms": 0.0678,
+        "per_encoder_median_ms": 0.0568
+      },
+      "Streamed SH Compose": {
+        "encoders": 0,
+        "per_frame_ms": 0.0,
+        "per_encoder_ms": null,
+        "per_encoder_median_ms": null
+      },
+      "Fog Raymarch Pass": {
+        "encoders": 0,
+        "per_frame_ms": 0.0,
+        "per_encoder_ms": null,
+        "per_encoder_median_ms": null
+      },
+      "Fog Composite Pass": {
+        "encoders": 0,
+        "per_frame_ms": 0.0,
+        "per_encoder_ms": null,
+        "per_encoder_median_ms": null
+      },
+      "Skinned Mesh Pass": {
+        "encoders": 0,
+        "per_frame_ms": 0.0,
+        "per_encoder_ms": null,
+        "per_encoder_median_ms": null
+      },
+      "Kinematic Brush Pass": {
+        "encoders": 0,
+        "per_frame_ms": 0.0,
+        "per_encoder_ms": null,
+        "per_encoder_median_ms": null
+      },
+      "Screen Effects Capture Tonemap Pass": {
+        "encoders": 1,
+        "per_frame_ms": 0.0006,
+        "per_encoder_ms": 0.1662,
+        "per_encoder_median_ms": 0.1662
+      }
+    }
+  },
+  "frame_count_marker": {
+    "pass": "BVH Cull Pass",
+    "count": 603
+  },
+  "complete": {
+    "available": true,
+    "marker": "BVH Cull Pass",
+    "required": [
+      "Depth Pre-Pass",
+      "Textured Pass",
+      "Glossy Overlay Pass"
+    ],
+    "cell_pass": false,
+    "framed_frames": 602,
+    "steady_frames": 300,
+    "complete_frames": 216,
+    "gpu_frame_ms_complete": 6.5534,
+    "gpu_frame_ms_incomplete": 6.4529,
+    "passes": {
+      "(wgpu internal) Signal": {
+        "per_frame_ms": 0.0327,
+        "median_ms": 0.0,
+        "p10_ms": 0.0,
+        "p90_ms": 0.0857
+      },
+      "BVH Cull Pass": {
+        "per_frame_ms": 0.3401,
+        "median_ms": 0.335,
+        "p10_ms": 0.3243,
+        "p90_ms": 0.3648
+      },
+      "Bloom Bright Pass": {
+        "per_frame_ms": 0.0829,
+        "median_ms": 0.0895,
+        "p10_ms": 0.01,
+        "p90_ms": 0.1154
+      },
+      "Bloom Downsample Pass": {
+        "per_frame_ms": 0.0642,
+        "median_ms": 0.0549,
+        "p10_ms": 0.0471,
+        "p90_ms": 0.0949
+      },
+      "Bloom Horizontal Gaussian Pass": {
+        "per_frame_ms": 0.0975,
+        "median_ms": 0.0828,
+        "p10_ms": 0.0628,
+        "p90_ms": 0.1777
+      },
+      "Bloom Scene Composite Pass": {
+        "per_frame_ms": 0.0343,
+        "median_ms": 0.0468,
+        "p10_ms": 0.0,
+        "p90_ms": 0.0757
+      },
+      "Bloom Upsample Pass": {
+        "per_frame_ms": 0.0633,
+        "median_ms": 0.0581,
+        "p10_ms": 0.047,
+        "p90_ms": 0.0867
+      },
+      "Bloom Vertical Gaussian Pass": {
+        "per_frame_ms": 0.0908,
+        "median_ms": 0.0846,
+        "p10_ms": 0.0658,
+        "p90_ms": 0.1218
+      },
+      "Capture Measurement Encoder": {
+        "per_frame_ms": 0.0599,
+        "median_ms": 0.0439,
+        "p10_ms": 0.0192,
+        "p90_ms": 0.1096
+      },
+      "Depth Pre-Pass": {
+        "per_frame_ms": 0.066,
+        "median_ms": 0.0559,
+        "p10_ms": 0.0454,
+        "p90_ms": 0.0974
+      },
+      "Glossy Overlay Pass": {
+        "per_frame_ms": 0.5973,
+        "median_ms": 0.5853,
+        "p10_ms": 0.5727,
+        "p90_ms": 0.6366
+      },
+      "Per-frame Upload Copies": {
+        "per_frame_ms": 0.1574,
+        "median_ms": 0.1386,
+        "p10_ms": 0.0893,
+        "p90_ms": 0.1615
+      },
+      "Reflection Probe Sums Pass": {
+        "per_frame_ms": 0.0168,
+        "median_ms": 0.0131,
+        "p10_ms": 0.0103,
+        "p90_ms": 0.0251
+      },
+      "Textured Pass": {
+        "per_frame_ms": 4.8961,
+        "median_ms": 4.769,
+        "p10_ms": 4.7104,
+        "p90_ms": 5.2471
+      }
+    },
+    "cost": {
+      "per_frame_ms": 0.0,
+      "median_ms": 0.0,
+      "p10_ms": 0.0,
+      "p90_ms": 0.0
+    }
+  }
+}

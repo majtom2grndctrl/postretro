@@ -1,7 +1,9 @@
 // Fluid surface reflection: the distance-corrected box-projected probe term
 // fs_main_reflecting composites, with the screen-space layer over it.
-// Concatenated after fluid_surface.wgsl; the gate, ray and style point live in
-// fluid_reflection_ray.wgsl.
+// Concatenated after fluid_surface.wgsl, and after glossy_overlay.wgsl, which
+// declares the same probe bindings by name and composes
+// fluid_reflection_about.wgsl after this file for its faces of any facing;
+// the gate, ray and style point live in fluid_reflection_ray.wgsl.
 // See: context/lib/rendering_pipeline.md §7.3a
 
 // Reflection probes. Mirrors `postretro_render_cpu::fluid_surface::reflection`:
@@ -78,14 +80,17 @@ fn fluid_reflection_layered_composite(surface: vec4<f32>, probe: vec3<f32>, shad
     return vec4<f32>(rgb, coverage);
 }
 
-// The capture's live-lighting scale toward `direction`, read from the probe's
+// Water's live-lighting scale toward `direction`, read from the probe's
 // sums, which the sums pass (fluid_reflection_sums.wgsl) wrote this frame:
 // the lobe weights blend the per-lobe sums, clamped at 0. No fragment
-// evaluates a stored light. Mirrors `reflection_ratio_from_sums`.
+// evaluates a stored light. Five lobes at the six-lobe stride: water binds
+// only up-facing probes, whose -Y share the compiler leaves 0, so the -Y sum
+// is exactly 0 and its term would add exactly 0. Mirrors
+// `reflection_ratio_from_up_sums`.
 // IP rule (owner review to change, rendering_pipeline.md §7.3a): only
 // probe-bound faces of geometry with fixed position and orientation read the
 // sums; a probe bound to a moving surface keeps the per-fragment ratio.
-fn fluid_reflection_ratio_from_sums(probe: u32, direction: vec3<f32>) -> vec3<f32> {
+fn fluid_reflection_ratio_from_up_sums(probe: u32, direction: vec3<f32>) -> vec3<f32> {
     let lobes = fluid_reflection_lobe_weights(direction);
     let base = probe * FLUID_REFLECTION_LOBES;
     var ratio = vec3<f32>(1.0);
@@ -94,25 +99,6 @@ fn fluid_reflection_ratio_from_sums(probe: u32, direction: vec3<f32>) -> vec3<f3
     ratio = ratio + fluid_probe_sums.lobes[base + 2u].xyz * lobes[2];
     ratio = ratio + fluid_probe_sums.lobes[base + 3u].xyz * lobes[3];
     ratio = ratio + fluid_probe_sums.lobes[base + 4u].xyz * lobes[4];
-    return max(ratio, vec3<f32>(0.0));
-}
-
-// The per-fragment form the sums replace, kept unreachable from every entry:
-// the sums' parity oracle, and the fallback for a reflector the IP rules
-// return to per-fragment evaluation (rendering_pipeline.md §7.3a). Lights
-// past the stored K have no entry and hold their reference.
-fn fluid_reflection_ratio(probe: u32, direction: vec3<f32>) -> vec3<f32> {
-    let lobes = fluid_reflection_lobe_weights(direction);
-    var ratio = vec3<f32>(1.0);
-    for (var i: u32 = 0u; i < FLUID_REFLECTION_LIGHTS_PER_PROBE; i = i + 1u) {
-        let light = fluid_probes.probes[probe].lights[i];
-        if !fluid_reflection_light_present(light.roster_index) {
-            continue;
-        }
-        let current = fluid_reflection_light_value(light.roster_index);
-        ratio = ratio + fluid_reflection_light_share(light.shares, lobes)
-            * fluid_reflection_light_change(current, light.reference);
-    }
     return max(ratio, vec3<f32>(0.0));
 }
 
@@ -324,6 +310,6 @@ fn fluid_reflection_sample(probe: u32, world_position: vec3<f32>, view: vec3<f32
         fluid_probes.tile.xy, layer);
     let uv = fluid_reflection_tile_uv(search.lookup, fluid_probes.tile.x, fluid_probes.tile.y);
     let capture = textureSampleLevel(fluid_probe_array, sh_atlas_sampler, uv, layer, 0.0).rgb;
-    return FluidReflectionSample(capture * fluid_reflection_ratio_from_sums(probe, search.lookup),
-        search.weight);
+    return FluidReflectionSample(
+        capture * fluid_reflection_ratio_from_up_sums(probe, search.lookup), search.weight);
 }

@@ -7,11 +7,11 @@
 use super::*;
 
 /// The composed fluid source with the reflecting fragment's one call of
-/// `fluid_reflection_ratio_from_sums(` restored to the kept per-fragment
+/// `fluid_reflection_ratio_from_up_sums(` restored to the kept per-fragment
 /// `fluid_reflection_ratio(`: the per-fragment oracle's fragment. Panics
 /// unless exactly one call site (the definition excluded) is substituted.
 pub(crate) fn per_fragment_ratio_oracle_source() -> String {
-    const FROM_SUMS: &str = "fluid_reflection_ratio_from_sums(";
+    const FROM_SUMS: &str = "fluid_reflection_ratio_from_up_sums(";
     let calls: Vec<usize> = SHADER_SOURCE
         .match_indices(FROM_SUMS)
         .map(|(at, _)| at)
@@ -71,12 +71,5 @@ impl FluidSurfacePass {
             &mut self.pipelines[FluidShaderVariant::Reflecting as usize],
             pipeline,
         )
-    }
-}
-
-impl InstalledFluidSurfaces {
-    /// The level's live-lighting sums buffer, for readback and prefill.
-    pub(crate) fn sums_buffer_for_test(&self) -> &wgpu::Buffer {
-        self.probes.sums_buffer()
     }
 }

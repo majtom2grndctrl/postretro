@@ -16,8 +16,8 @@ use crate::scripting::primitives::register_all;
 
 #[test]
 fn sdk_starter_mod_bundles_and_initializes_with_no_content() {
-    let entry = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../sdk/templates/starter/start-script.ts");
+    let entry =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/templates/starter/start-script.ts");
     let bundle = postretro_script_compiler::bundle_entry(&entry).expect("starter bundles");
 
     let ctx = ScriptCtx::new();

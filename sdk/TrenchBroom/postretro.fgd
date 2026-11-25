@@ -947,7 +947,7 @@
 // work, and zero emits no policy record; an empty overlap is a compiler error.
 @SolidClass = stream_priority_region : "Rank optional SH streaming work under pressure (brush)"
 [
-    _stream_priority(integer) : "Optional-work priority (0 = no hint, 3 = highest). Blank uses 0." : "0"
+    _stream_priority(integer) : "Optional-work priority (0 = no hint, 3 = highest). Blank uses 0." : 0
 ]
 
 // Semantic fog point entities.

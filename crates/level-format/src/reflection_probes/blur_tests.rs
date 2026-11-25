@@ -40,10 +40,15 @@ fn half_width_matches_the_brief_table() {
 
 #[test]
 fn exponent_mip_matches_the_delegated_answer() {
-    // n = 64 reads ≈ 2.6; n ≥ ~143 reads the minimum blur.
+    // n = 64 reads ≈ 2.6 and n = 256 ≈ 1.6, both their own lobes; n ≥ ~576
+    // reads the minimum blur.
     let at_64 = reflection_probe_exponent_mip(64.0, ENGINE_MIPS);
     assert!((at_64 - 2.58).abs() < 0.01, "{at_64}");
-    for n in [144.0, 256.0, 1024.0, SPECULAR_EXPONENT_MAX] {
+    let at_256 = reflection_probe_exponent_mip(256.0, ENGINE_MIPS);
+    assert!((at_256 - 1.58).abs() < 0.01, "{at_256}");
+    let at_574 = reflection_probe_exponent_mip(574.0, ENGINE_MIPS);
+    assert!(at_574 > REFLECTION_PROBE_MIN_BLUR_MIP, "{at_574}");
+    for n in [576.0, 1024.0, 4096.0, SPECULAR_EXPONENT_MAX] {
         assert_eq!(
             reflection_probe_exponent_mip(n, ENGINE_MIPS),
             REFLECTION_PROBE_MIN_BLUR_MIP,
@@ -124,7 +129,7 @@ fn each_mips_prefilter_exponent_maps_back_to_that_mip() {
 // minimum blur and the last mip, the minimum blur's lobe at the cap.
 #[test]
 fn the_probe_terms_spread_is_the_texels_lobe_within_the_chain() {
-    for n in [16.0f32, 40.0, 64.0, 100.0] {
+    for n in [16.0f32, 40.0, 64.0, 100.0, 256.0, 512.0] {
         let spread = reflection_probe_term_half_width(n, ENGINE_MIPS);
         let lobe = reflection_lobe_half_width(n);
         assert!(
@@ -133,7 +138,7 @@ fn the_probe_terms_spread_is_the_texels_lobe_within_the_chain() {
         );
     }
     let min_blur = reflection_probe_mip_half_width(REFLECTION_PROBE_MIN_BLUR_MIP as u32);
-    for n in [256.0, SPECULAR_EXPONENT_MAX] {
+    for n in [1024.0, SPECULAR_EXPONENT_MAX] {
         assert!((reflection_probe_term_half_width(n, ENGINE_MIPS) - min_blur).abs() < 1e-6);
     }
     // Monotone: blur never narrows as the exponent falls.

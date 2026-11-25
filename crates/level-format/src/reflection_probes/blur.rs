@@ -8,9 +8,9 @@ use super::{REFLECTION_PROBE_MIN_MIP_DIMENSION, REFLECTION_PROBE_TILE_DIMENSION}
 pub const REFLECTION_PROBE_MIP0_TEXEL_ANGLE: f32 =
     std::f32::consts::PI / (REFLECTION_PROBE_TILE_DIMENSION / 2) as f32;
 /// m_min, the minimum blur: no glossy world face reads sharper than this
-/// mip (the 32² tile, ≈ 11° texels), so no world face is a mirror. Water
-/// reads mip 0 and never this function.
-pub const REFLECTION_PROBE_MIN_BLUR_MIP: f32 = 2.0;
+/// mip (the 64² tile, 5.625° texels; n ≥ ~576 reads it), so no world face is
+/// a mirror. Water reads mip 0 and never this function.
+pub const REFLECTION_PROBE_MIN_BLUR_MIP: f32 = 1.0;
 
 /// The reflected-direction half-width at half maximum of a Blinn-Phong lobe
 /// of `exponent`, in radians: θ(n) = 2·acos(0.5^(1/n)). Rotating the lookup

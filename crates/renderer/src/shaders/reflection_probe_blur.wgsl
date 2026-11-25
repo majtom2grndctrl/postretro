@@ -11,7 +11,7 @@
 const REFLECTION_PROBE_MIP0_TEXEL_ANGLE: f32 = 0.049087387;
 // m_min: no glossy world face reads sharper than this mip, so none is a
 // mirror.
-const REFLECTION_PROBE_MIN_BLUR_MIP: f32 = 2.0;
+const REFLECTION_PROBE_MIN_BLUR_MIP: f32 = 1.0;
 
 // The reflected-direction half-width at half maximum of a Blinn-Phong lobe of
 // `exponent`, in radians: 2 x acos(0.5^(1/n)).

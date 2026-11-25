@@ -61,11 +61,12 @@ fn the_floor_blur_grows_as_the_exponent_falls_and_the_cap_reads_the_minimum_blur
     // minimum-blur mip, nudged past its f32 rounding so it reads that mip.
     let min_blur_exponent =
         reflection_probe_mip_exponent(REFLECTION_PROBE_MIN_BLUR_MIP as u32) * 1.0001;
+    let natural =
+        (reflection_lobe_half_width(min_blur_exponent) / REFLECTION_PROBE_MIP0_TEXEL_ANGLE).log2();
     assert!(
-        (reflection_lobe_half_width(min_blur_exponent) / REFLECTION_PROBE_MIP0_TEXEL_ANGLE)
-            .log2()
-            .max(1.999)
-            <= REFLECTION_PROBE_MIN_BLUR_MIP
+        natural <= REFLECTION_PROBE_MIN_BLUR_MIP
+            && natural > REFLECTION_PROBE_MIN_BLUR_MIP - 1.0e-3,
+        "{natural}"
     );
     for hit_length in [0.25, 1.0, 4.0, 16.0, 64.0] {
         let mut previous = f32::INFINITY;

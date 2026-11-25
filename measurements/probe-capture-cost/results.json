@@ -1,0 +1,58 @@
+{
+  "commit": "27c25a13d8b848c075439f31164eedb45651bc51",
+  "branch_measured": "glossy-world-reflections",
+  "machine": {
+    "model": "Intel MacBook Pro, Radeon Pro 5300M",
+    "cpu": "Intel(R) Core(TM) i9-9980HK CPU @ 2.40GHz",
+    "logical_cores": 16
+  },
+  "build": "dev profile (opt-level 2, debug assertions on), prl-build",
+  "flags": "--no-cache --no-tui -j 6, fresh -o and --baked-root per run, nice -n 10",
+  "rays_per_probe": 63504,
+  "tile": {"dimension": 128, "border": 1, "interior": 126, "supersamples_per_texel": 4},
+  "maps": {
+    "glossy-reflections-test.map --glossy-reflections": {
+      "probes": 10, "colour_mips": 6, "spec_lights": 15, "sdf_lights": 0,
+      "runs": [
+        {"stage_total_s": 0.434, "census_s": 0.008, "placement_boxfit_s": 0.009, "exclusion_classify_s": 0.000, "transparent_faces_s": 0.000, "cache_key_s": 0.049, "scene_setup_s": 0.001, "capture_trace_shade_s": 0.210, "colour_chain_s": 0.148, "distance_share_s": 0.005, "summary_reflection_probes_s": 0.44, "summary_total_s": 21.13, "wall_s": 21.17},
+        {"stage_total_s": 0.455, "census_s": 0.005, "placement_boxfit_s": 0.009, "exclusion_classify_s": 0.000, "transparent_faces_s": 0.000, "cache_key_s": 0.051, "scene_setup_s": 0.001, "capture_trace_shade_s": 0.220, "colour_chain_s": 0.160, "distance_share_s": 0.005, "summary_reflection_probes_s": 0.46, "summary_total_s": 20.95, "wall_s": 20.99}
+      ],
+      "colour_chain_worker_summed_s": {"mip0_bc6h": 0.020, "prefilter": 0.717, "mips1_5_bc6h": 0.004},
+      "outcomes": {"miss": 306596, "hit": 320689, "leak_guard": 7388, "fill": 367},
+      "sdf_shadow_rays": 0,
+      "reshade": {"surfaces": 328444, "reshade_s": [0.126, 0.127], "capture_trace_shade_s_same_run": 0.208}
+    },
+    "reflection-lake-test.map": {
+      "probes": 1, "colour_mips": 1, "spec_lights": 4, "sdf_lights": 0,
+      "runs": [
+        {"stage_total_s": 0.169, "census_s": 0.012, "placement_boxfit_s": 0.000, "exclusion_classify_s": 0.000, "transparent_faces_s": 0.000, "cache_key_s": 0.092, "scene_setup_s": 0.014, "capture_trace_shade_s": 0.048, "colour_chain_s": 0.002, "distance_share_s": 0.000, "summary_reflection_probes_s": 0.18, "summary_total_s": 82.27, "wall_s": 83.08},
+        {"stage_total_s": 0.156, "census_s": 0.011, "placement_boxfit_s": 0.001, "exclusion_classify_s": 0.000, "transparent_faces_s": 0.000, "cache_key_s": 0.087, "scene_setup_s": 0.012, "capture_trace_shade_s": 0.042, "colour_chain_s": 0.002, "distance_share_s": 0.000, "summary_reflection_probes_s": 0.16, "summary_total_s": 77.53, "wall_s": 77.66}
+      ],
+      "outcomes": {"miss": 0, "hit": 63434, "leak_guard": 34, "fill": 36},
+      "sdf_shadow_rays": 0,
+      "reshade": {"surfaces": 63504, "reshade_s": [0.019, 0.020], "capture_trace_shade_s_same_run": 0.043}
+    },
+    "glossy-reflections-showcase.map --glossy-reflections": {
+      "probes": 2, "colour_mips": 6, "spec_lights": 7, "sdf_lights": 0,
+      "runs": [
+        {"stage_total_s": 0.138, "census_s": 0.005, "placement_boxfit_s": 0.001, "cache_key_s": 0.001, "capture_trace_shade_s": 0.039, "colour_chain_s": 0.088, "distance_share_s": 0.002, "summary_reflection_probes_s": 0.14, "summary_total_s": 13.62, "wall_s": 13.65},
+        {"stage_total_s": 0.130, "census_s": 0.005, "placement_boxfit_s": 0.000, "cache_key_s": 0.001, "capture_trace_shade_s": 0.037, "colour_chain_s": 0.085, "distance_share_s": 0.002, "summary_reflection_probes_s": 0.13, "summary_total_s": 15.67, "wall_s": 15.70}
+      ],
+      "colour_chain_worker_summed_s": {"mip0_bc6h": 0.004, "prefilter": 0.170, "mips1_5_bc6h": 0.001},
+      "outcomes": {"miss": 63426, "hit": 63582, "leak_guard": 0, "fill": 0},
+      "sdf_shadow_rays": 0,
+      "reshade": {"surfaces": 63582, "reshade_s": [0.019, 0.018], "capture_trace_shade_s_same_run": 0.038}
+    },
+    "reflection-probes-test.map (extra: the only probe map with an sdf light)": {
+      "probes": 3, "colour_mips": 1, "spec_lights": 7, "sdf_lights": 1,
+      "runs": [
+        {"stage_total_s": 0.339, "census_s": 0.013, "placement_boxfit_s": 0.003, "exclusion_classify_s": 0.001, "cache_key_s": 0.179, "scene_setup_s": 0.003, "capture_trace_shade_s": 0.136, "colour_chain_s": 0.002, "distance_share_s": 0.002, "summary_reflection_probes_s": 0.35, "summary_total_s": 171.52, "wall_s": 171.57, "note": "DataScript 157.92 s: first scripts-build of the worktree"},
+        {"stage_total_s": 0.366, "census_s": 0.012, "placement_boxfit_s": 0.003, "exclusion_classify_s": 0.001, "cache_key_s": 0.186, "scene_setup_s": 0.003, "capture_trace_shade_s": 0.155, "colour_chain_s": 0.003, "distance_share_s": 0.002, "summary_reflection_probes_s": 0.37, "summary_total_s": 14.14, "wall_s": 14.19}
+      ],
+      "outcomes": {"miss": 0, "hit": 184510, "leak_guard": 4333, "fill": 1669},
+      "sdf_selected_per_probe": [0, 18702, 0],
+      "sdf_shadow_rays_per_probe": [0, 11637, 0],
+      "reshade": {"surfaces": 190512, "reshade_s": [0.095, 0.096], "capture_trace_shade_s_same_run": 0.142}
+    }
+  }
+}

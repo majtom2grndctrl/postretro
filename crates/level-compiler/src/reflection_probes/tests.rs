@@ -901,6 +901,29 @@ fn unchanged_inputs_hit_the_stage_cache_with_the_same_section() {
     assert_eq!(covered[0], covered[1]);
 }
 
+// A build with no cache computes no key, so it logs no lookup; one with a
+// cache logs its miss, then its hit.
+#[test]
+fn only_a_build_with_a_cache_logs_its_lookup() {
+    use log::Level as LogLevel;
+    use postretro_test_log_capture::LogCapture;
+
+    let room = every_term_room();
+    let environment = pool();
+    let dir = tempfile::tempdir().unwrap();
+    let cache = StageCache::new(dir.path()).unwrap();
+    let control = BakeControl::unrestricted();
+    let logs = LogCapture::start();
+    with_inputs(&room, &environment, |inputs| {
+        bake_or_load_reflection_probes(inputs, None, &control).unwrap();
+        logs.assert_not_logged(LogLevel::Info, "[cache] reflection_probes");
+        bake_or_load_reflection_probes(inputs, Some(&cache), &control).unwrap();
+        logs.assert_logged_once(LogLevel::Info, "[cache] reflection_probes miss");
+        bake_or_load_reflection_probes(inputs, Some(&cache), &control).unwrap();
+        logs.assert_logged_once(LogLevel::Info, "[cache] reflection_probes hit");
+    });
+}
+
 /// The stage's error for `room`, or `None` when it bakes.
 fn bake_error(room: &LitFloorRoom) -> Option<String> {
     with_inputs(room, &pool(), |inputs| {

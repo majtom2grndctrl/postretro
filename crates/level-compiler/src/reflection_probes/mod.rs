@@ -472,10 +472,10 @@ fn bake_or_load_with(
     }
 
     // Capture is a pure function of the keyed inputs, so a hit skips it.
-    // Hashing reads every input, id 22 included, so a build with no cache
-    // skips it.
-    let key = stage_cache
-        .map(|_| {
+    // The key serializes every input, id 22 included, so only a build with a
+    // cache computes it.
+    let keyed = stage_cache
+        .map(|cache| {
             cache_key(
                 inputs,
                 &probes,
@@ -483,26 +483,24 @@ fn bake_or_load_with(
                 constants,
                 crate::ray_traversal::TRACER_EPOCH,
             )
+            .map(|key| (cache, key))
         })
         .transpose()?;
-    if let Some((section, reports)) =
-        stage_cache
-            .zip(key.as_ref())
-            .and_then(|(cache, key)| cache.get(key))
-            .and_then(|bytes| {
-                parse_cache_payload(&bytes)
-                    .map_err(|e| {
-                        log::warn!("[cache] corrupt reflection_probes entry, re-baking: {e}")
-                    })
-                    .ok()
-            })
+    if let Some((section, reports)) = keyed
+        .as_ref()
+        .and_then(|(cache, key)| cache.get(key))
+        .and_then(|bytes| {
+            parse_cache_payload(&bytes)
+                .map_err(|e| log::warn!("[cache] corrupt reflection_probes entry, re-baking: {e}"))
+                .ok()
+        })
     {
         log::info!("[cache] reflection_probes hit");
         log_probes(&section, &reports);
         warn_hidden_reflectors(&section, &probes, inputs.environment_volumes, &world_faces);
         return Ok(Some(section));
     }
-    if stage_cache.is_some() {
+    if keyed.is_some() {
         log::info!("[cache] reflection_probes miss");
     }
 
@@ -549,7 +547,7 @@ fn bake_or_load_with(
         max_distance: bounds.diagonal() as f32 + 1.0,
     };
     let (section, reports) = capture_probes(&scene, &probes, &exclusions, &references, control)?;
-    if let (Some(cache), Some(key)) = (stage_cache, key.as_ref()) {
+    if let Some((cache, key)) = &keyed {
         cache.put(key, &cache_payload(&section, &reports));
     }
     log_probes(&section, &reports);

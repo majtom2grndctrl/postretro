@@ -667,7 +667,8 @@ fn an_offset_point_that_cannot_clear_a_wall_within_its_box_drops_saying_so() {
     capture.assert_logged_once(Level::Warn, "entity 2 'reflection_volume' capture point");
     capture.assert_logged_once(
         Level::Warn,
-        "is too close to a wall to move clear of it within its box and over its water; dropped",
+        "is too close to a wall to move clear of it within its box and in front of its faces; \
+         dropped",
     );
     // Only the derived probe its faces fall to, whose point is inside the
     // block, is in solid.
@@ -1021,7 +1022,9 @@ fn a_zero_capture_offset_holds_when_the_nearest_point_move_leaves_the_box() {
     let error = place_synthetic(&section, &[volume], 256).expect_err("the offset leaves the box");
     let message = format!("{error:#}");
     assert!(
-        message.contains("entity 4 'reflection_volume' `_capture_offset` moves its capture point"),
+        message.contains(
+            "entity 4 'reflection_volume' probe facing up `_capture_offset` moves its capture point"
+        ),
         "{message}"
     );
 }

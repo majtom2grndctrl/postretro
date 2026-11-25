@@ -1,4 +1,4 @@
-// Glossy placement's gate: each material's opt-in read once, the census line, and the world faces placement binds under `--glossy-reflections`.
+// Glossy placement's gate: under `--glossy-reflections` alone, each material's opt-in read once, the census line, and the world faces placement binds.
 // See: context/lib/resource_management.md §5.4
 
 use crate::governor::Governor;
@@ -10,11 +10,16 @@ use super::placement::ReflectorFace;
 use super::world_reflectors::{bound_reflector_faces, world_reflector_faces};
 
 /// The glossy world faces placement binds, in id-17 order: none without
-/// `inputs.glossy_reflections`. The census line logs either way.
+/// `inputs.glossy_reflections`. Without the flag no sidecar is read, so a
+/// build pays nothing for glossy support and an unreadable sidecar warns
+/// nothing; the census line, which needs those reads, logs only with it.
 pub(crate) fn glossy_world_faces(
     inputs: &ReflectionProbeInputs<'_>,
     governor: &Governor,
 ) -> Vec<ReflectorFace> {
+    if !inputs.glossy_reflections {
+        return Vec::new();
+    }
     let materials = GlossyMaterials::read(
         inputs.geometry,
         inputs.texture_keys,
@@ -22,9 +27,6 @@ pub(crate) fn glossy_world_faces(
         governor,
     );
     report_census(inputs.geometry, &materials);
-    if !inputs.glossy_reflections {
-        return Vec::new();
-    }
     let reflectors = world_reflector_faces(inputs.geometry, &materials);
     let faces = bound_reflector_faces(&reflectors);
     let up = faces.iter().filter(|face| face.facing.is_up()).count();

@@ -234,6 +234,33 @@ fn without_the_gate_a_glossy_floor_bakes_id_54_as_a_matte_one_and_binds_no_world
     assert_eq!(section, None);
 }
 
+// Gate row G1: without the flag no sidecar is read, so an unreadable one
+// warns nothing and no census logs; with it, both do.
+#[test]
+fn without_the_gate_no_sidecar_is_read_and_neither_warning_nor_census_logs() {
+    let gather = |gate: bool| {
+        let room = glossy_floor(gate);
+        let sidecar = format!("{}.prm", cache_filename_for_key(&[2; 32]));
+        std::fs::remove_file(room.prm_dir.path().join(sidecar)).unwrap();
+        let logs = LogCapture::start();
+        let faces = with_inputs(&room, &no_water(), |inputs| {
+            let control = BakeControl::unrestricted();
+            glossy_placement::glossy_world_faces(inputs, control.governor())
+        });
+        (faces, logs)
+    };
+    let (faces, logs) = gather(false);
+    assert!(faces.is_empty());
+    logs.assert_not_logged(LogLevel::Warn, "its faces reflect nothing");
+    logs.assert_not_logged(LogLevel::Info, "glossy census");
+    drop(logs);
+
+    let (faces, logs) = gather(true);
+    assert!(faces.is_empty(), "an unreadable sidecar reflects nothing");
+    logs.assert_logged_once(LogLevel::Warn, "texture 'glossy': cannot read");
+    logs.assert_logged_once(LogLevel::Info, "glossy census");
+}
+
 #[test]
 fn with_the_gate_a_glossy_floor_binds_one_derived_probe_lifted_2_mm_over_it() {
     let section = bake_under(&glossy_floor(true), Reflectors::SelfTransparent);

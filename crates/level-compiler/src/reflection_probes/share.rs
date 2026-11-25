@@ -14,7 +14,8 @@ const K: usize = REFLECTION_PROBE_LIGHTS_PER_PROBE;
 
 type LobeSums = [[f64; 3]; LOBES];
 
-/// The half of the sphere a probe's faces read, which its shares cover.
+/// The half of the sphere a probe's faces read: its shares cover it, and its
+/// colour mips past 0 are prefiltered from it alone.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum ShareHemisphere {
     /// Up-facing faces, water's and glossy floors': `y ≥ 0`, as water's
@@ -37,6 +38,11 @@ impl ShareHemisphere {
             Self::Up => direction.y < 0.0,
             Self::Around(normal) => direction.dot(*normal) < 0.0,
         }
+    }
+
+    /// Whether `direction` lies in the hemisphere, its horizon included.
+    pub(crate) fn holds(&self, direction: Vec3) -> bool {
+        !self.excludes(direction)
     }
 }
 

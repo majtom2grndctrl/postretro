@@ -57,11 +57,7 @@ pub(crate) fn warn_hidden_reflectors(
             continue;
         }
         if !probe.world_faces.is_empty() {
-            let what = if probe.facing.is_up() {
-                "glossy floor"
-            } else {
-                "glossy faces"
-            };
+            let what = bound_reflector(probe);
             log::warn!(
                 "[ReflectionProbes] probe {index} of entity {}: its capture point {:?} sees \
                  {:.0}% of the {what} it binds, and what it cannot see draws no reflection",
@@ -84,6 +80,17 @@ pub(crate) fn warn_hidden_reflectors(
             probe.capture_point,
             seen * 100.0,
         );
+    }
+}
+
+/// What a probe binding world faces names in its warning: every reflector
+/// [`seen_fraction`] measures, so the name and the percentage agree. Only an
+/// up-facing probe binds water beside world faces.
+fn bound_reflector(probe: &PlacedProbe) -> &'static str {
+    match (probe.facing.is_up(), probe.fluid_faces.is_empty()) {
+        (true, false) => "water and glossy floor",
+        (true, true) => "glossy floor",
+        (false, _) => "glossy faces",
     }
 }
 
@@ -211,5 +218,38 @@ impl DistanceTile {
         };
         let l1 = level.abs().element_sum();
         l1 < AT_CAPTURE_POINT_M || l1 * self.sample(level) < 1.0 + CAPTURE_SHADOW_MARGIN
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn probe(facing: Facing, fluid_faces: Vec<(u32, u32)>) -> PlacedProbe {
+        PlacedProbe {
+            source_entity: 2,
+            authored: true,
+            box_min: [-1.0; 3],
+            box_max: [1.0; 3],
+            capture_point: [0.0; 3],
+            facing,
+            bound_area: 1.0,
+            fluid_faces,
+            world_faces: vec![0],
+        }
+    }
+
+    // The warning's percentage covers water and glossy floor together, so a
+    // probe binding both names both.
+    #[test]
+    fn the_hidden_reflector_warning_names_every_reflector_it_measures() {
+        assert_eq!(
+            bound_reflector(&probe(Facing::Up, vec![(0, 0)])),
+            "water and glossy floor"
+        );
+        assert_eq!(
+            bound_reflector(&probe(Facing::Up, Vec::new())),
+            "glossy floor"
+        );
     }
 }

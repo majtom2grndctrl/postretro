@@ -10,6 +10,7 @@ use postretro_level_format::reflection_probes::{
 
 use super::capture::{TILE_INTERIOR, bordered_rgba_at, encode_tile, octahedral_direction};
 use super::placement::PlacedProbe;
+use super::share::ShareHemisphere;
 use crate::bc6h::encode_bc6h_rgb_from_f32_rgba;
 
 /// Kernel weight, relative to its peak, below which a source texel adds
@@ -25,7 +26,7 @@ const PREFILTER_BLOCK: u32 = 6;
 const PREFILTER_TABLE_STEPS: usize = 4096;
 /// Bumped when the prefilter's output for the same capture changes; keyed
 /// into the stage cache for sections that carry mips.
-pub(super) const PREFILTER_VERSION: u32 = 1;
+pub(super) const PREFILTER_VERSION: u32 = 2;
 
 /// Colour mips the section carries: the full chain to one BC6H block when
 /// any probe binds a world face, else mip 0 alone. Water reads mip 0 only,
@@ -59,12 +60,17 @@ pub(super) fn key_bytes(mip_count: u32) -> Vec<u8> {
 }
 
 /// One probe's colour chain as id 54 stores it: mip 0 the capture exactly as
-/// [`encode_tile`] writes it, then each later mip the capture prefiltered
-/// ([`prefilter_mip`]) and wrapped in its own 1-texel border by the SH
-/// atlas's rule, each BC6H. `rows` are the mip-0 interior rows.
-pub(super) fn encode_colour_chain(rows: &[&[Vec3]], mip_count: u32) -> Vec<u8> {
+/// [`encode_tile`] writes it, then each later mip the capture over the
+/// probe's `hemisphere` prefiltered ([`prefilter_mip`]) and wrapped in its
+/// own 1-texel border by the SH atlas's rule, each BC6H. `rows` are the
+/// mip-0 interior rows.
+pub(super) fn encode_colour_chain(
+    rows: &[&[Vec3]],
+    mip_count: u32,
+    hemisphere: ShareHemisphere,
+) -> Vec<u8> {
     let mut out = encode_tile(rows);
-    for (mip, rgba) in (1..).zip(prefiltered_mips(rows, mip_count)) {
+    for (mip, rgba) in (1..).zip(prefiltered_mips(rows, mip_count, hemisphere)) {
         let dimension = mip_dimension(mip);
         out.extend(encode_bc6h_rgb_from_f32_rgba(&rgba, dimension, dimension));
     }
@@ -73,11 +79,15 @@ pub(super) fn encode_colour_chain(rows: &[&[Vec3]], mip_count: u32) -> Vec<u8> {
 
 /// Mips 1..`mip_count` before encoding: each [`prefilter_mip`]'s interior in
 /// its own bordered tile, row-major RGBA f32.
-pub(super) fn prefiltered_mips(rows: &[&[Vec3]], mip_count: u32) -> Vec<Vec<f32>> {
+pub(super) fn prefiltered_mips(
+    rows: &[&[Vec3]],
+    mip_count: u32,
+    hemisphere: ShareHemisphere,
+) -> Vec<Vec<f32>> {
     if mip_count <= 1 {
         return Vec::new();
     }
-    let source = PrefilterSource::new(rows);
+    let source = PrefilterSource::new(rows, hemisphere);
     (1..mip_count)
         .map(|mip| {
             bordered_rgba_at(
@@ -133,9 +143,16 @@ fn texel_solid_angle(x: u32, y: u32, interior: u32) -> f32 {
     (2.0 / n).powi(2) / (length * length * length)
 }
 
-/// The mip-0 capture as the prefilter reads it: every interior texel's
-/// direction, solid angle and radiance, grouped into square blocks, each
-/// with its centre direction and angular radius.
+/// The mip-0 capture as the prefilter reads it: each interior texel in the
+/// probe's hemisphere, with its direction, solid angle and radiance, grouped
+/// into square blocks, each with its centre direction and angular radius.
+///
+/// Texels behind the hemisphere's plane never enter a mip. A glossy probe's
+/// rays pass through its own reflector plane, so there they read black
+/// under a floor and the next room through a wall: weighting them would
+/// darken every mip toward the horizon, where Fresnel weight is highest,
+/// and leak that room's light into the wall. Only mip 0 holds them, as
+/// captured; water reads mip 0 alone.
 pub(super) struct PrefilterSource {
     blocks: Vec<SourceBlock>,
 }
@@ -154,8 +171,10 @@ struct SourceTexel {
 }
 
 impl PrefilterSource {
-    /// `rows`: the mip-0 interior rows, [`TILE_INTERIOR`] square.
-    pub(super) fn new(rows: &[&[Vec3]]) -> Self {
+    /// `rows`: the mip-0 interior rows, [`TILE_INTERIOR`] square. Keeps the
+    /// texels `hemisphere` holds, by the share sums' own test, so a texel on
+    /// its horizon counts; a block holding none is left out.
+    pub(super) fn new(rows: &[&[Vec3]], hemisphere: ShareHemisphere) -> Self {
         let interior = TILE_INTERIOR;
         assert_eq!(rows.len(), interior as usize, "interior rows");
         let per_edge = interior.div_ceil(PREFILTER_BLOCK);
@@ -171,7 +190,11 @@ impl PrefilterSource {
                         solid_angle: texel_solid_angle(x, y, interior),
                         radiance: rows[y as usize][x as usize],
                     })
+                    .filter(|texel| hemisphere.holds(texel.direction))
                     .collect();
+                if texels.is_empty() {
+                    continue;
+                }
                 let centre = texels
                     .iter()
                     .map(|texel| texel.direction)
@@ -204,13 +227,17 @@ pub(super) fn prefilter_weight(cos_angle: f32, exponent: f32) -> f32 {
 }
 
 /// Colour mip `mip`'s interior, row-major: each texel the solid-angle-
-/// weighted mean of the mip-0 capture under the lobe of
+/// weighted mean of the mip-0 capture in the probe's hemisphere
+/// ([`PrefilterSource`]) under the lobe of
 /// `reflection_probe_mip_exponent(mip)` ([`PrefilterLobe`]), centred on
-/// the texel's direction. Texels past the lobe's [`PREFILTER_CUTOFF`] angle
-/// add nothing, and blocks lying wholly past it are skipped; the sum runs in
-/// a fixed order, so the bytes never depend on the worker count. The
-/// distance tile and capture-shadow weight never enter: only colour is
-/// blurred.
+/// the texel's direction. The mean divides by the weight inside the
+/// hemisphere, so a lookup at the horizon reads what lies above it at full
+/// strength. Texels past the lobe's [`PREFILTER_CUTOFF`] angle add nothing,
+/// and blocks lying wholly past it are skipped; the sum runs in a fixed
+/// order, so the bytes never depend on the worker count. A lookup whose lobe
+/// reaches no texel in the hemisphere stores 0: only a texel far behind the
+/// horizon, which no lookup's filter taps. The distance tile and
+/// capture-shadow weight never enter: only colour is blurred.
 pub(super) fn prefilter_mip(source: &PrefilterSource, mip: u32) -> Vec<Vec3> {
     let lobe = PrefilterLobe::new(reflection_probe_mip_exponent(mip));
     // Per block, the dot below which no member can reach the cutoff angle.

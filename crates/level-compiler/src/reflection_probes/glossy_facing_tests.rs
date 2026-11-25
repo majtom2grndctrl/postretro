@@ -603,6 +603,82 @@ fn a_box_over_a_pool_above_a_glossy_floor_captures_in_front_of_both() {
     );
 }
 
+/// A glossy platform at 1 m over `x ∈ [1.5, 3]`, its whole depth.
+fn platform() -> Quad {
+    let (lo, hi) = (Vec3::new(1.5, 1.0, -3.0), Vec3::new(3.0, 1.0, 3.0));
+    (Vec3::Y, rect(lo, hi, 1, 1.0), 1, LIT)
+}
+
+/// A box nested in [`room_volume`] around [`platform`] alone, entity 3.
+fn platform_volume() -> MapReflectionVolume {
+    MapReflectionVolume {
+        source_entity: 3,
+        source_label: "entity 3 'reflection_volume'".to_string(),
+        ..reflection_volume([1.4, 0.9, -3.01], [3.01, 1.1, 3.01])
+    }
+}
+
+// A box's capture point follows what it binds. A nested box claims the
+// glossy platform inside the room's box, leaving it the pool alone: it
+// captures over the water exactly where it does with no glossy face offered,
+// not over the platform it never binds.
+#[test]
+fn a_box_a_nested_box_leaves_only_water_captures_over_that_water() {
+    let mut quads = vec![platform()];
+    quads.extend(room_except(&[], 0));
+    let place_gated = |gate: bool| {
+        let mut room = scene(&quads, &[MATTE_GREY, glossy(GREY)], gate);
+        room.extras.authored = vec![room_volume(), platform_volume()];
+        place(&room, &pool())
+    };
+    let water_only = place_gated(false);
+    assert_eq!(water_only.len(), 1, "{water_only:#?}");
+    let probes = place_gated(true);
+    assert_eq!(probes.len(), 2, "{probes:#?}");
+    let pool_probe = &probes[0];
+    assert_eq!(pool_probe.source_entity, 2);
+    assert_eq!(pool_probe.fluid_faces, vec![(0, 0)]);
+    assert!(pool_probe.world_faces.is_empty());
+    assert_eq!(pool_probe.capture_point, water_only[0].capture_point);
+    let capture = pool_probe.capture_point_vec3();
+    assert!(
+        (capture - Vec3::new(0.0, 0.502, 0.0)).length() < 1e-5,
+        "{capture}"
+    );
+    let (_, nested) = binding(&probes, 0);
+    assert_eq!(nested.source_entity, 3);
+    assert_lifted_off(nested, &quads[0]);
+}
+
+// A box's glossy probe captures in front of the frontmost plane it binds, not
+// of one a nested box claims: 2 mm over the room's glossy floor, under the
+// raised platform the nested box binds.
+#[test]
+fn a_box_captures_in_front_of_the_frontmost_plane_it_binds_not_a_nested_boxs() {
+    let mut quads = vec![room_face(0, 1, LIT), platform()];
+    quads.extend(room_except(&[0], 0));
+    let mut room = scene(&quads, &[MATTE_GREY, glossy(GREY)], true);
+    room.extras.authored = vec![room_volume(), platform_volume()];
+    let probes = place(&room, &no_water());
+    assert_eq!(probes.len(), 2, "{probes:#?}");
+    let (_, floor) = binding(&probes, 0);
+    assert_eq!(
+        (floor.source_entity, floor.world_faces.clone()),
+        (2, vec![0])
+    );
+    let capture = floor.capture_point_vec3();
+    assert!(
+        (capture - Vec3::new(0.0, 0.002, 0.0)).length() < 1e-5,
+        "{capture}"
+    );
+    let (_, raised) = binding(&probes, 1);
+    assert_eq!(
+        (raised.source_entity, raised.world_faces.clone()),
+        (3, vec![1])
+    );
+    assert_lifted_off(raised, &quads[1]);
+}
+
 // Row 9 and pin P4: a face the capture point cannot serve binds nothing, and
 // the warning names it. The box's top is flush with a raised glossy floor,
 // so the clamp leaves the point on that floor's plane.

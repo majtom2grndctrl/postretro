@@ -83,10 +83,11 @@ pub(super) fn capture_probes(
     let mip_count = colour_mip_count(probes);
     let tiles: Vec<Vec<u8>> = rows
         .par_chunks(rows_per_tile)
-        .map(|rows| {
+        .zip(probes.par_iter())
+        .map(|(rows, probe)| {
             let _permit = control.governor().enter();
             let texels: Vec<&[glam::Vec3]> = rows.iter().map(|r| r.texels.as_slice()).collect();
-            encode_colour_chain(&texels, mip_count)
+            encode_colour_chain(&texels, mip_count, ShareHemisphere::of(&probe.facing))
         })
         .collect();
     let distances: Vec<u8> = rows

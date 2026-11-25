@@ -32,13 +32,18 @@ fn specular_slot(format: PrmFormat, texel: &[u8]) -> PrmSlot {
 }
 
 fn write_specular(dir: &Path, key: [u8; 32], slot: PrmSlot) {
+    write_specular_layers(dir, key, slot, 1);
+}
+
+/// A sidecar of `layer_count` layers; `slot`'s payload holds every layer.
+fn write_specular_layers(dir: &Path, key: [u8; 32], slot: PrmSlot, layer_count: u16) {
     let prm = PrmFile {
         header: PrmHeader {
             stage_version: STAGE_VERSION,
             slot_mask: PrmSlots::SPECULAR,
             bundle_hash: [0; 32],
             total_body_bytes: 0,
-            layer_count: 1,
+            layer_count,
         },
         slots: [None, Some(slot), None, None],
     };
@@ -115,6 +120,37 @@ fn glossy_materials_read_reflects_only_a_four_channel_slot_past_both_conditions(
     assert_eq!(
         (materials.used, materials.glossy(), materials.unreadable),
         (4, 1, 0)
+    );
+}
+
+// The loader binds a layered world sidecar a placeholder, so its material
+// draws matte at runtime; the compiler must not place probes for it either,
+// whatever its layers hold.
+#[test]
+fn glossy_materials_read_never_reflects_a_layered_sidecar() {
+    let dir = tempfile::tempdir().unwrap();
+    let texel = [200, 127, 200, 255];
+    write_specular(
+        dir.path(),
+        [1; 32],
+        specular_slot(PrmFormat::Rgba8Unorm, &texel),
+    );
+    let mut layered = specular_slot(PrmFormat::Rgba8Unorm, &texel);
+    layered.payload = layered.payload.repeat(2);
+    write_specular_layers(dir.path(), [2; 32], layered, 2);
+    let names: Vec<String> = ["single", "layered"].map(String::from).to_vec();
+    let keys = HashMap::from([(names[0].clone(), [1u8; 32]), (names[1].clone(), [2u8; 32])]);
+    let geometry =
+        floor_quads(&[([0.0, 0.0, 1.0, 1.0], 0), ([1.0, 0.0, 2.0, 1.0], 1)], 0.0).finish(names);
+    let control = BakeControl::unrestricted();
+    let materials = GlossyMaterials::read(&geometry, &keys, dir.path(), control.governor());
+    assert_eq!(
+        (materials.reflects(0), materials.reflects(1)),
+        (true, false)
+    );
+    assert_eq!(
+        (materials.used, materials.glossy(), materials.unreadable),
+        (2, 1, 0)
     );
 }
 

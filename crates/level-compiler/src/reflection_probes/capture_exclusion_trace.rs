@@ -303,8 +303,10 @@ impl ProbeExclusion<'_> {
     /// transparent reflector plane (water's), or a ray not heading behind it.
     ///
     /// The plane's faces are absent from the probe's primary rays, so behind
-    /// it the probe captures only what lies under its reflector, which no
-    /// lookup reads but a horizon texel's mean. Excluded brushes stand on the
+    /// it the probe captures only what lies under its reflector. Only mip 0's
+    /// horizon texels carry it to a lookup, through their supersamples and
+    /// bilinear taps; the colour mips past 0 never weight a texel behind the
+    /// plane. Excluded brushes stand on the
     /// reflector: past the plane nothing hides behind them, and a ray reads
     /// there with them absent, as through the transparent faces, with no
     /// fill or leak guard. Crossing an excluded brush's base

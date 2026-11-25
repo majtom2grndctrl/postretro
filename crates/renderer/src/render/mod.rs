@@ -164,6 +164,8 @@ mod glossy_floor_frame_test;
 #[cfg(test)]
 mod glossy_floor_frame_test_fixtures;
 #[cfg(test)]
+mod glossy_floor_grazing_frame_test;
+#[cfg(test)]
 mod glossy_floor_layer_frame_test;
 #[cfg(test)]
 mod glossy_overlay_frame_test;

@@ -81,6 +81,9 @@ pub(crate) struct GlossyFloorPass {
     /// Marches recorded so far; tests read it.
     #[cfg(test)]
     marches: std::cell::Cell<u32>,
+    /// The march's layout, for test-only variant pipelines.
+    #[cfg(test)]
+    march_layout: wgpu::PipelineLayout,
 }
 
 impl GlossyFloorPass {
@@ -210,6 +213,8 @@ impl GlossyFloorPass {
             chains: std::cell::Cell::new(0),
             #[cfg(test)]
             marches: std::cell::Cell::new(0),
+            #[cfg(test)]
+            march_layout,
         }
     }
 
@@ -238,6 +243,34 @@ impl GlossyFloorPass {
     #[cfg(test)]
     pub(crate) fn marches(&self) -> u32 {
         self.marches.get()
+    }
+
+    /// A march pipeline drawing `entry` from the march's shader with `extra`
+    /// WGSL composed after it (test-only).
+    #[cfg(test)]
+    pub(crate) fn march_variant(
+        &self,
+        device: &wgpu::Device,
+        extra: &str,
+        entry: &str,
+    ) -> wgpu::RenderPipeline {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Glossy Floor March Variant Shader"),
+            source: wgpu::ShaderSource::Wgsl(
+                format!("{}\n{extra}\n", march::GLOSSY_FLOOR_MARCH_SHADER_SOURCE).into(),
+            ),
+        });
+        march_pipeline(device, &self.march_layout, &shader, entry)
+    }
+
+    /// Put `march` in the production march pipelines' place, returning them
+    /// (test-only).
+    #[cfg(test)]
+    pub(crate) fn swap_march(
+        &mut self,
+        march: GlossyFloorMarchPipelines,
+    ) -> GlossyFloorMarchPipelines {
+        std::mem::replace(&mut self.march, march)
     }
 }
 
@@ -279,3 +312,7 @@ mod register_screen_test;
 #[cfg(test)]
 #[path = "glossy_floor_blur_frame_test.rs"]
 mod blur_frame_test;
+
+#[cfg(test)]
+#[path = "glossy_floor_march_inputs_frame_test.rs"]
+mod march_inputs_frame_test;

@@ -176,6 +176,14 @@ impl GlossyFloorMarchPipelines {
     ) -> &wgpu::RenderPipeline {
         &self.pipelines[style_index(style)][form.index()]
     }
+
+    /// `pipeline` in every style's and form's place: a test-only variant.
+    #[cfg(test)]
+    pub(crate) fn every(pipeline: wgpu::RenderPipeline) -> Self {
+        Self {
+            pipelines: GLOSSY_STYLES.map(|_| GlossyOverlayForm::ALL.map(|_| pipeline.clone())),
+        }
+    }
 }
 
 pub(crate) fn march_pipeline(

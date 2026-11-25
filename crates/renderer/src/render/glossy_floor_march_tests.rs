@@ -300,7 +300,7 @@ fn the_floor_blur_reads_exponent_minimum_blur_and_hit_length_alone() {
 /// `fs_reflection` by the march's IP gate in `fluid_surface_tests`.
 pub(crate) const GLOSSY_FLOOR_MARCH_BODY: &str = "fnglossy_floor_march(in:GlossyVertexOutput,\
      pixel:bool,carve:bool,normal_map:bool)->vec4<f32>{\
-     letderivatives=glossy_overlay_derivatives(in);\
+     letderivatives=glossy_floor_derivatives(in);\
      letdepth=glossy_overlay_depth(in,derivatives,carve);\
      letexponent=glossy_floor_exponent(depth.uv,derivatives.ddx,derivatives.ddy);\
      letsurface=glossy_overlay_surface(in,derivatives,depth,pixel,normal_map);\
@@ -330,6 +330,18 @@ fn the_floor_march_starts_from_the_probe_terms_point_and_writes_premultiplied() 
     assert_eq!(
         squashed(wgsl_function(MARCH_WGSL, "glossy_floor_march")),
         GLOSSY_FLOOR_MARCH_BODY
+    );
+    // The shared helpers take the overlay's derivatives per scene pixel: the
+    // march rasterises at the chain's level-0 extent, a fraction of the
+    // scene's.
+    assert_eq!(
+        squashed(wgsl_function(MARCH_WGSL, "glossy_floor_derivatives")),
+        "fnglossy_floor_derivatives(in:GlossyVertexOutput)->GlossyDerivatives{\
+         letd=glossy_overlay_derivatives(in);\
+         letscale=vec2<f32>(textureDimensions(floor_chain))\
+         /vec2<f32>(textureDimensions(scene_depth));\
+         returnGlossyDerivatives(d.ddx*scale.x,d.ddy*scale.y,d.ddx_world*scale.x,\
+         d.ddy_world*scale.y);}"
     );
     assert_eq!(
         squashed(wgsl_function(MARCH_WGSL, "glossy_floor_origin")),

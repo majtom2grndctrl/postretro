@@ -70,6 +70,24 @@ fn vs_main(in: GlossyVertexInput) -> GlossyVertexOutput {
     return out;
 }
 
+// The overlay's derivatives at this fragment, per scene pixel. This pass
+// rasterises at the chain's level-0 extent, the floor tier's fraction of the
+// scene's, so one of its pixels spans several scene pixels; raw derivatives
+// would read the exponent, the normal map, Surface Depth's level and the
+// texel seam band that many mips coarse, and on a coarse enough fraction turn
+// pixel style's texel-centre point into the fragment's own. Scaled to the
+// scene, every shared helper reads what the overlay reads at its full-extent
+// pixel, as water's reflection pass scales its texel footprint
+// (`target_scale`). The UV-to-world Jacobian is a ratio of these, so it is
+// unchanged.
+fn glossy_floor_derivatives(in: GlossyVertexOutput) -> GlossyDerivatives {
+    let d = glossy_overlay_derivatives(in);
+    let scale = vec2<f32>(textureDimensions(floor_chain))
+        / vec2<f32>(textureDimensions(scene_depth));
+    return GlossyDerivatives(d.ddx * scale.x, d.ddy * scale.y, d.ddx_world * scale.x,
+        d.ddy_world * scale.y);
+}
+
 // The texel's exponent, read as the overlay's `glossy_texel` reads it: the
 // specular slot through forward's reconstruction at the UV forward shades.
 fn glossy_floor_exponent(uv: vec2<f32>, ddx: vec2<f32>, ddy: vec2<f32>) -> f32 {
@@ -129,14 +147,15 @@ fn glossy_floor_hit_colour(pixel: vec2<f32>, exponent: f32, hit: GlossyFloorHit,
 // One style's and material form's march, from the overlay's point (lifted off
 // the floor) about the overlay's normal, so the floor layer and the probe term
 // reflect one ray.
-// Derivatives come first, in uniform control flow. The probe term's gate (the
-// face seen from its up side, the all-terms mask) refuses a fragment, which
-// writes nothing, so its texel reads c = 0. One ray per target pixel: the
-// exponent sets the blur alone, never whether, how far or how finely a ray
-// marches. A miss, or a stop with no confidence, writes a literal 0.
+// Derivatives, per scene pixel, come first, in uniform control flow. The
+// probe term's gate (the face seen from its up side, the all-terms mask)
+// refuses a fragment, which writes nothing, so its texel reads c = 0. One
+// ray per target pixel: the exponent sets the blur alone, never whether, how
+// far or how finely a ray marches. A miss, or a stop with no confidence,
+// writes a literal 0.
 fn glossy_floor_march(in: GlossyVertexOutput, pixel: bool, carve: bool,
                       normal_map: bool) -> vec4<f32> {
-    let derivatives = glossy_overlay_derivatives(in);
+    let derivatives = glossy_floor_derivatives(in);
     let depth = glossy_overlay_depth(in, derivatives, carve);
     let exponent = glossy_floor_exponent(depth.uv, derivatives.ddx, derivatives.ddy);
     let surface = glossy_overlay_surface(in, derivatives, depth, pixel, normal_map);

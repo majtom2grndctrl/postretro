@@ -15,7 +15,7 @@ Inside the stage, two parts matter:
 - **Capture** (trace and shade every probe's 63,504 rays) scales with probe count, at
   about 19 to 52 ms per probe at 6 workers.
 - **The colour-mip prefilter** runs only when a glossy world face binds a probe (6 mips).
-  It then matches or exceeds capture: 0.15 s against 0.21 s for 10 probes, 0.09 s against
+  It then rivals capture: 0.15 s against 0.21 s for 10 probes, and exceeds it on 2 probes, 0.09 s against
   0.04 s for 2 probes. BC6H encoding is negligible.
 
 Placement, census, exclusion classification and transparent faces together take under 20 ms.

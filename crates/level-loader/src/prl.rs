@@ -3206,7 +3206,7 @@ mod tests {
         );
     }
 
-    // Row 61: world bindings index Geometry (id 17), whose fixture holds two
+    // World bindings index Geometry (id 17), whose fixture holds two
     // faces; face 1 loads, face 2 refuses the level by name.
     #[test]
     fn load_prl_refuses_a_world_binding_past_the_geometry_faces() {
@@ -3243,7 +3243,7 @@ mod tests {
         );
     }
 
-    // Row 61: a version-2 section, built before six lobes, colour mips and
+    // A version-2 section, built before six lobes, colour mips and
     // world bindings, is refused by the named version error.
     #[test]
     fn load_prl_refuses_a_version_two_reflection_probe_section() {

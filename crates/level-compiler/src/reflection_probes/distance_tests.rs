@@ -17,7 +17,9 @@ use super::capture::{
     F16_MIN_POSITIVE, SUPERSAMPLE_OFFSETS, TILE_INTERIOR, distance_bits, encode_distance_tile,
     inverse_l1_distance, octahedral_direction,
 };
-use super::capture_visibility::{CAPTURE_SHADOW_MARGIN, DistanceTile, warn_hidden_reflectors};
+use super::capture_visibility::{
+    CAPTURE_SHADOW_MARGIN, CAPTURE_SHADOW_PLANE_DEPTH, DistanceTile, warn_hidden_reflectors,
+};
 use super::facing::Facing;
 use super::placement::PlacedProbe;
 use super::reflection_probes_test_fixtures::{
@@ -347,6 +349,15 @@ fn a_finite_hit_at_any_distance_stores_non_zero_and_a_miss_stores_zero() {
 
 /// A distance tile storing `w(direction)` at every texel, border included.
 fn tile_of(w: impl Fn(Vec3) -> f32) -> DistanceTile {
+    DistanceTile::from_bytes(
+        REFLECTION_PROBE_TILE_DIMENSION,
+        REFLECTION_PROBE_TILE_BORDER,
+        &tile_bytes_of(w),
+    )
+}
+
+/// [`tile_of`]'s payload: little-endian f16 per texel, as id 54 stores it.
+fn tile_bytes_of(w: impl Fn(Vec3) -> f32) -> Vec<u8> {
     let dimension = REFLECTION_PROBE_TILE_DIMENSION;
     let border = REFLECTION_PROBE_TILE_BORDER;
     let mut bytes = Vec::new();
@@ -359,7 +370,7 @@ fn tile_of(w: impl Fn(Vec3) -> f32) -> DistanceTile {
             bytes.extend_from_slice(&f32_to_f16_bits(w(d)).to_le_bytes());
         }
     }
-    DistanceTile::from_bytes(dimension, border, &bytes)
+    bytes
 }
 
 /// A point at L1 distance `l1` from the origin, `degrees` above +X.
@@ -377,6 +388,18 @@ fn capture_shadow_margin_matches_the_fluid_shaders() {
     assert_eq!(CAPTURE_SHADOW_MARGIN, FLUID_REFLECTION_SHADOW_MARGIN);
 }
 
+// A glossy fragment deeper than δ behind the capture point's plane tests its
+// capture shadow from its true position too, as the overlay's search does,
+// so the warning's δ is the overlay's.
+#[test]
+fn capture_shadow_plane_depth_matches_the_overlays() {
+    use postretro_render_cpu::fluid_surface::reflection_search_about::FLUID_REFLECTION_SHADOW_PLANE_DEPTH;
+    assert_eq!(
+        CAPTURE_SHADOW_PLANE_DEPTH,
+        FLUID_REFLECTION_SHADOW_PLANE_DEPTH
+    );
+}
+
 // Sight means "the shader draws a probe term": h < κ, not h < 0. Water a
 // little behind the stored surface, inside the margin, draws a faded term
 // and is seen; water past the margin draws none.
@@ -391,4 +414,168 @@ fn sight_holds_inside_the_capture_shadow_margin_and_fails_past_it() {
     // A capture that stored no surface sees everything.
     let sky = tile_of(|_| 0.0);
     assert!(sky.sees(Vec3::ZERO, at(40.0, 10.0), &Facing::Up));
+}
+
+// --- Two floor heights under one probe -----------------------------------------
+
+/// The two-height room's capture point: 2 mm over the platform's centre.
+const PLATFORM_CAPTURE: Vec3 = Vec3::new(-2.0, 0.502, 0.0);
+
+/// `1 / |hit − PLATFORM_CAPTURE|₁` along unit `direction` in a 6 × 3 × 6 m
+/// room whose west third is a platform 0.5 m high and the rest a floor at 0,
+/// both bound to one probe and so absent from its capture, as a probe's
+/// bound planes are. A low wall 0.4 m high crosses the lower floor just east
+/// of the platform, below the capture point's height: seen over the capture
+/// point's plane it hides nothing, seen from the capture point it hides the
+/// lower floor behind it. 0 where the ray hits nothing.
+fn two_height_room_inverse_l1(direction: Vec3) -> f32 {
+    let boxes: [(Vec3, Vec3); 6] = [
+        (Vec3::new(-3.5, -0.5, -3.5), Vec3::new(-3.0, 3.5, 3.5)),
+        (Vec3::new(3.0, -0.5, -3.5), Vec3::new(3.5, 3.5, 3.5)),
+        (Vec3::new(-3.5, -0.5, -3.5), Vec3::new(3.5, 3.5, -3.0)),
+        (Vec3::new(-3.5, -0.5, 3.0), Vec3::new(3.5, 3.5, 3.5)),
+        (Vec3::new(-3.5, 3.0, -3.5), Vec3::new(3.5, 3.5, 3.5)),
+        (Vec3::new(-0.8, 0.0, -3.0), Vec3::new(-0.6, 0.4, 3.0)),
+    ];
+    let origin = PLATFORM_CAPTURE;
+    let mut nearest = f32::INFINITY;
+    for (lo, hi) in boxes {
+        let (mut t_near, mut t_far) = (f32::NEG_INFINITY, f32::INFINITY);
+        let mut missed = false;
+        for axis in 0..3 {
+            let (o, d) = (origin[axis], direction[axis]);
+            if d == 0.0 {
+                missed |= o < lo[axis] || o > hi[axis];
+                continue;
+            }
+            let (a, b) = ((lo[axis] - o) / d, (hi[axis] - o) / d);
+            t_near = t_near.max(a.min(b));
+            t_far = t_far.min(a.max(b));
+        }
+        if !missed && t_near <= t_far && t_near > 0.0 {
+            nearest = nearest.min(t_near);
+        }
+    }
+    if nearest.is_finite() {
+        1.0 / (nearest * direction.abs().element_sum())
+    } else {
+        0.0
+    }
+}
+
+/// A horizontal quad at height `y`, wound to face up.
+fn up_quad(x0: f64, z0: f64, x1: f64, z1: f64, y: f64) -> Vec<glam::DVec3> {
+    use glam::DVec3;
+    vec![
+        DVec3::new(x0, y, z0),
+        DVec3::new(x0, y, z1),
+        DVec3::new(x1, y, z1),
+        DVec3::new(x1, y, z0),
+    ]
+}
+
+// One probe binding glossy floors at two heights, captured over the higher:
+// the overlay tests a lower-floor fragment's capture shadow from its true
+// position, so the low wall the capture point sees between them withholds
+// the term behind it, and the warning counts that floor as unseen: about a
+// third of the bound area is seen, and the probe warns. Water over the same
+// two planes keeps the fluid shader's test, read over the capture point's
+// plane, which looks over the wall: it sees nearly all and warns nothing.
+#[test]
+fn a_glossy_probe_over_two_heights_counts_the_lower_floor_a_blocker_hides() {
+    use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
+    use postretro_level_format::reflection_probes::{
+        REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1, ReflectionProbeLightShare, ReflectionProbeRecord,
+    };
+
+    use super::placement::{FaceGeometry, ReflectorFace, ReflectorSource};
+
+    let (box_min, box_max) = ([-3.0, 0.0, -3.0], [3.0, 3.0, 3.0]);
+    let section = ReflectionProbesSection {
+        tile_dimension: REFLECTION_PROBE_TILE_DIMENSION,
+        tile_border: REFLECTION_PROBE_TILE_BORDER,
+        atlas_format: IRRADIANCE_FORMAT_RGBA16F,
+        colour_mip_count: 1,
+        probes: vec![ReflectionProbeRecord {
+            source_entity: 7,
+            box_min,
+            box_max,
+            capture_point: PLATFORM_CAPTURE.to_array(),
+            layer: 0,
+            lights: [ReflectionProbeLightShare::UNUSED; 4],
+        }],
+        fluid_bindings: Vec::new(),
+        world_bindings: Vec::new(),
+        tiles: Vec::new(),
+        distance_format: REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
+        distances: tile_bytes_of(two_height_room_inverse_l1),
+    };
+    let probe = |fluid_faces: Vec<(u32, u32)>, world_faces: Vec<u32>| PlacedProbe {
+        source_entity: 7,
+        authored: true,
+        box_min,
+        box_max,
+        capture_point: PLATFORM_CAPTURE.to_array(),
+        facing: Facing::Up,
+        bound_area: 36.0,
+        fluid_faces,
+        world_faces,
+    };
+    let platform = up_quad(-3.0, -3.0, -1.0, 3.0, 0.5);
+    let lower = up_quad(-1.0, -3.0, 3.0, 3.0, 0.0);
+    let world_faces: Vec<ReflectorFace> = [&platform, &lower]
+        .into_iter()
+        .enumerate()
+        .map(|(face, points)| {
+            ReflectorFace::new(
+                ReflectorSource::World { face: face as u32 },
+                FaceGeometry::from_polygon(points).expect("a quad has area"),
+                Facing::Up,
+                points,
+            )
+        })
+        .collect();
+
+    let warning = "probe 0 of entity 7: its capture point";
+    let logs = LogCapture::start();
+    warn_hidden_reflectors(
+        &section,
+        &[probe(Vec::new(), vec![0, 1])],
+        &volumes(Vec::new()),
+        &world_faces,
+    );
+    logs.assert_logged_once(LogLevel::Warn, warning);
+    let message = logs
+        .records()
+        .into_iter()
+        .find(|r| r.message.contains(warning))
+        .unwrap()
+        .message;
+    assert!(
+        message.contains("of the glossy floor it binds"),
+        "{message}"
+    );
+    let percent: f64 = message
+        .split(" sees ")
+        .nth(1)
+        .and_then(|rest| rest.split('%').next())
+        .and_then(|n| n.parse().ok())
+        .expect("the warning names the fraction seen");
+    assert!((25.0..50.0).contains(&percent), "{message}");
+
+    logs.clear();
+    let to_array = |points: &[glam::DVec3]| -> Vec<[f32; 3]> {
+        points.iter().map(|p| p.as_vec3().to_array()).collect()
+    };
+    let pools = volumes(vec![fluid_volume(
+        5,
+        &[to_array(&platform[..]), to_array(&lower[..])],
+    )]);
+    warn_hidden_reflectors(
+        &section,
+        &[probe(vec![(0, 0), (0, 1)], Vec::new())],
+        &pools,
+        &[],
+    );
+    logs.assert_not_logged(LogLevel::Warn, warning);
 }

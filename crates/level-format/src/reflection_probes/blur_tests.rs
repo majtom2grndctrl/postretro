@@ -1,4 +1,4 @@
-// Exponent → mip function tests (acceptance row 23).
+// Exponent → mip function tests.
 // See: context/lib/testing_guide.md
 
 use super::*;
@@ -30,8 +30,8 @@ fn the_mip0_texel_angle_is_180_degrees_over_64() {
 }
 
 #[test]
-fn half_width_matches_the_brief_table() {
-    // research.md §Blur: n = 256 → 8.4°, 64 → 16.8°, 6 → 54°.
+fn half_width_matches_the_reference_table() {
+    // The lobe's half-width at half maximum: n = 256 → 8.4°, 64 → 16.8°, 6 → 54°.
     for (n, degrees) in [(256.0, 8.43), (64.0, 16.85), (6.0, 54.0)] {
         let theta = reflection_lobe_half_width(n).to_degrees();
         assert!((theta - degrees).abs() < 0.1, "n = {n}: {theta}°");
@@ -124,7 +124,7 @@ fn each_mips_prefilter_exponent_maps_back_to_that_mip() {
     assert!((reflection_probe_mip_exponent(ENGINE_MIPS - 1) - 2.0).abs() < 1e-3);
 }
 
-// Row 36 (probe half): the probe term's spread per exponent, the reference
+// The probe term's spread per exponent, the reference
 // the floor layer's blur is held to: the texel's own lobe between the
 // minimum blur and the last mip, the minimum blur's lobe at the cap.
 #[test]

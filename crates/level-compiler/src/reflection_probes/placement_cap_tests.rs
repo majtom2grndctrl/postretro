@@ -118,7 +118,7 @@ fn sources(probes: &[PlacedProbe]) -> Vec<(u32, bool, Vec<u32>)> {
 // Drop order
 // ---------------------------------------------------------------------------
 
-// Row 62 (P18): one probe past the cap drops exactly one probe, the one
+// One probe past the cap drops exactly one probe, the one
 // binding only world faces with the smallest bound area, whatever its order,
 // and the warning names its faces. At the cap, none drops and nothing warns.
 #[test]
@@ -151,7 +151,7 @@ fn one_probe_past_the_cap_drops_the_smallest_world_face_only_probe_naming_its_fa
     );
 }
 
-// Row 62 (P18): a water map pushed past the cap by glossy faces keeps every
+// A water map pushed past the cap by glossy faces keeps every
 // water probe, derived and authored, and drops world-face probes, authored
 // and derived, even one larger than every pool.
 #[test]
@@ -189,7 +189,7 @@ fn a_water_map_pushed_past_the_cap_by_glossy_faces_keeps_every_water_probe() {
     );
 }
 
-// Row 63 (P25): a water-only map past the cap drops the derived probes the
+// A water-only map past the cap drops the derived probes the
 // build before dropped (the smallest bound water, kept in fluid entity
 // order), and the warning names each dropped probe's faces.
 #[test]
@@ -232,7 +232,7 @@ fn a_water_only_map_past_the_cap_drops_as_before_and_names_each_dropped_probes_f
 // Authored boxes
 // ---------------------------------------------------------------------------
 
-// Row 66 (P19): authored boxes whose water-binding probes alone pass the cap
+// Authored boxes whose water-binding probes alone pass the cap
 // refuse the build, the error counting them and naming each box with the
 // probes it makes. Authored probes binding only world faces never refuse:
 // past the cap they drop first, the smallest bound area first, and the

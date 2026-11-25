@@ -134,6 +134,24 @@ mod tests {
         assert_ne!(facings.facing_of(DVec3::NEG_Y), Facing::Up);
     }
 
+    // The compiler's up-facing test is the runtime's: a face the compiler
+    // binds to an up-facing probe clamps its lookups to the horizon, and
+    // any other reads about its own normal, either side of 1°.
+    #[test]
+    fn up_facing_cosine_matches_the_runtime_hemisphere_axis() {
+        use postretro_render_cpu::fluid_surface::reflection_hemisphere::{
+            FLUID_REFLECTION_UP, REFLECTION_UP_FACING_MIN_COS, reflection_hemisphere_axis,
+        };
+        assert_eq!(UP_FACING_MIN_COS as f32, REFLECTION_UP_FACING_MIN_COS);
+        let mut facings = Facings::default();
+        for degrees in [0.0, 0.5, 0.99, 1.01, 2.0, 45.0] {
+            let (s, c) = f64::to_radians(degrees).sin_cos();
+            let normal = DVec3::new(s, c, 0.0);
+            let runtime_up = reflection_hemisphere_axis(normal.as_vec3()) == FLUID_REFLECTION_UP;
+            assert_eq!(facings.facing_of(normal).is_up(), runtime_up, "{degrees}°");
+        }
+    }
+
     #[test]
     fn up_measures_as_water_always_has_and_others_round_trip() {
         let p = DVec3::new(1.5, -2.25, 0.75);

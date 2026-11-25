@@ -43,7 +43,7 @@ pub fn reflection_probe_mip_half_width(mip: u32) -> f32 {
 /// texel reads, α₀·2^m(n). Between the minimum blur and the last mip it is
 /// the texel's own lobe θ(n); sharper texels read the minimum blur's, and
 /// rougher ones the last mip's. The floor screen-space layer's spread is
-/// held against it (acceptance row 36).
+/// held against it.
 pub fn reflection_probe_term_half_width(exponent: f32, colour_mip_count: u32) -> f32 {
     REFLECTION_PROBE_MIP0_TEXEL_ANGLE
         * reflection_probe_exponent_mip(exponent, colour_mip_count).exp2()

@@ -34,8 +34,8 @@ pub(crate) const SSR_COARSEST_STRIDE_DIVISOR: u32 = 180;
 /// [`SSR_COARSEST_STRIDE_DIVISOR`] for the glossy floor's screen-space layer:
 /// the smallest stride divisor among its tiers, which keys the thin rule of a
 /// probe binding a glossy floor. Its tiers start as water's steps and
-/// divisors (`plan.md` Delegated answers), so it equals water's until the
-/// owner retunes them; a test pins it to them.
+/// divisors, so it equals water's until a floor tier is retuned; a test pins
+/// it to them.
 pub(crate) const FLOOR_LAYER_COARSEST_STRIDE_DIVISOR: u32 = 180;
 /// The engine's default horizontal field of view. A copy: the binary's
 /// `camera::HFOV` (crates/postretro/src/camera.rs) is out of the compiler's
@@ -305,11 +305,12 @@ fn classify(
 }
 
 /// Whether the rule classifies `probe`'s brushes: when it faces up, binding
-/// water, a glossy floor or both, the faces that carry a screen-space layer.
-/// A probe binding walls, ceilings or slopes binds no such face, so it
-/// captures every static brush, a `Never` one too. Classification measures
-/// in the up-facing frame ([`WATER_REFLECTOR_NORMAL`]), and the leak guard's
-/// projection box ignores its floor below, which holds only for these.
+/// water, a glossy floor or both. The rule is a compile-time size rule keyed
+/// to facing alone (`context/lib/resource_management.md` §5.2, Runtime-blind):
+/// a probe binding walls, ceilings or slopes captures every static brush, a
+/// `Never` one too. Classification measures in the up-facing frame
+/// ([`WATER_REFLECTOR_NORMAL`]), and the leak guard's projection box ignores
+/// its floor below, which holds only for up-facing probes.
 pub(crate) fn classifies(probe: &PlacedProbe) -> bool {
     probe.facing.is_up()
 }

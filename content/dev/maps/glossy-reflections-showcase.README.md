@@ -55,8 +55,9 @@ Subjects, all standing on the floor:
 
 The twins stand 96 (columns) and 48 (pillars) units either side of the zone
 boundary x 320, at the same depth, so sharp and rough compare in one frame.
-The monument stands about 5.4 m from the south wall, the columns 7.7 m and
-the pillars 9.8 m, so blur growth with distance shows.
+Measured to their south faces, the monument's plinth stands about 5.0 m
+from the south wall, the columns 7.7 m and the pillars 10.0 m, so blur
+growth with distance shows.
 
 Lights: a white `light_area` band across the north wall (x 96–448, z
 112–136, `light` 40, `_glow` 2) and a vertical one on the east wall (y

@@ -209,7 +209,7 @@ fn shadowed(section: &ReflectionProbesSection, points: &[Vec3]) -> Vec<Vec3> {
         .collect()
 }
 
-// Gate row G1, compiler half: without the flag a glossy material changes
+// Without the flag a glossy material changes
 // nothing in id 54.
 #[test]
 fn without_the_gate_a_glossy_floor_bakes_id_54_as_a_matte_one_and_binds_no_world_face() {
@@ -234,7 +234,7 @@ fn without_the_gate_a_glossy_floor_bakes_id_54_as_a_matte_one_and_binds_no_world
     assert_eq!(section, None);
 }
 
-// Gate row G1: without the flag no sidecar is read, so an unreadable one
+// Without the flag no sidecar is read, so an unreadable one
 // warns nothing and no census logs; with it, both do.
 #[test]
 fn without_the_gate_no_sidecar_is_read_and_neither_warning_nor_census_logs() {
@@ -282,7 +282,7 @@ fn with_the_gate_a_glossy_floor_binds_one_derived_probe_lifted_2_mm_over_it() {
     assert!((Vec3::from(probe.box_max) - Vec3::new(3.0, 3.0, 3.0)).length() < 0.02);
 }
 
-// Row 10, floor half: the capture point sits 2 mm over the floor, so with the
+// On a floor the capture point sits 2 mm over it, so with the
 // floor in its capture every texel at the horizon reads it a few centimetres
 // away and the floor's own fragments fall in capture shadow.
 #[test]
@@ -301,7 +301,7 @@ fn a_glossy_floor_probe_places_no_fragment_of_its_own_floor_in_capture_shadow() 
     );
 }
 
-// Pin P2: a glossy inlay flush in a floor whose material does not reflect.
+// A glossy inlay flush in a floor whose material does not reflect.
 #[test]
 fn a_flush_glossy_inlay_in_a_matte_floor_reflects_over_its_whole_area() {
     let inlay = [-1.0, -1.0, 1.0, 1.0];
@@ -328,7 +328,7 @@ fn a_flush_glossy_inlay_in_a_matte_floor_reflects_over_its_whole_area() {
     );
 }
 
-// Pin P2: a matte strip crossing a glossy floor, coplanar with it. Both
+// A matte strip crossing a glossy floor, coplanar with it. Both
 // halves share one probe, so the strip lies between the capture point and
 // the far half; it is in the reflector's plane and casts no capture shadow.
 #[test]
@@ -368,7 +368,7 @@ fn a_coplanar_matte_strip_casts_no_capture_shadow_on_the_glossy_floor_beyond_it(
     assert!(dark.iter().all(|p| p.x > 0.25));
 }
 
-// Gate row G2: the flag keys the stage, even where placement is unchanged.
+// The flag keys the stage, even where placement is unchanged.
 #[test]
 fn toggling_the_glossy_gate_misses_the_stage_cache_and_an_unchanged_gate_hits() {
     let dir = tempfile::tempdir().unwrap();

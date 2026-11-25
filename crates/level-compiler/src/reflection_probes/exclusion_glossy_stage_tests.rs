@@ -177,14 +177,14 @@ fn floor_behind_the_monument(
     out
 }
 
-/// How many of `points` their probe's capture point sees, by the runtime's
+/// How many of `points` their probe's capture point sees, by the overlay's
 /// capture-shadow cutoff read from the stored distance tile.
 fn seen(section: &ReflectionProbesSection, points: &[(usize, Vec3)]) -> usize {
     points
         .iter()
         .filter(|&&(probe, point)| {
             let record = &section.probes[probe];
-            DistanceTile::decode(section, record.layer as usize).sees(
+            DistanceTile::decode(section, record.layer as usize).sees_glossy(
                 Vec3::from(record.capture_point),
                 point,
                 &Facing::Up,
@@ -197,7 +197,7 @@ fn seen(section: &ReflectionProbesSection, points: &[(usize, Vec3)]) -> usize {
 // The monument
 // ---------------------------------------------------------------------------
 
-// Row 17 (compiler half): a freestanding monument on a glossy floor, each of
+// A freestanding monument on a glossy floor, each of
 // its brushes under the exclusion threshold, leaves the floor's probe, so no
 // floor fragment behind it, seen from the capture point, loses its probe
 // term: the probe holds the room behind it, and the build warns of no
@@ -205,7 +205,7 @@ fn seen(section: &ReflectionProbesSection, points: &[(usize, Vec3)]) -> usize {
 // floor's centroid falls on it), so a fill rebuilding the floor under the
 // excluded plinth would withhold most of that floor.
 //
-// Row 12 (compiler half): set `always`, the probe keeps the monument, and
+// Set `always`, the probe keeps the monument, and
 // the floor behind it, seen from the capture point, is withheld.
 #[test]
 fn a_freestanding_monument_on_a_glossy_floor_withholds_no_floor_behind_it() {
@@ -316,7 +316,7 @@ fn a_ray_into_an_excluded_plinths_base_reads_behind_the_floor_not_a_fill() {
 // The floor stride and the cache key
 // ---------------------------------------------------------------------------
 
-// Row 15, key half: retuning the floor layer's coarsest stride re-keys a
+// Retuning the floor layer's coarsest stride re-keys a
 // level whose probe binds a glossy floor and leaves a water-only level's key
 // and capture byte-identical.
 #[test]

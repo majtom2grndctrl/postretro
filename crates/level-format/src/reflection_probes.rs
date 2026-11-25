@@ -107,7 +107,8 @@ pub struct ReflectionProbesSection {
     /// Colour mips per probe, at least 1; every mip whole 4×4 blocks. The
     /// compiler writes mip 0 alone for a section binding only fluid faces
     /// (water reads mip 0), and the full chain to 4², each mip prefiltered by
-    /// its lobe (`blur`), when any world face binds.
+    /// its lobe over the probe's facing hemisphere (`blur`), when any world
+    /// face binds.
     pub colour_mip_count: u32,
     /// Authored probes in map entity order, then derived water probes in
     /// fluid entity order, then derived glossy world-face probes.
@@ -128,8 +129,10 @@ pub struct ReflectionProbesSection {
 /// One probe. Reflector-agnostic: nothing here is water-specific.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ReflectionProbeRecord {
-    /// The authored `reflection_volume` brush, or the fluid entity of a
-    /// derived probe; for diagnostics.
+    /// The authored `reflection_volume` brush, the fluid entity of a derived
+    /// water probe, or 0 (worldspawn, the compiler's `WORLD_SOURCE_ENTITY`)
+    /// for a derived world probe, whose faces belong to no one entity; for
+    /// diagnostics.
     pub source_entity: u32,
     /// Projection box in engine space (Y-up, meters).
     pub box_min: [f32; 3],

@@ -1,5 +1,5 @@
-// Colour mip prefilter tests: spread per mip (row 24), per-mip borders (row 25), the probe's hemisphere alone, the chain's layout and mip 0's bytes.
-// See: context/lib/testing_guide.md · context/plans/in-progress/glossy-world-reflections/index.md §Acceptance (Shading)
+// Colour mip prefilter tests: spread per mip, per-mip borders, the probe's hemisphere alone, the chain's layout and mip 0's bytes.
+// See: context/lib/resource_management.md §5.4 (Colour mips) · testing_guide.md
 
 use super::*;
 use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
@@ -131,7 +131,7 @@ fn texel_solid_angles_cover_the_sphere_at_every_mip() {
     }
 }
 
-// Row 24: a one-texel bright source, prefiltered, spreads at each colour mip
+// A one-texel bright source, prefiltered, spreads at each colour mip
 // to the reflected-direction half-width of the exponent that maps to that
 // mip, within one texel of that mip (α₀·2^m). The half-maximum contour lies
 // between θ − α and θ + α: every texel at half the peak or more lies within
@@ -184,7 +184,7 @@ fn a_one_texel_source_spreads_to_each_mips_mapped_half_width() {
                 }
             }
             eprintln!(
-                "[Task7 row 24] source ({sx},{sy}) mip {mip}: θ {:.2}°, half-max set reaches \
+                "[prefilter spread] source ({sx},{sy}) mip {mip}: θ {:.2}°, half-max set reaches \
                  {:.2}°, first dim texel {:.2}°, texel {:.2}°",
                 theta.to_degrees(),
                 widest_bright.to_degrees(),
@@ -347,7 +347,7 @@ fn wrapped_source(x: u32, y: u32, dimension: u32) -> [u32; 2] {
     [source.0 as u32, source.1 as u32]
 }
 
-// Row 25: at every colour mip past 0 (mip 0's border is the capture's own,
+// At every colour mip past 0 (mip 0's border is the capture's own,
 // `capture::tests`), each tile border copies its wrapped interior, and the
 // stored chain is exactly those bordered tiles, BC6H-encoded mip by mip.
 #[test]

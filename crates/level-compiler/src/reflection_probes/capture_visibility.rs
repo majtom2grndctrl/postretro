@@ -18,6 +18,12 @@ const MIN_SEEN_FRACTION: f64 = 0.5;
 /// the margin and beside the shadow's edge); water at or past it draws none.
 /// A parity test pins it to render-cpu's `FLUID_REFLECTION_SHADOW_MARGIN`.
 pub(crate) const CAPTURE_SHADOW_MARGIN: f32 = 0.05;
+/// δ: how far behind the capture point's plane, along the probe's facing
+/// normal, a glossy fragment still tests its capture shadow at that plane
+/// alone (m). Deeper, on a farther bound plane, the overlay also tests it
+/// from its true position. A parity test pins it to render-cpu's
+/// `FLUID_REFLECTION_SHADOW_PLANE_DEPTH`.
+pub(crate) const CAPTURE_SHADOW_PLANE_DEPTH: f32 = 0.004;
 /// Each fan triangle of a bound face splits into `SUBDIVISIONS²` equal
 /// sub-triangles, one sample at each centroid: 128 samples on a quad.
 const SUBDIVISIONS: u32 = 8;
@@ -29,10 +35,12 @@ const AT_CAPTURE_POINT_M: f32 = 1.0e-6;
 /// binds: its water, or its glossy world faces among `world_faces` (the
 /// placed world faces, in id-17 order).
 ///
-/// "Sees" is [`DistanceTile::sees`], the runtime's capture-shadow cutoff read
-/// from the stored distance tile, so the seen water matches the water the
-/// fluid shader draws a probe term on (faded within κ of the cutoff), and
-/// the warning predicts the dark water. It traces no rays (a direct C-to-P
+/// "Sees" is the runtime's capture-shadow cutoff read from the stored
+/// distance tile: [`DistanceTile::sees`] for water, as the fluid shader
+/// tests it, and [`DistanceTile::sees_glossy`] for glossy faces, as the
+/// overlay tests them. So the seen surface matches the surface that draws a
+/// probe term (faded within κ of the cutoff), and the warning predicts the
+/// dark surface. It traces no rays (a direct C-to-P
 /// visibility test would cost a BVH query per sample and could disagree
 /// with what the shader reads), and it runs from the section alone, so a
 /// warm build warns as a cold one does. Samples sit at fixed points of each
@@ -116,10 +124,16 @@ fn seen_fraction(tile: &DistanceTile, probe: &PlacedProbe, faces: &[ReflectorFac
         };
         let face = &faces[at];
         let height = face.plane_height();
+        let glossy = matches!(source, ReflectorSource::World { .. });
         face_samples(&face.outline, |point, area| {
             total += area;
             let surface = face.facing.lift(point, height).as_vec3();
-            if tile.sees(capture, surface, &probe.facing) {
+            let sees = if glossy {
+                tile.sees_glossy(capture, surface, &probe.facing)
+            } else {
+                tile.sees(capture, surface, &probe.facing)
+            };
+            if sees {
                 seen += area;
             }
         });
@@ -218,6 +232,35 @@ impl DistanceTile {
         };
         let l1 = level.abs().element_sum();
         l1 < AT_CAPTURE_POINT_M || l1 * self.sample(level) < 1.0 + CAPTURE_SHADOW_MARGIN
+    }
+
+    /// Whether the glossy overlay draws a probe term at `point`, a glossy
+    /// world face's fragment. Within [`CAPTURE_SHADOW_PLANE_DEPTH`] of the
+    /// capture point's plane it tests as [`Self::sees`] does. Deeper, on a
+    /// farther bound plane (a lower floor sharing the probe), it reads `h`
+    /// twice: from its true position lifted by δ, which the full-sphere tile
+    /// holds, and over the capture point's plane; the larger must stay under
+    /// κ. So an object the capture point saw between it and the fragment
+    /// withholds the term there, as the overlay's search does.
+    pub(crate) fn sees_glossy(&self, capture: Vec3, point: Vec3, facing: &Facing) -> bool {
+        let axis = facing.normal().as_vec3();
+        let offset = point - capture;
+        let along = offset.dot(axis);
+        let h = |level: Vec3| {
+            let l1 = level.abs().element_sum();
+            if l1 < AT_CAPTURE_POINT_M {
+                -1.0
+            } else {
+                l1 * self.sample(level) - 1.0
+            }
+        };
+        let h_shadow = h(offset - axis * along.clamp(-CAPTURE_SHADOW_PLANE_DEPTH, 0.0));
+        let h_depth = if along < -CAPTURE_SHADOW_PLANE_DEPTH {
+            h_shadow.max(h(offset - axis * along.min(0.0)))
+        } else {
+            h_shadow
+        };
+        h_depth < CAPTURE_SHADOW_MARGIN
     }
 }
 

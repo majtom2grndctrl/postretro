@@ -6,9 +6,10 @@ each a diffuse plus any slot siblings. The first five cover per-texel
 sharpness and tint; of them, the last two cover `_p` on a prefix with no
 Surface Depth tuning, and `_p`, `_t` and `_h` together. The map that shows
 them is `content/dev/maps/specular-texel-sharpness.map`. The next four
-art-direct glossy world reflections through `_p` and `_s` alone, in the
-side rooms of `content/dev/maps/glossy-reflections-test.map`. The last three
-dress `content/dev/maps/glossy-reflections-showcase.map`: a sharp and a rough
+art-direct glossy world reflections through `_p` and `_s` alone, with `_t`
+0 on each that reflects, in the side rooms of
+`content/dev/maps/glossy-reflections-test.map`. The last three dress
+`content/dev/maps/glossy-reflections-showcase.map`: a sharp and a rough
 tinted floor that reflect strongly, and a matte striped subject. Exponents
 below are n = 2 / r^4 - 2 at r = 1 - p / 255; a texel reflects only where
 n > 8 and `_s` > 0, at a weight fading in over n 8-16 (bytes 85-107).

@@ -1,4 +1,4 @@
-//! Water parity A/B for glossy world reflections (row 1): on every water map in `content/dev`,
+//! Water parity A/B for glossy world reflections: on every water map in `content/dev`,
 //! each probe that binds no world face places and captures exactly as the build before the
 //! glossy-world-reflections branch did.
 //!
@@ -85,7 +85,7 @@ fn id54(prl: &Path) -> Option<Vec<u8>> {
     read_section_data(&mut reader, &meta, SectionId::ReflectionProbes as u32).expect("id 54")
 }
 
-/// One probe, renumbering-free: everything row 1 compares.
+/// One probe, renumbering-free: everything the parity compares.
 #[derive(Debug, PartialEq)]
 struct ProbeView {
     source_entity: u32,

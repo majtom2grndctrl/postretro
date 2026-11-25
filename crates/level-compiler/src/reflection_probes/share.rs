@@ -419,7 +419,7 @@ mod tests {
         assert_eq!(shares.report.covered, 1.0);
     }
 
-    // Row 19: a ceiling's probe reads the lower hemisphere, so light below
+    // A ceiling's probe reads the lower hemisphere, so light below
     // it takes a share on −Y and nothing above it reaches +Y.
     #[test]
     fn a_ceilings_shares_cover_its_lower_hemisphere_alone() {

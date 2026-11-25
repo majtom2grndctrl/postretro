@@ -148,6 +148,9 @@ impl Renderer {
             super::renderer_resources::rebuild_level_extent_groups(device, full, &mut level, scene);
             full.level = Some(level);
         }
+        // The active set's glossy targets follow the new extent at the kept
+        // tier, each built once.
+        self.sync_glossy_target();
         // After fluid group 5 holds the new scene depth: the planar layer, its
         // group 5 and the mirror targets follow it at the new extent.
         self.rebuild_planar_layer();

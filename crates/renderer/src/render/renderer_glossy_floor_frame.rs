@@ -3,6 +3,7 @@
 // after the coplanar-mover guard and before the overlay.
 // See: context/lib/rendering_pipeline.md §7.3a (Glossy world faces, Floors)
 
+use super::cpu_stages::RenderStage;
 use super::glossy_floor::GLOSSY_FLOOR_MATERIAL_GROUP;
 use super::*;
 use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
@@ -59,6 +60,7 @@ impl Renderer {
         let Some(targets) = self.glossy_floor_targets().filter(|_| floor_layer) else {
             return;
         };
+        let _chain_scope = self.cpu_frame.scope(RenderStage::GlossySceneColourChain);
         let full = self.full();
         // Encoder-level timestamps: the chain is one pass per level.
         if let Some(timing) = &full.frame_timing {
@@ -91,6 +93,7 @@ impl Renderer {
         else {
             return;
         };
+        let _march_scope = self.cpu_frame.scope(RenderStage::GlossyFloorMarch);
         let timestamps = full
             .frame_timing
             .as_ref()

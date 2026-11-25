@@ -3,7 +3,10 @@
 // D_static lifecycle.
 // See: context/lib/rendering_pipeline.md §7.3a (Glossy world faces)
 
-use super::glossy_overlay::{GLOSSY_OVERLAY_MATERIAL_GROUP, glossy_overlay_draws};
+use super::cpu_stages::RenderStage;
+use super::glossy_overlay::{
+    GLOSSY_OVERLAY_MATERIAL_GROUP, GlossyMoverGuard, glossy_overlay_draws,
+};
 use super::*;
 use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
 
@@ -59,10 +62,16 @@ impl Renderer {
         else {
             return;
         };
+        // Past every gate: a frame that records no overlay reports the stage
+        // absent. The guard, chain and march nest inside it.
+        let _overlay_scope = self.cpu_frame.scope(RenderStage::GlossyOverlay);
         // The coplanar-mover guard: this frame's movers mark D_static, which
         // forward cleared and wrote this frame, so a mover face coplanar with
-        // a glossy face takes no term (pins P15, P23).
-        if let Some(static_diffuse) = glossy.static_diffuse_view() {
+        // a glossy face takes no term.
+        if let Some(static_diffuse) = glossy.static_diffuse_view()
+            && GlossyMoverGuard::records(&full.kinematic_brush, &level.kinematic)
+        {
+            let _guard_scope = self.cpu_frame.scope(RenderStage::GlossyMoverGuard);
             full.glossy_overlay.guard().record(
                 encoder,
                 static_diffuse,
@@ -70,6 +79,7 @@ impl Renderer {
                 &full.uniform_bind_group,
                 &full.kinematic_brush,
                 &level.kinematic,
+                full.frame_timing.as_ref(),
             );
         }
         // The chain reads the highlight-free colour every opaque pass wrote,
@@ -127,9 +137,12 @@ impl Renderer {
         );
     }
 
-    /// Bring the active level's D_static target in line with the kept
-    /// reflection tier at the current scene extent: allocated above off,
-    /// released at off. Compiles nothing.
+    /// Bring the active set's glossy targets, D_static and the floor layer's,
+    /// in line with the kept reflection tier at the current scene extent: at
+    /// publish, on a tier change and on a scene resize. D_static allocated
+    /// above off, released at off; the floor targets at the floor tiers on a
+    /// level with an up-facing bound face. A resident set holds none.
+    /// Compiles nothing.
     pub(super) fn sync_glossy_target(&mut self) {
         let quality = self.reflection_quality;
         let extent = self.scene_extent();
@@ -139,7 +152,7 @@ impl Renderer {
         };
         let layout = full.glossy_overlay.level_layout();
         if let Some(glossy) = full.level.as_mut().and_then(|level| level.glossy.as_mut()) {
-            layout.sync_target(device, glossy, quality, extent);
+            layout.sync_targets(device, glossy, quality, extent);
         }
     }
 }

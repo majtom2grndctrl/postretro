@@ -31,6 +31,17 @@ pub struct LevelGeometryLightmapStreaming {
     pub pool_sizing: StreamedPoolSizing,
 }
 
+/// Id 54 as the install stamps the glossy world probe stream from it: the
+/// section, and Geometry (id 17)'s face count, which its world bindings
+/// index.
+#[derive(Clone, Copy)]
+pub struct LevelReflectionProbes<'a> {
+    pub section: &'a postretro_level_format::reflection_probes::ReflectionProbesSection,
+    /// Id 17's face count: a stream whose BVH leaves fall short of it, or a
+    /// binding past it, is refused whole.
+    pub geometry_face_count: usize,
+}
+
 pub struct LevelGeometry<'a> {
     pub vertices: &'a [postretro_render_data::geometry::WorldVertex],
     /// One owner entry per vertex: its face's id-42 owners and the offset
@@ -47,8 +58,7 @@ pub struct LevelGeometry<'a> {
     /// Id 54, whose world binding list stamps the glossy overlay's
     /// per-vertex probe index stream at install. `None` for a level without
     /// probes; a section binding no world face builds no stream.
-    pub reflection_probes:
-        Option<&'a postretro_level_format::reflection_probes::ReflectionProbesSection>,
+    pub reflection_probes: Option<LevelReflectionProbes<'a>>,
     /// Id 60's volumes, whose no-script glow seeds the volume table at
     /// install; the frame's volume bridge owns every later write.
     pub emissive_volumes: &'a [postretro_level_format::emissive::EmissiveVolumeRecord],

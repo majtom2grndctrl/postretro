@@ -3,7 +3,9 @@
 // See: context/lib/rendering_pipeline.md §7.3a (Glossy world faces)
 
 use crate::render::DEPTH_FORMAT;
+use crate::render::frame_timing::FrameTiming;
 use crate::render::kinematic_brush::{KinematicBrushPass, KinematicLevelState};
+use crate::render::pipeline_layout::TIMING_PAIR_GLOSSY_MOVER_GUARD;
 
 /// The guard's fragment: alpha 1, written through an alpha-only mask so the
 /// static diffuse forward wrote in RGB stays as it is.
@@ -64,10 +66,18 @@ impl GlossyMoverGuard {
         }
     }
 
+    /// Whether this frame records the guard: a main-view mover draws. The
+    /// caller asks before it opens the guard's CPU stage, so a frame with no
+    /// guard reports the stage absent.
+    pub(crate) fn records(movers: &KinematicBrushPass, level: &KinematicLevelState) -> bool {
+        movers.has_draws(level)
+    }
+
     /// Mark this frame's main-view movers in `static_diffuse`, after forward
     /// wrote it and before the overlay reads it, on a frame the overlay draws
-    /// and a mover draws. Its own pass: D_static loaded and stored, scene
-    /// depth read-only.
+    /// and [`Self::records`] holds. Its own pass, timed as its own pair:
+    /// D_static loaded and stored, scene depth read-only.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn record(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -76,8 +86,9 @@ impl GlossyMoverGuard {
         camera: &wgpu::BindGroup,
         movers: &KinematicBrushPass,
         level: &KinematicLevelState,
+        timing: Option<&FrameTiming>,
     ) {
-        if !movers.has_draws(level) {
+        if !Self::records(movers, level) {
             return;
         }
         #[cfg(test)]
@@ -98,7 +109,8 @@ impl GlossyMoverGuard {
                 depth_ops: None,
                 stencil_ops: None,
             }),
-            timestamp_writes: None,
+            timestamp_writes: timing
+                .map(|timing| timing.render_pass_writes(TIMING_PAIR_GLOSSY_MOVER_GUARD)),
             ..Default::default()
         });
         pass.set_bind_group(0, camera, &[]);

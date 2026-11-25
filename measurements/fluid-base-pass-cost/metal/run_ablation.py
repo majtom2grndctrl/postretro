@@ -11,8 +11,8 @@ usage: python3 measurements/fluid-base-pass-cost/metal/run_ablation.py --arms a,
   --rounds N   interleaved rounds (default 2: forward, then reversed)
   --warmup N / --samples N   capture frames (default 120 / 120)
   --tag T      results file suffix (results-<T>.{json,md})
-  --report glossy   overlay / sums / floor chain / floor march / forward / frame / overlap
-                    table (glossy-world-reflections)
+  --report glossy   overlay / sums / floor chain / floor march / mover guard / forward /
+                    frame / overlap table (glossy-world-reflections)
   --abort-invalid   stop at the first invalid run (pilot)
   --min-free-gb N   stop before a run when / has less free space (default 16)
 env: CELL_BIN (engine binary, must be named postretro), CELL_BIN_BEFORE /
@@ -223,6 +223,7 @@ def main():
                 print(f"  busy clock {busy_clock_text(r)}", flush=True)
                 print(f"  overlay {kit.fmt(r.get('glossy_ms'), 3)} sums {kit.fmt(r.get('sums_any_ms'), 3)} "
                       f"chain {kit.fmt(r.get('chain_ms'), 3)} march {kit.fmt(r.get('march_ms'), 3)} "
+                      f"guard {kit.fmt(r.get('guard_ms'), 3)} "
                       f"mover {kit.fmt(r.get('mover_ms'), 3)} "
                       f"fluid {kit.fmt(r.get('fluid_ms'), 3)} forward {kit.fmt(r.get('forward_ms'), 3)} "
                       f"frame {kit.fmt(r.get('gpu_frame_ms_complete'), 3)} clock {kit.clock_text(r)} "
@@ -252,6 +253,7 @@ def add_glossy_figures(r):
     r["sums_any_ms"] = get(gpu_time.PROBE_SUMS_LABEL) + get(gpu_time.SUMS_LABEL)
     r["chain_ms"] = get(gpu_time.FLOOR_CHAIN_LABEL)
     r["march_ms"] = get(gpu_time.FLOOR_MARCH_LABEL)
+    r["guard_ms"] = get(gpu_time.GUARD_LABEL)
     r["mover_ms"] = get(MOVER_LABEL)
     r["pass_sum_ms"] = round(sum(p["per_frame_ms"] for p in passes.values()), 4)
     frame = complete.get("gpu_frame_ms_complete")
@@ -274,11 +276,12 @@ def summarize_glossy(records, tag):
           "Per complete frame (gpu_time.py), mean over valid runs; spread = max - min across runs. "
           "frame = union of every labelled interval; pass sum = sum of every labelled pass's mean; "
           "overlap = pass sum - frame; chain = every Glossy Floor Chain Level pass in the frame, summed; "
-          "march = Glossy Floor March Pass; mover = Kinematic Brush Pass. Clock = median core clock (min-max) over the run's busy "
+          "march = Glossy Floor March Pass; guard = Glossy Mover Guard Pass; mover = Kinematic Brush Pass. "
+          "Clock = median core clock (min-max) over the run's busy "
           "samples (GPU activity >= 50%), with their count, per run.", "",
-          "| arm | valid | overlay ms | spread | sums ms | chain ms | march ms | mover ms | spread | "
+          "| arm | valid | overlay ms | spread | sums ms | chain ms | march ms | guard ms | mover ms | spread | "
           "forward ms | spread | GPU frame ms | spread | pass sum ms | overlap ms | clocks |",
-          "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+          "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for name, rs in by.items():
         good = [r for r in rs if r["valid"] and r.get("forward_ms") is not None]
         col = lambda k: [r[k] for r in good if r.get(k) is not None]
@@ -287,6 +290,7 @@ def summarize_glossy(records, tag):
                "sums_ms": mean(col("sums_any_ms")),
                "chain_ms": mean(col("chain_ms")), "chain_spread": spread(col("chain_ms")),
                "march_ms": mean(col("march_ms")), "march_spread": spread(col("march_ms")),
+               "guard_ms": mean(col("guard_ms")),
                "mover_ms": mean(col("mover_ms")), "mover_spread": spread(col("mover_ms")),
                "forward_ms": mean(col("forward_ms")), "forward_spread": spread(col("forward_ms")),
                "gpu_frame_ms": mean(col("gpu_frame_ms_complete")),
@@ -297,6 +301,7 @@ def summarize_glossy(records, tag):
         f = kit.fmt
         md.append(f"| {name} | {len(good)}/{len(rs)} | {f(row['glossy_ms'], 3)} | {f(row['glossy_spread'], 3)} | "
                   f"{f(row['sums_ms'], 3)} | {f(row['chain_ms'], 3)} | {f(row['march_ms'], 3)} | "
+                  f"{f(row['guard_ms'], 3)} | "
                   f"{f(row['mover_ms'], 3)} | {f(row['mover_spread'], 3)} | "
                   f"{f(row['forward_ms'], 3)} | {f(row['forward_spread'], 3)} | "
                   f"{f(row['gpu_frame_ms'], 3)} | {f(row['frame_spread'], 3)} | {f(row['pass_sum_ms'], 3)} | "

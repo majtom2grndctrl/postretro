@@ -398,9 +398,9 @@ pub use renderer_types::{
     CaptureGpuTimingState, CaptureGpuTimingWindow, CapturePromotionPin, CapturePromotionRow,
     CellOverlayState, ClearColor, DEFAULT_AMBIENT_FLOOR, DEFAULT_DYNAMIC_DIRECT_SCALE,
     DEFAULT_INDIRECT_SCALE, GpuTimingSupport, LevelGeometry, LevelGeometryLightmapStreaming,
-    LevelGeometryShStorage, LocatorDiagnostics, PortalOverlayState, PresentChoice, PresentHandle,
-    RUNTIME_DYNAMIC_LIGHT_RESERVE, Renderer, SPLASH_CLEAR_COLOR, SpatialCellSetDiagnostics,
-    SpatialDiagnostics, WorldWireframeMode,
+    LevelGeometryShStorage, LevelReflectionProbes, LocatorDiagnostics, PortalOverlayState,
+    PresentChoice, PresentHandle, RUNTIME_DYNAMIC_LIGHT_RESERVE, Renderer, SPLASH_CLEAR_COLOR,
+    SpatialCellSetDiagnostics, SpatialDiagnostics, WorldWireframeMode,
 };
 pub(crate) use renderer_types::{GpuTexture, POST_RETRO_ANISO_CLAMP};
 pub use rigid_occluder_depth::MoverOccluderAabb;

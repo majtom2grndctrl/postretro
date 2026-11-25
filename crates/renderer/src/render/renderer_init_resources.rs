@@ -488,6 +488,7 @@ fn timing_pass_labels() -> Vec<&'static str> {
     pass_labels[TIMING_PAIR_GLOSSY_OVERLAY] = "glossy_overlay";
     pass_labels[TIMING_PAIR_GLOSSY_SCENE_COLOUR_CHAIN] = "glossy_scene_colour_chain";
     pass_labels[TIMING_PAIR_GLOSSY_FLOOR_MARCH] = "glossy_floor_march";
+    pass_labels[TIMING_PAIR_GLOSSY_MOVER_GUARD] = "glossy_mover_guard";
     pass_labels
 }
 

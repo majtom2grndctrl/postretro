@@ -8,7 +8,7 @@ Developer-raised, from the cell-rate spike and the `fluid-base-pass-cost` landin
 ## Decisions
 - **Shape not yet chosen (owner, 2026-11-22).** The texture-space cell pool below is the drafted shape, and a screen-space probe-term target is its rival (Path). The shape measurements in Open questions choose between them, or park the work. The Decisions below are refined after that, and the brief re-runs `/validate-plan`.
 - **Scope: pixel style's probe term.** The reflection-free variant keeps today's cost and image. Smooth style stays per fragment (`rendering_pipeline.md` §7.3a Style).
-- **Reads the sibling's live-lighting sums.** The cell pass evaluates the ratio from `reflection-probe-fluid-pass-performance`'s per-probe sums and evaluates no stored light.
+- **Reads the level's live-lighting sums.** The cell pass evaluates the ratio from the per-probe sums `reflection-probe-fluid-pass-performance` landed, level-owned since `glossy-world-reflections` and read by the glossy overlay too (`rendering_pipeline.md` §7.3a Per-probe sums), and evaluates no stored light.
 - **No early-out.** It removes visible reflections of lit walls at mixed views and buys under 1 ms at Auto on the 5300M's built-in display, except for a pool filling the frame seen straight down (`research.md` §Early-out).
 - **Cell path for pixel style.**
   - Why it ships: it matches per-fragment within the parity bound, except in cells the per-fragment path itself splits. Its saving grows with resolution and texel size (`research.md` §Yardstick).
@@ -34,7 +34,8 @@ Developer-raised, from the cell-rate spike and the `fluid-base-pass-cost` landin
 - **No split draw here, despite the 1660 perf floor (§10).** It needs a per-backend switch or a measured gate (`research.md` §The 1660 floor), so it is a follow-up brief. This brief records the 1660 cost that shows whether the read penalty survives the base-pass landing (Manual).
 - **Non-goals:**
   - Live lighting: `reflection-probe-fluid-pass-performance`.
-  - Probe blending and streaming: `reflection-probe-seams` and `reflection-probe-streaming` (drafts on branch `claude/probe-streaming-brief-364a5e`).
+  - Probe streaming: `reflection-probe-streaming` (draft). Probe blending: none; `reflection-probe-seams` is retired (`roadmap.md`).
+  - Glossy world faces' probe term, and pixel-style water's coarse-cell screen-space defect (`research.md` §Findings from glossy-world-reflections).
   - The SSR layer's target and its composite with the probe term: `fluid-ssr-reflections`.
   - Any author or player surface: both paths match within parity, so there is nothing to choose.
 
@@ -95,7 +96,7 @@ Orderings cite `research.md` §Pins.
 
 ## Path
 - **Order:** the cell path, then the hidden-cell skip. Measure on the 5300M after each. Capture needs switches for the cell path and the skip, a forced cell path, pool and face-record caps, poison pre-fills, and a prior frame at another pose, time or style.
-- **Cell pass:** reuse the fragment's search, fade, tap and Fresnel functions, with the ratio read from the sums. Write reflection colour and weight; keep the proximity band per fragment. Estimate pixels per cell from projected face area over cell count. Pack nearest first and skip a per-cell frustum cull (`research.md` §Cell storage sizing, §What the spikes rule out).
+- **Cell pass:** reuse the fragment's search, fade, tap and Fresnel functions, with the ratio read from the sums. That is water's own up-only search and five-lobe ratio, not the overlay's axis form; sharing that form and the six-lobe ratio cost water's entry 7 VGPRs (`research.md` §Findings from glossy-world-reflections). Write reflection colour and weight; keep the proximity band per fragment. Estimate pixels per cell from projected face area over cell count. Pack nearest first and skip a per-cell frustum cull (`research.md` §Cell storage sizing, §What the spikes rule out).
 - **Hidden-cell test:** a cell's footprint can straddle a wall's edge, so test it conservatively (its corners, or the farthest depth over it), never the centre alone. A single cell cannot fall back per fragment: the cell entry carries no search globals.
 - **Precedents:**
   - `claude/cell-rate-spike-1660`: `fluid_reflection_cells.rs` and `fluid_reflection_cells.wgsl`. The 5300M branch (`claude/cell-rate-spike`), with the render-cpu affine fit and shelf pack, is gone from origin.
@@ -103,7 +104,6 @@ Orderings cite `research.md` §Pins.
   - `fluid-ssr-reflections` (landed): a 1×1 placeholder bound at full init, with group 5 rebuilt only at its lifecycle points.
 - **Face records:** pool origins change every frame, so they cannot ride an install-time vertex buffer as the spike's did. Prefer a uniform table keyed by a face index on the vertex stream; its capacity is the face-record bound. The base-pass grid adds vertices per face, not faces, so a face-keyed table is unaffected.
 - **Rival shape: a screen-space probe-term target** at a fraction of the scene extent, in its own pass, read nearest at each cell centre's screen projection. This is how pixel style already reads the SSR target. It needs no pool, packing, face records or hidden-cell test, since raster depth rejects hidden water, and it stays outside the texture-space filings that gate the cell pool. It falls back per fragment where cells shrink toward a target pixel, a band the cell path still covers (`research.md` §Screen-space rival). The probe term cannot share the SSR pass, whose IP rules bar probe resources.
-- **Seams:** `reflection-probe-seams` puts nearby probes on the vertex stage, which a compute cell pass lacks. Whichever lands second gives the cell pass a compute-readable source for them.
 - **Large files:** `renderer_render_frame.rs` and `fluid_surface.rs` are past `development_guide.md` §2.1's split line. Split before extending.
 
 ## Open questions

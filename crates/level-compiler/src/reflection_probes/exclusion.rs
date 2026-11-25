@@ -164,7 +164,8 @@ impl ExclusionConstants {
     }
 }
 
-/// The screen-space layers that draw what an up-facing probe excludes.
+/// The screen-space layers over an up-facing probe's bound faces; the
+/// coarsest of their strides sets its thin rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScreenSpaceLayers {
     /// Water's layer alone: the probe binds water and no glossy floor.
@@ -304,8 +305,8 @@ fn classify(
 }
 
 /// Whether the rule classifies `probe`'s brushes: when it faces up, binding
-/// water, a glossy floor or both, whose screen-space layers draw what it
-/// drops. A probe binding walls, ceilings or slopes has no such layer, so it
+/// water, a glossy floor or both, the faces that carry a screen-space layer.
+/// A probe binding walls, ceilings or slopes binds no such face, so it
 /// captures every static brush, a `Never` one too. Classification measures
 /// in the up-facing frame ([`WATER_REFLECTOR_NORMAL`]), and the leak guard's
 /// projection box ignores its floor below, which holds only for these.

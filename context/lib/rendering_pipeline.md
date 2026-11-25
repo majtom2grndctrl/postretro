@@ -859,8 +859,8 @@ Glossy world faces follow the same tier, the player's lever on their cost: Off d
 - **IP rules.** Standing constraints; changing one needs owner IP review.
   - Probe binding is hard and per face; no lookup-direction value picks the probe or the axis. The capture shadow is withheld, never filled from SH, a lightmap, screen space or another probe.
   - The probe term and the screen-space term stay separate quantities. The floor pass binds no probe colour, distance array or sums and reaches no capture-shadow function; no target it reads or writes holds the probe term; F·c·X is the same at every s.
-  - The floor blur's width, level and weights read the texel's exponent, the minimum blur and the hit distance alone, never s, the distance tile, a capture-shadow flag or probe colour. It never widens, renormalises or fills where the probe term is withheld.
-  - The blurred colour is read at the fragment's own screen position (smooth) or its texel centre's projection (pixel), with no normal- or noise-driven offset. The filter is isotropic: no weight from a neighbour's exponent or normal.
+  - The floor blur's width, level and weights read the texel's exponent, the minimum blur, the hit distance, the hit's view depth (a position) and the projection constants alone, never s, the distance tile, a capture-shadow flag or probe colour. It never widens, renormalises or fills where the probe term is withheld.
+  - The floor layer's target is read at the fragment's own screen position (smooth) or its texel centre's projection (pixel), with no normal- or noise-driven offset; the march's hit follows the reflection law, as water's does. The filter is isotropic: no weight from a neighbour's exponent or normal.
   - The exponent sets blur alone, never ray count, stride or step budget. The march keeps water's rules (Screen-space layer, IP rules).
   - No history and no precomputed intersection: every target the overlay and the floor layer read is this frame's.
 

@@ -1,6 +1,9 @@
 // Fluid reflection distance search: box projection corrected against the
-// probe's stored per-texel distance. GPU-free CPU reference for
-// `fluid_reflection.wgsl`'s search, which mirrors it and a test pins.
+// probe's stored per-texel distance. Water's search: every tap and the lookup
+// clamp to the horizon, as up-facing water's probes read. GPU-free CPU
+// reference for `fluid_reflection.wgsl`'s search, which mirrors it and a test
+// pins. A glossy face of any facing searches about its own hemisphere axis
+// (`reflection_search_about`), which about +Y returns this search bit for bit.
 // See: context/lib/rendering_pipeline.md §7.3a (Reflection) · resource_management.md §5
 
 use glam::{Vec2, Vec3};
@@ -107,7 +110,7 @@ pub fn reflection_search_h(
 }
 
 /// GLSL `smoothstep`.
-fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+pub(super) fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
@@ -369,3 +372,7 @@ mod fixtures;
 #[cfg(test)]
 #[path = "reflection_search_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "reflection_search_up_tests.rs"]
+mod up_tests;

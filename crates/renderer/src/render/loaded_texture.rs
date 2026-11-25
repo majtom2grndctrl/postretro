@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use postretro_level_format::prm::{PrmReadError, PrmSlot};
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
-use postretro_render_cpu::loaded_texture::slot_levels;
+use postretro_render_cpu::loaded_texture::{slot_levels, specular_slot_reflects_in};
 use postretro_render_cpu::surface_depth::{SurfaceReliefLevels, surface_relief_from_surface_map};
 use postretro_render_cpu::texture_prep::{
     PreparedTexture, PreparedWorldTextures, prepare_world_textures,
@@ -58,6 +58,14 @@ pub struct LoadedTexture {
     /// that is not a surface map. The uniform build picks the base
     /// mip's band and quantizes it with the material's level count.
     pub surface_relief: SurfaceReliefLevels,
+    /// Whether the material reflects its room: the glossy opt-in over the
+    /// specular slot's uploaded mip 0, the bytes the compiler judged
+    /// (`specular_slot_reflects`). Its bucket is then a glossy bucket.
+    pub reflects: bool,
+    /// Whether the normal slot holds the material's own normal map rather
+    /// than the 1×1 neutral placeholder: the glossy overlay reads a
+    /// placeholder's one texel instead of sampling it.
+    pub normal_mapped: bool,
 }
 
 /// Where [`load_textures`] spent its time, for the install's own log line.
@@ -183,6 +191,8 @@ pub(super) fn upload_prepared_texture(
         mip_count: plan.mip_count,
         // A model plan never consumes specular, so models stay flat.
         surface_relief: specular_surface_relief(&slots[1], plan.consume[1]),
+        reflects: specular_slot_reflects_in(&slots[1], plan.consume[1]),
+        normal_mapped: plan.consume[2] && slots[2].is_ok(),
     }
 }
 

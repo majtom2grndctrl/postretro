@@ -1,0 +1,292 @@
+// Game: Postretro
+// Format: Valve
+// glossy-reflections-showcase dev map. One sealed room, interior x 0 to 480,
+// y 0 to 480, z 0 to 192, walls 32 thick, built so glossy floor reflections
+// read at a glance. The floor is two coplanar zones under one probe: the west
+// two thirds, x 0 to 320, metal_mirror_tinted, sharp and tinted so it
+// reflects strongly head-on; the east third, x 320 to 480,
+// metal_satin_tinted, the same tint at a rougher sharpness. Twin
+// signal-stripes columns and twin glowing pillars stand one on each zone, at
+// the same distance from the south wall, so sharp and rough compare in one
+// frame. Also on the sharp floor: a monument with a hazard-striped column
+// near, and a parked kinematic block with hazard panels in the west. Light:
+// a white light_area band across the north wall, a vertical light_area strip
+// on the east wall, a magenta and a cyan point light and a white fill. The north
+// wall is the glossy cyan and copper tile and reflects too; the east wall is
+// hazard stripes; the west and south walls and the ceiling are matte metal
+// panel. A reflection_volume over the room makes one probe for the floor and
+// one for the north wall.
+// Glossy placement runs only under prl-build --glossy-reflections.
+// See glossy-reflections-showcase.README.md.
+// NOTE: keep map comments free of braces and quotes, and never leave a blank
+// line inside an entity block.
+// entity 0
+{
+"classname" "worldspawn"
+"wad" ""
+"_tb_mod" "dev"
+// brush floor_sharp
+{
+( 320 -32 -32 ) ( 320 512 0 ) ( 320 512 -32 ) 50-free-textures/concrete_stone_021 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( -32 512 -32 ) ( -32 -32 0 ) ( -32 -32 -32 ) 50-free-textures/concrete_stone_021 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 320 512 -32 ) ( -32 512 0 ) ( -32 512 -32 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( -32 -32 -32 ) ( 320 -32 0 ) ( 320 -32 -32 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( -32 512 0 ) ( 320 -32 0 ) ( -32 -32 0 ) test/metal_mirror_tinted [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 2 2
+( -32 -32 -32 ) ( 320 512 -32 ) ( -32 512 -32 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+// brush floor_rough
+{
+( 512 -32 -32 ) ( 512 512 0 ) ( 512 512 -32 ) 50-free-textures/concrete_stone_021 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 320 512 -32 ) ( 320 -32 0 ) ( 320 -32 -32 ) 50-free-textures/concrete_stone_021 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 512 512 -32 ) ( 320 512 0 ) ( 320 512 -32 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 320 -32 -32 ) ( 512 -32 0 ) ( 512 -32 -32 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 320 512 0 ) ( 512 -32 0 ) ( 320 -32 0 ) test/metal_satin_tinted [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 2 2
+( 320 -32 -32 ) ( 512 512 -32 ) ( 320 512 -32 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+// brush ceiling
+{
+( 512 -32 192 ) ( 512 512 224 ) ( 512 512 192 ) 50-free-textures/concrete_stone_021 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( -32 512 192 ) ( -32 -32 224 ) ( -32 -32 192 ) 50-free-textures/concrete_stone_021 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 512 512 192 ) ( -32 512 224 ) ( -32 512 192 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( -32 -32 192 ) ( 512 -32 224 ) ( 512 -32 192 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( -32 512 224 ) ( 512 -32 224 ) ( -32 -32 224 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( -32 -32 192 ) ( 512 512 192 ) ( -32 512 192 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-003" [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 2 2
+}
+// brush west_wall
+{
+( 0 -32 0 ) ( 0 512 192 ) ( 0 512 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-003" [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 2 2
+( -32 512 0 ) ( -32 -32 192 ) ( -32 -32 0 ) 50-free-textures/concrete_stone_021 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 0 512 0 ) ( -32 512 192 ) ( -32 512 0 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( -32 -32 0 ) ( 0 -32 192 ) ( 0 -32 0 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( -32 512 192 ) ( 0 -32 192 ) ( -32 -32 192 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( -32 -32 0 ) ( 0 512 0 ) ( -32 512 0 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+// brush east_wall
+{
+( 512 -32 0 ) ( 512 512 192 ) ( 512 512 0 ) 50-free-textures/concrete_stone_021 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 480 512 0 ) ( 480 -32 192 ) ( 480 -32 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/ConcreteWall-Hazard-Full-01_64" [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 2 2
+( 512 512 0 ) ( 480 512 192 ) ( 480 512 0 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 480 -32 0 ) ( 512 -32 192 ) ( 512 -32 0 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 480 512 192 ) ( 512 -32 192 ) ( 480 -32 192 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 480 -32 0 ) ( 512 512 0 ) ( 480 512 0 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+// brush south_wall
+{
+( 480 -32 0 ) ( 480 0 192 ) ( 480 0 0 ) 50-free-textures/concrete_stone_021 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 0 0 0 ) ( 0 -32 192 ) ( 0 -32 0 ) 50-free-textures/concrete_stone_021 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 480 0 0 ) ( 0 0 192 ) ( 0 0 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-003" [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 2 2
+( 0 -32 0 ) ( 480 -32 192 ) ( 480 -32 0 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 0 0 192 ) ( 480 -32 192 ) ( 0 -32 192 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 0 -32 0 ) ( 480 0 0 ) ( 0 0 0 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+// brush north_wall
+{
+( 480 480 0 ) ( 480 512 192 ) ( 480 512 0 ) 50-free-textures/concrete_stone_021 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 0 512 0 ) ( 0 480 192 ) ( 0 480 0 ) 50-free-textures/concrete_stone_021 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 480 512 0 ) ( 0 512 192 ) ( 0 512 0 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 0 480 0 ) ( 480 480 192 ) ( 480 480 0 ) test/concrete_carved_tinted_gloss [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 8 8
+( 0 512 192 ) ( 480 480 192 ) ( 0 480 192 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 0 480 0 ) ( 480 512 0 ) ( 0 512 0 ) 50-free-textures/concrete_stone_021 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+// brush monument_plinth
+{
+( 212 196 0 ) ( 212 260 16 ) ( 212 260 0 ) 50-free-textures/concrete_pavement_036 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 148 260 0 ) ( 148 196 16 ) ( 148 196 0 ) 50-free-textures/concrete_pavement_036 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 212 260 0 ) ( 148 260 16 ) ( 148 260 0 ) 50-free-textures/concrete_pavement_036 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 148 196 0 ) ( 212 196 16 ) ( 212 196 0 ) 50-free-textures/concrete_pavement_036 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 148 260 16 ) ( 212 196 16 ) ( 148 196 16 ) 50-free-textures/concrete_pavement_036 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 148 196 0 ) ( 212 260 0 ) ( 148 260 0 ) 50-free-textures/concrete_pavement_036 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+// brush monument_column
+{
+( 196 212 16 ) ( 196 244 112 ) ( 196 244 16 ) "Level Eleven Games Sci-Fi Texture Pack v1/ConcreteWall-Hazard-Full-01_64" [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 164 244 16 ) ( 164 212 112 ) ( 164 212 16 ) "Level Eleven Games Sci-Fi Texture Pack v1/ConcreteWall-Hazard-Full-01_64" [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 196 244 16 ) ( 164 244 112 ) ( 164 244 16 ) "Level Eleven Games Sci-Fi Texture Pack v1/ConcreteWall-Hazard-Full-01_64" [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 164 212 16 ) ( 196 212 112 ) ( 196 212 16 ) "Level Eleven Games Sci-Fi Texture Pack v1/ConcreteWall-Hazard-Full-01_64" [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 164 244 112 ) ( 196 212 112 ) ( 164 212 112 ) "Level Eleven Games Sci-Fi Texture Pack v1/ConcreteWall-Hazard-Full-01_64" [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 164 212 16 ) ( 196 244 16 ) ( 164 244 16 ) "Level Eleven Games Sci-Fi Texture Pack v1/ConcreteWall-Hazard-Full-01_64" [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+// brush monument_cap
+{
+( 204 204 112 ) ( 204 252 120 ) ( 204 252 112 ) 50-free-textures/concrete_pavement_036 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 156 252 112 ) ( 156 204 120 ) ( 156 204 112 ) 50-free-textures/concrete_pavement_036 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 204 252 112 ) ( 156 252 120 ) ( 156 252 112 ) 50-free-textures/concrete_pavement_036 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 156 204 112 ) ( 204 204 120 ) ( 204 204 112 ) 50-free-textures/concrete_pavement_036 [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 156 252 120 ) ( 204 204 120 ) ( 156 204 120 ) 50-free-textures/concrete_pavement_036 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 156 204 112 ) ( 204 252 112 ) ( 156 252 112 ) 50-free-textures/concrete_pavement_036 [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+// brush stripe_column_sharp
+{
+( 240 304 0 ) ( 240 336 160 ) ( 240 336 0 ) test/concrete_signal_stripes [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 8 8
+( 208 336 0 ) ( 208 304 160 ) ( 208 304 0 ) test/concrete_signal_stripes [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 8 8
+( 240 336 0 ) ( 208 336 160 ) ( 208 336 0 ) test/concrete_signal_stripes [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 8 8
+( 208 304 0 ) ( 240 304 160 ) ( 240 304 0 ) test/concrete_signal_stripes [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 8 8
+( 208 336 160 ) ( 240 304 160 ) ( 208 304 160 ) test/concrete_signal_stripes [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 8 8
+( 208 304 0 ) ( 240 336 0 ) ( 208 336 0 ) test/concrete_signal_stripes [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 8 8
+}
+// brush stripe_column_rough
+{
+( 432 304 0 ) ( 432 336 160 ) ( 432 336 0 ) test/concrete_signal_stripes [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 8 8
+( 400 336 0 ) ( 400 304 160 ) ( 400 304 0 ) test/concrete_signal_stripes [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 8 8
+( 432 336 0 ) ( 400 336 160 ) ( 400 336 0 ) test/concrete_signal_stripes [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 8 8
+( 400 304 0 ) ( 432 304 160 ) ( 432 304 0 ) test/concrete_signal_stripes [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 8 8
+( 400 336 160 ) ( 432 304 160 ) ( 400 304 160 ) test/concrete_signal_stripes [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 8 8
+( 400 304 0 ) ( 432 336 0 ) ( 400 336 0 ) test/concrete_signal_stripes [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 8 8
+}
+}
+// entity 1 -- player start, south of centre, facing north
+{
+"classname" "player_spawn"
+"origin" "240 48 40"
+"angles" "0 90 0"
+}
+// entity 2 -- white light_area band across the north wall, glowing south
+{
+"classname" "light_area"
+"light" "40"
+"_color" "255 255 255"
+"_glow" "2"
+"_tags" "dev glossy_showcase north_band"
+// brush north_band
+{
+( 448 472 112 ) ( 448 480 136 ) ( 448 480 112 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-003" [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 2 2
+( 96 480 112 ) ( 96 472 136 ) ( 96 472 112 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-003" [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 2 2
+( 448 480 112 ) ( 96 480 136 ) ( 96 480 112 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-003" [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 2 2
+( 96 472 112 ) ( 448 472 136 ) ( 448 472 112 ) neon/status_lamp [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 96 480 136 ) ( 448 472 136 ) ( 96 472 136 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-003" [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 2 2
+( 96 472 112 ) ( 448 480 112 ) ( 96 480 112 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-003" [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 2 2
+}
+}
+// entity 3 -- vertical light_area strip on the east wall, glowing west
+{
+"classname" "light_area"
+"light" "30"
+"_color" "255 255 255"
+"_glow" "1.5"
+"_tags" "dev glossy_showcase east_strip"
+// brush east_strip
+{
+( 480 176 16 ) ( 480 200 176 ) ( 480 200 16 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-003" [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 2 2
+( 472 200 16 ) ( 472 176 176 ) ( 472 176 16 ) neon/status_lamp [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 480 200 16 ) ( 472 200 176 ) ( 472 200 16 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-003" [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 2 2
+( 472 176 16 ) ( 480 176 176 ) ( 480 176 16 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-003" [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 2 2
+( 472 200 176 ) ( 480 176 176 ) ( 472 176 176 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-003" [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 2 2
+( 472 176 16 ) ( 480 200 16 ) ( 472 200 16 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-003" [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 2 2
+}
+}
+// entity 4 -- glowing pillar on the sharp floor, 48 units west of the zone boundary
+{
+"classname" "light_area"
+"light" "20"
+"_color" "255 255 255"
+"_glow" "1.5"
+"_tags" "dev glossy_showcase glow_pillar_sharp"
+// brush glow_pillar_sharp
+{
+( 280 392 0 ) ( 280 408 144 ) ( 280 408 0 ) neon/status_lamp [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 264 408 0 ) ( 264 392 144 ) ( 264 392 0 ) neon/status_lamp [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 280 408 0 ) ( 264 408 144 ) ( 264 408 0 ) neon/status_lamp [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 264 392 0 ) ( 280 392 144 ) ( 280 392 0 ) neon/status_lamp [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 264 408 144 ) ( 280 392 144 ) ( 264 392 144 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-003" [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 2 2
+( 264 392 0 ) ( 280 408 0 ) ( 264 408 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-003" [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 2 2
+}
+}
+// entity 5 -- glowing pillar on the rough floor, 48 units east of the zone boundary
+{
+"classname" "light_area"
+"light" "20"
+"_color" "255 255 255"
+"_glow" "1.5"
+"_tags" "dev glossy_showcase glow_pillar_rough"
+// brush glow_pillar_rough
+{
+( 376 392 0 ) ( 376 408 144 ) ( 376 408 0 ) neon/status_lamp [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 360 408 0 ) ( 360 392 144 ) ( 360 392 0 ) neon/status_lamp [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 376 408 0 ) ( 360 408 144 ) ( 360 408 0 ) neon/status_lamp [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 360 392 0 ) ( 376 392 144 ) ( 376 392 0 ) neon/status_lamp [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 360 408 144 ) ( 376 392 144 ) ( 360 392 144 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-003" [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 2 2
+( 360 392 0 ) ( 376 408 0 ) ( 360 408 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-003" [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 2 2
+}
+}
+// entity 6 -- magenta point light, west
+{
+"classname" "light"
+"origin" "64 320 150"
+"light" "220"
+"_color" "255 60 180"
+"_falloff_range" "448"
+"_shadow_type" "static_light_map"
+"delay" "0"
+"style" "0"
+"_tags" "dev glossy_showcase magenta_light"
+}
+// entity 7 -- cyan point light, east
+{
+"classname" "light"
+"origin" "416 208 150"
+"light" "220"
+"_color" "60 200 255"
+"_falloff_range" "448"
+"_shadow_type" "static_light_map"
+"delay" "0"
+"style" "0"
+"_tags" "dev glossy_showcase cyan_light"
+}
+// entity 8 -- white fill over the south half
+{
+"classname" "light"
+"origin" "240 128 176"
+"light" "120"
+"_color" "255 255 255"
+"_falloff_range" "640"
+"_shadow_type" "static_light_map"
+"delay" "0"
+"style" "0"
+"_tags" "dev glossy_showcase fill_light"
+}
+// entity 9 -- kinematic block on the sharp floor, west, parked at its first waypoint
+{
+"classname" "kinematic_mover"
+"name" "showcase_block"
+"path" "showcase_block_low"
+"speed" "0.5"
+"wait_ms" "500"
+"move_mode" "ping_pong"
+"start_on_spawn" "0"
+"_tags" "dev glossy_showcase block"
+// brush block
+{
+( 80 280 0 ) ( 80 344 64 ) ( 80 344 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/ConcretePanel-Hazard-Full-01_64" [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 16 344 0 ) ( 16 280 64 ) ( 16 280 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/ConcretePanel-Hazard-Full-01_64" [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 80 344 0 ) ( 16 344 64 ) ( 16 344 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/ConcretePanel-Hazard-Full-01_64" [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 16 280 0 ) ( 80 280 64 ) ( 80 280 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/ConcretePanel-Hazard-Full-01_64" [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 16 344 64 ) ( 80 280 64 ) ( 16 280 64 ) "Level Eleven Games Sci-Fi Texture Pack v1/ConcretePanel-Hazard-Full-01_64" [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 16 280 0 ) ( 80 344 0 ) ( 16 344 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/ConcretePanel-Hazard-Full-01_64" [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+}
+// entity 10 -- the block's first waypoint, its rest pose
+{
+"classname" "kinematic_waypoint"
+"name" "showcase_block_low"
+"next" "showcase_block_high"
+"origin" "48 312 32"
+}
+// entity 11 -- the block's second waypoint
+{
+"classname" "kinematic_waypoint"
+"name" "showcase_block_high"
+"origin" "48 312 128"
+}
+// entity 12 -- reflection_volume over the room: one probe for both floor zones, one for the north wall
+{
+"classname" "reflection_volume"
+// brush room_volume
+{
+( 480 0 0 ) ( 480 480 192 ) ( 480 480 0 ) DebugTextures/debug_wall_purple [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 0 480 0 ) ( 0 0 192 ) ( 0 0 0 ) DebugTextures/debug_wall_purple [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 480 480 0 ) ( 0 480 192 ) ( 0 480 0 ) DebugTextures/debug_wall_purple [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 0 0 0 ) ( 480 0 192 ) ( 480 0 0 ) DebugTextures/debug_wall_purple [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 0 480 192 ) ( 480 0 192 ) ( 0 0 192 ) DebugTextures/debug_wall_purple [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 0 0 0 ) ( 480 480 0 ) ( 0 480 0 ) DebugTextures/debug_wall_purple [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+}

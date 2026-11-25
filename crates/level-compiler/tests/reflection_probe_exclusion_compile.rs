@@ -192,7 +192,7 @@ fn texel(section: &ReflectionProbesSection, direction: [f32; 3]) -> Texel {
     let (x, y) = (x as usize, y as usize);
     let at = y * dimension as usize + x;
     let block = (y / 4) * (dimension as usize / 4) + x / 4;
-    let bytes: &[u8; 16] = section.tile(0)[block * 16..block * 16 + 16]
+    let bytes: &[u8; 16] = section.colour_tile(0, 0)[block * 16..block * 16 + 16]
         .try_into()
         .expect("a BC6H block is 16 bytes");
     let rgb = decode_bc6h_block(bytes).expect("colour block decodes")[(y % 4) * 4 + x % 4];

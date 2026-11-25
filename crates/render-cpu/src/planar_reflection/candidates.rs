@@ -65,9 +65,9 @@ impl PlanarCandidates {
 /// holds. Bindings ascend by (volume, face), so this is one binary search.
 pub(super) fn face_binds_probe(section: &ReflectionProbesSection, volume: u32, face: u32) -> bool {
     section
-        .bindings
+        .fluid_bindings
         .binary_search_by(|binding| (binding.volume, binding.face).cmp(&(volume, face)))
-        .is_ok_and(|index| (section.bindings[index].probe as usize) < section.probes.len())
+        .is_ok_and(|index| (section.fluid_bindings[index].probe as usize) < section.probes.len())
 }
 
 /// Every flat up-facing face `keep` accepts, grouped into planes by height,

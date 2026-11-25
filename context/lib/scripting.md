@@ -92,8 +92,8 @@ Validation follows the fluid policy above: a rule broken drops that fluid with a
 `bloom` accepts `resolution: "half" | "quarter" | "eighth"` and
 `pixelated: boolean`; omitted fields use half and smooth defaults.
 `reflections.style` accepts `"pixel" | "smooth"`,
-default pixel, and sets the look of every fluid reflection layer
-(`rendering_pipeline.md` §7.3a). `specular.style` accepts
+default pixel, and sets the look of every fluid reflection layer and of
+glossy world reflections (`rendering_pipeline.md` §7.3a). `specular.style` accepts
 `"pixel" | "smooth"`, default pixel, and sets whether world and mover
 highlights take one point per texel (`rendering_pipeline.md` §4, Texel-centre
 highlight). It applies live: the commit is a per-frame uniform write, with no

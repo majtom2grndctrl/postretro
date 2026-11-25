@@ -772,7 +772,6 @@ impl FluidSurfacePass {
         super::FluidLevelLayout {
             params_bind_group_layout: self.params_bind_group_layout.clone(),
             reflection_probe_layout: self.reflection.probe_layout().clone(),
-            sums_layout: self.sums.layout().clone(),
             scene_group: self.scene_inputs.group_layout(),
         }
     }

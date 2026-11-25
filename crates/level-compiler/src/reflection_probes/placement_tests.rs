@@ -19,9 +19,10 @@ use super::capture_point::{
     nearest_point_on_polygon,
 };
 use super::derived::FIT_MATCH_TOLERANCE_M;
+use super::facing::Facing;
 use super::hit::SceneTracer;
 use super::placement::{
-    CAPTURE_LIFT_M, PlacedProbe, PlacementScene, UpFacingFace, bindings, place_probes,
+    CAPTURE_LIFT_M, PlacedProbe, PlacementScene, ReflectorFace, fluid_bindings, place_probes,
 };
 use super::placement_test_fixtures::{
     PlacementFixture, UNIT, box_brush, engine, engine_box, fluid, reflection_volume, sealed_room,
@@ -48,14 +49,15 @@ fn water(brushes: &[([f64; 3], [f64; 3])]) -> String {
     fluid("water", &brushes)
 }
 
-fn probe_binding<'p>(probes: &'p [PlacedProbe], face: &UpFacingFace) -> Option<&'p PlacedProbe> {
-    probes
-        .iter()
-        .find(|p| p.faces.contains(&(face.volume, face.face)))
+fn probe_binding<'p>(probes: &'p [PlacedProbe], face: &ReflectorFace) -> Option<&'p PlacedProbe> {
+    probes.iter().find(|p| {
+        face.fluid_face()
+            .is_some_and(|key| p.fluid_faces.contains(&key))
+    })
 }
 
 /// The up-facing face whose area centroid is nearest the map-unit point.
-fn face_near(faces: &[UpFacingFace], q: [f64; 3]) -> &UpFacingFace {
+fn face_near(faces: &[ReflectorFace], q: [f64; 3]) -> &ReflectorFace {
     let target = engine(q);
     faces
         .iter()
@@ -106,7 +108,7 @@ fn probe_box(probe: &PlacedProbe) -> (DVec3, DVec3) {
 }
 
 /// Horizontal distance from `p` to the nearest of `faces`' water; 0 over it.
-fn distance_to_water(p: DVec3, faces: &[&UpFacingFace]) -> f64 {
+fn distance_to_water(p: DVec3, faces: &[&ReflectorFace]) -> f64 {
     faces
         .iter()
         .map(|face| nearest_point_on_polygon(DVec2::new(p.x, p.z), &face.outline).1)
@@ -137,7 +139,7 @@ fn derived_faces_of_one_pool_fit_the_room_and_share_one_probe() {
     assert_eq!(probes.len(), 1, "{probes:?}");
     let probe = &probes[0];
     assert_eq!(probe.source_entity, 1);
-    assert_eq!(probe.faces.len(), 3);
+    assert_eq!(probe.fluid_faces.len(), 3);
     let (lo, hi) = probe_box(probe);
     assert_fits(lo, hi, room, FIT_MATCH_TOLERANCE_M);
     // The group's area centroid, 2 mm above the water, inside the union box.
@@ -271,7 +273,7 @@ fn derived_centroid_off_its_water_moves_to_the_nearest_point_on_it() {
     let probes = fixture.place().unwrap();
     assert_eq!(probes.len(), 1, "{probes:?}");
     let p = point(&probes[0]);
-    let all: Vec<&UpFacingFace> = faces.iter().collect();
+    let all: Vec<&ReflectorFace> = faces.iter().collect();
     assert!(distance_to_water(p, &all) <= 1e-6, "{p} is over water");
     // Inset from the pillar's wall, not inside it.
     let (lo, hi) = engine_box(pillar.0, pillar.1);
@@ -297,7 +299,7 @@ fn derived_centroid_off_its_water_moves_to_the_nearest_point_on_it() {
     let probes = fixture.place().unwrap();
     assert_eq!(probes.len(), 1, "one L-shaped group: {probes:?}");
     let p = point(&probes[0]);
-    let all: Vec<&UpFacingFace> = faces.iter().collect();
+    let all: Vec<&ReflectorFace> = faces.iter().collect();
     assert!(distance_to_water(p, &all) <= 1e-6, "{p} is over water");
     // The area centroid itself lies in the notch.
     let mut weighted = DVec3::ZERO;
@@ -331,7 +333,7 @@ fn derived_probe_with_an_invalid_capture_point_drops_naming_its_fluid_entity() {
     capture.assert_logged_once(Level::Warn, "derived probe of fluid entity 1");
     capture.assert_logged_once(Level::Warn, "is in solid; dropped");
     capture.assert_not_logged(Level::Warn, "past the 1-probe cap");
-    let bound = bindings(&probes);
+    let bound = fluid_bindings(&probes);
     assert!(bound.iter().all(|b| b.volume == 1), "{bound:?}");
 
     capture.clear();
@@ -398,14 +400,14 @@ fn a_derived_centroid_within_the_clearance_of_a_wall_moves_clear_and_is_kept() {
     assert_near(p, centroid + DVec3::Z * CAPTURE_CLEARANCE_M, 1e-5);
     let face_z = engine([128.2, 0.0, 0.0]).z;
     assert!(p.z - face_z >= CAPTURE_CLEARANCE_M, "{p}");
-    let all: Vec<&UpFacingFace> = faces.iter().collect();
+    let all: Vec<&ReflectorFace> = faces.iter().collect();
     assert!(distance_to_water(p, &all) <= 1e-6, "{p} is over water");
     let (lo, hi) = probe_box(&probes[0]);
     assert!(p.cmpge(lo).all() && p.cmple(hi).all(), "{p} in {lo}..{hi}");
     let classifier = PointClassifier::new(&fixture.tree, &fixture.exterior, &fixture.environment);
-    assert_eq!(classifier.fault(p), None);
+    assert_eq!(classifier.fault(p, &Facing::Up), None);
     assert_eq!(
-        classifier.fault(centroid),
+        classifier.fault(centroid, &Facing::Up),
         Some(PointFault::Crowded),
         "crowded where it started"
     );
@@ -428,7 +430,11 @@ fn authored_box_over_two_heights_captures_over_the_lowest_and_warns() {
     let probes = fixture.place().unwrap();
     assert_eq!(probes.len(), 1);
     assert_eq!(probes[0].source_entity, 2);
-    assert_eq!(probes[0].faces.len(), 2, "both planes bind the room box");
+    assert_eq!(
+        probes[0].fluid_faces.len(),
+        2,
+        "both planes bind the room box"
+    );
     let basin_point = engine([384.0, 128.0, 0.0]) + DVec3::Y * (16.0 * UNIT + CAPTURE_LIFT_M);
     assert_near(point(&probes[0]), basin_point, 1e-4);
     capture.assert_logged_once(
@@ -448,8 +454,8 @@ fn authored_box_over_two_heights_captures_over_the_lowest_and_warns() {
     assert_near(point(&probes[0]), basin_point, 1e-4);
     let main = face_near(&faces, [160.0, 128.0, 32.0]);
     let basin = face_near(&faces, [384.0, 128.0, 16.0]);
-    assert_eq!(probes[0].faces, vec![(main.volume, main.face)]);
-    assert_eq!(probes[1].faces, vec![(basin.volume, basin.face)]);
+    assert_eq!(probes[0].fluid_faces, vec![main.fluid_face().unwrap()]);
+    assert_eq!(probes[1].fluid_faces, vec![basin.fluid_face().unwrap()]);
     capture.assert_not_logged(Level::Warn, "more than one height");
 }
 
@@ -509,7 +515,7 @@ fn authored_centroid_over_an_island_moves_onto_the_water_and_is_kept() {
     assert_eq!(probes.len(), 1);
     assert_eq!(probes[0].source_entity, 2);
     let p = point(&probes[0]);
-    let all: Vec<&UpFacingFace> = faces.iter().collect();
+    let all: Vec<&ReflectorFace> = faces.iter().collect();
     assert!(distance_to_water(p, &all) <= 1e-6, "{p}");
     let (lo, hi) = engine_box(pillar.0, pillar.1);
     assert!(p.x < lo.x || p.x > hi.x || p.z < lo.z || p.z > hi.z, "{p}");
@@ -596,7 +602,7 @@ fn an_offset_point_in_a_wall_drops_and_one_just_beside_it_moves_clear() {
         );
         let classifier =
             PointClassifier::new(&fixture.tree, &fixture.exterior, &fixture.environment);
-        assert_eq!(classifier.fault(p), None, "{offset}: {p}");
+        assert_eq!(classifier.fault(p, &Facing::Up), None, "{offset}: {p}");
         assert_near(
             DVec3::new(p.x, p.y, 0.0),
             DVec3::new(engine([0.0, 128.0, 0.0]).x, water_y, 0.0),
@@ -661,7 +667,8 @@ fn an_offset_point_that_cannot_clear_a_wall_within_its_box_drops_saying_so() {
     capture.assert_logged_once(Level::Warn, "entity 2 'reflection_volume' capture point");
     capture.assert_logged_once(
         Level::Warn,
-        "is too close to a wall to move clear of it within its box and over its water; dropped",
+        "is too close to a wall to move clear of it within its box and in front of its faces; \
+         dropped",
     );
     // Only the derived probe its faces fall to, whose point is inside the
     // block, is in solid.
@@ -761,7 +768,7 @@ fn faces_of_a_dropped_box_bind_the_enclosing_box_or_derived_probes() {
         assert_eq!(probes[0].source_entity, large_entity);
         assert_eq!(probes[0].capture_point, alone[0].capture_point);
         assert_eq!(
-            probes[0].faces.len(),
+            probes[0].fluid_faces.len(),
             faces.len(),
             "every face binds the large box"
         );
@@ -777,7 +784,7 @@ fn faces_of_a_dropped_box_bind_the_enclosing_box_or_derived_probes() {
         "derived: {probes:?}"
     );
     assert_eq!(
-        probes.iter().map(|p| p.faces.len()).sum::<usize>(),
+        probes.iter().map(|p| p.fluid_faces.len()).sum::<usize>(),
         fixture.up_faces().len()
     );
 }
@@ -824,8 +831,8 @@ fn a_pool_spanning_two_authored_boxes_binds_each_face_to_its_own() {
     );
     let west = face_near(&faces, [128.0, 128.0, 32.0]);
     let east = face_near(&faces, [256.0, 128.0, 32.0]);
-    assert_eq!(probes[0].faces, vec![(west.volume, west.face)]);
-    assert_eq!(probes[1].faces, vec![(east.volume, east.face)]);
+    assert_eq!(probes[0].fluid_faces, vec![west.fluid_face().unwrap()]);
+    assert_eq!(probes[1].fluid_faces, vec![east.fluid_face().unwrap()]);
 }
 
 // P14 in map units: two 128 × 128 × 96 u boxes 32 u apart both hold the
@@ -849,7 +856,7 @@ fn map_unit_boxes_of_one_size_tie_to_the_earlier_entity_in_either_order() {
         let probes = fixture.place().unwrap();
         assert_eq!(probes.len(), 1, "{probes:?}");
         assert_eq!(probes[0].source_entity, 2, "the earlier box binds");
-        assert_eq!(probes[0].faces.len(), fixture.up_faces().len());
+        assert_eq!(probes[0].fluid_faces.len(), fixture.up_faces().len());
         let (lo, hi) = probe_box(&probes[0]);
         let (expected_lo, expected_hi) = engine_box(first.0, first.1);
         assert_near(lo, expected_lo, 1e-4);
@@ -881,7 +888,7 @@ fn map_unit_pools_of_one_area_tie_at_the_cap_to_the_earlier_entity_in_either_ord
         assert_eq!(probes[0].source_entity, 1, "the earlier fluid entity stays");
         let kept = face_near(&faces, first);
         assert!(
-            probes[0].faces.contains(&(kept.volume, kept.face)),
+            probes[0].fluid_faces.contains(&kept.fluid_face().unwrap()),
             "{probes:?}"
         );
         capture.assert_logged_once(
@@ -915,6 +922,7 @@ fn place_synthetic(
     place_probes(
         section,
         authored,
+        &[],
         &PlacementScene {
             tracer: &tracer,
             bounds: &bounds,
@@ -966,7 +974,7 @@ fn side_bottom_and_sloped_fluid_faces_bind_no_probe() {
     let probes = place_synthetic(&section, &[], 256).unwrap();
     assert_eq!(probes.len(), 1);
     assert_eq!(probes[0].source_entity, 7);
-    assert_eq!(probes[0].faces, vec![(0, 0)]);
+    assert_eq!(probes[0].fluid_faces, vec![(0, 0)]);
     // An authored box over every face binds the top alone too.
     let probes = place_synthetic(
         &section,
@@ -976,7 +984,7 @@ fn side_bottom_and_sloped_fluid_faces_bind_no_probe() {
     .unwrap();
     assert_eq!(probes.len(), 1);
     assert_eq!(probes[0].source_entity, 9);
-    assert_eq!(probes[0].faces, vec![(0, 0)]);
+    assert_eq!(probes[0].fluid_faces, vec![(0, 0)]);
 }
 
 // P29 with P32: a centroid off its water moves to the nearest water, which
@@ -1014,7 +1022,9 @@ fn a_zero_capture_offset_holds_when_the_nearest_point_move_leaves_the_box() {
     let error = place_synthetic(&section, &[volume], 256).expect_err("the offset leaves the box");
     let message = format!("{error:#}");
     assert!(
-        message.contains("entity 4 'reflection_volume' `_capture_offset` moves its capture point"),
+        message.contains(
+            "entity 4 'reflection_volume' probe facing up `_capture_offset` moves its capture point"
+        ),
         "{message}"
     );
 }
@@ -1045,7 +1055,7 @@ fn equal_smallest_boxes_tie_to_the_earlier_entity() {
         let once = place_synthetic(&section, &authored, 256).unwrap();
         assert_eq!(once.len(), 1);
         assert_eq!(once[0].source_entity, 4);
-        assert_eq!(once[0].faces, vec![(0, 0)]);
+        assert_eq!(once[0].fluid_faces, vec![(0, 0)]);
         assert_eq!(once, place_synthetic(&section, &authored, 256).unwrap());
     }
     capture.assert_logged(
@@ -1093,7 +1103,7 @@ fn cap_overflow_drops_the_smallest_derived_and_refuses_authored_past_it() {
         Level::Warn,
         "2 derived probe(s) past the 3-probe cap dropped",
     );
-    let bound: Vec<u32> = bindings(&probes).iter().map(|b| b.volume).collect();
+    let bound: Vec<u32> = fluid_bindings(&probes).iter().map(|b| b.volume).collect();
     assert_eq!(bound, vec![1, 3, 4], "dropped probes' faces bind nothing");
 
     let authored: Vec<MapReflectionVolume> = (0..4)
@@ -1153,7 +1163,7 @@ fn cap_ties_keep_the_earlier_fluid_entity_then_face() {
     };
     let one = run(1);
     assert_eq!(one.len(), 1);
-    assert_eq!(one[0].faces, vec![(0, 0)]);
+    assert_eq!(one[0].fluid_faces, vec![(0, 0)]);
     assert_eq!(one, run(4));
     assert_eq!(one, run(1));
 }

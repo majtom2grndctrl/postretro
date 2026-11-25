@@ -234,7 +234,7 @@ fn assert_doorway_pool_probes(sections: &BTreeMap<u32, Vec<u8>>) -> usize {
     assert!(!top_faces.is_empty());
     assert_eq!(
         probes
-            .bindings
+            .fluid_bindings
             .iter()
             .map(|b| (b.volume, b.face))
             .collect::<Vec<_>>(),
@@ -257,7 +257,11 @@ fn assert_doorway_pool_probes(sections: &BTreeMap<u32, Vec<u8>>) -> usize {
                     .any(|v| (v.position[2] - engine_z).abs() < 1e-4)
             })
             .expect("a top piece at the pool's end");
-        let binding = probes.bindings.iter().find(|b| b.face == face).unwrap();
+        let binding = probes
+            .fluid_bindings
+            .iter()
+            .find(|b| b.face == face)
+            .unwrap();
         probes.probes[binding.probe as usize]
     };
     let west = probe_at(64.0 * UNIT);
@@ -757,7 +761,7 @@ fn the_capture_skips_movers_and_dynamic_lights_and_sees_switch_brushes() {
         ReflectionProbesSection::from_bytes(section(&switch, SectionId::ReflectionProbes)).unwrap();
     assert_eq!(base_probes.probes.len(), switch_probes.probes.len());
     let changed = (0..base_probes.probes.len())
-        .filter(|&layer| base_probes.tile(layer) != switch_probes.tile(layer))
+        .filter(|&layer| base_probes.colour_tile(layer, 0) != switch_probes.colour_tile(layer, 0))
         .count();
     assert!(changed > 0, "the switch brush appears in a probe's tile");
 }
@@ -792,7 +796,7 @@ fn stress_env_volumes_builds_with_no_more_probes_than_the_cap() {
     eprintln!(
         "stress-env-volumes: {} probe(s), {} binding(s), built in {:.1} s",
         probes.probes.len(),
-        probes.bindings.len(),
+        probes.fluid_bindings.len(),
         started.elapsed().as_secs_f64()
     );
     assert!(!probes.probes.is_empty());

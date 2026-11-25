@@ -1,0 +1,32 @@
+{
+ "fixture": "private project's largest map by source size",
+ "map_bytes": 5038791,
+ "workers": 6,
+ "nice": 10,
+ "cache": "--no-cache",
+ "before_binary": "prl-build 8dda8a34a",
+ "after_binary": "prl-build ca71993bf --glossy-reflections",
+ "runs": [
+  {
+   "run": "before-r1",
+   "probe_stage_s": 1.54,
+   "total_s": 540.01
+  },
+  {
+   "run": "after-r1",
+   "probe_stage_s": 14.3,
+   "total_s": 579.18
+  },
+  {
+   "run": "after-r2",
+   "probe_stage_s": 14.23,
+   "total_s": 582.86
+  },
+  {
+   "run": "before-r2",
+   "probe_stage_s": 1.54,
+   "total_s": 562.07
+  }
+ ],
+ "after_glossy_probes_dropped_past_cap": 1908
+}

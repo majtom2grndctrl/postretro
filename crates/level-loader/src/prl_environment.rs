@@ -88,18 +88,21 @@ pub(crate) fn decode_push_forces(
 }
 
 /// Decode the optional ReflectionProbes section and check its bindings name
-/// real surface faces. Absent means no probes. The roster references are
-/// checked once lighting is loaded ([`validate_reflection_probe_lights`]).
+/// real faces: fluid bindings surface faces of EnvironmentVolumes (id 52),
+/// world bindings faces of Geometry (id 17), `geometry_face_count` of them.
+/// Absent means no probes. The roster references are checked once lighting
+/// is loaded ([`validate_reflection_probe_lights`]).
 pub(crate) fn decode_reflection_probes(
     data: Option<Vec<u8>>,
     environment: &EnvironmentVolumesSection,
+    geometry_face_count: usize,
 ) -> Result<Option<ReflectionProbesSection>, PrlLoadError> {
     let Some(data) = data else {
         return Ok(None);
     };
     let section = ReflectionProbesSection::from_bytes(&data)
         .map_err(|err| section_validation_from_error("ReflectionProbes", err))?;
-    for binding in &section.bindings {
+    for binding in &section.fluid_bindings {
         let Some(volume) = environment.volumes.get(binding.volume as usize) else {
             return Err(section_validation_from_error(
                 "ReflectionProbes",
@@ -122,11 +125,17 @@ pub(crate) fn decode_reflection_probes(
             ));
         }
     }
+    section
+        .check_world_faces(geometry_face_count)
+        .map_err(|err| section_validation_from_error("ReflectionProbes", err))?;
     log::info!(
-        "[PRL] ReflectionProbes: {} probe(s), {}² tiles, {} bound face(s)",
+        "[PRL] ReflectionProbes: {} probe(s), {}² tiles × {} colour mip(s), {} bound fluid \
+         face(s), {} bound world face(s)",
         section.probes.len(),
         section.tile_dimension,
-        section.bindings.len(),
+        section.colour_mip_count,
+        section.fluid_bindings.len(),
+        section.world_bindings.len(),
     );
     Ok(Some(section))
 }

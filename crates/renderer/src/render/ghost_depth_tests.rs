@@ -147,7 +147,7 @@ fn ghost_pass_seeds_inside_the_gate_and_attaches_ghost_depth_and_never_scene_dep
     let ghost_pass = at("label:Some(\"GhostPass\"),");
     let record = at(".ghost_order.record(");
     let order = [
-        at("label:Some(\"SkinnedMeshPass\"),"),
+        at("self.record_skinned_mesh_pass("),
         gate,
         build,
         seed,

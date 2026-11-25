@@ -61,8 +61,8 @@ pub(crate) struct LevelCommitReport {
     pub(crate) set: Option<LevelSetId>,
     /// Every GPU object created on the main thread across the commit.
     pub(crate) created: GpuCreationCounts,
-    /// What the publish created: only an extent rebuild or a reflection
-    /// tier reconcile does, each counted below.
+    /// What the publish created: only an extent rebuild, a reflection tier
+    /// reconcile or a glossy target build does, each counted below.
     pub(crate) publish_created: GpuCreationCounts,
     /// Publishes that rebuilt the set's extent-bound groups and fog target:
     /// the scene extent the renderer committed moved since the build.
@@ -70,6 +70,10 @@ pub(crate) struct LevelCommitReport {
     /// Publishes that re-keyed the set's reflection targets: the renderer's
     /// kept reflection tier moved since the build.
     pub(crate) reflection_tier_rebuilds: u64,
+    /// Publishes that built the published set's glossy targets: a glossy
+    /// level above reflection quality off builds them at its publish, never
+    /// in its off-frame build, so a level change never holds two sets.
+    pub(crate) glossy_target_builds: u64,
     /// Distinct models the commit's real sweep held that the prediction
     /// missed, each loaded synchronously.
     pub(crate) model_misses: usize,
@@ -91,9 +95,12 @@ pub(crate) struct LevelCommitReport {
 impl LevelCommitReport {
     /// What the commit created outside every counted fallback: zero by the
     /// commit's contract. A publish that created something without counting
-    /// an extent rebuild or a tier reconcile counts here.
+    /// an extent rebuild, a tier reconcile or a glossy target build counts
+    /// here.
     pub(crate) fn uncounted_creations(&self) -> GpuCreationCounts {
-        let publish = if self.extent_rebuilds + self.reflection_tier_rebuilds > 0 {
+        let counted =
+            self.extent_rebuilds + self.reflection_tier_rebuilds + self.glossy_target_builds;
+        let publish = if counted > 0 {
             self.publish_created
         } else {
             GpuCreationCounts::default()
@@ -112,5 +119,31 @@ pub(crate) fn add_creation_counts(a: GpuCreationCounts, b: GpuCreationCounts) ->
         textures: a.textures + b.textures,
         bind_groups: a.bind_groups + b.bind_groups,
         pipelines: a.pipelines + b.pipelines,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A glossy level's publish builds its targets there, never in its build:
+    // a counted glossy target build accounts for what the publish created,
+    // and the same creations uncounted read as outside the contract.
+    #[test]
+    fn a_counted_glossy_target_build_accounts_for_the_publish_creations() {
+        let publish = GpuCreationCounts {
+            buffers: 1,
+            textures: 5,
+            bind_groups: 4,
+            pipelines: 0,
+        };
+        let mut report = LevelCommitReport {
+            created: publish,
+            publish_created: publish,
+            ..LevelCommitReport::default()
+        };
+        assert_eq!(report.uncounted_creations(), publish);
+        report.glossy_target_builds = 1;
+        assert_eq!(report.uncounted_creations(), GpuCreationCounts::default());
     }
 }

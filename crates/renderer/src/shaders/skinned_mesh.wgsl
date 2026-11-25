@@ -623,6 +623,25 @@ fn accumulate_dynamic_direct(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    return skinned_shade(in);
+}
+
+// At a tier that runs the glossy floor layer: the same colour, written again
+// as the highlight-free colour. The mesh draws no highlight, so it clears the
+// separation where it draws (rendering_pipeline.md §7.3a, Glossy world
+// faces, Floors).
+struct SkinnedHighlightFreeOutput {
+    @location(0) colour: vec4<f32>,
+    @location(1) highlight_free: vec4<f32>,
+};
+
+@fragment
+fn fs_main_highlight_free(in: VertexOutput) -> SkinnedHighlightFreeOutput {
+    let colour = skinned_shade(in);
+    return SkinnedHighlightFreeOutput(colour, colour);
+}
+
+fn skinned_shade(in: VertexOutput) -> vec4<f32> {
     // SH-lit: sample base color, multiply by baked indirect irradiance, then add
     // the baked static-direct term (group 4 binding 15; gated by `has_direct`).
     // The runtime dynamic-direct term (group 2) is summed below before the albedo

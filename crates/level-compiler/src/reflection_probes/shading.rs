@@ -4,7 +4,8 @@
 use glam::Vec3;
 
 use super::animated_direct::AnimatedDirectSampler;
-use super::capture_exclusion::{CaptureBrushes, ProbeExclusion, RayOutcome};
+use super::capture_brushes::CaptureBrushes;
+use super::capture_exclusion::{ProbeExclusion, RayOutcome};
 use super::capture_fill::fill_surface;
 use super::delta_sample::DeltaShSampler;
 use super::emissive_factor::{AreaGlowFaces, AreaGlowTerm, EmissiveFaceFactors};

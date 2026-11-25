@@ -44,6 +44,8 @@ mod prl_streaming;
 #[cfg(feature = "load-prl")]
 mod prl_teleporters;
 #[cfg(feature = "load-prl")]
+mod prl_world_probe_stream;
+#[cfg(feature = "load-prl")]
 mod sh_stream;
 #[cfg(all(test, feature = "load-prl"))]
 mod sh_stream_codec_tests;
@@ -88,6 +90,8 @@ pub use prl_loader::{
 pub use prl_streaming::{
     load_prl, load_prl_staged, load_prl_with_progress, load_prl_with_sh_streaming,
 };
+#[cfg(feature = "load-prl")]
+pub use prl_world_probe_stream::{NO_WORLD_PROBE, build_vertex_world_probes};
 #[cfg(feature = "load-prl")]
 pub use sh_stream::{
     PreparedShCluster, ShDrainBatch, ShDrainOutcome, ShStorage, ShStreamBaseMetadata,

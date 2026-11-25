@@ -14,7 +14,7 @@ use postretro_level_format::environment_volumes::{
 use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
 use postretro_level_format::reflection_probes::{
     REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1, REFLECTION_PROBE_LIGHTS_PER_PROBE,
-    ReflectionProbeBinding, ReflectionProbeLightShare, ReflectionProbeRecord,
+    ReflectionProbeFluidBinding, ReflectionProbeLightShare, ReflectionProbeRecord,
     ReflectionProbesSection, reflection_probe_zero_distances,
 };
 use postretro_render_cpu::fluid_surface::FluidSurfaceLook;
@@ -155,6 +155,8 @@ pub(super) fn green_probe(bindings: &[(u32, u32)]) -> ReflectionProbesSection {
         tile_dimension: PROBE_TILE,
         tile_border: 1,
         atlas_format: IRRADIANCE_FORMAT_RGBA16F,
+        colour_mip_count: 1,
+        world_bindings: Vec::new(),
         probes: vec![ReflectionProbeRecord {
             source_entity: 0,
             box_min: [-10.0; 3],
@@ -163,9 +165,9 @@ pub(super) fn green_probe(bindings: &[(u32, u32)]) -> ReflectionProbesSection {
             layer: 0,
             lights: [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE],
         }],
-        bindings: bindings
+        fluid_bindings: bindings
             .iter()
-            .map(|&(volume, face)| ReflectionProbeBinding {
+            .map(|&(volume, face)| ReflectionProbeFluidBinding {
                 volume,
                 face,
                 probe: 0,
@@ -315,6 +317,7 @@ pub(super) fn with_world_quads<R>(
         vertices: &vertices,
         vertex_spec_owners: &[],
         vertex_emissive_volumes: &[],
+        reflection_probes: None,
         emissive_volumes: &[],
         area_glow_lights: &[],
         indices: &indices,
@@ -372,7 +375,7 @@ pub(super) fn capture_checked(renderer: &mut Renderer, view: View) -> Vec<u8> {
 }
 
 /// `texture`'s level 0, `texel_bytes` a texel, read back tight.
-fn read_back(
+pub(super) fn read_back(
     renderer: &Renderer,
     texture: &wgpu::Texture,
     texel_bytes: u32,

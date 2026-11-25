@@ -430,7 +430,7 @@ impl<'ast> Visit<'ast> for Scanner<'_> {
             }
         }
         self.record("method", name.clone(), self.source.fragment(expr));
-        if name == "draw_indirect" {
+        if name == "draw_indirect" || name == "draw_indirect_subset" {
             let pass = expr.args.first().map(|arg| self.source.fragment(arg));
             if let Some(pass) = pass {
                 let pass = pass.trim_start_matches("&mut");

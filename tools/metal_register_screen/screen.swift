@@ -3,9 +3,10 @@
 // slice carries each packed function's register counts (`regs.py` reads them).
 //
 // usage: screen <dir> <fragment entry>
-//   reads <dir>/vs_main.metal and <dir>/<fragment entry>.metal, and the
-//   vertex streams from <dir>/vertex_layout when present (else the mover's),
-//   writes <dir>/<fragment entry>.metallib
+//   reads <dir>/vs_main.metal and <dir>/<fragment entry>.metal, the vertex
+//   streams from <dir>/vertex_layout when present (else the mover's), and the
+//   entry's colour attachments from its line of <dir>/color_formats when
+//   present (else one rgba16Float), writes <dir>/<fragment entry>.metallib
 import Foundation
 import Metal
 
@@ -31,15 +32,42 @@ func library(_ name: String) throws -> MTLLibrary {
 let descriptor = MTLRenderPipelineDescriptor()
 descriptor.vertexFunction = try library("vs_main").makeFunction(name: "vs_main")
 descriptor.fragmentFunction = try library(fragment).makeFunction(name: fragment)
-descriptor.colorAttachments[0].pixelFormat = .rgba16Float
+// The entry's colour attachments, one format per attachment index:
+//   <fragment entry> <format>...   with format rgba16Float | rg11b10Float
+let pixelFormats: [String: MTLPixelFormat] = ["rgba16Float": .rgba16Float, "rg11b10Float": .rg11b10Float]
+var attachments: [MTLPixelFormat] = [.rgba16Float]
+if let lines = try? String(contentsOfFile: "\(dir)/color_formats", encoding: .utf8),
+   let line = lines.split(separator: "\n").first(where: { $0.split(separator: " ").first.map(String.init) == fragment }) {
+    attachments = line.split(separator: " ").dropFirst().map { name in
+        guard let format = pixelFormats[String(name)] else {
+            FileHandle.standardError.write("unknown colour format \(name) for \(fragment)\n".data(using: .utf8)!)
+            exit(1)
+        }
+        return format
+    }
+}
+// Every colour output the entry writes needs a declared attachment.
+let msl = try String(contentsOfFile: "\(dir)/\(fragment).metal", encoding: .utf8)
+let written = try NSRegularExpression(pattern: "\\[\\[color\\(([0-9]+)\\)\\]\\]")
+    .matches(in: msl, range: NSRange(msl.startIndex..., in: msl))
+    .compactMap { Range($0.range(at: 1), in: msl).flatMap { Int(msl[$0]) } }
+if let highest = written.max(), highest >= attachments.count {
+    FileHandle.standardError.write("\(fragment) writes color(\(highest)) but declares \(attachments.count) attachments\n".data(using: .utf8)!)
+    exit(1)
+}
+for (index, format) in attachments.enumerated() {
+    descriptor.colorAttachments[index].pixelFormat = format
+}
 descriptor.depthAttachmentPixelFormat = .depth32Float
 let vertex = MTLVertexDescriptor()
 let layoutPath = "\(dir)/vertex_layout"
 if let layout = try? String(contentsOfFile: layoutPath, encoding: .utf8) {
     // A capture's own vertex streams, one line each:
     //   layout <buffer> <stride>
-    //   attribute <location> <float2|float3|uint> <offset> <buffer>
-    let formats: [String: MTLVertexFormat] = ["float2": .float2, "float3": .float3, "uint": .uint]
+    //   attribute <location> <float2|float3|uint|ushort2|ushort4> <offset> <buffer>
+    let formats: [String: MTLVertexFormat] = [
+        "float2": .float2, "float3": .float3, "uint": .uint, "ushort2": .ushort2, "ushort4": .ushort4,
+    ]
     for line in layout.split(separator: "\n") {
         let field = line.split(separator: " ").map(String.init)
         if field.first == "layout", field.count == 3 {

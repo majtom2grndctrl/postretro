@@ -22,7 +22,8 @@ use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
 use super::ReflectionProbeInputs;
 use super::animated_direct::AnimatedDirectSampler;
-use super::capture_exclusion::{BrushFaces, CaptureBrushes, ProbeExclusion};
+use super::capture_brushes::{BrushFaces, CaptureBrushes};
+use super::capture_exclusion::ProbeExclusion;
 use super::emissive_factor::EmissiveFaceFactors;
 use super::hit::SceneTracer;
 use super::lightmap_sample::LightmapSampler;
@@ -39,6 +40,10 @@ pub(super) const CEILING_TEXTURE: &str = "test/ceiling";
 pub(super) const FLOOR_TEXTURE: &str = "test/floor";
 pub(super) const PILLAR_TEXTURE: &str = "test/pillar";
 pub(super) const TRIM_TEXTURE: &str = "test/trim";
+/// A floor material whose specular slot passes the glossy opt-in.
+pub(super) const GLOSSY_FLOOR_TEXTURE: &str = "test/glossy_floor";
+/// The glossy floor's specular texel: `_s` 200, `_p` 200.
+const GLOSSY_SPECULAR: [u8; 4] = [200, 127, 200, 255];
 
 /// The room's interior in map units: 256 u square, 128 u tall (6.5 × 3.25 m).
 pub(super) const ROOM_MIN: [f64; 3] = [-128.0, -128.0, 0.0];
@@ -150,6 +155,7 @@ pub(super) fn fixture_materials() -> Vec<(&'static str, MipPayload)> {
         (FLOOR_TEXTURE, uniform_mips([[64, 64, 64, 255]; 3])),
         (PILLAR_TEXTURE, uniform_mips([[255, 0, 0, 255]; 3])),
         (TRIM_TEXTURE, uniform_mips([[255, 0, 255, 255]; 3])),
+        (GLOSSY_FLOOR_TEXTURE, uniform_mips([[64, 64, 64, 255]; 3])),
     ]
 }
 
@@ -167,6 +173,8 @@ pub(super) struct CaptureFixture {
     pub alpha_lights: AlphaLightsSection,
     pub chunk_list: ChunkLightListSection,
     pub weight_maps: Option<AnimatedLightWeightMapsSection>,
+    /// `prl-build --glossy-reflections`: off unless a test turns it on.
+    pub glossy_reflections: bool,
 }
 
 impl CaptureFixture {
@@ -177,7 +185,8 @@ impl CaptureFixture {
         let mut keys = HashMap::new();
         for (index, (name, mips)) in fixture_materials().into_iter().enumerate() {
             let key = [index as u8 + 1; 32];
-            write_mip_prm(prm_dir.path(), key, mips);
+            let specular = (name == GLOSSY_FLOOR_TEXTURE).then_some(GLOSSY_SPECULAR);
+            write_mip_prm(prm_dir.path(), key, mips, specular);
             keys.insert(name.to_string(), key);
         }
         // Uniform base SH 1 over the room and past it.
@@ -201,6 +210,7 @@ impl CaptureFixture {
             alpha_lights: AlphaLightsSection::default(),
             chunk_list: ChunkLightListSection::placeholder(),
             weight_maps: None,
+            glossy_reflections: false,
         }
     }
 
@@ -400,6 +410,7 @@ impl CaptureFixture {
             emissive_volumes: &[],
             area_glow: None,
             prm_root: self.prm_dir.path(),
+            glossy_reflections: self.glossy_reflections,
         })
     }
 
@@ -454,12 +465,24 @@ pub(super) fn toward(from: Vec3, q: [f64; 3]) -> (Vec3, f32) {
     (offset.normalize().as_vec3(), offset.length() as f32)
 }
 
-/// A 4×4 diffuse `.prm` of three mip levels, at `key`.
-fn write_mip_prm(dir: &Path, key: [u8; 32], payload: MipPayload) {
+/// A 4×4 diffuse `.prm` of three mip levels, at `key`, with a uniform
+/// specular slot of `specular` when given.
+fn write_mip_prm(dir: &Path, key: [u8; 32], payload: MipPayload, specular: Option<[u8; 4]>) {
+    let mut slot_mask = PrmSlots::DIFFUSE;
+    let specular = specular.map(|texel| {
+        slot_mask |= PrmSlots::SPECULAR;
+        PrmSlot {
+            format: PrmFormat::Rgba8Unorm,
+            width: 4,
+            height: 4,
+            level_count: 3,
+            payload: [16, 4, 1].iter().flat_map(|&n| texel.repeat(n)).collect(),
+        }
+    });
     let prm = PrmFile {
         header: PrmHeader {
             stage_version: STAGE_VERSION,
-            slot_mask: PrmSlots::DIFFUSE,
+            slot_mask,
             bundle_hash: [0; 32],
             total_body_bytes: 0,
             layer_count: 1,
@@ -472,7 +495,7 @@ fn write_mip_prm(dir: &Path, key: [u8; 32], payload: MipPayload) {
                 level_count: 3,
                 payload,
             }),
-            None,
+            specular,
             None,
             None,
         ],

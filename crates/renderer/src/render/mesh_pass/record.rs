@@ -5,6 +5,7 @@ use postretro_render_cpu::mesh_instances::MeshFramePlan;
 
 use super::{LevelModels, MeshPass, UploadedModel};
 use crate::render::LevelLightGroups;
+use crate::render::glossy_floor::ColourOutputs;
 
 impl MeshPass {
     /// Record the forward skinned-mesh draws from the already-uploaded buffers.
@@ -22,17 +23,28 @@ impl MeshPass {
     /// lights. Filter `forward_visible` so those instances feed shadow depth but
     /// skip the color pass, batching contiguous visible runs so the common
     /// all-visible frame issues one draw per group/submesh. Instances only
-    /// the planar mirror reaches never draw here.
+    /// the planar mirror reaches never draw here. `outputs` is the form the
+    /// caller's pass attaches.
     pub(in crate::render) fn record_draws(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         models: &LevelModels,
         lights: &LevelLightGroups,
         plan: &MeshFramePlan,
+        outputs: ColourOutputs,
     ) {
-        self.record_draws_where(pass, models, lights, plan, false, |instance| {
-            instance.forward_visible
-        });
+        let pipeline = match outputs {
+            ColourOutputs::Colour => &self.pipeline,
+            ColourOutputs::HighlightFree => &self.highlight_free_pipeline,
+        };
+        self.record_draws_where(
+            pass,
+            models,
+            plan,
+            pipeline,
+            lights.select(false),
+            |instance| instance.forward_visible,
+        );
     }
 
     /// The planar mirror's skinned-mesh draws from the same uploaded buffers:
@@ -51,32 +63,33 @@ impl MeshPass {
         self.record_draws_where(
             pass,
             models,
-            lights,
             plan,
-            self.mirror_light_records,
+            &self.pipeline,
+            lights.select(self.mirror_light_records),
             |instance| instance.mirror.drawn(),
         );
     }
 
     /// One instanced draw per maximal contiguous run of instances `drawn`
-    /// admits, per group and submesh.
+    /// admits, per group and submesh, through `pipeline` (the form the
+    /// caller's pass attaches) with `lights` as group 2.
     fn record_draws_where(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         models: &LevelModels,
-        lights: &LevelLightGroups,
         plan: &MeshFramePlan,
-        mirror_light_records: bool,
+        pipeline: &wgpu::RenderPipeline,
+        lights: &wgpu::BindGroup,
         drawn: impl Fn(&postretro_render_cpu::mesh_instances::PlannedInstance) -> bool,
     ) {
         if plan.groups.is_empty() {
             return;
         }
 
-        pass.set_pipeline(&self.pipeline);
+        pass.set_pipeline(pipeline);
         // Group 2 (runtime direct lighting): the active level's light buffers +
         // the per-frame params uniform. Set once for the frame.
-        pass.set_bind_group(2, lights.select(mirror_light_records), &[]);
+        pass.set_bind_group(2, lights, &[]);
         // Group 3 (palette + instance SSBO) is shared across every group/submesh
         // this frame — set once. The shader selects each instance's run via
         // `@builtin(instance_index)` against the densely-packed SSBO.

@@ -7,16 +7,52 @@ use postretro_level_format::reflection_probes::{
     reflection_probe_lobe_weights,
 };
 
+use super::facing::Facing;
+
 const LOBES: usize = REFLECTION_PROBE_LOBE_COUNT;
 const K: usize = REFLECTION_PROBE_LIGHTS_PER_PROBE;
 
 type LobeSums = [[f64; 3]; LOBES];
 
+/// The half of the sphere a probe's faces read: its shares cover it, and its
+/// colour mips past 0 are prefiltered from it alone.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum ShareHemisphere {
+    /// Up-facing faces, water's and glossy floors': `y ≥ 0`, as water's
+    /// shares always were.
+    Up,
+    /// Around a wall's, ceiling's or slope's unit normal.
+    Around(Vec3),
+}
+
+impl ShareHemisphere {
+    pub(crate) fn of(facing: &Facing) -> Self {
+        match facing {
+            Facing::Up => Self::Up,
+            Facing::Other(_) => Self::Around(facing.normal().as_vec3()),
+        }
+    }
+
+    fn excludes(&self, direction: Vec3) -> bool {
+        match self {
+            Self::Up => direction.y < 0.0,
+            Self::Around(normal) => direction.dot(*normal) < 0.0,
+        }
+    }
+
+    /// Whether `direction` lies in the hemisphere, its horizon included.
+    pub(crate) fn holds(&self, direction: Vec3) -> bool {
+        !self.excludes(direction)
+    }
+}
+
 /// Lobe-weighted, solid-angle-weighted radiance sums over a probe's captured
-/// samples in the upper hemisphere: the captured total, and each animated
-/// light's part of it at its reference value. Every runtime lookup is clamped
-/// to the horizon, so light only the lower hemisphere holds (a pool floor
-/// below the capture point) never reaches the water and takes no share; the
+/// samples in its faces' hemisphere ([`ShareHemisphere`]): the captured
+/// total, and each animated light's part of it at its reference value. Every
+/// runtime lookup is clamped to that hemisphere, so light only the other
+/// half holds (a pool floor below the capture point) never reaches the face
+/// and takes no share; up-facing probes leave the −Y lobe empty, so water's
+/// −Y share is 0, and a ceiling's probe fills −Y and leaves +Y empty. The
 /// tile itself still holds the full sphere. Rows sum independently and merge
 /// in row order, so the result never depends on the worker count; no
 /// per-texel per-light value is ever held.
@@ -75,16 +111,18 @@ impl ShareReport {
 impl ShareSums {
     /// One captured sample in `direction`, standing for `solid_angle`: its
     /// captured radiance and each animated light's unit term, which counts at
-    /// the light's reference value. A sample below the horizon adds nothing.
+    /// the light's reference value. A sample outside `hemisphere` adds
+    /// nothing.
     pub(crate) fn add(
         &mut self,
+        hemisphere: ShareHemisphere,
         direction: Vec3,
         solid_angle: f32,
         capture: Vec3,
         animated: &[(u32, Vec3)],
         references: &[[f32; 3]],
     ) {
-        if direction.y < 0.0 {
+        if hemisphere.excludes(direction) {
             return;
         }
         let lobes = reflection_probe_lobe_weights(direction.to_array());
@@ -116,7 +154,7 @@ impl ShareSums {
 
     /// The K lights of largest total contribution (their lobe-weighted
     /// captured radiance summed over lobes and channels: the light's captured
-    /// energy over the upper hemisphere), ties to the lower roster index, each
+    /// energy over the probe's hemisphere), ties to the lower roster index, each
     /// with its per-lobe per-channel fraction of the captured light. A lobe
     /// that captured nothing in a channel stores 0 there. A light whose
     /// reference has a negative channel is never stored, since the section
@@ -282,7 +320,14 @@ mod tests {
     fn sums_of(samples: &[Sample], references: &[[f32; 3]]) -> ShareSums {
         let mut sums = ShareSums::default();
         for (direction, capture, animated) in samples {
-            sums.add(*direction, 1.0, *capture, animated, references);
+            sums.add(
+                ShareHemisphere::Up,
+                *direction,
+                1.0,
+                *capture,
+                animated,
+                references,
+            );
         }
         sums
     }
@@ -366,10 +411,36 @@ mod tests {
             .map(|e| e.roster_index)
             .collect();
         assert_eq!(stored, [1]);
-        // Light 1 is all the +X lobe captured above the horizon.
+        // Light 1 is all the +X lobe captured above the horizon; −Y, the
+        // last lobe, captured nothing.
         assert_eq!(shares.entries[0].shares[1], [1.0; 3]);
+        assert_eq!(shares.entries[0].shares[LOBES - 1], [0.0; 3]);
         assert_eq!(shares.report.animated_lights, 1);
         assert_eq!(shares.report.covered, 1.0);
+    }
+
+    // A ceiling's probe reads the lower hemisphere, so light below
+    // it takes a share on −Y and nothing above it reaches +Y.
+    #[test]
+    fn a_ceilings_shares_cover_its_lower_hemisphere_alone() {
+        let references = [[1.0; 3]];
+        let ceiling = ShareHemisphere::Around(Vec3::NEG_Y);
+        let mut sums = ShareSums::default();
+        for direction in [Vec3::NEG_Y, Vec3::Y, Vec3::new(1.0, 0.5, 0.0).normalize()] {
+            sums.add(
+                ceiling,
+                direction,
+                1.0,
+                Vec3::ONE,
+                &[(0, Vec3::ONE)],
+                &references,
+            );
+        }
+        let shares = sums.finish(&references);
+        assert_eq!(shares.entries[0].roster_index, 0);
+        assert_eq!(shares.entries[0].shares[LOBES - 1], [1.0; 3]);
+        assert_eq!(shares.entries[0].shares[0], [0.0; 3], "+Y is behind it");
+        assert_eq!(shares.entries[0].shares[1], [0.0; 3], "so is +X above it");
     }
 
     // The section refuses a negative reference: such a light is never

@@ -1,6 +1,7 @@
 //! Reflection-probe capture stage (PRL id 54): place authored and derived
-//! probes over up-facing fluid faces, capture each probe's static world into
-//! an octahedral colour tile and a distance tile.
+//! probes over up-facing fluid faces and, behind `--glossy-reflections`,
+//! glossy world faces of every facing; capture each probe's static world
+//! into an octahedral colour tile and a distance tile.
 //! See: context/lib/resource_management.md §5 · build_pipeline.md §Compiler pipeline, §Build Cache
 
 mod animated_direct;
@@ -8,6 +9,7 @@ mod authored;
 mod box_fit;
 mod capture;
 mod capture_bounds;
+mod capture_brushes;
 mod capture_exclusion;
 mod capture_fill;
 mod capture_point;
@@ -17,19 +19,33 @@ mod derived;
 mod emissive_factor;
 mod exclusion;
 mod exclusion_underside;
+mod facing;
+mod fit_frame;
+mod front_side;
+mod glossy_census;
+mod glossy_materials;
+mod glossy_placement;
 mod hit;
 mod lightmap_sample;
 pub(crate) mod placement;
+mod plane_basis;
+mod prefilter;
+mod probe_capture;
+mod probe_log;
 mod reference;
 mod roster;
 mod sdf_lights;
+mod self_transparency;
 mod sh_sample;
 mod shading;
 mod share;
 mod stage_key;
+mod world_reflectors;
 
 #[cfg(test)]
 mod area_glow_capture_tests;
+#[cfg(test)]
+mod box_fit_tests;
 #[cfg(test)]
 mod capture_exclusion_held_tests;
 #[cfg(test)]
@@ -45,9 +61,23 @@ mod capture_tests;
 #[cfg(test)]
 mod distance_tests;
 #[cfg(test)]
+mod exclusion_glossy_stage_tests;
+#[cfg(test)]
+mod exclusion_glossy_tests;
+#[cfg(test)]
 mod exclusion_stage_tests;
 #[cfg(test)]
 mod exclusion_tests;
+#[cfg(test)]
+mod glossy_census_prl_tests;
+#[cfg(test)]
+mod glossy_census_tests;
+#[cfg(test)]
+mod glossy_facing_tests;
+#[cfg(test)]
+mod glossy_placement_tests;
+#[cfg(test)]
+mod placement_cap_tests;
 #[cfg(test)]
 pub(crate) mod placement_test_fixtures;
 #[cfg(test)]
@@ -69,15 +99,10 @@ use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
 use postretro_level_format::emissive::{EmissiveTexture, EmissiveVolumeRecord};
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
-use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, LightmapSection};
+use postretro_level_format::lightmap::LightmapSection;
 use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
-use postretro_level_format::reflection_probes::{
-    MAX_REFLECTION_PROBES, REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
-    REFLECTION_PROBE_LIGHTS_PER_PROBE, REFLECTION_PROBE_TILE_BORDER,
-    REFLECTION_PROBE_TILE_DIMENSION, ReflectionProbeRecord, ReflectionProbesSection,
-};
+use postretro_level_format::reflection_probes::{MAX_REFLECTION_PROBES, ReflectionProbesSection};
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
-use rayon::prelude::*;
 
 use crate::bake_control::BakeControl;
 use crate::bvh_build::BvhPrimitive;
@@ -89,21 +114,28 @@ use crate::partition::BspTree;
 use crate::surface_materials::SurfaceMaterials;
 use animated_direct::AnimatedDirectSampler;
 use box_fit::WorldBounds;
-use capture::{RowCapture, TILE_INTERIOR, capture_row, encode_distance_tile, encode_tile};
-use capture_exclusion::{BrushFaces, CaptureBrushes, ProbeExclusion};
+use capture_brushes::{BrushFaces, CaptureBrushes};
+use capture_exclusion::ProbeExclusion;
 use capture_point::PointClassifier;
-use capture_visibility::warn_hidden_water;
+use capture_visibility::warn_hidden_reflectors;
 use delta_sample::DeltaShSampler;
 use emissive_factor::{AreaGlowFaces, EmissiveFaceFactors};
 use exclusion::{ExclusionConstants, ExclusionScene, classify_probes_within_boxes};
 pub(crate) use hit::SceneTracer;
 use lightmap_sample::LightmapSampler;
-use placement::{PlacedProbe, PlacementScene, bindings, place_probes, up_facing_faces};
+#[cfg(test)]
+use placement::fluid_bindings;
+use placement::{PlacedProbe, PlacementScene, place_probes, up_facing_faces};
+use probe_capture::capture_probes;
+#[cfg(test)]
+use probe_capture::capture_section;
+use probe_log::log_probes;
 use roster::{check_roster, references};
 use sdf_lights::SdfLights;
+use self_transparency::transparent_faces;
 use sh_sample::{PRODUCTION_PROBE_OCCLUSION, ShVolumeSampler};
 use shading::CaptureScene;
-use share::{ShareReport, ShareSums, log_negative_references};
+use share::log_negative_references;
 use stage_key::{cache_key, cache_payload, parse_cache_payload};
 
 /// Cache stage identity for the whole id-54 section.
@@ -137,7 +169,11 @@ const STAGE_ID: &str = "reflection_probes";
 /// with an `_e` map), not the texture-name prefix, times a member face's
 /// emissive volume `max × colour`; the key gains each volume's factor and
 /// faces.
-const STAGE_VERSION: u32 = 15;
+/// 16: id 54 version 3: six lobes (−Y appended, zero for water), a colour
+/// mip count (1), and a world binding list. Glossy placement added no
+/// version: the key gained the gate, each probe's world faces and its
+/// transparent faces, so no earlier entry can hit.
+const STAGE_VERSION: u32 = 16;
 
 /// What the stage reads. Everything here enters its cache key.
 pub(crate) struct ReflectionProbeInputs<'a> {
@@ -197,6 +233,10 @@ pub(crate) struct ReflectionProbeInputs<'a> {
     /// light's glow, `_glow` keying this stage and no lighting bake.
     pub area_glow: Option<&'a AreaGlowSection>,
     pub prm_root: &'a Path,
+    /// `prl-build --glossy-reflections`: glossy world faces take probes,
+    /// derived or authored. Off, every map bakes as it did before glossy
+    /// placement, its glossy materials included.
+    pub glossy_reflections: bool,
 }
 
 /// The bindings placement gives `environment` over a compiled static world,
@@ -206,7 +246,7 @@ pub(crate) fn placed_bindings(
     environment: &EnvironmentVolumesSection,
     authored: &[MapReflectionVolume],
     world: &crate::fixture_pipeline::FixturePipeline,
-) -> Vec<postretro_level_format::reflection_probes::ReflectionProbeBinding> {
+) -> Vec<postretro_level_format::reflection_probes::ReflectionProbeFluidBinding> {
     let bounds =
         WorldBounds::from_positions(world.geometry.geometry.vertices.iter().map(|v| &v.position))
             .expect("the level has static world");
@@ -217,6 +257,7 @@ pub(crate) fn placed_bindings(
     let probes = place_probes(
         environment,
         authored,
+        &[],
         &PlacementScene {
             tracer: &tracer,
             bounds: &bounds,
@@ -226,7 +267,7 @@ pub(crate) fn placed_bindings(
         MAX_REFLECTION_PROBES,
     )
     .expect("placement keeps within the cap");
-    bindings(&probes)
+    fluid_bindings(&probes)
 }
 
 /// Id 54 for the level, from the cache when its key hits; `None` when no
@@ -242,6 +283,7 @@ pub(crate) fn bake_or_load_reflection_probes(
         control,
         &ExclusionConstants::PRODUCTION,
         classify_probes_within_boxes,
+        Reflectors::SelfTransparent,
     )
 }
 
@@ -259,6 +301,7 @@ pub(crate) fn bake_or_load_under(
         control,
         constants,
         classify_probes_within_boxes,
+        Reflectors::SelfTransparent,
     )
 }
 
@@ -276,7 +319,39 @@ pub(crate) fn bake_or_load_unfiltered(
         control,
         &ExclusionConstants::PRODUCTION,
         |_, probes, _| vec![Vec::new(); probes.len()],
+        Reflectors::SelfTransparent,
     )
+}
+
+/// The stage with glossy probes' primary rays under `reflectors`: tests
+/// compare the self-transparent capture with the self-occluded ones it
+/// exists to avoid.
+#[cfg(test)]
+pub(crate) fn bake_or_load_with_reflectors(
+    inputs: &ReflectionProbeInputs<'_>,
+    reflectors: Reflectors,
+) -> anyhow::Result<Option<ReflectionProbesSection>> {
+    bake_or_load_with(
+        inputs,
+        None,
+        &BakeControl::unrestricted(),
+        &ExclusionConstants::PRODUCTION,
+        classify_probes_within_boxes,
+        reflectors,
+    )
+}
+
+/// What a glossy probe's primary rays pass through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reflectors {
+    /// Every face in its reflector plane, bound or not: production.
+    SelfTransparent,
+    /// Nothing: its own floor is in its capture.
+    #[cfg(test)]
+    Opaque,
+    /// Its bound faces alone: a coplanar matte face stays in its capture.
+    #[cfg(test)]
+    BoundOnly,
 }
 
 /// The stage, each placed probe's excluded set from `classify` under
@@ -287,9 +362,13 @@ fn bake_or_load_with(
     control: &BakeControl,
     constants: &ExclusionConstants,
     classify: impl FnOnce(&ExclusionScene<'_>, &[PlacedProbe], &ExclusionConstants) -> Vec<Vec<u32>>,
+    reflectors: Reflectors,
 ) -> anyhow::Result<Option<ReflectionProbesSection>> {
+    // Under the gate alone: without it no sidecar is read and no census logs.
+    let world_faces = glossy_placement::glossy_world_faces(inputs, control.governor());
     if inputs.reflection_volumes.is_empty()
         && up_facing_faces(inputs.environment_volumes).is_empty()
+        && world_faces.is_empty()
     {
         return Ok(None);
     }
@@ -315,6 +394,7 @@ fn bake_or_load_with(
     let probes = place_probes(
         inputs.environment_volumes,
         inputs.reflection_volumes,
+        &world_faces,
         &PlacementScene {
             tracer: &tracer,
             bounds: &bounds,
@@ -352,6 +432,7 @@ fn bake_or_load_with(
             face_brush: inputs.face_brushes,
             geometry: inputs.geometry,
             environment_volumes: inputs.environment_volumes,
+            world_faces: &world_faces,
         },
         &probes,
         constants,
@@ -368,10 +449,20 @@ fn bake_or_load_with(
         face_brushes: inputs.face_brushes,
         faces: &brush_faces,
     };
+    let transparent = match reflectors {
+        Reflectors::SelfTransparent => transparent_faces(inputs.geometry, &probes, &world_faces),
+        #[cfg(test)]
+        Reflectors::Opaque => vec![Vec::new(); probes.len()],
+        #[cfg(test)]
+        Reflectors::BoundOnly => probes.iter().map(|p| p.world_faces.clone()).collect(),
+    };
     let exclusions: Vec<ProbeExclusion<'_>> = probes
         .iter()
         .zip(&excluded)
-        .map(|(probe, set)| ProbeExclusion::new(&tracer, brushes, set, probe))
+        .zip(transparent)
+        .map(|((probe, set), faces)| {
+            ProbeExclusion::new(&tracer, brushes, set, probe).with_transparent_faces(&tracer, faces)
+        })
         .collect();
     for (index, exclusion) in exclusions.iter().enumerate() {
         log::info!(
@@ -401,7 +492,7 @@ fn bake_or_load_with(
     {
         log::info!("[cache] reflection_probes hit");
         log_probes(&section, &reports);
-        warn_hidden_water(&section, &probes, inputs.environment_volumes);
+        warn_hidden_reflectors(&section, &probes, inputs.environment_volumes, &world_faces);
         return Ok(Some(section));
     }
     log::info!("[cache] reflection_probes miss");
@@ -453,178 +544,6 @@ fn bake_or_load_with(
         cache.put(&key, &cache_payload(&section, &reports));
     }
     log_probes(&section, &reports);
-    warn_hidden_water(&section, &probes, inputs.environment_volumes);
+    warn_hidden_reflectors(&section, &probes, inputs.environment_volumes, &world_faces);
     Ok(Some(section))
-}
-
-/// [`capture_probes`] with each probe's primary rays skipping its
-/// `excluded` brushes (sorted brush indices, one set per probe).
-#[cfg(test)]
-fn capture_section(
-    scene: &CaptureScene<'_>,
-    probes: &[PlacedProbe],
-    excluded: &[Vec<u32>],
-    references: &[[f32; 3]],
-    control: &BakeControl,
-) -> anyhow::Result<(ReflectionProbesSection, Vec<ShareReport>)> {
-    anyhow::ensure!(
-        excluded.len() == probes.len(),
-        "{} excluded set(s) for {} probe(s)",
-        excluded.len(),
-        probes.len()
-    );
-    let exclusions: Vec<ProbeExclusion<'_>> = probes
-        .iter()
-        .zip(excluded)
-        .map(|(probe, excluded)| ProbeExclusion::new(&scene.tracer, scene.brushes, excluded, probe))
-        .collect();
-    capture_probes(scene, probes, &exclusions, references, control)
-}
-
-/// Capture every probe's colour and distance tiles and light share, each
-/// probe's primary rays under its exclusion (one per probe). Work items are
-/// tile rows, so one probe spreads across workers; rows land in item order
-/// and each probe's share sums merge in row order, so the bytes never depend
-/// on the worker count.
-fn capture_probes(
-    scene: &CaptureScene<'_>,
-    probes: &[PlacedProbe],
-    exclusions: &[ProbeExclusion<'_>],
-    references: &[[f32; 3]],
-    control: &BakeControl,
-) -> anyhow::Result<(ReflectionProbesSection, Vec<ShareReport>)> {
-    anyhow::ensure!(
-        exclusions.len() == probes.len(),
-        "{} exclusion(s) for {} probe(s)",
-        exclusions.len(),
-        probes.len()
-    );
-    let rows_per_tile = TILE_INTERIOR as usize;
-    let items: Vec<(usize, u32)> = (0..probes.len())
-        .flat_map(|probe| (0..TILE_INTERIOR).map(move |row| (probe, row)))
-        .collect();
-    control.publish_total(items.len());
-    let rows = items
-        .par_iter()
-        .map(|&(probe, row)| {
-            let _permit = control.governor().enter();
-            let captured = capture_row(
-                scene,
-                probes[probe].capture_point_vec3(),
-                &exclusions[probe],
-                row,
-                references,
-            );
-            control.advance(1);
-            captured
-        })
-        .collect::<anyhow::Result<Vec<RowCapture>>>()?;
-    let tiles: Vec<Vec<u8>> = rows
-        .par_chunks(rows_per_tile)
-        .map(|rows| {
-            let _permit = control.governor().enter();
-            let texels: Vec<&[glam::Vec3]> = rows.iter().map(|r| r.texels.as_slice()).collect();
-            encode_tile(&texels)
-        })
-        .collect();
-    let distances: Vec<u8> = rows
-        .chunks(rows_per_tile)
-        .flat_map(|rows| {
-            let texels: Vec<&[f32]> = rows.iter().map(|r| r.distances.as_slice()).collect();
-            encode_distance_tile(&texels)
-        })
-        .collect();
-    let shares: Vec<_> = rows
-        .chunks(rows_per_tile)
-        .map(|rows| {
-            let mut sums = ShareSums::default();
-            for row in rows {
-                sums.merge(&row.shares);
-            }
-            sums.finish(references)
-        })
-        .collect();
-
-    let section = ReflectionProbesSection {
-        tile_dimension: REFLECTION_PROBE_TILE_DIMENSION,
-        tile_border: REFLECTION_PROBE_TILE_BORDER,
-        atlas_format: IRRADIANCE_FORMAT_BC6H,
-        probes: probes
-            .iter()
-            .zip(&shares)
-            .enumerate()
-            .map(|(layer, (probe, share))| ReflectionProbeRecord {
-                source_entity: probe.source_entity,
-                box_min: probe.box_min,
-                box_max: probe.box_max,
-                capture_point: probe.capture_point,
-                layer: layer as u32,
-                lights: share.entries,
-            })
-            .collect(),
-        bindings: bindings(probes),
-        tiles: tiles.concat(),
-        distance_format: REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
-        distances,
-    };
-    Ok((section, shares.iter().map(|share| share.report).collect()))
-}
-
-fn log_probes(section: &ReflectionProbesSection, reports: &[ShareReport]) {
-    for (index, (probe, report)) in section.probes.iter().zip(reports).enumerate() {
-        let faces = section
-            .bindings
-            .iter()
-            .filter(|b| b.probe as usize == index)
-            .count();
-        log::info!(
-            "[ReflectionProbes] probe {index}: entity {}, box {:?}..{:?}, capture point {:?}, \
-             {faces} face(s)",
-            probe.source_entity,
-            probe.box_min,
-            probe.box_max,
-            probe.capture_point,
-        );
-        if report.animated_lights == 0 {
-            log::info!("[ReflectionProbes] probe {index}: no animated light reaches its capture");
-            continue;
-        }
-        let stored: Vec<String> = probe
-            .lights
-            .iter()
-            .zip(report.totals)
-            .filter(|(light, _)| light.is_used())
-            .map(|(light, total)| {
-                format!(
-                    "light {} (reference [{:.3}, {:.3}, {:.3}], {:.3} of the capture)",
-                    light.roster_index,
-                    light.reference[0],
-                    light.reference[1],
-                    light.reference[2],
-                    total
-                )
-            })
-            .collect();
-        log::info!(
-            "[ReflectionProbes] probe {index}: covered share {:.3} of {} animated light(s); \
-             stored {}",
-            report.covered,
-            report.animated_lights,
-            stored.join(", "),
-        );
-        let held = report.animated_lights as usize - stored.len();
-        if held > 0 {
-            log::info!(
-                "[ReflectionProbes] probe {index}: {held} animated light(s) past the \
-                 {REFLECTION_PROBE_LIGHTS_PER_PROBE} stored stay at reference; covered share {:.3}",
-                report.covered,
-            );
-        }
-    }
-    log::info!(
-        "[ReflectionProbes] {} probe(s), {} binding(s), {} tile byte(s)",
-        section.probes.len(),
-        section.bindings.len(),
-        section.tiles.len()
-    );
 }

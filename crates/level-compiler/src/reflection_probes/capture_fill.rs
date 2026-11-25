@@ -4,7 +4,8 @@
 use glam::{DVec3, Vec3};
 
 use super::capture_bounds::outside_by;
-use super::capture_exclusion::{BrushFaces, CONTACT_TOLERANCE_M};
+use super::capture_brushes::BrushFaces;
+use super::capture_exclusion::CONTACT_TOLERANCE_M;
 use super::hit::{SceneTracer, SurfaceHit, SurfacePoint};
 use crate::geometry::{GeometryResult, brush_side_texel_uv};
 use crate::map_data::{BrushSide, BrushVolume};

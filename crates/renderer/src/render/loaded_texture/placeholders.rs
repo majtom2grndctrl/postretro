@@ -127,6 +127,8 @@ pub(in crate::render) fn placeholder_loaded_texture(
         emissive_view,
         mip_count: 1,
         surface_relief: SurfaceReliefLevels::FLAT,
+        reflects: false,
+        normal_mapped: false,
     }
 }
 

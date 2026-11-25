@@ -88,13 +88,15 @@ fn a_light_reaching_only_below_the_horizon_takes_no_share_and_no_slot() {
         .map(|l| l.roster_index)
         .collect();
     assert_eq!(stored, [1], "{lights:?}");
-    // Above the horizon light 1 is all the light every lobe captured; the
-    // lit floor would otherwise fill a quarter of each horizontal lobe.
-    for lobe in &lights[0].shares {
+    // Above the horizon light 1 is all the light every lobe the water reads
+    // captured; −Y, the last lobe, captures nothing for up-facing water.
+    let (above, down) = lights[0].shares.split_at(DOWN_LOBE);
+    for lobe in above {
         for share in lobe {
             assert!((share - 1.0).abs() < 1e-4, "{lights:?}");
         }
     }
+    assert_eq!(down, [[0.0; 3]], "{lights:?}");
 }
 
 // Row 12: bounce enters at the production indirect weight, base and delta
@@ -151,6 +153,9 @@ fn sdf_room(occluder: bool) -> super::tests::LitFloorRoom {
 
 /// The capture point of [`pool`]'s probe.
 const CAPTURE: Vec3 = Vec3::new(0.0, 0.502, 0.0);
+/// The −Y lobe, last in lobe order; an up-facing water probe's shares skip
+/// the lower hemisphere, so it stays empty.
+const DOWN_LOBE: usize = REFLECTION_PROBE_LOBE_COUNT - 1;
 
 // P19: a room lit only by a baked sdf light; a hit occluded from it carries
 // none of its direct.
@@ -227,7 +232,8 @@ fn lobe_integrals(
     layer: usize,
 ) -> [[f64; 3]; REFLECTION_PROBE_LOBE_COUNT] {
     let dimension = section.tile_dimension;
-    let decoded = decode_bc6h_rgb_to_f32_rgba(section.tile(layer), dimension, dimension).unwrap();
+    let decoded =
+        decode_bc6h_rgb_to_f32_rgba(section.colour_tile(layer, 0), dimension, dimension).unwrap();
     let mut sums = [[0.0f64; 3]; REFLECTION_PROBE_LOBE_COUNT];
     for y in 0..TILE_INTERIOR {
         for x in 0..TILE_INTERIOR {
@@ -324,7 +330,10 @@ fn stored_shares_are_each_lights_fraction_of_the_captured_light_per_lobe() {
         .find(|e| e.roster_index == 1)
         .unwrap();
     assert!(ceiling.shares[0][2] > 0.9, "{ceiling:?}");
-    for lobe in 0..REFLECTION_PROBE_LOBE_COUNT {
+    // −Y captures nothing for up-facing water, so neither light has a share.
+    assert_eq!(floor.shares[DOWN_LOBE], [0.0; 3], "{floor:?}");
+    assert_eq!(ceiling.shares[DOWN_LOBE], [0.0; 3], "{ceiling:?}");
+    for lobe in 0..DOWN_LOBE {
         for c in 0..3 {
             let sum = floor.shares[lobe][c] + ceiling.shares[lobe][c];
             assert!(
@@ -379,11 +388,13 @@ fn a_dark_lobe_stores_zero_shares_and_never_nan() {
     let section = bake(&room, &pool()).unwrap();
     let entry = &section.probes[0].lights[0];
     assert_eq!(entry.roster_index, 0);
-    // Every lobe's red is the light's; green and blue capture nothing.
-    for lobe in &entry.shares {
+    // Every lobe the water reads has the light's red; green and blue capture
+    // nothing, and −Y captures nothing at all.
+    for lobe in &entry.shares[..DOWN_LOBE] {
         assert!((lobe[0] - 1.0).abs() < 1e-5, "{entry:?}");
         assert_eq!((lobe[1], lobe[2]), (0.0, 0.0));
     }
+    assert_eq!(entry.shares[DOWN_LOBE], [0.0; 3], "{entry:?}");
     assert!(
         section.probes[0]
             .lights

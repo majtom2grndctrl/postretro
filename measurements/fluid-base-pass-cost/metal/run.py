@@ -121,6 +121,9 @@ if IMPL == "1660":
 FREE_MASK = 0x17F & ~0x40
 RATIOS = {"": False, "r1": True}
 ENGINE_ENV = {"POSTRETRO_SH_STREAMING": "sync-proof", "RUST_LOG": "info"}
+# False for a map without fluid (glossy-world-reflections driver): the fluid
+# pass may be absent and the complete-frame basis checks its own labels.
+REQUIRE_FLUID = True
 # Another engine, cargo or compiler process skews GPU pass times and the batch
 # must not start or continue beside one.
 BUSY_PROCESSES = ("postretro", "cargo", "rustc", "prl-build")
@@ -330,6 +333,9 @@ def run_one(label, arm, round_i, args, trace_dir, flags):
             x = subprocess.Popen(cmd, cwd=ROOT, env=engine_env(), stdout=sf, stderr=subprocess.STDOUT)
             report_seen = interrupted = None
             timeout = float(os.environ.get("RECORD_TIMEOUT", "1200"))
+            # Seconds xctrace may keep saving after the engine's report appears
+            # (XCTRACE_GRACE, default 180) before it is interrupted.
+            grace = float(os.environ.get("XCTRACE_GRACE", "180"))
             # Watchdog: xctrace record can hang after the target exits and stall
             # a batch (rendering_pipeline.md section 12).
             while x.poll() is None:
@@ -337,8 +343,8 @@ def run_one(label, arm, round_i, args, trace_dir, flags):
                 if report_seen is None and report.exists():
                     report_seen = now
                     sampling.clear()  # the timed span is over; setup and finalize are not clock-relevant
-                if report_seen and interrupted is None and now - report_seen > 180:
-                    record["problems"].append("xctrace still running 180 s after the engine finished; interrupted")
+                if report_seen and interrupted is None and now - report_seen > grace:
+                    record["problems"].append(f"xctrace still running {grace:.0f} s after the engine finished; interrupted")
                     x.send_signal(signal.SIGINT)
                     interrupted = now
                 if interrupted and now - interrupted > 180:
@@ -434,9 +440,9 @@ def run_one(label, arm, round_i, args, trace_dir, flags):
             # every required row, so no label is shifted.
             record["basis"] = "complete"
             record["steady_frames"] = complete["steady_frames"]
-            record["fluid_ms"] = complete["passes"][FLUID_LABEL]["per_frame_ms"]
-            record["fluid_ms_p10_p90"] = [complete["passes"][FLUID_LABEL]["p10_ms"],
-                                          complete["passes"][FLUID_LABEL]["p90_ms"]]
+            fp = complete["passes"].get(FLUID_LABEL)
+            record["fluid_ms"] = fp["per_frame_ms"] if fp else None
+            record["fluid_ms_p10_p90"] = [fp["p10_ms"], fp["p90_ms"]] if fp else None
             record["forward_ms"] = complete["passes"][FORWARD_LABEL]["per_frame_ms"]
             cell = complete["passes"].get(CELL_LABEL)
             record["cell_ms"] = cell["per_frame_ms"] if cell else 0.0
@@ -466,14 +472,14 @@ def run_one(label, arm, round_i, args, trace_dir, flags):
             record["fluid_ms"] = fluid_all["per_frame_ms"]
             record["forward_ms"] = record["forward_ms_whole_run"]
             record["problems"].append("no steady-state slice: " + str(steady.get("reason", "no expected frames")))
-        if not fluid_all["encoders"]:
+        if REQUIRE_FLUID and not fluid_all["encoders"]:
             record["problems"].append("fluid pass absent from the trace (no Fluid Surface Pass encoders)")
         cell_all = gpu["reported"][CELL_LABEL]["encoders"]
         if arm["mode"] in CELL_MODES and not cell_all:
             record["problems"].append("cell arm recorded no Fluid Reflection Cell Pass encoders")
         if arm["mode"] not in CELL_MODES and cell_all:
             record["problems"].append("per-fragment or free arm recorded Fluid Reflection Cell Pass encoders")
-        if record.get("basis") != "complete":
+        if REQUIRE_FLUID and record.get("basis") != "complete":
             record["problems"].append("cost needs the complete-frame basis (fluid + cell per frame)")
         elif record.get("basis") != "complete" and steady.get("available")                 and steady["passes"][FLUID_LABEL]["encoders"] < 0.95 * steady["frames"]:
             record["problems"].append(

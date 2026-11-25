@@ -1574,13 +1574,15 @@ fn descriptor_reflectivity_limits_match_the_surface_look_packing() {
 fn a_zero_opacity_fog_free_fluid_draws_only_where_a_face_binds_a_probe() {
     use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
     use postretro_level_format::reflection_probes::{
-        REFLECTION_PROBE_LIGHTS_PER_PROBE, ReflectionProbeBinding, ReflectionProbeLightShare,
+        REFLECTION_PROBE_LIGHTS_PER_PROBE, ReflectionProbeFluidBinding, ReflectionProbeLightShare,
         ReflectionProbeRecord, ReflectionProbesSection,
     };
     let probes = ReflectionProbesSection {
         tile_dimension: 4,
         tile_border: 1,
         atlas_format: IRRADIANCE_FORMAT_BC6H,
+        colour_mip_count: 1,
+        world_bindings: Vec::new(),
         probes: vec![ReflectionProbeRecord {
             source_entity: 1,
             box_min: [0.0; 3],
@@ -1590,7 +1592,7 @@ fn a_zero_opacity_fog_free_fluid_draws_only_where_a_face_binds_a_probe() {
             lights: [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE],
         }],
         // Only volume 1's face binds.
-        bindings: vec![ReflectionProbeBinding {
+        fluid_bindings: vec![ReflectionProbeFluidBinding {
             volume: 1,
             face: 0,
             probe: 0,

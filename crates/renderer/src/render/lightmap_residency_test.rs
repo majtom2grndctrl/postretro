@@ -230,6 +230,7 @@ fn offscreen_renderer_meter_is_empty_with_no_active_set() {
             vertices: &[],
             vertex_spec_owners: &[],
             vertex_emissive_volumes: &[],
+            reflection_probes: None,
             emissive_volumes: &[],
             area_glow_lights: &[],
             indices: &[],

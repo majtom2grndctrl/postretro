@@ -13,24 +13,35 @@ pub const NO_WORLD_PROBE: u32 = u32::MAX;
 
 /// One probe index per world vertex: its face's bound probe, or
 /// [`NO_WORLD_PROBE`]. `None` (no allocation) when nothing binds: an empty
-/// list, or faces the BVH leaves cannot reach. `probe_count` bounds the probe
-/// indices the stream may hold; a binding past it binds nothing.
+/// list, or faces the BVH leaves cannot reach. `face_count` is Geometry (id
+/// 17)'s face count, which the bindings index; `probe_count` bounds the probe
+/// indices the stream may hold, and a binding past it binds nothing.
 ///
 /// Each face's indices come from [`face_index_ranges`], with one leaf per
-/// face. The compiler gives every face its own vertices; a vertex two faces
+/// face: a face with no leaf leaves the leaves short of `face_count`, and the
+/// stream is refused rather than let a face read the next face's range. The
+/// compiler gives every face its own vertices; a vertex two faces
 /// share whose bindings differ could carry only one probe, so the stream is
 /// refused whole (logged once) rather than let one face read another's probe.
 pub fn build_vertex_world_probes(
     vertex_count: usize,
     indices: &[u32],
     leaves: &[BvhLeaf],
+    face_count: usize,
     bindings: &[ReflectionProbeWorldBinding],
     probe_count: usize,
 ) -> Option<Vec<u32>> {
     if bindings.is_empty() {
         return None;
     }
-    match stamp(vertex_count, indices, leaves, bindings, probe_count) {
+    match stamp(
+        vertex_count,
+        indices,
+        leaves,
+        face_count,
+        bindings,
+        probe_count,
+    ) {
         Ok(stream) => Some(stream),
         Err(reason) => {
             log::error!(
@@ -46,10 +57,11 @@ fn stamp(
     vertex_count: usize,
     indices: &[u32],
     leaves: &[BvhLeaf],
+    face_count: usize,
     bindings: &[ReflectionProbeWorldBinding],
     probe_count: usize,
 ) -> Result<Vec<u32>, String> {
-    let ranges = face_index_ranges(leaves, leaves.len(), indices.len())?;
+    let ranges = face_index_ranges(leaves, face_count, indices.len())?;
     let mut stream = vec![NO_WORLD_PROBE; vertex_count];
     const UNSTAMPED: usize = usize::MAX;
     let mut stamped_by = vec![UNSTAMPED; vertex_count];
@@ -137,7 +149,7 @@ mod tests {
     fn world_probe_stream_stamps_each_bound_face_and_leaves_the_rest_unbound() {
         let (vertices, indices, leaves) = three_faces();
         let stream =
-            build_vertex_world_probes(vertices, &indices, &leaves, &[bind(0, 3), bind(2, 1)], 4)
+            build_vertex_world_probes(vertices, &indices, &leaves, 3, &[bind(0, 3), bind(2, 1)], 4)
                 .expect("bound faces reach their vertices");
         let n = NO_WORLD_PROBE;
         assert_eq!(stream, vec![3, 3, 3, 3, n, n, n, 1, 1, 1, 1]);
@@ -147,7 +159,7 @@ mod tests {
     fn world_probe_stream_allocates_nothing_without_world_bindings() {
         let (vertices, indices, leaves) = three_faces();
         assert_eq!(
-            build_vertex_world_probes(vertices, &indices, &leaves, &[], 4),
+            build_vertex_world_probes(vertices, &indices, &leaves, 3, &[], 4),
             None
         );
     }
@@ -156,8 +168,44 @@ mod tests {
     fn world_probe_stream_skips_a_binding_past_the_installed_probes() {
         let (vertices, indices, leaves) = three_faces();
         let stream =
-            build_vertex_world_probes(vertices, &indices, &leaves, &[bind(1, 4)], 4).unwrap();
+            build_vertex_world_probes(vertices, &indices, &leaves, 3, &[bind(1, 4)], 4).unwrap();
         assert!(stream.iter().all(|&probe| probe == NO_WORLD_PROBE));
+    }
+
+    /// The `[PRL]` errors `capture` holds.
+    fn prl_errors(capture: &LogCapture) -> usize {
+        capture
+            .records()
+            .into_iter()
+            .filter(|record| record.level == Level::Error && record.message.starts_with("[PRL]"))
+            .count()
+    }
+
+    // A binding is checked against id 17's face count, not the leaf count: a
+    // face with no triangle has no leaf, so the leaves fall short of the faces
+    // and the stream is refused, rather than face 2's binding stamping the
+    // leaf range that belongs to another face.
+    #[test]
+    fn world_probe_stream_refuses_leaves_short_of_the_geometry_face_count() {
+        let capture = LogCapture::start();
+        let (vertices, indices, leaves) = three_faces();
+        assert_eq!(
+            build_vertex_world_probes(vertices, &indices, &leaves, 4, &[bind(2, 0)], 1),
+            None,
+            "four faces, three leaves"
+        );
+        assert_eq!(prl_errors(&capture), 1, "the refused stream logs once");
+    }
+
+    #[test]
+    fn world_probe_stream_refuses_a_binding_past_the_geometry_face_count() {
+        let capture = LogCapture::start();
+        let (vertices, indices, leaves) = three_faces();
+        assert_eq!(
+            build_vertex_world_probes(vertices, &indices, &leaves, 3, &[bind(3, 0)], 1),
+            None
+        );
+        assert_eq!(prl_errors(&capture), 1, "the refused stream logs once");
     }
 
     #[test]
@@ -168,15 +216,10 @@ mod tests {
         let leaves = [leaf(0, 3), leaf(3, 3)];
         for bindings in [[bind(0, 0), bind(1, 1)].as_slice(), &[bind(0, 0)]] {
             assert_eq!(
-                build_vertex_world_probes(5, &indices, &leaves, bindings, 2),
+                build_vertex_world_probes(5, &indices, &leaves, 2, bindings, 2),
                 None
             );
         }
-        let errors = capture
-            .records()
-            .into_iter()
-            .filter(|record| record.level == Level::Error && record.message.starts_with("[PRL]"))
-            .count();
-        assert_eq!(errors, 2, "each refused stream logs once");
+        assert_eq!(prl_errors(&capture), 2, "each refused stream logs once");
     }
 }

@@ -437,7 +437,7 @@ impl ComputeCullPipeline {
 
     /// [`Self::draw_indirect`] over the camera ranges of the buckets `keep`
     /// admits, over the same indirect buffer: forward's two sweeps on a
-    /// glossy level and the glossy overlay.
+    /// glossy level, the glossy overlay and the floor layer's march.
     pub(crate) fn draw_indirect_subset<'a>(
         &'a self,
         render_pass: &mut wgpu::RenderPass<'a>,

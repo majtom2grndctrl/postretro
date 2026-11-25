@@ -71,8 +71,8 @@ pub(crate) fn take_census(geometry: &GeometryResult, materials: &GlossyMaterials
     }
 }
 
-/// Logs the census's line under `materials`' verdicts: on every build, the
-/// opt-in check whether or not glossy placement runs.
+/// Logs the census's line under `materials`' verdicts, on every build that
+/// runs glossy placement.
 pub(crate) fn report_census(geometry: &GeometryResult, materials: &GlossyMaterials) {
     log_census(&take_census(geometry, materials));
 }

@@ -12,9 +12,9 @@ use crate::partition::{BspTree, find_leaf_for_point};
 use super::facing::Facing;
 use super::placement::{CAPTURE_LIFT_M, ReflectorFace};
 
-/// A centroid moved onto the water lands this far inside the face it lands
+/// A centroid moved onto its faces lands this far inside the face it lands
 /// on, toward that face's own centroid (at most halfway): a point exactly on
-/// the edge would sit on the wall plane of the solid that cut the water
+/// the edge would sit on the wall plane of the solid that cut the face
 /// there, where the BSP's side is a tie and capture rays start in the wall.
 /// Twice [`CAPTURE_CLEARANCE_M`], so a move straight off a wall clears it; a
 /// move at a slant to the wall lands closer, and
@@ -32,7 +32,7 @@ pub(crate) const NEAREST_POINT_INSET_M: f64 = 0.02;
 pub(crate) const CAPTURE_CLEARANCE_M: f64 = 0.01;
 /// A centroid within this in-plane distance of a face counts as over it, so
 /// one lying on the shared edge of two pieces stays put.
-const OVER_WATER_EPSILON_M: f64 = 1.0e-6;
+const OVER_FACE_EPSILON_M: f64 = 1.0e-6;
 
 /// In-plane area centroid of `faces`, [`CAPTURE_LIFT_M`] off `plane` along
 /// their facing's normal (above it, for water). A centroid not over any of
@@ -57,19 +57,19 @@ pub(crate) fn capture_point_over(faces: &[&ReflectorFace], plane: f64) -> DVec3 
             nearest = Some((distance, point, face));
         }
     }
-    let (distance, on_water, face) = nearest.expect("a capture point needs at least one face");
-    let horizontal = if distance <= OVER_WATER_EPSILON_M {
+    let (distance, on_face, face) = nearest.expect("a capture point needs at least one face");
+    let in_plane = if distance <= OVER_FACE_EPSILON_M {
         centroid
     } else {
-        let toward = facing.project(face.geometry.centroid) - on_water;
+        let toward = facing.project(face.geometry.centroid) - on_face;
         let length = toward.length();
         if length > 0.0 {
-            on_water + toward * (NEAREST_POINT_INSET_M / length).min(0.5)
+            on_face + toward * (NEAREST_POINT_INSET_M / length).min(0.5)
         } else {
-            on_water
+            on_face
         }
     };
-    facing.lift(horizontal, plane + CAPTURE_LIFT_M)
+    facing.lift(in_plane, plane + CAPTURE_LIFT_M)
 }
 
 /// The point of polygon `outline` (in-plane coordinates) nearest `p`, and
@@ -134,7 +134,7 @@ impl fmt::Display for PointFault {
             Self::InSolid => write!(f, "in solid"),
             Self::Crowded => write!(
                 f,
-                "too close to a wall to move clear of it within its box and over its water"
+                "too close to a wall to move clear of it within its box and in front of its faces"
             ),
             Self::Wedged => write!(f, "too close to walls on both sides to move clear of them"),
             Self::InFluid(entity) => write!(f, "inside fluid entity {entity}"),
@@ -193,9 +193,9 @@ impl<'a> PointClassifier<'a> {
         raw: DVec3,
         box_min: Vec3,
         box_max: Vec3,
-        water: &[&ReflectorFace],
+        faces: &[&ReflectorFace],
     ) -> Result<Vec3, (Vec3, PointFault)> {
-        let facing = water[0].facing;
+        let facing = faces[0].facing;
         let axes = facing.in_plane_axes();
         if let Some(fault) = self.own_fault(raw) {
             return Err((raw.as_vec3(), fault));
@@ -219,9 +219,9 @@ impl<'a> PointClassifier<'a> {
         }
         let moved = (point + nudge).as_vec3();
         let in_box = moved.cmpge(box_min).all() && moved.cmple(box_max).all();
-        let keeps_water =
-            !over_water(point, water, &facing) || over_water(moved.as_dvec3(), water, &facing);
-        if !in_box || !keeps_water {
+        let keeps_faces =
+            !over_faces(point, faces, &facing) || over_faces(moved.as_dvec3(), faces, &facing);
+        if !in_box || !keeps_faces {
             return Err((stored, PointFault::Crowded));
         }
         let landed = moved.as_dvec3();
@@ -293,13 +293,13 @@ impl<'a> PointClassifier<'a> {
     }
 }
 
-/// Whether `point` lies over any of `faces` in `facing`'s plane:
-/// horizontally over water.
-fn over_water(point: DVec3, faces: &[&ReflectorFace], facing: &Facing) -> bool {
+/// Whether `point` lies over any of `faces` in `facing`'s plane: in front
+/// of one, measured in that plane (horizontally, for water).
+fn over_faces(point: DVec3, faces: &[&ReflectorFace], facing: &Facing) -> bool {
     let p = facing.project(point);
     faces
         .iter()
-        .any(|face| nearest_point_on_polygon(p, &face.outline).1 <= OVER_WATER_EPSILON_M)
+        .any(|face| nearest_point_on_polygon(p, &face.outline).1 <= OVER_FACE_EPSILON_M)
 }
 
 /// Inside when `dot(p, n) - d <= 0` for every plane, as id 52 defines it.
@@ -343,7 +343,7 @@ mod tests {
         assert!((q - DVec2::ZERO).length() < 1e-12, "a corner");
         // On an edge reads as over it.
         let (_, d) = nearest_point_on_polygon(DVec2::new(2.0, 0.5), &outline);
-        assert!(d <= OVER_WATER_EPSILON_M);
+        assert!(d <= OVER_FACE_EPSILON_M);
     }
 
     // Regression: a point moved off one wall into a gap narrower than twice

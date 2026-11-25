@@ -1,9 +1,5 @@
-//! Adapter-backed gates for the probe colour mips: every mip of every layer
-//! uploads from id 54 at install into a sampled-only array (row 56), and the
-//! overlay's own read functions land each direction on the interior texel
-//! the compiler wrote for it at every mip down to 4², under both mips of a
-//! selection (row 26, pin P6), matching render-cpu's reference.
-//! See: context/lib/rendering_pipeline.md §7.3a (Glossy world faces)
+//! Adapter-backed gates for the probe colour mips: upload, per-mip reads, and the overlay's selection at every section shape against render-cpu's reference.
+//! See: context/lib/rendering_pipeline.md §7.3a (Glossy world faces, Blur)
 
 use glam::Vec3;
 use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_RGBA16F, f32_to_f16_bits};
@@ -13,7 +9,7 @@ use postretro_level_format::octahedral::{
 use postretro_level_format::reflection_probes::{
     REFLECTION_PROBE_TILE_BORDER, REFLECTION_PROBE_TILE_DIMENSION, ReflectionProbeWorldBinding,
     reflection_probe_full_colour_mip_count, reflection_probe_mip_exponent,
-    reflection_probe_zero_distances,
+    reflection_probe_mip0_texel_angle, reflection_probe_zero_distances,
 };
 use postretro_render_cpu::reflection_probe_mips::{
     reflection_probe_mip_colour, reflection_probe_mips,
@@ -32,16 +28,31 @@ fn mips() -> u32 {
     reflection_probe_full_colour_mip_count(TILE)
 }
 
+/// A section's colour chain shape, as id 54's header gives it.
+#[derive(Clone, Copy, Debug)]
+struct Shape {
+    tile: u32,
+    mips: u32,
+}
+
+/// The engine's: 128² tiles, every mip to one block.
+fn engine() -> Shape {
+    Shape {
+        tile: TILE,
+        mips: mips(),
+    }
+}
+
 /// The value naming interior texel `(x, y)` of mip `mip` on `layer`, exact
 /// in f16: R the mip and layer, G and B the texel.
 fn label(layer: u32, mip: u32, x: u32, y: u32) -> Vec3 {
     Vec3::new((mip + 10 * layer) as f32, x as f32, y as f32)
 }
 
-/// Mip `mip` of `layer`'s tile, border included, bordered by the SH atlas's
-/// wrap rule as the compiler writes it.
-fn labelled_mip(layer: u32, mip: u32) -> Vec<Vec3> {
-    let dimension = TILE >> mip;
+/// Mip `mip` of `layer`'s `tile`-edge tile, border included, bordered by the
+/// SH atlas's wrap rule as the compiler writes it.
+fn labelled_mip(tile: u32, layer: u32, mip: u32) -> Vec<Vec3> {
+    let dimension = tile >> mip;
     (0..dimension)
         .flat_map(|y| (0..dimension).map(move |x| (x, y)))
         .map(|(x, y)| {
@@ -51,15 +62,15 @@ fn labelled_mip(layer: u32, mip: u32) -> Vec<Vec3> {
         .collect()
 }
 
-/// A world-only level: two probes of six labelled `Rgba16Float` mips each,
-/// stored layer-major as id 54 stores them.
-fn labelled_level() -> SumsLevel {
+/// A world-only level: two probes of `shape`'s labelled `Rgba16Float` mips
+/// each, stored layer-major as id 54 stores them.
+fn labelled_level(shape: Shape) -> SumsLevel {
     let mut section = probe_section((0..LAYERS).map(|layer| probe(layer, &[])).collect(), &[]);
-    section.tile_dimension = TILE;
+    section.tile_dimension = shape.tile;
     section.atlas_format = IRRADIANCE_FORMAT_RGBA16F;
-    section.colour_mip_count = mips();
+    section.colour_mip_count = shape.mips;
     section.tiles = (0..LAYERS)
-        .flat_map(|layer| (0..mips()).flat_map(move |mip| labelled_mip(layer, mip)))
+        .flat_map(|layer| (0..shape.mips).flat_map(move |mip| labelled_mip(shape.tile, layer, mip)))
         .flat_map(|texel| {
             [texel.x, texel.y, texel.z, 1.0]
                 .map(f32_to_f16_bits)
@@ -67,7 +78,7 @@ fn labelled_level() -> SumsLevel {
                 .flat_map(u16::to_le_bytes)
         })
         .collect();
-    section.distances = reflection_probe_zero_distances(LAYERS as usize, TILE);
+    section.distances = reflection_probe_zero_distances(LAYERS as usize, shape.tile);
     section.world_bindings = vec![
         ReflectionProbeWorldBinding { face: 0, probe: 0 },
         ReflectionProbeWorldBinding { face: 1, probe: 1 },
@@ -143,8 +154,8 @@ fn shader() -> String {
 }
 
 /// Run `queries` through the overlay's read functions over the installed
-/// level's own colour array.
-fn read(renderer: &Renderer, queries: &[Query]) -> Vec<Vec3> {
+/// level's own colour array, its table naming `tile`.
+fn read(renderer: &Renderer, tile: u32, queries: &[Query]) -> Vec<Vec3> {
     let device = &renderer.device;
     let probes = renderer
         .reflection_probes()
@@ -180,7 +191,7 @@ fn read(renderer: &Renderer, queries: &[Query]) -> Vec<Vec3> {
             usage,
         })
     };
-    let table: Vec<u8> = [TILE, BORDER, LAYERS, 0]
+    let table: Vec<u8> = [tile, BORDER, LAYERS, 0]
         .into_iter()
         .flat_map(u32::to_le_bytes)
         .collect();
@@ -276,17 +287,17 @@ fn fold_texels(interior: u32) -> Vec<(u32, u32)> {
     texels
 }
 
-fn installed() -> Option<Renderer> {
+fn installed(shape: Shape) -> Option<Renderer> {
     let mut renderer = offscreen_renderer_or_skip("glossy_probe_mips_gpu_test", FRAME, FRAME)?;
-    labelled_level().install(&mut renderer);
+    labelled_level(shape).install(&mut renderer);
     Some(renderer)
 }
 
-// Row 56 (GPU half): the installed colour array holds every mip of id 54's
+// GPU half: the installed colour array holds every mip of id 54's
 // chain on every layer, sampled only; its distance array one level.
 #[test]
 fn every_colour_mip_uploads_into_a_sampled_only_array() {
-    let Some(renderer) = installed() else {
+    let Some(renderer) = installed(engine()) else {
         return;
     };
     let [colour, distance] = renderer
@@ -320,7 +331,7 @@ fn every_colour_mip_uploads_into_a_sampled_only_array() {
             })
         })
         .collect();
-    for (query, read) in queries.iter().zip(read(&renderer, &queries)) {
+    for (query, read) in queries.iter().zip(read(&renderer, TILE, &queries)) {
         assert_eq!(
             read,
             label(query.layer, query.mip as u32, 0, 0),
@@ -331,13 +342,13 @@ fn every_colour_mip_uploads_into_a_sampled_only_array() {
     }
 }
 
-// Row 26, pin P6 (GPU half): at every colour mip down to 4², the direction
+// GPU half: at every colour mip down to 4², the direction
 // the compiler wrote an interior texel for reads that texel, near the folds
 // included, on either layer; and a selection between two mips reads each at
 // its own UV, matching render-cpu `reflection_probe_mip_colour`.
 #[test]
 fn a_direction_reads_its_own_texel_at_every_mip_and_across_a_selection() {
-    let Some(renderer) = installed() else {
+    let Some(renderer) = installed(engine()) else {
         return;
     };
     let mut queries = Vec::new();
@@ -361,13 +372,15 @@ fn a_direction_reads_its_own_texel_at_every_mip_and_across_a_selection() {
     }
     // Selections: exponents at and between each mip's lobe, the cap and the
     // minimum, toward mip-2 texel centres near the folds.
+    let angle = reflection_probe_mip0_texel_angle(TILE);
     let mut exponents = vec![1.0, 8.0, 12.0, 16.0, 64.0, 8192.0];
     for mip in 2..mips() {
-        exponents.push(reflection_probe_mip_exponent(mip));
+        exponents.push(reflection_probe_mip_exponent(mip, angle));
         if mip + 1 < mips() {
             exponents.push(
-                (reflection_probe_mip_exponent(mip) * reflection_probe_mip_exponent(mip + 1))
-                    .sqrt(),
+                (reflection_probe_mip_exponent(mip, angle)
+                    * reflection_probe_mip_exponent(mip + 1, angle))
+                .sqrt(),
             );
         }
     }
@@ -392,9 +405,13 @@ fn a_direction_reads_its_own_texel_at_every_mip_and_across_a_selection() {
         }
     }
     let plain: Vec<Query> = queries.iter().map(|(query, _)| *query).collect();
-    let reads = read(&renderer, &plain);
+    let reads = read(&renderer, TILE, &plain);
     let chains: Vec<Vec<Vec<Vec3>>> = (0..LAYERS)
-        .map(|layer| (0..mips()).map(|mip| labelled_mip(layer, mip)).collect())
+        .map(|layer| {
+            (0..mips())
+                .map(|mip| labelled_mip(TILE, layer, mip))
+                .collect()
+        })
         .collect();
     let mut selections = 0;
     for ((query, texel), read) in queries.iter().zip(reads) {
@@ -420,7 +437,7 @@ fn a_direction_reads_its_own_texel_at_every_mip_and_across_a_selection() {
                     query.direction,
                     query.exponent,
                 );
-                let selection = reflection_probe_mips(query.exponent, mips());
+                let selection = reflection_probe_mips(query.exponent, TILE, mips());
                 // R names the mips: it pins the selection and blend exactly.
                 assert!(
                     (read.x - expected.x).abs() < 2.0e-3,
@@ -442,7 +459,122 @@ fn a_direction_reads_its_own_texel_at_every_mip_and_across_a_selection() {
     }
     assert!(selections > 0);
     eprintln!(
-        "[Task7 row 26] {} queries, {selections} selections",
+        "[mip selection] {} queries, {selections} selections",
         queries.len()
     );
+}
+
+// GPU half of the header-derived selection: a 64² and a 256² section, each
+// with its full chain, select the mips render-cpu's reference gives at that
+// tile's α₀ (one index lower and higher than at 128²), and a one-mip
+// section, at 128² and 256², never reads past mip 0. The overlay reads α₀
+// from the probe table's tile dimension and the chain's length from the
+// installed array, so no engine tile size or mip count is baked in.
+#[test]
+fn the_overlay_selects_the_sections_own_mips_at_every_tile_size() {
+    let exponents = [
+        1.0f32, 8.0, 12.0, 16.0, 24.0, 40.0, 64.0, 100.0, 160.0, 256.0, 576.0, 2048.0, 8192.0,
+    ];
+    let shapes = [
+        Shape {
+            tile: 64,
+            mips: reflection_probe_full_colour_mip_count(64),
+        },
+        Shape {
+            tile: 256,
+            mips: reflection_probe_full_colour_mip_count(256),
+        },
+        Shape {
+            tile: TILE,
+            mips: 1,
+        },
+        Shape { tile: 256, mips: 1 },
+    ];
+    for shape in shapes {
+        let Some(renderer) = installed(shape) else {
+            return;
+        };
+        // Toward texel centres of the sharpest mip a selection reads, near
+        // the folds: mip 1 of a full chain, mip 0 of a one-mip one.
+        let probe_mip = 1.min(shape.mips - 1);
+        let dimension = shape.tile >> probe_mip;
+        let mut queries = Vec::new();
+        for layer in 0..LAYERS {
+            for &exponent in &exponents {
+                for (x, y) in fold_texels(dimension - 2 * BORDER) {
+                    queries.push(Query {
+                        direction: Vec3::from(irradiance_interior_texel_direction(
+                            x, y, dimension, BORDER,
+                        )),
+                        exponent,
+                        layer,
+                        mip: -1,
+                    });
+                }
+            }
+        }
+        let reads = read(&renderer, shape.tile, &queries);
+        let chains: Vec<Vec<Vec<Vec3>>> = (0..LAYERS)
+            .map(|layer| {
+                (0..shape.mips)
+                    .map(|mip| labelled_mip(shape.tile, layer, mip))
+                    .collect()
+            })
+            .collect();
+        let mut deepest = 0.0f32;
+        for (query, read) in queries.iter().zip(reads) {
+            let selection = reflection_probe_mips(query.exponent, shape.tile, shape.mips);
+            let chain: Vec<&[Vec3]> = chains[query.layer as usize]
+                .iter()
+                .map(Vec::as_slice)
+                .collect();
+            let expected = reflection_probe_mip_colour(
+                &chain,
+                shape.tile,
+                BORDER,
+                query.direction,
+                query.exponent,
+            );
+            // R names the mips (mip + 10 × layer): it pins the selection
+            // and blend.
+            let read_mip = read.x - (10 * query.layer) as f32;
+            assert!(
+                (read.x - expected.x).abs() < 2.0e-3,
+                "{shape:?} n {} layer {}: mips {read} vs {expected} ({selection:?})",
+                query.exponent,
+                query.layer
+            );
+            assert!(
+                (read - expected).abs().max_element() < 0.3,
+                "{shape:?} n {} layer {} toward {}: {read} vs {expected}",
+                query.exponent,
+                query.layer,
+                query.direction
+            );
+            assert!(
+                read_mip <= (shape.mips - 1) as f32 + 1.0e-3,
+                "{shape:?}: n {} reads mip {read_mip}, past the chain",
+                query.exponent
+            );
+            if shape.mips == 1 {
+                assert!(
+                    read_mip.abs() < 1.0e-3,
+                    "{shape:?}: n {} reads mip {read_mip}",
+                    query.exponent
+                );
+            }
+            deepest = deepest.max(read_mip);
+        }
+        eprintln!(
+            "[mip selection] {shape:?}: {} selections, deepest mip read {deepest:.3}",
+            queries.len()
+        );
+        if shape.mips > 1 {
+            // The roughest exponents reach the section's own last mip.
+            assert!(
+                (deepest - (shape.mips - 1) as f32).abs() < 1.0e-3,
+                "{shape:?}: deepest {deepest}"
+            );
+        }
+    }
 }

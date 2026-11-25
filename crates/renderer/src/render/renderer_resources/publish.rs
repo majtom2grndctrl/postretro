@@ -72,11 +72,6 @@ pub(in crate::render) fn rebuild_level_extent_groups(
     );
     full.sdf_shadow_pass
         .rebind_level_extent(device, &mut level.sdf_shadow, &full.depth_view);
-    if let Some(glossy) = level.glossy.as_mut() {
-        full.glossy_overlay
-            .level_layout()
-            .resize_target(device, glossy, extent);
-    }
     level.extent.extent = extent;
     level.extent.generation = full.scene_targets_generation;
 }
@@ -89,13 +84,17 @@ impl Renderer {
     /// [`Renderer::extent_rebuilds`]); its own reflection targets are lent to
     /// the fluid and planar passes, and re-keyed only if the kept reflection
     /// tier moved since its build (counted by
-    /// [`Renderer::reflection_tier_rebuilds`]); its sampler map merges
-    /// into the renderer's add-only maps; the active spot pool and depth
-    /// caches point at its shadow tier, every slot unoccupied and every
-    /// cache layer cold; and per-frame draw inputs the previous level's ids
-    /// index clear. `previous` says what becomes of the set it replaces:
-    /// retired, or kept resident (its key returned). Publishing the active
-    /// set, or an unknown key, changes nothing and returns `None`.
+    /// [`Renderer::reflection_tier_rebuilds`]); its glossy targets, which no
+    /// set's build makes, are built at the kept tier and the current scene
+    /// once the replaced set has given its own up (counted by
+    /// [`Renderer::glossy_target_builds`]), so a level change never holds
+    /// two sets of them; its sampler map merges into the renderer's add-only
+    /// maps; the active spot pool and depth caches point at its shadow tier,
+    /// every slot unoccupied and every cache layer cold; and per-frame draw
+    /// inputs the previous level's ids index clear. `previous` says what
+    /// becomes of the set it replaces: retired, or kept resident (its key
+    /// returned) without its glossy targets. Publishing the active set, or
+    /// an unknown key, changes nothing and returns `None`.
     pub fn publish_level_set(
         &mut self,
         id: LevelSetId,
@@ -139,6 +138,11 @@ impl Renderer {
             (Some(mut replaced), PreviousLevelSet::KeepResident) => {
                 replaced.fluid_targets = replaced_fluid;
                 replaced.mirror_targets = replaced_mirror;
+                // Only the published set holds glossy targets; this one
+                // builds them again at its own publish.
+                if let Some(glossy) = replaced.glossy.as_mut() {
+                    glossy.release_targets();
+                }
                 let kept = replaced.id;
                 full.resident_levels.push(replaced);
                 Some(kept)
@@ -152,12 +156,18 @@ impl Renderer {
         };
         let before = gpu_creation_counts();
         self.reconcile_published_fluid_targets(extent_changed);
-        self.sync_glossy_target();
         // A set built at the kept tier and the current scene targets lends
         // its own and builds nothing here; anything built means the tier
         // moved since its build (an extent rebuild already counted above).
         if !extent_changed && gpu_creation_counts().since(before).total() > 0 {
             self.full_mut().reflection_tier_rebuilds += 1;
+        }
+        // The glossy targets, after the replaced set gave its own up: built
+        // once, at the kept tier and the current scene extent.
+        let before = gpu_creation_counts();
+        self.sync_glossy_target();
+        if gpu_creation_counts().since(before).total() > 0 {
+            self.full_mut().glossy_target_builds += 1;
         }
         kept
     }

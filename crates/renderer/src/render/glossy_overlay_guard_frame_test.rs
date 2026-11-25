@@ -57,7 +57,7 @@ fn frames(renderer: &mut Renderer) -> Frames {
     }
 }
 
-// Acceptance row 49, pins P15 and P23. A mover face coplanar with a bound
+// A mover face coplanar with a bound
 // glossy face (the face's own quad at the identity) shades over it, and the
 // overlay's Equal lands there too (the constant variant counts a fragment
 // on each such pixel): the guard alone withholds the term, so those pixels
@@ -211,7 +211,7 @@ pub(super) fn character_at(at: Vec3) -> MeshInstanceInput {
     }
 }
 
-// Acceptance row 49, pin P15: a mover and a character standing on a bound
+// A mover and a character standing on a bound
 // glossy face, in front of it, take no overlay fragment: their pixels are the
 // same with the production overlay (the floor layer included) and with one
 // that adds nothing, and with one that adds a constant per fragment. Every

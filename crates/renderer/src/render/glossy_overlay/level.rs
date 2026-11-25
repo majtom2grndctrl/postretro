@@ -1,16 +1,18 @@
 // One level's glossy overlay state: the world probe stream, the overlay's
-// group over the level's probes, and the static-diffuse target.
+// group over the level's probes, and, while its set is published, the
+// static-diffuse and floor-layer targets.
 // See: context/lib/rendering_pipeline.md §7.3a (Glossy world faces) · context/lib/resource_management.md §5.4
 
 use postretro_level_format::SectionId;
 use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
+use postretro_render_cpu::glossy_floor_blur::GlossyFloorTermBlur;
 use postretro_render_cpu::render_extent::Extent;
 
-use crate::render::LevelGeometry;
 use crate::render::glossy_floor::{GlossyFloorLayout, GlossyFloorTargets, binds_an_up_facing_face};
 use crate::render::gpu_create::GpuCreate;
 use crate::render::reflection_probe_resources::ReflectionProbeResources;
 use crate::render::residency::{ResidencyAllocation, ResidencyAllocationState, texture_row};
+use crate::render::{LevelGeometry, LevelReflectionProbes};
 
 /// The memory ledger's row for the static-diffuse target.
 pub const GLOSSY_STATIC_DIFFUSE: &str = "glossy_static_diffuse";
@@ -33,21 +35,26 @@ struct StaticDiffuseTarget {
 }
 
 /// One level's glossy overlay state, owned by its level set and dropped with
-/// it. Exists only for a level whose id 54 binds a world face.
+/// it. Exists only for a level whose id 54 binds a world face. Its targets
+/// exist only while its set is the published one: the set's build makes
+/// none, publish builds them at the kept tier and scene extent, and a set
+/// kept resident behind another's publish releases them, so a level change
+/// never holds two sets of targets.
 pub(crate) struct GlossyLevelState {
     /// One probe index per world vertex, written once at install.
     world_probes: wgpu::Buffer,
     /// The overlay's group over the level's probe records; `None` until the
     /// probes install, or when they do not.
     probe_group: Option<wgpu::BindGroup>,
-    /// Forward's D_static target, at scene extent while the reflection tier
-    /// is above off; `None` at off.
+    /// Forward's D_static target, at scene extent while the set is published
+    /// and the reflection tier is above off; `None` otherwise.
     target: Option<StaticDiffuseTarget>,
-    /// Whether a bound world face faces up by water's test: only such a
-    /// level takes the floor layer.
-    floor_faces: bool,
+    /// While a bound world face faces up by water's test (only such a level
+    /// takes the floor layer), the probe term's blur its floor blur matches:
+    /// the section's α₀ and colour mip count, from id 54's header.
+    floor_blur: Option<GlossyFloorTermBlur>,
     /// The floor layer's highlight-free colour, scene-colour chain, target
-    /// and march depth, while `floor_faces` holds at a tier that runs the
+    /// and march depth, while `floor_blur` is set at a tier that runs the
     /// floor layer.
     floor: Option<GlossyFloorTargets>,
     /// The overlay's inputs group, while D_static exists: D_static, the
@@ -58,20 +65,23 @@ pub(crate) struct GlossyLevelState {
 
 impl GlossyLevelLayout {
     /// The level's glossy state, or `None` (no allocation) when its id 54
-    /// binds no world face, or the bindings cannot reach the vertices. The
-    /// targets follow `quality` at `extent`.
+    /// binds no world face, or the bindings cannot reach the vertices. Builds
+    /// the world probe stream alone: no target exists until the set
+    /// publishes ([`Self::sync_targets`]).
     pub(crate) fn build(
         &self,
         device: &wgpu::Device,
         geometry: &LevelGeometry<'_>,
-        quality: FluidReflectionQuality,
-        extent: Extent,
     ) -> Option<GlossyLevelState> {
-        let section = geometry.reflection_probes?;
+        let LevelReflectionProbes {
+            section,
+            geometry_face_count,
+        } = geometry.reflection_probes?;
         let stream = postretro_level_loader::build_vertex_world_probes(
             geometry.vertices.len(),
             geometry.indices,
             &geometry.bvh.leaves,
+            geometry_face_count,
             &section.world_bindings,
             section.probes.len(),
         )?;
@@ -84,16 +94,16 @@ impl GlossyLevelLayout {
             contents: &bytes,
             usage: wgpu::BufferUsages::VERTEX,
         });
-        let mut state = GlossyLevelState {
+        Some(GlossyLevelState {
             world_probes,
             probe_group: None,
             target: None,
-            floor_faces: binds_an_up_facing_face(geometry.vertices, &stream),
+            floor_blur: binds_an_up_facing_face(geometry.vertices, &stream).then(|| {
+                GlossyFloorTermBlur::of_section(section.tile_dimension, section.colour_mip_count)
+            }),
             floor: None,
             inputs_group: None,
-        };
-        self.sync_target(device, &mut state, quality, extent);
-        Some(state)
+        })
     }
 
     /// Bind the overlay's probe group over the level's installed probes.
@@ -129,23 +139,24 @@ impl GlossyLevelLayout {
         });
     }
 
-    /// Bring the D_static target and the floor layer's targets in line with
-    /// `quality` and `extent`: D_static allocated above off at `extent`,
-    /// released at off; the floor targets as [`GlossyFloorLayout::sync`]
-    /// rules. Targets already there build nothing; the inputs group rebuilds
-    /// only over a target created or released. Returns whether it created a
-    /// D_static target.
-    pub(crate) fn sync_target(
+    /// Bring the published set's D_static target and floor-layer targets in
+    /// line with `quality` and the scene `extent`: at publish, on a tier
+    /// change and on a scene resize, so a resize at a moved tier builds each
+    /// target once. D_static allocated above off at `extent`, released at
+    /// off; the floor targets as [`GlossyFloorLayout::sync`] rules. Targets
+    /// already there build nothing; the inputs group rebuilds only over a
+    /// target created or released.
+    pub(crate) fn sync_targets(
         &self,
         device: &wgpu::Device,
         state: &mut GlossyLevelState,
         quality: FluidReflectionQuality,
         extent: Extent,
-    ) -> bool {
+    ) {
         let had_floor = state.floor.is_some();
         let floor_built =
             self.floor
-                .sync(device, &mut state.floor, state.floor_faces, quality, extent);
+                .sync(device, &mut state.floor, state.floor_blur, quality, extent);
         let floor_moved = floor_built || had_floor != state.floor.is_some();
         let created = if quality == FluidReflectionQuality::Off {
             state.target = None;
@@ -162,22 +173,6 @@ impl GlossyLevelLayout {
         if created || floor_moved || state.target.is_none() {
             self.rebind_inputs(device, state);
         }
-        created
-    }
-
-    /// Recreate allocated targets at `extent` (the scene targets moved);
-    /// absent ones stay absent.
-    pub(crate) fn resize_target(
-        &self,
-        device: &wgpu::Device,
-        state: &mut GlossyLevelState,
-        extent: Extent,
-    ) {
-        if state.target.is_some() {
-            state.target = Some(self.target(device, extent));
-        }
-        self.floor.resize(device, &mut state.floor, extent);
-        self.rebind_inputs(device, state);
     }
 
     fn target(&self, device: &wgpu::Device, extent: Extent) -> StaticDiffuseTarget {
@@ -238,6 +233,15 @@ fn static_diffuse_usage() -> wgpu::TextureUsages {
 }
 
 impl GlossyLevelState {
+    /// Drop every target and the inputs group over them, creating nothing:
+    /// the set stays resident behind another's publish, and builds its
+    /// targets again at its own.
+    pub(crate) fn release_targets(&mut self) {
+        self.target = None;
+        self.floor = None;
+        self.inputs_group = None;
+    }
+
     /// Whether forward writes D_static and the overlay can draw: the probes
     /// are bound and the target exists.
     pub(crate) fn ready(&self) -> bool {
@@ -270,7 +274,7 @@ impl GlossyLevelState {
     /// at the tiers that run it.
     #[cfg(test)]
     pub(crate) fn has_floor_faces(&self) -> bool {
-        self.floor_faces
+        self.floor_blur.is_some()
     }
 
     /// The ledger rows of every target allocated: D_static, then the floor

@@ -1,8 +1,7 @@
 // Source gates and pure checks for the glossy floor layer's source half: the
 // IP fences over the scene-colour chain, the highlight-free outputs' shape,
 // and where its pipelines are built.
-// See: context/lib/rendering_pipeline.md §7.3a (Glossy world faces, Floors) ·
-// context/plans/in-progress/glossy-world-reflections/ip-check.md §7
+// See: context/lib/rendering_pipeline.md §7.3a (Glossy world faces, Floors)
 
 use super::*;
 use crate::render::gpu_test_harness::{wgsl_function, wgsl_item};
@@ -35,7 +34,6 @@ fn floor_layer_blur_sources() -> Vec<(&'static str, String)> {
         [
             "reflection_probe_exponent_mip",
             "reflection_probe_mip0_texel_angle",
-            "glossy_floor_probe_mips",
             "world_probes",
         ]
         .into_iter()
@@ -107,7 +105,7 @@ const BLUR_AT_THE_HIT: [&str; 3] = [
     "glossy_floor/march.rs record_march",
 ];
 
-// Acceptance row 44, fences B2 and B4 (`ip-check.md` §7), B1's inputs. No
+// IP fences (owner review to change): no
 // target the blur reads or writes holds the probe term: the chain's one
 // source is the highlight-free colour, which every opaque pass writes before
 // the overlay adds a probe term to scene colour, and neither the downsample,
@@ -201,7 +199,7 @@ fn the_floor_layers_blur_reads_no_probe_term_and_filters_isotropically() {
     assert_eq!(chain.matches("set_bind_group(").count(), 1);
 }
 
-// Row 53's inventory, extended to the chain: the downsample's bindings name
+// The no-history gate's binding inventory, extended to the chain: the downsample's bindings name
 // no history, reprojection or intersection resource, and the highlight-free
 // colour and every chain level are cleared each frame they are written (by
 // forward and the chain), so no texel survives a frame.
@@ -232,7 +230,7 @@ fn the_floor_layers_sources_hold_no_history() {
     ));
 }
 
-// Acceptance rows 41 and 51: forward's highlight-free entries return the very
+// Forward's highlight-free entries return the very
 // colour `forward_shade` computes, as `fs_main` does, and beside it that
 // colour less the highlight forward adds (the untinted specular times albedo
 // plus the tinted specular), taken after the colour's own expression, which
@@ -290,7 +288,7 @@ fn forward_writes_its_colour_and_leaves_its_highlight_out() {
     );
 }
 
-// Acceptance rows 41 and 42: the mover's highlight-free value is its colour
+// The mover's highlight-free value is its colour
 // less exactly the highlight that colour adds (pixel: albedo times the
 // untinted sum plus the tinted sum's tint; smooth: the one specular sum
 // times its colour), and the skinned mesh, which draws none, writes its
@@ -327,7 +325,7 @@ fn movers_leave_their_highlight_out_and_skinned_meshes_write_their_colour() {
     );
 }
 
-// Acceptance row 43, pin P28 (source half): every forward, mover and
+// Source half: every forward, mover and
 // skinned-mesh form, with and without the highlight-free output, and the
 // chain's downsample, is built at full init: each constructor is reached
 // from one full-init site alone, so a tier change can build none. The

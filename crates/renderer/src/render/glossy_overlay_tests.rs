@@ -111,7 +111,7 @@ fn overlay_vertex_stage_repeats_forwards_invariant_clip_position() {
     }
 }
 
-// Acceptance row 32 (source gate): forward's layout and budget stay
+// Source gate: forward's layout and budget stay
 // untouched, and the overlay's layout refuses every lighting binding: it
 // binds the shared camera group, forward's material group (read for albedo
 // and the specular slot only), and two groups of its own, textures, uniforms
@@ -241,9 +241,10 @@ fn overlay_reads_its_probe_from_the_binding_and_lights_through_the_sums() {
     assert!(sample.contains("letlayer=fluid_probes.probes[probe].layer;"));
     assert!(sample.contains("fluid_reflection_ratio_from_sums(probe,search.lookup)"));
     // Water's sample up to its colour tap: the same ray, layer and search,
-    // statement for statement, with the ray kept in the face's hemisphere
-    // where water floors it above the horizon (`FLUID_REFLECTION_UP`), so the
-    // binding and search fences carry over.
+    // statement for statement, with the ray kept in the face's hemisphere and
+    // the search run about the face's axis where water floors the ray above
+    // the horizon and searches up-only, so the binding and search fences
+    // carry over.
     let prefix = |body: &str| {
         body[body.find('{').expect("body") + 1..]
             .split("letuv=")
@@ -259,8 +260,14 @@ fn overlay_reads_its_probe_from_the_binding_and_lights_through_the_sums() {
             "fluid_reflection_above_horizon(fluid_reflection_mirror(view,outward))",
             "fluid_reflection_above_hemisphere(fluid_reflection_mirror(view,normal),axis)",
         )
-        .replace("search(world_position,", "search(origin,")
-        .replace("FLUID_REFLECTION_UP", "axis");
+        .replace(
+            "fluid_reflection_search(world_position,",
+            "fluid_reflection_search_about(origin,",
+        )
+        .replace(
+            "capture_point,fluid_probes.tile.xy",
+            "capture_point,axis,fluid_probes.tile.xy",
+        );
     assert_eq!(prefix(&sample), water_about_axis);
     assert!(
         squashed(wgsl_function(
@@ -282,8 +289,8 @@ fn overlay_reads_its_probe_from_the_binding_and_lights_through_the_sums() {
 // capture-shadow weight, R coloured as the highlight; additive over the scene
 // colour. A texel whose weight is 0 adds nothing and reads no normal map and
 // runs no probe search; a pixel this frame's mover guard marked adds
-// nothing, its mark read after the weight with D_static, in the one load
-// (pins P15, P23). One entry per reflection style and material form over one
+// nothing, its mark read after the weight with D_static, in the one load.
+// One entry per reflection style and material form over one
 // shading.
 #[test]
 fn overlay_adds_the_weighted_reflection_minus_static_diffuse() {
@@ -337,7 +344,7 @@ fn overlay_adds_the_weighted_reflection_minus_static_diffuse() {
     assert_eq!(blend.alpha.src_factor, wgpu::BlendFactor::Zero);
 }
 
-// Acceptance rows 4, 27, 34: the shader's weight and colour mirror render-cpu
+// The shader's weight and colour mirror render-cpu
 // `glossy_reflection` statement for statement, with its constants pinned to
 // the reference's (the sharpness fade's to level-format's, the reflectivities
 // to water's Fresnel scale), and the texel is read as forward reads its
@@ -459,7 +466,7 @@ fn forward_entries_share_shading_and_only_the_static_diffuse_entry_writes_it() {
     );
 }
 
-// Acceptance row 30: D_static is stored by the scene colour's own
+// D_static is stored by the scene colour's own
 // conversion, so it never exceeds forward's stored colour and the composite
 // cannot undershoot (`static_diffuse_format`).
 #[test]
@@ -492,7 +499,7 @@ fn overlay_gate_needs_tier_mask_ready_level_and_a_glossy_range() {
     assert!(!glossy_overlay_draws(Off, all, true, true));
 }
 
-// Acceptance row 46 (recording order), pin P12: the overlay records after
+// Recording order: the overlay records after
 // forward, the mover pass and the skinned-mesh pass, and before the Ghost
 // Pass, the planar mirror, the fluid passes, billboards, billboard ghosts
 // and the fog composite, so each of those draws over its result and nothing
@@ -558,7 +565,7 @@ fn overlay_records_after_the_skinned_mesh_pass_and_before_the_ghost_pass() {
     assert_eq!(frame.matches("self.glossy_floor_layer_draws(").count(), 1);
 }
 
-// Acceptance row 30: a character's promoted-light shadow is forward's
+// A character's promoted-light shadow is forward's
 // shadowmask union subtraction from the static direct light, taken before
 // D_static, so it is part of what the overlay replaces and fades by (1 − W)
 // with the rest of the static diffuse.
@@ -581,14 +588,15 @@ fn the_entity_shadow_subtraction_lands_in_static_diffuse() {
     );
 }
 
-// Acceptance rows 35, 67: the overlay shades from forward's own inputs. Its
+// The overlay shades from forward's own inputs. Its
 // vertex stage decodes the tangent as forward does and interpolates position,
 // UV, normal and tangent as forward's do; its march is forward's Surface Depth
 // snippet over forward's arguments (the eye vector, its length, the
 // derivatives), so it reads the texel forward shaded, and a live switch
 // reaches both through the one material uniform; the normal it mirrors about
-// is forward's shading normal (the march's face normal on a side hit, the
-// normal map's on a top); and pixel style takes the texel-centre point
+// is forward's shading normal on a top (the normal map's) and the flat face
+// normal on a carved side, whose own normal would mirror the view behind the
+// face; and pixel style takes the texel-centre point
 // forward's highlight takes, smooth the fragment (rendering_pipeline.md §4,
 // Texel-centre highlight; §7.3, Surface Depth).
 #[test]
@@ -663,7 +671,7 @@ fn overlay_shades_from_forwards_march_normal_and_texel_point() {
          letmesh_n=normalize(in.world_normal);\
          letn_ts=glossy_overlay_tangent_normal(depth.uv,d,normal_map);\
          letn_bump=reconstruct_tbn_normal(mesh_n,in.world_tangent,in.bitangent_sign,n_ts);\
-         letnormal=select(depth.normal,n_bump,depth.hit_top);\
+         letnormal=select(mesh_n,n_bump,depth.hit_top);\
          letview=normalize(uniforms.camera_position-in.world_position);\
          letpoint=specular_texel_point(!pixel,SpecularPoint(in.world_position,view),in.uv,\
          depth.uv,in.world_position,uniforms.camera_position,\
@@ -753,7 +761,7 @@ fn overlay_probe_term_mirrors_the_cpu_reference() {
          axis:vec3<f32>,exponent:f32)->FluidReflectionSample{\
          letray=fluid_reflection_above_hemisphere(fluid_reflection_mirror(view,normal),axis);\
          letlayer=fluid_probes.probes[probe].layer;\
-         letsearch=fluid_reflection_search(origin,ray,fluid_probes.probes[probe].box_min,\
+         letsearch=fluid_reflection_search_about(origin,ray,fluid_probes.probes[probe].box_min,\
          fluid_probes.probes[probe].box_max,fluid_probes.probes[probe].capture_point,axis,\
          fluid_probes.tile.xy,layer);\
          letcapture=glossy_overlay_probe_colour(search.lookup,layer,exponent);\

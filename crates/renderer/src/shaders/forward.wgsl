@@ -1158,9 +1158,9 @@ fn shadowmask_union_subtraction(
 // One forward fragment's shading: the colour fs_main writes, and its static
 // diffuse D_static (albedo x (ambient floor + SH indirect + static direct
 // after the shadowmask subtraction)), which only the glossy overlay's second
-// output reads (rendering_pipeline.md §7.3a, Glossy world faces). Both
-// entries share this, so fs_main's colour is computed exactly as before and
-// the static diffuse is dead code there.
+// output reads (rendering_pipeline.md §7.3a, Glossy world faces). Every
+// forward entry shares this, so fs_main's colour is computed exactly as before
+// and the static diffuse is dead code there.
 //
 // `highlight` is the Blinn-Phong highlight forward adds to the colour (the
 // untinted specular times albedo plus the tinted specular), which only the

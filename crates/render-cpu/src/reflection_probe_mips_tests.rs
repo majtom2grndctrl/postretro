@@ -1,4 +1,4 @@
-// Colour mip selection and per-mip read reference tests (acceptance rows 23, 26; pin P6).
+// Colour mip selection and per-mip read reference tests.
 // See: context/lib/testing_guide.md
 
 use super::*;
@@ -16,6 +16,11 @@ const BORDER: u32 = REFLECTION_PROBE_TILE_BORDER;
 
 fn mip_count() -> u32 {
     reflection_probe_full_colour_mip_count(TILE)
+}
+
+/// α₀ of the engine's 128² tile.
+fn angle() -> f32 {
+    reflection_probe_mip0_texel_angle(TILE)
 }
 
 /// A value naming interior texel `(x, y)` of mip `mip`, exact in f16.
@@ -65,30 +70,54 @@ pub(crate) fn fold_texels(interior: u32) -> Vec<(u32, u32)> {
 fn selection_blends_the_mapped_mip_between_its_floor_and_the_next() {
     let count = mip_count();
     for n in [8.0f32, 16.0, 40.0, 64.0, 100.0] {
-        let mip = reflection_probe_exponent_mip(n, count);
-        let mips = reflection_probe_mips(n, count);
+        let mip = reflection_probe_exponent_mip(n, angle(), count);
+        let mips = reflection_probe_mips(n, TILE, count);
         assert_eq!(mips.lower, mip.floor() as u32, "n = {n}");
         assert_eq!(mips.upper, mips.lower + 1, "n = {n}");
         assert!((mips.lower as f32 + mips.blend - mip).abs() < 1e-6);
         assert!((0.0..1.0).contains(&mips.blend));
     }
     // The cap reads the minimum blur alone; the minimum exponent the last mip.
-    let cap = reflection_probe_mips(SPECULAR_EXPONENT_MAX, count);
+    let cap = reflection_probe_mips(SPECULAR_EXPONENT_MAX, TILE, count);
     assert_eq!(
         (cap.lower, cap.blend),
         (REFLECTION_PROBE_MIN_BLUR_MIP as u32, 0.0)
     );
-    let rough = reflection_probe_mips(SPECULAR_EXPONENT_MIN, count);
+    let rough = reflection_probe_mips(SPECULAR_EXPONENT_MIN, TILE, count);
     assert_eq!(
         (rough.lower, rough.upper, rough.blend),
         (count - 1, count - 1, 0.0)
     );
     // A one-mip chain reads mip 0 alone.
-    let one = reflection_probe_mips(64.0, 1);
+    let one = reflection_probe_mips(64.0, TILE, 1);
     assert_eq!((one.lower, one.upper, one.blend), (0, 0, 0.0));
 }
 
-// Row 26, pin P6 (reference half): at every colour mip down to 4², the
+// The selection reads the section's own tile dimension: at 64² a texel's
+// blur angle falls one mip lower than at 128², at 256² one higher, each
+// clamped to its own chain; a one-mip section of any size reads mip 0 alone.
+#[test]
+fn selection_follows_the_sections_tile_dimension() {
+    for (tile, offset) in [(64u32, -1.0f32), (256, 1.0)] {
+        let count = reflection_probe_full_colour_mip_count(tile);
+        for n in [16.0f32, 40.0, 64.0, 100.0] {
+            let engine = reflection_probe_exponent_mip(n, angle(), mip_count());
+            let expected = (engine + offset)
+                .max(REFLECTION_PROBE_MIN_BLUR_MIP)
+                .min((count - 1) as f32);
+            let mips = reflection_probe_mips(n, tile, count);
+            assert!(
+                (mips.lower as f32 + mips.blend - expected).abs() < 1e-4,
+                "{tile}²: n = {n} reads {mips:?}, expected {expected}"
+            );
+            assert!(mips.upper < count);
+        }
+        let one = reflection_probe_mips(64.0, tile, 1);
+        assert_eq!((one.lower, one.upper, one.blend), (0, 0, 0.0), "{tile}²");
+    }
+}
+
+// Reference half: at every colour mip down to 4², the
 // direction the compiler wrote an interior texel for lands on that texel's
 // centre in that mip's own tile, so a filtered read returns it exactly;
 // across a selection between two mips, the other mip's read lands inside the
@@ -150,8 +179,9 @@ fn the_colour_read_blends_each_mips_own_read() {
     let refs: Vec<&[Vec3]> = chain.iter().map(Vec::as_slice).collect();
     // An exponent halfway between mips 2 and 3, a direction at a mip-2
     // texel centre near the fold.
-    let n = reflection_probe_mip_exponent(2) * 0.5 + reflection_probe_mip_exponent(3) * 0.5;
-    let mips = reflection_probe_mips(n, count);
+    let n = reflection_probe_mip_exponent(2, angle()) * 0.5
+        + reflection_probe_mip_exponent(3, angle()) * 0.5;
+    let mips = reflection_probe_mips(n, TILE, count);
     assert_eq!((mips.lower, mips.upper), (2, 3));
     let direction = Vec3::from(irradiance_interior_texel_direction(
         0,

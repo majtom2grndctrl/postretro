@@ -277,6 +277,16 @@ impl Renderer {
             .as_ref()
             .map_or(0, |full| full.reflection_tier_rebuilds)
     }
+
+    /// How many publishes built the published set's glossy targets: a glossy
+    /// level's publish above reflection quality off builds them there, since
+    /// no set's build does (a counted fallback, like
+    /// [`Self::reflection_tier_rebuilds`]).
+    pub fn glossy_target_builds(&self) -> u64 {
+        self.full
+            .as_ref()
+            .map_or(0, |full| full.glossy_target_builds)
+    }
 }
 
 /// The geometry job's inputs: the assembled level (UVs normalized), shared so

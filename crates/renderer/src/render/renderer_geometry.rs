@@ -139,7 +139,13 @@ pub fn level_world_to_geometry<'a>(
         vertices: &world.vertices,
         vertex_spec_owners: &world.vertex_spec_owners,
         vertex_emissive_volumes: &world.vertex_emissive_volumes,
-        reflection_probes: world.reflection_probes.as_ref(),
+        reflection_probes: world
+            .reflection_probes
+            .as_ref()
+            .map(|section| LevelReflectionProbes {
+                section,
+                geometry_face_count: world.face_meta.len(),
+            }),
         emissive_volumes: &world.emissive.volumes,
         area_glow_lights: &world.area_glow.lights,
         indices: &world.indices,

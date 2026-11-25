@@ -1,5 +1,5 @@
-// Reflection probe GPU residency meter: one row per probe record of the
-// active level set.
+// Reflection probe GPU residency meter: the probe rows of the active level set,
+// with the glossy overlay's and floor layer's target rows appended.
 // See: context/lib/resource_management.md §5.3
 
 use super::residency::{ResidencyAllocation, allocation_total_bytes};
@@ -11,7 +11,8 @@ pub const REFLECTION_PROBE_SUMS: &str = "probe_sums";
 
 /// Resident bytes of the active level's reflection probe records: the colour
 /// array with every mip, the distance array, the share table and the
-/// live-lighting sums, read back from what the level bound. A level with no
+/// live-lighting sums, read back from what the level bound. The glossy
+/// overlay's and floor layer's targets follow as appended rows. A level with no
 /// probes, and no active level, report [`Self::EMPTY`]. The fluid install's
 /// dummies are not probes and never appear here.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -21,7 +22,7 @@ pub struct ReflectionProbeResidencyReport {
 }
 
 impl ReflectionProbeResidencyReport {
-    /// No rows and no bytes: no probes resident.
+    /// No rows and no bytes: no probes and no glossy targets resident.
     pub const EMPTY: Self = Self {
         allocations: Vec::new(),
         total_bytes: 0,

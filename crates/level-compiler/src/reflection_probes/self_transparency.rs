@@ -60,6 +60,14 @@ impl FacePlanes {
     /// surround or a matte strip crossing a glossy floor casts no capture
     /// shadow either. Faces facing the other way are back faces from the
     /// capture point, which the trace already skips.
+    ///
+    /// "Facing as they do" is one test against the bound faces' area-weighted
+    /// mean normal: a face's normal within 1° of it ([`UP_FACING_MIN_COS`]),
+    /// and its centroid within [`PLANE_TOLERANCE_M`] of a bound face's along
+    /// it. Faces of one facing lie within 1° of its normal, so bound faces
+    /// may differ by up to 2°: a face in a bound face's plane, that bound
+    /// face included, can lie more than 1° off the mean, stay opaque and cast
+    /// a capture shadow. A known edge, accepted rather than fixed.
     pub(crate) fn reflector_plane_faces(
         &self,
         probe: &PlacedProbe,

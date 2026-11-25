@@ -51,6 +51,10 @@ pub(in crate::render) struct FullRenderer {
     /// (the tier moved after the set's build): the counted fallback beside
     /// `extent_rebuilds`.
     pub(in crate::render) reflection_tier_rebuilds: u64,
+    /// Publishes that built the published set's glossy targets, which no
+    /// set's build makes: the counted fallback a glossy level's publish takes
+    /// above reflection quality off.
+    pub(in crate::render) glossy_target_builds: u64,
     /// Bumped each time the scene-sized targets are recreated. A set records
     /// the generation its extent-bound groups bind, so its publish rebuilds
     /// them when the targets changed since, even at an equal extent.

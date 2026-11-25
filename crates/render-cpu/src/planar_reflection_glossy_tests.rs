@@ -14,7 +14,7 @@ fn with_glossy_faces(mut section: ReflectionProbesSection, faces: u32) -> Reflec
     section
 }
 
-// Acceptance row 58 (candidate builder): the candidate builder reads fluid
+// Candidate builder: the candidate builder reads fluid
 // volumes and their fluid bindings alone, so a level whose glossy floor binds
 // thousands of world faces, outsizing every pool, builds the same candidate
 // planes as without them, and selects the same plane, with the same

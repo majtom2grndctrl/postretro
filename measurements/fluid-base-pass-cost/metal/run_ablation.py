@@ -1,7 +1,8 @@
 """Metal System Trace batch for the reflection-free fluid pass's base cost (Mac).
 
 usage: python3 measurements/fluid-base-pass-cost/metal/run_ablation.py --arms a,b,... [options]
-  --arms       comma list of <config>:<variant>[:<mask hex>[:<reflection quality>]] (variant is a file in
+  --arms       comma list of <config>:<variant>[:<mask hex>[:<reflection quality>[:<specular style>]]]
+               (an empty quality field keeps the default; variant is a file in
                variants/ without .wgsl, "stock" for the binary's own shader, or
                "before"/"after" for a two-binary A/B: that arm launches
                CELL_BIN_BEFORE / CELL_BIN_AFTER with its own shader; mask
@@ -10,8 +11,8 @@ usage: python3 measurements/fluid-base-pass-cost/metal/run_ablation.py --arms a,
   --rounds N   interleaved rounds (default 2: forward, then reversed)
   --warmup N / --samples N   capture frames (default 120 / 120)
   --tag T      results file suffix (results-<T>.{json,md})
-  --report glossy   overlay / sums / floor chain / floor march / forward / frame / overlap
-                    table (glossy-world-reflections)
+  --report glossy   overlay / sums / floor chain / floor march / mover guard / forward /
+                    frame / overlap table (glossy-world-reflections)
   --abort-invalid   stop at the first invalid run (pilot)
   --min-free-gb N   stop before a run when / has less free space (default 16)
 env: CELL_BIN (engine binary, must be named postretro), CELL_BIN_BEFORE /
@@ -64,9 +65,17 @@ kit.POSES.update({
 })
 CONFIGS.update({f"glossy-{v}-{r}": (f"glossy-{v}", res) for v in ("across", "down")
                 for r, res in (("auto", AUTO), ("1440", QHD), ("4k", UHD))})
+# glossy-world-reflections M7 (Task 12b): maps/glossy-floor-mover.map, the
+# floor-only fixture plus one parked kinematic mover (a 96-unit block west of
+# the monument, on screen in the across view). Same pose as glossy-across.
+kit.POSES["glossy-mover-across"] = dict(kit.POSES["glossy-across"], map="content/dev/maps/glossy-floor-mover.prl")
+CONFIGS.update({f"glossy-mover-across-{r}": ("glossy-mover-across", res)
+                for r, res in (("auto", AUTO), ("1440", QHD), ("4k", UHD))})
+MOVER_POSES = {"glossy-mover-across"}
+MOVER_LABEL = "Kinematic Brush Pass"
 # Maps without fluid: the complete-frame basis requires these labels instead
 # of the fluid pass (plus the overlay on arms whose tier draws it).
-NO_FLUID_POSES = {"glossy-across", "glossy-down"}
+NO_FLUID_POSES = {"glossy-across", "glossy-down", "glossy-mover-across"}
 # Two-binary A/B: these variants run their own binary's shader, no override.
 BINARY_VARIANTS = {"before": "CELL_BIN_BEFORE", "after": "CELL_BIN_AFTER"}
 # Tiers that run the glossy floor layer (Task 11: FLOOR_LAYER_PRESETS); an arm
@@ -88,6 +97,8 @@ def write_scene(path, arm, png, report, warmup, samples, mapname=None, quick=Fal
     }
     if arm.get("quality"):
         scene["reflection_quality"] = arm["quality"]
+    if arm.get("specular"):
+        scene["specular_style"] = arm["specular"]
     # Two-binary arms read maps their own prl-build compiled:
     # MAP_ROOT_BEFORE / MAP_ROOT_AFTER name a content/<mod>/maps directory.
     root = os.environ.get(f"MAP_ROOT_{arm['mode'].upper()}") if arm["mode"] in BINARY_VARIANTS else None
@@ -104,10 +115,13 @@ def parse_arm(text):
     parts = text.split(":")
     config, variant = parts[0], parts[1]
     mask = int(parts[2], 16) if len(parts) > 2 else FREE_MASK
-    quality = parts[3] if len(parts) > 3 else None
+    quality = (parts[3] or None) if len(parts) > 3 else None
+    specular = parts[4] if len(parts) > 4 else None
+    if specular not in (None, "pixel", "smooth"):
+        raise SystemExit(f"unknown specular style {specular}")
     pose, res = CONFIGS[config]
     name = (f"{config}-{variant}" + (f"-m{mask:03x}" if mask != FREE_MASK else "")
-            + (f"-{quality}" if quality else ""))
+            + (f"-{quality}" if quality else "") + (f"-spec{specular}" if specular else ""))
     own_shader = variant == "stock" or variant in BINARY_VARIANTS
     wgsl = None if own_shader else HERE / "variants" / f"{variant}.wgsl"
     if wgsl is not None and not wgsl.is_file():
@@ -120,7 +134,7 @@ def parse_arm(text):
         binary = Path(os.environ.get("CELL_BIN", kit.ROOT / "target/release/postretro"))
     return {"name": name, "config": config, "pose": pose, "resolution": res, "mode": variant,
             "ratio_one": False, "mask": mask, "wgsl": str(wgsl) if wgsl else None,
-            "binary": str(binary), "quality": quality}
+            "binary": str(binary), "quality": quality, "specular": specular}
 
 
 def main():
@@ -195,18 +209,22 @@ def main():
                 gpu_time.COMPLETE_REQUIRED = (("Depth Pre-Pass", "Textured Pass")
                                               + (() if no_fluid else ("Fluid Surface Pass",))
                                               + ((gpu_time.GLOSSY_LABEL,) if overlay else ())
-                                              + ((gpu_time.FLOOR_MARCH_LABEL,) if floor else ()))
+                                              + ((gpu_time.FLOOR_MARCH_LABEL,) if floor else ())
+                                              + ((MOVER_LABEL,) if a["pose"] in MOVER_POSES else ()))
                 label = f"{args.tag}-{a['name']}-r{rnd}"
                 print(f"run {label} ...", flush=True)
                 r = kit.run_one(label, a, rnd, args, trace_dir, flags)
                 r["variant"], r["mask"], r["binary"] = a["mode"], a["mask"], a["binary"]
                 r["quality"], r["complete_required"] = a["quality"], list(gpu_time.COMPLETE_REQUIRED)
+                r["specular"] = a["specular"]
                 add_glossy_figures(r)
                 (kit.RUNS / f"{label}.run.json").write_text(json.dumps(r, indent=2) + "\n")
                 records.append(r)
                 print(f"  busy clock {busy_clock_text(r)}", flush=True)
                 print(f"  overlay {kit.fmt(r.get('glossy_ms'), 3)} sums {kit.fmt(r.get('sums_any_ms'), 3)} "
                       f"chain {kit.fmt(r.get('chain_ms'), 3)} march {kit.fmt(r.get('march_ms'), 3)} "
+                      f"guard {kit.fmt(r.get('guard_ms'), 3)} "
+                      f"mover {kit.fmt(r.get('mover_ms'), 3)} "
                       f"fluid {kit.fmt(r.get('fluid_ms'), 3)} forward {kit.fmt(r.get('forward_ms'), 3)} "
                       f"frame {kit.fmt(r.get('gpu_frame_ms_complete'), 3)} clock {kit.clock_text(r)} "
                       f"valid={r['valid']} {r['problems'] if not r['valid'] else ''}", flush=True)
@@ -235,6 +253,8 @@ def add_glossy_figures(r):
     r["sums_any_ms"] = get(gpu_time.PROBE_SUMS_LABEL) + get(gpu_time.SUMS_LABEL)
     r["chain_ms"] = get(gpu_time.FLOOR_CHAIN_LABEL)
     r["march_ms"] = get(gpu_time.FLOOR_MARCH_LABEL)
+    r["guard_ms"] = get(gpu_time.GUARD_LABEL)
+    r["mover_ms"] = get(MOVER_LABEL)
     r["pass_sum_ms"] = round(sum(p["per_frame_ms"] for p in passes.values()), 4)
     frame = complete.get("gpu_frame_ms_complete")
     r["overlap_ms"] = round(r["pass_sum_ms"] - frame, 4) if frame is not None else None
@@ -256,11 +276,12 @@ def summarize_glossy(records, tag):
           "Per complete frame (gpu_time.py), mean over valid runs; spread = max - min across runs. "
           "frame = union of every labelled interval; pass sum = sum of every labelled pass's mean; "
           "overlap = pass sum - frame; chain = every Glossy Floor Chain Level pass in the frame, summed; "
-          "march = Glossy Floor March Pass. Clock = median core clock (min-max) over the run's busy "
+          "march = Glossy Floor March Pass; guard = Glossy Mover Guard Pass; mover = Kinematic Brush Pass. "
+          "Clock = median core clock (min-max) over the run's busy "
           "samples (GPU activity >= 50%), with their count, per run.", "",
-          "| arm | valid | overlay ms | spread | sums ms | chain ms | march ms | forward ms | spread | "
-          "GPU frame ms | spread | pass sum ms | overlap ms | clocks |",
-          "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+          "| arm | valid | overlay ms | spread | sums ms | chain ms | march ms | guard ms | mover ms | spread | "
+          "forward ms | spread | GPU frame ms | spread | pass sum ms | overlap ms | clocks |",
+          "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for name, rs in by.items():
         good = [r for r in rs if r["valid"] and r.get("forward_ms") is not None]
         col = lambda k: [r[k] for r in good if r.get(k) is not None]
@@ -269,6 +290,8 @@ def summarize_glossy(records, tag):
                "sums_ms": mean(col("sums_any_ms")),
                "chain_ms": mean(col("chain_ms")), "chain_spread": spread(col("chain_ms")),
                "march_ms": mean(col("march_ms")), "march_spread": spread(col("march_ms")),
+               "guard_ms": mean(col("guard_ms")),
+               "mover_ms": mean(col("mover_ms")), "mover_spread": spread(col("mover_ms")),
                "forward_ms": mean(col("forward_ms")), "forward_spread": spread(col("forward_ms")),
                "gpu_frame_ms": mean(col("gpu_frame_ms_complete")),
                "frame_spread": spread(col("gpu_frame_ms_complete")),
@@ -278,6 +301,8 @@ def summarize_glossy(records, tag):
         f = kit.fmt
         md.append(f"| {name} | {len(good)}/{len(rs)} | {f(row['glossy_ms'], 3)} | {f(row['glossy_spread'], 3)} | "
                   f"{f(row['sums_ms'], 3)} | {f(row['chain_ms'], 3)} | {f(row['march_ms'], 3)} | "
+                  f"{f(row['guard_ms'], 3)} | "
+                  f"{f(row['mover_ms'], 3)} | {f(row['mover_spread'], 3)} | "
                   f"{f(row['forward_ms'], 3)} | {f(row['forward_spread'], 3)} | "
                   f"{f(row['gpu_frame_ms'], 3)} | {f(row['frame_spread'], 3)} | {f(row['pass_sum_ms'], 3)} | "
                   f"{f(row['overlap_ms'], 3)} | {'; '.join(row['clocks'])} |")

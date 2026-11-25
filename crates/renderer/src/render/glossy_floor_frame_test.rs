@@ -5,9 +5,13 @@
 //! See: context/lib/rendering_pipeline.md §7.3a (Glossy world faces, Floors)
 
 use glam::{Mat4, UVec2, Vec3};
-use postretro_level_format::reflection_probes::ReflectionProbeWorldBinding;
+use postretro_level_format::reflection_probes::{
+    REFLECTION_PROBE_TILE_DIMENSION, ReflectionProbeWorldBinding,
+    reflection_probe_full_colour_mip_count, reflection_probe_zero_distances,
+};
 use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
 use postretro_render_cpu::frame_uniforms::SpecularStyle;
+use postretro_render_cpu::glossy_floor_blur::GlossyFloorTermBlur;
 
 use super::fluid_reflection_frame_test_fixtures::{FRAME, View, centre, pixels};
 use super::fluid_reflection_sums_frame_test_fixtures::frame_at;
@@ -34,7 +38,7 @@ use super::{
     GLOSSY_FLOOR_LAYER, GLOSSY_FLOOR_LAYER_DEPTH, GLOSSY_HIGHLIGHT_FREE, GLOSSY_SCENE_COLOUR_CHAIN,
     GLOSSY_STATIC_DIFFUSE, Renderer,
 };
-use FluidReflectionQuality::{High, Low, Medium, Off};
+use FluidReflectionQuality::{High, Low, Medium, Off, Ultra, VeryHigh};
 
 /// Where a pixel's centre ray first meets the room.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -174,7 +178,7 @@ fn footprint_range(
     range
 }
 
-// Acceptance row 41, pin P26 (the halves the floor march does not need).
+// The halves the floor march does not need are dropped.
 // At a floor tier, a wall with `_s` and no `_p` (untinted), a glossy wall
 // and the glossy floor (tinted, then untinted) and a mover face each draw a
 // bright highlight from a test-only static highlight (forward's world
@@ -238,7 +242,7 @@ fn the_highlight_free_colour_leaves_each_passs_highlight_out_and_the_chain_filte
     renderer.release_level_resources();
 }
 
-// Acceptance row 41, pin P26 (own outputs, A/B within the build): forward's
+// Own outputs, A/B within the build: forward's
 // and the mover pass's colour at a floor tier (their highlight-free forms)
 // is bit for bit the colour at Low (the two-output forms) and, for the
 // production sources, at Off (forward's one-output form): adding the
@@ -291,7 +295,7 @@ fn forward_and_mover_colour_is_the_same_bits_at_a_floor_tier_as_below_it() {
     renderer.release_level_resources();
 }
 
-// Acceptance row 42, pin P27. With the walls' test highlights on screen, a
+// With the walls' test highlights on screen, a
 // mover and a character with no highlight of their own stand in front of
 // them: their pixels' highlight-free colour is their own pass's colour,
 // with nothing of the wall's highlight taken from them. On the next frame,
@@ -554,7 +558,7 @@ fn publish_room(renderer: &mut Renderer, id: super::LevelSetId) {
     set_mover(renderer, Some(mover_in_front()));
 }
 
-// Acceptance rows 39 and 43, pins P21 and P28. The highlight-free colour,
+// Lifecycle: the highlight-free colour,
 // the chain and the floor layer's target and depth follow the floor layer.
 // On the first frame after install, a resize, a level set published at
 // another extent and a live low → medium switch, all sit at the current
@@ -680,7 +684,189 @@ fn the_floor_targets_follow_the_floor_tier_and_extent_and_release_below_it() {
     assert_eq!(ledger.bytes(GLOSSY_STATIC_DIFFUSE), None);
 }
 
-// Acceptance rows 43 and 45 (no up-facing face). A level whose glossy faces
+/// The sets, active first, whose glossy state holds any target.
+fn sets_holding_glossy_targets(renderer: &Renderer) -> Vec<super::LevelSetId> {
+    let full = renderer.full();
+    full.level
+        .iter()
+        .chain(&full.resident_levels)
+        .filter(|set| {
+            set.glossy
+                .as_ref()
+                .is_some_and(|glossy| glossy.residency_rows().next().is_some())
+        })
+        .map(|set| set.id)
+        .collect()
+}
+
+/// The ledger's bytes for every glossy row: D_static, the highlight-free
+/// colour, the chain, the floor layer and its depth.
+fn glossy_ledger(renderer: &Renderer) -> [Option<u64>; 5] {
+    let ledger = renderer
+        .reflection_probe_residency_report()
+        .expect("full renderer");
+    [
+        GLOSSY_STATIC_DIFFUSE,
+        GLOSSY_HIGHLIGHT_FREE,
+        GLOSSY_SCENE_COLOUR_CHAIN,
+        GLOSSY_FLOOR_LAYER,
+        GLOSSY_FLOOR_LAYER_DEPTH,
+    ]
+    .map(|row| ledger.bytes(row))
+}
+
+/// Publish `id`, keeping the set it replaces resident; returns that set's
+/// key and what the publish created.
+fn publish_keeping(
+    renderer: &mut Renderer,
+    id: super::LevelSetId,
+) -> (Option<super::LevelSetId>, GpuCreationCounts) {
+    let before = gpu_creation_counts();
+    let kept = renderer.publish_level_set(
+        id,
+        super::level_resource_set::PreviousLevelSet::KeepResident,
+    );
+    (kept, gpu_creation_counts().since(before))
+}
+
+// Owner ruling on glossy targets and level sets. No set's build makes a
+// glossy target: a set built beside a published glossy level holds no
+// D_static and no floor target, and the ledger counts the published set's
+// alone. Its publish at a tier that moved since its build builds each target
+// once (D_static and the four floor targets: five textures), counted, at the
+// kept tier, and the set it keeps resident gives its own up. A set published
+// back at a moved extent builds its own at that extent. At no step do two
+// sets hold targets, and the ledger always holds one set's rows.
+#[test]
+fn glossy_targets_exist_only_on_the_published_set_and_build_once_at_its_publish() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let quarter = (FRAME / 4, FRAME / 4);
+    install_room(&mut renderer, FloorMaterial::WHITE_SHARP);
+    let first = renderer.active_level_set().expect("installed");
+    assert_eq!(sets_holding_glossy_targets(&renderer), [first]);
+    let ledger = glossy_ledger(&renderer);
+    assert!(
+        ledger.iter().all(Option::is_some),
+        "the published set's rows: {ledger:?}"
+    );
+
+    // Built off the main thread beside the published level: no target, no
+    // ledger row of its own.
+    let id = build_room_off_main(&mut renderer);
+    let built = renderer
+        .level_set(id)
+        .and_then(|set| set.glossy.as_ref())
+        .expect("the built set's glossy state");
+    assert!(built.static_diffuse_view().is_none() && built.floor().is_none());
+    assert_eq!(
+        built.residency_rows().count(),
+        0,
+        "the built set: no target"
+    );
+    assert_eq!(sets_holding_glossy_targets(&renderer), [first]);
+    assert_eq!(
+        glossy_ledger(&renderer),
+        ledger,
+        "the ledger: one set's rows"
+    );
+
+    // The tier moves while the set is resident; its publish builds each
+    // target once, at the kept tier.
+    renderer.set_reflection_quality(Medium);
+    assert_eq!(sets_holding_glossy_targets(&renderer), [first]);
+    let builds = renderer.glossy_target_builds();
+    let (kept, created) = publish_keeping(&mut renderer, id);
+    assert_eq!(kept, Some(first));
+    assert_eq!(
+        (created.pipelines, created.textures),
+        (0, 5),
+        "the publish builds each glossy target once: {created:?}"
+    );
+    assert_eq!(renderer.glossy_target_builds(), builds + 1, "counted");
+    assert_eq!(
+        sets_holding_glossy_targets(&renderer),
+        [id],
+        "the kept set gave its targets up"
+    );
+    set_bucket_material(&mut renderer, 0, FloorMaterial::WHITE_SHARP, true);
+    set_bucket_material(&mut renderer, 1, SPECULAR_WALL, false);
+    assert_boundary_frame(
+        &mut renderer,
+        (FRAME, FRAME),
+        quarter,
+        "the published set at the kept tier",
+    );
+
+    // The extent moves; the set published back builds its own at it.
+    renderer.record_surface_size(48, 40);
+    renderer.commit_extents();
+    let (kept, _) = publish_keeping(&mut renderer, first);
+    assert_eq!(kept, Some(id));
+    assert_eq!(renderer.glossy_target_builds(), builds + 2);
+    assert_eq!(sets_holding_glossy_targets(&renderer), [first]);
+    assert_boundary_frame(
+        &mut renderer,
+        (48, 40),
+        (12, 10),
+        "published back at a moved extent",
+    );
+    let published = glossy_ledger(&renderer);
+
+    // A swap at an unchanged tier and extent: five textures again, and the
+    // ledger holds one set's rows, the same bytes.
+    let (kept, created) = publish_keeping(&mut renderer, id);
+    assert_eq!(kept, Some(first));
+    assert_eq!((created.pipelines, created.textures), (0, 5), "{created:?}");
+    assert_eq!(sets_holding_glossy_targets(&renderer), [id]);
+    assert_eq!(glossy_ledger(&renderer), published);
+
+    // Unload: no set holds a target and the ledger has no glossy row.
+    assert!(renderer.release_level_set(id));
+    assert!(sets_holding_glossy_targets(&renderer).is_empty());
+    assert_eq!(glossy_ledger(&renderer), [None; 5]);
+    assert!(renderer.release_level_set(first));
+}
+
+// A tier change between floor tiers of one fraction (high, very high and
+// ultra, all ½) keeps every target: it builds no texture or pipeline, only
+// the march's uniform and group, and the first frame at each tier records
+// one chain and one march at the same extents.
+#[test]
+fn floor_tiers_of_one_fraction_share_the_floor_targets() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let frame = (FRAME, FRAME);
+    let half = (FRAME / 2, FRAME / 2);
+    install_room(&mut renderer, FloorMaterial::WHITE_SHARP);
+    renderer.set_reflection_quality(High);
+    assert_boundary_frame(&mut renderer, frame, half, "high");
+    for (tier, what) in [
+        (VeryHigh, "high → very high"),
+        (High, "very high → high"),
+        (Ultra, "high → ultra"),
+        (VeryHigh, "ultra → very high"),
+    ] {
+        let before = gpu_creation_counts();
+        renderer.set_reflection_quality(tier);
+        let built = gpu_creation_counts().since(before);
+        assert_eq!(
+            (
+                built.pipelines,
+                built.textures,
+                built.buffers,
+                built.bind_groups
+            ),
+            (0, 0, 1, 1),
+            "{what}: the march's uniform and group alone: {built:?}"
+        );
+        assert_boundary_frame(&mut renderer, frame, half, what);
+    }
+}
+
+// No up-facing face. A level whose glossy faces
 // bound to a probe are all walls takes no floor layer: at a floor tier it
 // allocates no highlight-free colour and no chain, records no chain, and
 // its mover writes its one output, while the overlay still draws the
@@ -713,7 +899,49 @@ fn a_level_without_an_up_facing_glossy_face_takes_no_floor_layer() {
     renderer.release_level_resources();
 }
 
-// Acceptance row 39 (no overlay output). The chain records before the
+// The floor blur matches the probe term the section's own header sets: the
+// march's uniform carries α₀ from id 54's tile dimension and its colour mip
+// count, for a 64² and a 256² capture with full chains and a one-mip 128²
+// section (whose probe term reads mip 0 alone), at each floor tier. The
+// march binds no probe array, so the header reaches it through the uniform
+// alone.
+#[test]
+fn the_floor_march_blurs_by_the_sections_own_tile_and_mip_count() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    for (tile, mips) in [
+        (64, reflection_probe_full_colour_mip_count(64)),
+        (256, reflection_probe_full_colour_mip_count(256)),
+        (REFLECTION_PROBE_TILE_DIMENSION, 1),
+    ] {
+        let mut probes = floor_probe(true);
+        let texel = probes.tiles[..8].to_vec();
+        let texels: u32 = (0..mips).map(|mip| (tile >> mip).pow(2)).sum();
+        probes.tile_dimension = tile;
+        probes.colour_mip_count = mips;
+        probes.tiles = texel.repeat(texels as usize);
+        probes.distances = reflection_probe_zero_distances(1, tile);
+        install_faces(&mut renderer, &room_faces(), &probes);
+        set_bucket_material(&mut renderer, 0, FloorMaterial::WHITE_SHARP, true);
+        for tier in [Medium, High] {
+            renderer.set_reflection_quality(tier);
+            let glossy = renderer.level().glossy.as_ref().expect("glossy state");
+            let march = glossy
+                .floor()
+                .expect("a floor tier builds the floor targets")
+                .march();
+            assert_eq!(
+                march.term_blur,
+                GlossyFloorTermBlur::of_section(tile, mips),
+                "{tile}² × {mips} at {tier:?}"
+            );
+        }
+        renderer.release_level_resources();
+    }
+}
+
+// No overlay output. The chain records before the
 // overlay: it is bit for bit the same whatever the overlay adds, while the
 // scene colour it leaves differs.
 #[test]

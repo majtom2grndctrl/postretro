@@ -100,13 +100,20 @@ impl GlossyMaterials {
     }
 }
 
-/// The opt-in over mip 0 of the specular slot in the sidecar `key` names.
+/// The opt-in over mip 0 of the specular slot in the sidecar `key` names. A
+/// layered sidecar never reflects: the loader binds a world material only
+/// from a one-layer sidecar, and a placeholder for any other, so a face of
+/// it would reflect at the compiler and draw matte at runtime.
 fn read_verdict(key: &[u8; 32], prm_root: &Path) -> Result<bool, String> {
     let path = prm_root.join(format!("{}.prm", cache_filename_for_key(key)));
     let bytes =
         std::fs::read(&path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
     let (header, slots) = PrmFile::from_bytes_partial(&bytes);
-    header.map_err(|error| format!("{} is not a readable .prm: {error}", path.display()))?;
+    let header =
+        header.map_err(|error| format!("{} is not a readable .prm: {error}", path.display()))?;
+    if header.layer_count != 1 {
+        return Ok(false);
+    }
     // Wire order: diffuse, specular, normal, emissive.
     let [_, specular, _, _] = slots;
     let slot = match specular {

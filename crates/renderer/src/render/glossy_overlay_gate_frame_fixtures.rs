@@ -294,6 +294,10 @@ pub(super) struct Layers<'a> {
     pub floor: Option<&'a FloorLayer>,
     pub material: FloorMaterial,
     pub shadow: f32,
+    /// Pixel style's read of the floor layer: nearest at the texel point's
+    /// projection, which on the floor fixture (one UV over every face, so
+    /// no texel grid) is the fragment's own pixel; else smooth's bilinear.
+    pub pixel: bool,
 }
 
 impl Layers<'_> {
@@ -302,6 +306,7 @@ impl Layers<'_> {
         floor: None,
         material: FloorMaterial::WHITE_SHARP,
         shadow: 1.0,
+        pixel: false,
     };
 }
 
@@ -336,7 +341,11 @@ pub(super) fn assert_layered_composite(
                 let point = on_plane(view, centre(pixel), 0.0).expect("on the floor");
                 let fresnel = glossy_fresnel(&texel, (view.eye - point).normalize().y);
                 let (screen, spread) = layers.floor.map_or((Vec4::ZERO, Vec4::ZERO), |floor| {
-                    floor.bilinear(pixel, scene)
+                    if layers.pixel {
+                        (floor.nearest(centre(pixel), scene), Vec4::ZERO)
+                    } else {
+                        floor.bilinear(pixel, scene)
+                    }
                 });
                 let expected = forward.colour(pixel)
                     + glossy_composite(

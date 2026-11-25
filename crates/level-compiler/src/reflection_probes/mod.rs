@@ -364,7 +364,7 @@ fn bake_or_load_with(
     classify: impl FnOnce(&ExclusionScene<'_>, &[PlacedProbe], &ExclusionConstants) -> Vec<Vec<u32>>,
     reflectors: Reflectors,
 ) -> anyhow::Result<Option<ReflectionProbesSection>> {
-    // The census line reports on every build, gate on or off.
+    // Under the gate alone: without it no sidecar is read and no census logs.
     let world_faces = glossy_placement::glossy_world_faces(inputs, control.governor());
     if inputs.reflection_volumes.is_empty()
         && up_facing_faces(inputs.environment_volumes).is_empty()

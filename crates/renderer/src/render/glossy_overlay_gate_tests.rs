@@ -1,6 +1,6 @@
 // Glossy overlay source gates for its lifecycle: the probe layer from the
-// face's binding, the coplanar-mover guard's mark and clip path, and no
-// planar layer on a world face.
+// face's binding, the coplanar-mover guard's mark, clip path and timing pair,
+// no planar layer on a world face, and targets built at publish alone.
 // See: context/lib/testing_guide.md §3 (Source-scanning tests) · context/lib/rendering_pipeline.md §7.3a
 
 use super::*;
@@ -37,7 +37,7 @@ fn names_planar(text: &str) -> bool {
     })
 }
 
-// Acceptance row 54: the scan that pins water's probe layer to its face's
+// The scan that pins water's probe layer to its face's
 // binding covers the overlay. The probe index rides the per-vertex world
 // stream, written once at install from id 54's world bindings alone and read
 // flat; the fragment hands that varying to the probe term and nothing else;
@@ -141,7 +141,7 @@ fn the_overlay_probe_layer_derives_from_the_face_binding_alone() {
     }
 }
 
-// Acceptance row 49 (source half), pins P15 and P23. The guard covers the
+// Source half. The guard covers the
 // pixels the mover colour pass shades: the mover pass's own `vs_depth` from
 // its own module and layout, Equal without a depth write. It marks D_static's
 // alpha alone, which forward clears to 0 and writes as 0 on every frame it
@@ -198,7 +198,7 @@ fn the_mover_guard_marks_this_frames_movers_through_their_own_clip_path() {
     }
 }
 
-// Acceptance row 47 (source half): no planar layer reaches a world face at
+// Source half: no planar layer reaches a world face at
 // any tier. The overlay's shader, recording and level state name no planar
 // resource, and the production composite takes no screen-space share
 // (`vec4(0.0)`) until the floor layer lands.
@@ -281,4 +281,70 @@ fn no_planar_layer_reaches_the_overlay() {
         }
     }
     assert!(names_planar("planar_layer") && !names_planar("coplanar mover"));
+}
+
+// The coplanar-mover guard is timed as its own labelled pair, inside the
+// frame's prefilled query set, with the frame's timing handed in.
+#[test]
+fn the_mover_guard_owns_a_labelled_timing_pair() {
+    use crate::render::pipeline_layout::{TIMING_PAIR_COUNT, TIMING_PAIR_GLOSSY_MOVER_GUARD};
+    const { assert!(TIMING_PAIR_GLOSSY_MOVER_GUARD < TIMING_PAIR_COUNT) }
+    assert!(
+        include_str!("renderer_init_resources.rs")
+            .contains("pass_labels[TIMING_PAIR_GLOSSY_MOVER_GUARD] = \"glossy_mover_guard\"")
+    );
+    let guard = squashed(include_str!("glossy_overlay/mover_guard.rs"));
+    assert!(guard.contains(
+        "timestamp_writes:timing\
+         .map(|timing|timing.render_pass_writes(TIMING_PAIR_GLOSSY_MOVER_GUARD)),"
+    ));
+    let frame = squashed(include_str!("renderer_glossy_frame.rs"));
+    assert!(frame.contains("&level.kinematic,full.frame_timing.as_ref(),);"));
+}
+
+// No set's build makes a glossy target: the build makes the world probe
+// stream alone, and the extent-bound rebuild a publish or a resize runs names
+// no glossy target. Publish builds the published set's targets once, after
+// the replaced set gave its own up (kept resident) or was retired, so a level
+// change never holds two sets of them and a publish at a moved tier and
+// extent builds each target once.
+#[test]
+fn glossy_targets_build_at_publish_alone() {
+    let resources = squashed(include_str!("renderer_resources.rs"));
+    assert!(resources.contains("letglossy=context.glossy.build(device,geometry);"));
+    let build = squashed(wgsl_function(
+        include_str!("glossy_overlay/level.rs"),
+        "build",
+    ));
+    for target in ["sync_targets(", "self.target(", ".floor.sync("] {
+        assert!(!build.contains(target), "the build makes `{target}`");
+    }
+    let publish_source = include_str!("renderer_resources/publish.rs");
+    let rebuild = squashed(wgsl_function(publish_source, "rebuild_level_extent_groups"));
+    assert!(!rebuild.contains("glossy"), "{rebuild}");
+    let publish = squashed(wgsl_function(publish_source, "publish_level_set"));
+    let release = publish
+        .find("glossy.release_targets();")
+        .expect("a kept set gives its targets up");
+    let retire = publish
+        .find("full.retire_level_set(replaced);")
+        .expect("a retired set drops them");
+    let sync = publish
+        .find("self.sync_glossy_target();")
+        .expect("publish builds the published set's");
+    assert!(release < sync && retire < sync, "{publish}");
+    assert_eq!(publish.matches("self.sync_glossy_target();").count(), 1);
+    // A resize brings the active set's targets to the new extent at the kept
+    // tier, after its extent-bound groups.
+    let extent = squashed(wgsl_function(
+        include_str!("renderer_extent.rs"),
+        "rebuild_scene_targets",
+    ));
+    let groups = extent
+        .find("rebuild_level_extent_groups(device,full,&mutlevel,scene);")
+        .expect("the active set's groups");
+    let glossy = extent
+        .find("self.sync_glossy_target();")
+        .expect("the active set's glossy targets follow the extent");
+    assert!(groups < glossy);
 }

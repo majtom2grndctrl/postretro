@@ -348,6 +348,7 @@ pub(crate) fn build_full_renderer(
         next_level_set_id: 0,
         extent_rebuilds: 0,
         reflection_tier_rebuilds: 0,
+        glossy_target_builds: 0,
         scene_targets_generation: 0,
         build_token: std::sync::Arc::new(()),
         pending_textures: None,

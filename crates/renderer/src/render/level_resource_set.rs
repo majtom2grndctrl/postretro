@@ -293,7 +293,8 @@ pub(in crate::render) struct LevelResourceSet {
     pub(in crate::render) reflection_probes:
         Option<reflection_probe_resources::ReflectionProbeResources>,
     /// The glossy overlay's state: the world probe stream, its probe group
-    /// and the D_static target. `None` unless id 54 binds a world face.
+    /// and, while this set is published, its D_static and floor-layer
+    /// targets. `None` unless id 54 binds a world face.
     pub(in crate::render) glossy: Option<glossy_overlay::GlossyLevelState>,
     /// This level's fluid surfaces; `None` until `install_fluid_surfaces`
     /// finds a drawable face.

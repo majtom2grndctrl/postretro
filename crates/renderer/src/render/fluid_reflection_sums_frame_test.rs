@@ -180,7 +180,7 @@ fn the_build_before_oracle_restores_exactly_the_one_per_fragment_ratio_call() {
             .count()
     };
     let (from_sums, per_fragment) = (
-        "fluid_reflection_ratio_from_sums(",
+        "fluid_reflection_ratio_from_up_sums(",
         "fluid_reflection_ratio(",
     );
     assert_eq!(
@@ -199,15 +199,15 @@ fn the_build_before_oracle_restores_exactly_the_one_per_fragment_ratio_call() {
         1,
         "the oracle evaluates its lights"
     );
-    assert_eq!(oracle.len() + "_from_sums".len(), production.len());
+    assert_eq!(oracle.len() + "_from_up_sums".len(), production.len());
     let differs_at = production
         .bytes()
         .zip(oracle.bytes())
         .position(|(a, b)| a != b)
         .expect("the sources differ");
     assert!(
-        production[differs_at..].starts_with("_from_sums(probe, search.lookup)")
-            && production[differs_at + "_from_sums".len()..] == oracle[differs_at..],
+        production[differs_at..].starts_with("_from_up_sums(probe, search.lookup)")
+            && production[differs_at + "_from_up_sums".len()..] == oracle[differs_at..],
         "the sources differ only in the one call"
     );
     eprintln!("[FluidSumsProof] oracle substitution: 1 call site restored at byte {differs_at}");

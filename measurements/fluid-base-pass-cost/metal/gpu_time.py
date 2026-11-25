@@ -72,8 +72,11 @@ PROBE_SUMS_LABEL = "Reflection Probe Sums Pass"
 # them), and the floor march one render pass.
 FLOOR_CHAIN_LABEL = "Glossy Floor Chain Level"
 FLOOR_MARCH_LABEL = "Glossy Floor March Pass"
+# The overlay's coplanar-mover guard (timing pair 26): one render pass on a
+# frame with a mover draw.
+GUARD_LABEL = "Glossy Mover Guard Pass"
 # Passes reported beside the fluid pass.
-REPORTED = (FLUID_LABEL, CELL_LABEL, SUMS_LABEL, PROBE_SUMS_LABEL, GLOSSY_LABEL, FLOOR_CHAIN_LABEL, FLOOR_MARCH_LABEL, SSR_LABEL, FORWARD_LABEL, "Depth Pre-Pass", "Streamed SH Compose",
+REPORTED = (FLUID_LABEL, CELL_LABEL, SUMS_LABEL, PROBE_SUMS_LABEL, GLOSSY_LABEL, FLOOR_CHAIN_LABEL, FLOOR_MARCH_LABEL, GUARD_LABEL, SSR_LABEL, FORWARD_LABEL, "Depth Pre-Pass", "Streamed SH Compose",
             "Fog Raymarch Pass", "Fog Composite Pass", "Skinned Mesh Pass",
             "Kinematic Brush Pass", "Screen Effects Capture Tonemap Pass")
 

@@ -2,6 +2,7 @@
 // draws a reflection probe term, on a frame with any such draw.
 // See: context/lib/rendering_pipeline.md §7.3a (Live lighting)
 
+use super::cpu_stages::RenderStage;
 use super::*;
 use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
 
@@ -50,6 +51,8 @@ impl Renderer {
         let Some(probes) = self.reflection_probes() else {
             return;
         };
+        // Past the gate: a frame that dispatches no sums reports it absent.
+        let _sums_scope = self.cpu_frame.scope(RenderStage::ReflectionProbeSums);
         let full = self.full();
         full.reflection_probe_sums.record(
             encoder,

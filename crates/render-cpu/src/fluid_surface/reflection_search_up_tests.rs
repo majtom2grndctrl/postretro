@@ -1,8 +1,10 @@
-// Tests: up-facing probes search exactly as before the hemisphere
-// generalization. A frozen copy of the search as it stood (every tap and the
-// lookup clamped to y ≥ 0) is compared with `reflection_search_about` about
-// +Y over real captured tiles and random rays, bit for bit; and a wall's and a
-// ceiling's lookups stay in their own hemisphere.
+// Tests: water's search (up-only, `reflection_search`) and the search about
+// a bound face's axis (`reflection_search_about`, the glossy overlay's) agree
+// bit for bit about +Y over real captured tiles and random rays from any
+// origin within δ of the capture point's plane, so an up-facing glossy floor
+// on its probe's frontmost plane reads what water reads; deeper origins (a
+// lower bound floor) differ in the capture-shadow weight alone. A wall's and
+// a ceiling's lookups stay in their own hemisphere.
 // See: context/lib/rendering_pipeline.md §7.3a (Reflection, Glossy world faces)
 
 use glam::{Vec2, Vec3};
@@ -11,224 +13,16 @@ use proptest::prelude::*;
 use super::fixtures::{Scene, SceneBox, TILE, capture_tile, pillar_room, pool_room, room_b};
 use super::*;
 use crate::fluid_surface::reflection::{
-    FLUID_REFLECTION_DIRECTION_EPSILON, reflection_above_horizon, reflection_box_hit,
-    reflection_lookup, reflection_tile_uv,
+    reflection_above_horizon, reflection_box_hit, reflection_lookup, reflection_tile_uv,
 };
 use crate::fluid_surface::reflection_hemisphere::{
     FLUID_REFLECTION_UP, REFLECTION_UP_FACING_MIN_COS, reflection_above_hemisphere,
     reflection_hemisphere_axis, reflection_level, reflection_lookup_about,
 };
-
-// ---- The search as it stood before the hemisphere generalization ----------
-
-fn frozen_lookup(hit: Vec3, capture_point: Vec3, ray: Vec3) -> Vec3 {
-    let toward = hit - capture_point;
-    let level = Vec3::new(toward.x, toward.y.max(0.0), toward.z);
-    if level.dot(level) < FLUID_REFLECTION_DIRECTION_EPSILON {
-        Vec3::new(ray.x, ray.y.max(0.0), ray.z)
-    } else {
-        level
-    }
-}
-
-fn frozen_reflection_search_h(
-    q: Vec3,
-    capture_point: Vec3,
-    tile: [u32; 2],
-    distance: &impl Fn(Vec2) -> f32,
-) -> f32 {
-    let toward = q - capture_point;
-    let level = Vec3::new(toward.x, toward.y.max(0.0), toward.z);
-    let l1 = level.abs().element_sum();
-    if l1 < FLUID_REFLECTION_SEARCH_EPSILON {
-        return -1.0;
-    }
-    l1 * distance(reflection_tile_uv(level, tile[0], tile[1])) - 1.0
-}
-
-fn frozen_smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
-    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
-
-fn frozen_reflection_shadow_fade_angle(tile: [u32; 2]) -> f32 {
-    FLUID_REFLECTION_SHADOW_FADE_TEXELS * FLUID_REFLECTION_HALF_TURN
-        / (tile[0] as f32 - 2.0 * tile[1] as f32)
-}
-
-fn frozen_reflection_shadow_tap(
-    capture_point: Vec3,
-    toward: Vec3,
-    turn: f32,
-    tile: [u32; 2],
-    distance: &impl Fn(Vec2) -> f32,
-) -> f32 {
-    let turn2 = turn * turn;
-    let sine = turn * (1.0 - turn2 / 6.0 * (1.0 - turn2 / 20.0));
-    let cosine = 1.0 - turn2 / 2.0 * (1.0 - turn2 / 12.0);
-    let turned = Vec3::new(
-        toward.x * cosine + toward.z * sine,
-        toward.y,
-        toward.z * cosine - toward.x * sine,
-    );
-    frozen_reflection_search_h(capture_point + turned, capture_point, tile, distance)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn frozen_reflection_shadow_edge(
-    capture_point: Vec3,
-    toward: Vec3,
-    angle: f32,
-    side: f32,
-    h_origin: f32,
-    h_far: f32,
-    h_opposite: f32,
-    tile: [u32; 2],
-    distance: &impl Fn(Vec2) -> f32,
-) -> f32 {
-    let step = (h_far - h_opposite) / (1.0 + h_opposite).max(FLUID_REFLECTION_SEARCH_EPSILON);
-    let h_lit = h_origin.min(0.0);
-    let gate = frozen_smoothstep(
-        FLUID_REFLECTION_SHADOW_GATE_START * angle,
-        FLUID_REFLECTION_SHADOW_GATE_FULL * angle,
-        step,
-    );
-    if h_far <= 0.0 || gate <= 0.0 {
-        return angle;
-    }
-    let h_half = frozen_reflection_shadow_tap(capture_point, toward, 0.5 * side, tile, distance);
-    let crossing = if h_half > 0.0 {
-        0.5 * angle * h_lit / (h_lit - h_half)
-    } else {
-        0.5 * angle + 0.5 * angle * h_half / (h_half - h_far)
-    };
-    angle + (crossing - angle) * gate
-}
-
-fn frozen_reflection_shadow_fade(
-    origin: Vec3,
-    capture_point: Vec3,
-    tile: [u32; 2],
-    h_origin: f32,
-    distance: &impl Fn(Vec2) -> f32,
-) -> f32 {
-    let angle = frozen_reflection_shadow_fade_angle(tile);
-    let toward = origin - capture_point;
-    let h_plus = frozen_reflection_shadow_tap(capture_point, toward, angle, tile, distance);
-    let h_minus = frozen_reflection_shadow_tap(capture_point, toward, -angle, tile, distance);
-    let edge = frozen_reflection_shadow_edge(
-        capture_point,
-        toward,
-        angle,
-        angle,
-        h_origin,
-        h_plus,
-        h_minus,
-        tile,
-        distance,
-    )
-    .min(frozen_reflection_shadow_edge(
-        capture_point,
-        toward,
-        angle,
-        -angle,
-        h_origin,
-        h_minus,
-        h_plus,
-        tile,
-        distance,
-    ));
-    frozen_smoothstep(0.0, angle, edge)
-}
-
-fn frozen_reflection_search(
-    origin: Vec3,
-    ray: Vec3,
-    box_min: Vec3,
-    box_max: Vec3,
-    capture_point: Vec3,
-    tile: [u32; 2],
-    distance: impl Fn(Vec2) -> f32,
-) -> FluidReflectionSearch {
-    let h = |q: Vec3| frozen_reflection_search_h(q, capture_point, tile, &distance);
-    let box_hit = reflection_box_hit(origin, ray, box_min, box_max);
-    let t_box = (box_hit - origin).dot(ray);
-    let h_origin = h(origin);
-    let h_box = h(box_hit);
-    let ends_at = |point: Vec3, status, weight| FluidReflectionSearch {
-        point,
-        lookup: frozen_lookup(point, capture_point, ray),
-        status,
-        weight,
-    };
-    if h_origin >= FLUID_REFLECTION_SHADOW_MARGIN {
-        return ends_at(box_hit, FluidReflectionSearchStatus::CaptureShadow, 0.0);
-    }
-    let weight = frozen_reflection_shadow_fade(origin, capture_point, tile, h_origin, &distance)
-        * (1.0 - frozen_smoothstep(0.0, FLUID_REFLECTION_SHADOW_MARGIN, h_origin));
-    if h_origin >= 0.0 {
-        return ends_at(box_hit, FluidReflectionSearchStatus::CaptureShadow, weight);
-    }
-
-    // Front end of the bracket: the last sample in front of a surface.
-    let (mut t_front, mut h_front) = (0.0, h_origin);
-    let mut back = None;
-    let from_capture = origin - capture_point;
-    let b = from_capture.dot(ray);
-    for _ in 0..FLUID_REFLECTION_SEARCH_STEPS {
-        // The stored surface toward this sample, as a distance from the
-        // capture point: |v|₂ / (|v|₁ · w), and |v|₁ · w is h + 1.
-        if h_front <= -1.0 {
-            break;
-        }
-        let q = origin + ray * t_front;
-        let toward = q - capture_point;
-        let level = Vec3::new(toward.x, toward.y.max(0.0), toward.z);
-        let radius = level.length() / (h_front + 1.0);
-        let disc = b * b - (from_capture.dot(from_capture) - radius * radius);
-        if disc < 0.0 {
-            break;
-        }
-        let t_next = -b + disc.sqrt();
-        if t_next <= t_front || t_next >= t_box {
-            break;
-        }
-        let h_next = h(origin + ray * t_next);
-        if h_next >= 0.0 {
-            back = Some((t_next, h_next));
-            break;
-        }
-        (t_front, h_front) = (t_next, h_next);
-    }
-    let (mut t_back, mut h_back) = match back {
-        Some(sample) => sample,
-        None if h_box >= 0.0 => (t_box, h_box),
-        None => return ends_at(box_hit, FluidReflectionSearchStatus::BeyondBox, weight),
-    };
-
-    let mut t_hit = t_back;
-    for refinement in 0..FLUID_REFLECTION_SEARCH_REFINEMENTS {
-        t_hit = if h_back != h_front {
-            t_front - h_front * (t_back - t_front) / (h_back - h_front)
-        } else {
-            t_back
-        };
-        if refinement + 1 == FLUID_REFLECTION_SEARCH_REFINEMENTS {
-            break;
-        }
-        let h_hit = h(origin + ray * t_hit);
-        if h_hit >= 0.0 {
-            (t_back, h_back) = (t_hit, h_hit);
-        } else {
-            (t_front, h_front) = (t_hit, h_hit);
-        }
-    }
-    ends_at(
-        origin + ray * t_hit,
-        FluidReflectionSearchStatus::Hit,
-        weight,
-    )
-}
+use crate::fluid_surface::reflection_search_about::{
+    FLUID_REFLECTION_SHADOW_PLANE_DEPTH, reflection_search_about, reflection_shadow_level,
+    reflection_shadow_tap_about,
+};
 
 // ---- Up-facing parity -------------------------------------------------------
 
@@ -240,14 +34,14 @@ fn finite_unit() -> impl Strategy<Value = Vec3> {
 }
 
 /// The two searches' every output, bit for bit up to a zero's sign.
-fn assert_same_search(new: FluidReflectionSearch, old: FluidReflectionSearch, case: &str) {
-    assert_eq!(new.status, old.status, "{case}");
-    assert_eq!(new.weight, old.weight, "{case}");
-    assert_eq!(new.point.to_array(), old.point.to_array(), "{case}");
-    assert_eq!(new.lookup.to_array(), old.lookup.to_array(), "{case}");
+fn assert_same_search(about: FluidReflectionSearch, water: FluidReflectionSearch, case: &str) {
+    assert_eq!(about.status, water.status, "{case}");
+    assert_eq!(about.weight, water.weight, "{case}");
+    assert_eq!(about.point.to_array(), water.point.to_array(), "{case}");
+    assert_eq!(about.lookup.to_array(), water.lookup.to_array(), "{case}");
     assert_eq!(
-        reflection_tile_uv(new.lookup, TILE[0], TILE[1]).to_array(),
-        reflection_tile_uv(old.lookup, TILE[0], TILE[1]).to_array(),
+        reflection_tile_uv(about.lookup, TILE[0], TILE[1]).to_array(),
+        reflection_tile_uv(water.lookup, TILE[0], TILE[1]).to_array(),
         "{case}"
     );
 }
@@ -263,15 +57,24 @@ fn parity_scenes() -> Vec<&'static Scene> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(4096))]
 
-    // Up-facing probes, water's included, are unchanged by the hemisphere
-    // generalization: about +Y, the search from any origin (at the water,
-    // above or below it, inside the box or past it) along any ray, floored
-    // above the horizon or not, returns what the search before it returned,
-    // bit for bit — hit point, lookup, its tile UV, status and weight.
+    // About +Y, the search about an axis is water's search: from any origin
+    // no more than δ below the capture point (on the water, which lies 2 mm
+    // below it, or above it; inside the box or past it) along any ray,
+    // floored above the horizon or not, both return the same hit point,
+    // lookup, tile UV, status and weight, bit for bit. Deeper, as a lower
+    // bound floor lies, the capture-shadow tests also read the origin's true
+    // position, where water's read it over the capture point's plane alone:
+    // the weight may differ, but it is 0 wherever water's is withheld past
+    // the margin, and wherever the search runs on past the shadow its hit
+    // point, lookup and status are water's.
     #[test]
-    fn up_facing_searches_match_the_search_before_the_hemisphere_bit_for_bit(
+    fn the_search_about_up_is_waters_search_bit_for_bit(
         scene in 0usize..3,
-        at in (0.0f32..1.0, -0.6f32..0.6, 0.0f32..1.0),
+        at in (
+            0.0f32..1.0,
+            prop_oneof![Just(0.0f32), -0.6f32..0.6],
+            0.0f32..1.0,
+        ),
         overshoot in (-0.5f32..0.5, -0.5f32..0.5),
         ray in finite_unit(),
         floored in any::<bool>(),
@@ -285,7 +88,7 @@ proptest! {
         );
         let ray = if floored { reflection_above_horizon(ray) } else { ray };
         let distance = |uv: Vec2| scene.distance(uv);
-        let new = reflection_search_about(
+        let about = reflection_search_about(
             origin,
             ray,
             scene.box_min,
@@ -295,17 +98,6 @@ proptest! {
             TILE,
             distance,
         );
-        let old = frozen_reflection_search(
-            origin,
-            ray,
-            scene.box_min,
-            scene.box_max,
-            scene.capture,
-            TILE,
-            distance,
-        );
-        assert_same_search(new, old, &format!("{origin} along {ray}"));
-        // Water's own entry is the same search.
         let water = reflection_search(
             origin,
             ray,
@@ -315,7 +107,18 @@ proptest! {
             TILE,
             distance,
         );
-        assert_same_search(water, old, &format!("water: {origin} along {ray}"));
+        let case = format!("{origin} along {ray}");
+        if origin.y - scene.capture.y >= -FLUID_REFLECTION_SHADOW_PLANE_DEPTH {
+            assert_same_search(about, water, &case);
+        } else if about.status != FluidReflectionSearchStatus::CaptureShadow {
+            assert_eq!(about.status, water.status, "{case}");
+            assert_eq!(about.point.to_array(), water.point.to_array(), "{case}");
+            assert_eq!(about.lookup.to_array(), water.lookup.to_array(), "{case}");
+        } else if reflection_search_h(origin, scene.capture, TILE, &distance)
+            >= FLUID_REFLECTION_SHADOW_MARGIN
+        {
+            assert_eq!(about.weight, 0.0, "{case}");
+        }
     }
 
     // The hemisphere helpers about +Y are water's horizon clamps exactly.
@@ -337,19 +140,42 @@ proptest! {
         for hit in [v, capture] {
             assert_eq!(
                 reflection_lookup_about(hit, capture, ray, FLUID_REFLECTION_UP).to_array(),
-                frozen_lookup(hit, capture, ray).to_array()
-            );
-            assert_eq!(
-                reflection_lookup(hit, capture, ray).to_array(),
-                frozen_lookup(hit, capture, ray).to_array()
+                reflection_lookup(hit, capture, ray).to_array()
             );
         }
+        // A shadow tap keeps its offset's height (exactly, about +Y), so one
+        // within δ below the capture point reads water's tap.
         let distance = |uv: Vec2| 0.25 + 0.5 * uv.x * uv.y;
-        for turn in [0.05f32, -0.05, 0.025] {
-            assert_eq!(
-                reflection_shadow_tap(capture, v, turn, TILE, &distance),
-                frozen_reflection_shadow_tap(capture, v, turn, TILE, &distance)
-            );
+        if v.y >= -FLUID_REFLECTION_SHADOW_PLANE_DEPTH {
+            for turn in [0.05f32, -0.05, 0.025] {
+                let up = FLUID_REFLECTION_UP;
+                assert_eq!(
+                    reflection_shadow_tap_about(capture, v, turn, up, TILE, &distance),
+                    reflection_shadow_tap(capture, v, turn, TILE, &distance)
+                );
+            }
+        }
+    }
+
+    // About any axis, the capture-shadow tests' offset is the search's level
+    // bit for bit within δ behind the capture point's plane, so a fragment on
+    // a probe's frontmost bound plane tests its capture shadow as before;
+    // deeper it is the true offset lifted by δ, continuous at δ.
+    #[test]
+    fn the_shadow_offset_is_the_level_within_the_plane_depth_and_true_beyond_it(
+        v in (-5.0f32..5.0, -5.0f32..5.0, -5.0f32..5.0),
+        axis in finite_unit(),
+        on_plane in -FLUID_REFLECTION_SHADOW_PLANE_DEPTH..0.0f32,
+    ) {
+        let v = Vec3::from(v);
+        let depth = FLUID_REFLECTION_SHADOW_PLANE_DEPTH;
+        for v in [v, v - axis * (v.dot(axis) - on_plane)] {
+            let shadow = reflection_shadow_level(v, axis);
+            if v.dot(axis) >= -depth {
+                assert_eq!(shadow.to_array(), reflection_level(v, axis).to_array(), "{v}");
+            } else {
+                assert_eq!(shadow.to_array(), (v - axis * -depth).to_array(), "{v}");
+            }
         }
     }
 }
@@ -476,7 +302,9 @@ fn wall_and_ceiling_lookups_reach_below_the_capture_point_and_never_behind_the_f
 
 // The shadow fade turns its taps about the face's axis, keeping each tap's
 // height along it: about a wall's normal a tap never leaves the wall's
-// distance from the capture point along that normal.
+// distance from the capture point along that normal. A tap behind the
+// capture point's plane by more than δ (here, about +Y, 0.4 m below it)
+// reads below the plane, toward where the turned offset truly lies.
 #[test]
 fn shadow_taps_turn_about_the_faces_axis() {
     let captured = std::cell::RefCell::new(Vec::new());
@@ -490,8 +318,8 @@ fn shadow_taps_turn_about_the_faces_axis() {
         let h = reflection_shadow_tap_about(capture, toward, 0.05, axis, TILE, &distance);
         assert_eq!(h, -1.0, "a capture miss");
         let uv = captured.borrow_mut().pop().expect("one tap");
-        // The tap read toward the turned offset, clamped into the
-        // hemisphere: its UV is that direction's.
+        // The tap read toward the turned offset as the capture-shadow
+        // tests read it: its UV is that direction's.
         let turn2 = 0.05f32 * 0.05;
         let (sine, cosine) = (
             0.05 * (1.0 - turn2 / 6.0 * (1.0 - turn2 / 20.0)),
@@ -502,10 +330,17 @@ fn shadow_taps_turn_about_the_faces_axis() {
         let turned = along + across * cosine + axis.cross(across) * sine;
         assert!((turned.dot(axis) - toward.dot(axis)).abs() < 1.0e-6);
         assert!((turned.length() - toward.length()).abs() < 1.0e-5);
-        let expected = reflection_tile_uv(reflection_level(turned, axis), TILE[0], TILE[1]);
+        let read = reflection_shadow_level(turned, axis);
+        let expected = reflection_tile_uv(read, TILE[0], TILE[1]);
         assert!(
             (uv - expected).length() < 1.0e-6,
             "about {axis}: {uv} against {expected}"
         );
+        if toward.dot(axis) < 0.0 {
+            assert!(read.dot(axis) < -0.39, "about {axis}: {read}");
+        }
     }
 }
+
+#[path = "reflection_search_two_height_tests.rs"]
+mod two_height;

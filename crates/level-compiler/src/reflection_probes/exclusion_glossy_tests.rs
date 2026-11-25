@@ -148,7 +148,7 @@ fn glossy_floor(face: u32, min: [f64; 2], max: [f64; 2], y: f64) -> ReflectorFac
 // Which probes classify
 // ---------------------------------------------------------------------------
 
-// Row 13: a probe binding up-facing faces alone, water, a glossy floor or
+// A probe binding up-facing faces alone, water, a glossy floor or
 // both, excludes a brush small relative to its bound area by water's rule
 // and keeps a large one; a probe binding a wall, a ceiling or a slope
 // captures that brush. `never` excludes from, and `always` keeps in, every
@@ -190,7 +190,7 @@ fn up_facing_probes_exclude_by_waters_rule_and_wall_ceiling_and_slope_probes_cap
     }
 }
 
-// Row 13, underside half: a brush whose only downward face hangs over a
+// Underside rule: a brush whose only downward face hangs over a
 // probe's glossy floor stays in the probe, as one over its water does; moved
 // off the floor, the same brush leaves.
 #[test]
@@ -250,7 +250,7 @@ fn floor_stride(divisor: u32) -> ExclusionConstants {
     }
 }
 
-// Row 14 (P24): a probe binding water and a glossy floor keeps a brush
+// A probe binding water and a glossy floor keeps a brush
 // thinner than the coarser of the two layers' thin floors at its view
 // distance. Under a test-only floor stride coarser than water's, the floor's
 // thin floor is the coarser; under one finer, water's is; either way the
@@ -293,7 +293,7 @@ fn a_water_and_glossy_floor_probe_keeps_a_brush_under_the_coarser_strides_thin_f
     assert_eq!(between.excluded(&floor, &finer), vec![0]);
 }
 
-// Row 15: a glossy-floor probe's thin rule keys to the floor layer's
+// A glossy-floor probe's thin rule keys to the floor layer's
 // coarsest stride and a water-only probe's to water's. Under a test-only
 // floor stride coarser than water's, a brush whose thickness lies between
 // the two thin floors stays in the glossy-floor probe and leaves the water
@@ -324,7 +324,7 @@ fn a_glossy_floor_probes_thin_rule_keys_to_the_floor_stride_and_waters_to_its_ow
     assert_eq!(between.excluded(&water, &production), vec![0]);
 }
 
-// Row 16: the compiler's floor-layer stride is the coarsest stride among the
+// The compiler's floor-layer stride is the coarsest stride among the
 // floor layer's runtime tiers (render-cpu's floor-layer presets), as water's
 // is pinned to water's; retuning a floor tier coarser fails it.
 #[test]

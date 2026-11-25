@@ -195,7 +195,7 @@ fn assert_matches_reference(
     checked
 }
 
-// Acceptance rows 4, 27, 34 (GPU half): every bound pixel's output is
+// GPU half: every bound pixel's output is
 // forward plus the CPU reference's addition for its texel — the sharpness
 // fade at, inside and past the band, `_s` scaling, Fresnel from the 0.04
 // base raised by tint, and the highlight's colour — at head-on, across and
@@ -232,7 +232,7 @@ fn bound_pixels_add_the_reference_weight_and_colour_at_every_angle() {
     }
 }
 
-// Acceptance row 4 (GPU half): a texel at or below the floor, and one with
+// GPU half: a texel at or below the floor, and one with
 // `_s` 0, draws no term (byte-identical to forward); inside the band the
 // term rises with the exponent; halving `_s` halves the addition; at
 // grazing, adjacent texels across the floor contour differ by no more than
@@ -325,7 +325,7 @@ const ADVERSARIAL_AMBIENTS: [f32; 6] = [
     3.0 + 1.5 / 64.0,
 ];
 
-// Acceptance row 30 (pin P13): over a dark reflected ceiling (R = 0), with
+// Over a dark reflected ceiling (R = 0), with
 // only static light shading the floor, no output channel falls below 0 —
 // head-on and grazing, untinted and tint-1, where W reaches 1 (tint-1 head-on
 // and every texel at grazing).
@@ -370,9 +370,9 @@ fn no_channel_falls_below_zero_over_a_dark_reflection() {
     assert!(lowest >= 0.0, "lowest channel {lowest}");
 }
 
-// Acceptance row 30: the static diffuse — a character's promoted-light
+// The static diffuse — a character's promoted-light
 // shadow included, which forward subtracts from it before writing D_static
-// (row 29) — fades by (1 − W): two static light levels differ on a glossy
+// — fades by (1 − W): two static light levels differ on a glossy
 // pixel by (1 − W) × their difference without the overlay.
 #[test]
 fn static_diffuse_differences_fade_by_one_minus_w() {
@@ -408,7 +408,7 @@ fn static_diffuse_differences_fade_by_one_minus_w() {
     assert!(checked > 100);
 }
 
-// Acceptance row 31 (pin P14): a mask with any bit of the all-terms set off
+// A mask with any bit of the all-terms set off
 // draws no overlay term from its toggle frame on — no pass recorded, and the
 // frame byte-identical to forward's under that mask — and the term returns on
 // the toggle frame back, as before.
@@ -555,7 +555,7 @@ fn assert_differences_match(what: &str, differences: &[(UVec2, Vec3, Vec3, f32)]
     assert!(lit > 50, "{what} lights the floor: {lit} pixels");
 }
 
-// Acceptance row 32 (GPU half, pin P13): the difference a dynamic point
+// GPU half: the difference a dynamic point
 // light, a muzzle flash (a short-range inverse-square runtime light at the
 // eye, as the weapon's flash reaches the renderer) and a material's glow
 // make to a glossy floor, on minus off, is the same with and without the

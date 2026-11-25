@@ -1,11 +1,9 @@
 // Colour mip source gates: the exponent -> mip WGSL pinned to its level-format
-// reference (row 23), water's mip-0 read (row 2), the overlay's per-mip read
-// (row 26), and no pass writing the probe arrays (row 56).
+// reference, water's mip-0 read, the overlay's per-mip read,
+// and no pass writing the probe arrays.
 // See: context/lib/testing_guide.md · context/lib/rendering_pipeline.md §7.3a
 
-use postretro_level_format::reflection_probes::{
-    REFLECTION_PROBE_MIN_BLUR_MIP, REFLECTION_PROBE_MIP0_TEXEL_ANGLE,
-};
+use postretro_level_format::reflection_probes::REFLECTION_PROBE_MIN_BLUR_MIP;
 
 use super::GLOSSY_OVERLAY_SHADER_SOURCE;
 use crate::render::gpu_test_harness::{wgsl_const_line, wgsl_function};
@@ -51,13 +49,25 @@ fn shaders() -> Vec<(String, String)> {
     out
 }
 
-// Row 23: the shader's exponent -> mip function is level-format's, constant
+// The shader's exponent -> mip function is level-format's, constant
 // for constant and operation for operation, and composed into the overlay.
+// α₀ derives from the section's tile dimension as level-format's
+// `reflection_probe_mip0_texel_angle` derives it, so no engine tile size is
+// baked into the shader.
 #[test]
 fn the_shaders_exponent_mip_function_is_the_pinned_reference() {
     assert_eq!(
-        wgsl_f32(BLUR_WGSL, "REFLECTION_PROBE_MIP0_TEXEL_ANGLE"),
-        REFLECTION_PROBE_MIP0_TEXEL_ANGLE
+        wgsl_f32(BLUR_WGSL, "REFLECTION_PROBE_PI"),
+        std::f32::consts::PI
+    );
+    // level-format `reflection_probe_mip0_texel_angle`: π / (tile / 2).
+    assert_eq!(
+        squashed(wgsl_function(
+            BLUR_WGSL,
+            "reflection_probe_mip0_texel_angle"
+        )),
+        "fnreflection_probe_mip0_texel_angle(tile_dimension:u32)->f32{\
+         returnREFLECTION_PROBE_PI/f32(tile_dimension/2u);}"
     );
     assert_eq!(
         wgsl_f32(BLUR_WGSL, "REFLECTION_PROBE_MIN_BLUR_MIP"),
@@ -73,9 +83,10 @@ fn the_shaders_exponent_mip_function_is_the_pinned_reference() {
     // the minimum blur (`max` then `min`).
     assert_eq!(
         squashed(wgsl_function(BLUR_WGSL, "reflection_probe_exponent_mip")),
-        "fnreflection_probe_exponent_mip(exponent:f32,colour_mip_count:u32)->f32{\
+        "fnreflection_probe_exponent_mip(exponent:f32,mip0_texel_angle:f32,\
+         colour_mip_count:u32)->f32{\
          letlast=f32(colour_mip_count-1u);\
-         letmip=log2(reflection_lobe_half_width(exponent)/REFLECTION_PROBE_MIP0_TEXEL_ANGLE);\
+         letmip=log2(reflection_lobe_half_width(exponent)/mip0_texel_angle);\
          returnmin(max(mip,REFLECTION_PROBE_MIN_BLUR_MIP),last);}"
     );
     assert!(GLOSSY_OVERLAY_SHADER_SOURCE.contains(BLUR_WGSL));
@@ -86,8 +97,9 @@ fn the_shaders_exponent_mip_function_is_the_pinned_reference() {
         }
         for item in [
             "fn reflection_probe_exponent_mip(",
+            "fn reflection_probe_mip0_texel_angle(",
             "fn reflection_lobe_half_width(",
-            "const REFLECTION_PROBE_MIP0_TEXEL_ANGLE",
+            "const REFLECTION_PROBE_PI",
             "const REFLECTION_PROBE_MIN_BLUR_MIP",
         ] {
             assert!(!source.contains(item), "{name} redeclares {item}");
@@ -95,17 +107,19 @@ fn the_shaders_exponent_mip_function_is_the_pinned_reference() {
     }
 }
 
-// Row 26 (shader half): the overlay reads the two mips the function selects,
+// Shader half: the overlay reads the two mips the function selects,
 // each at its own tile's UV and level, blended as render-cpu
 // `reflection_probe_mip_colour` does; the probe's layer and the colour mip
-// count (the installed array's own) are its only other inputs.
+// count (the installed array's own) and the tile dimension (the probe
+// table's, the section's own) are its only other inputs.
 #[test]
 fn the_overlay_reads_each_selected_mip_at_its_own_uv() {
     assert_eq!(
         squashed(wgsl_function(OVERLAY_WGSL, "glossy_overlay_probe_colour")),
         "fnglossy_overlay_probe_colour(direction:vec3<f32>,layer:u32,exponent:f32)->vec3<f32>{\
          letcount=textureNumLevels(fluid_probe_array);\
-         letmip=reflection_probe_exponent_mip(exponent,count);\
+         letmip=reflection_probe_exponent_mip(exponent,\
+         reflection_probe_mip0_texel_angle(fluid_probes.tile.x),count);\
          letlower=u32(mip);\
          letupper=min(lower+1u,count-1u);\
          returnmix(glossy_overlay_probe_mip(direction,layer,lower),\
@@ -126,7 +140,7 @@ fn the_overlay_reads_each_selected_mip_at_its_own_uv() {
     assert_eq!(code.matches("glossy_overlay_probe_colour(").count(), 2);
 }
 
-// Row 2 (scan half): water samples colour mip 0 only. Every read of the
+// Scan half: water samples colour mip 0 only. Every read of the
 // colour array outside the overlay is at level 0.0, the fluid shader never
 // composes the exponent -> mip function, and water's one colour tap is its
 // sample's.
@@ -171,7 +185,7 @@ fn water_samples_colour_mip_zero_only() {
     assert!(!fluid.contains("reflection_probe_blur.wgsl"));
 }
 
-// Row 56 (source half): every colour mip uploads once, at install, from id 54;
+// Source half: every colour mip uploads once, at install, from id 54;
 // the probe arrays are created in one place, sampled only, and never a
 // render attachment, storage texture or copy destination after their upload.
 #[test]

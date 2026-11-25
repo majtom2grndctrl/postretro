@@ -162,8 +162,8 @@ struct FluidProbeTable {
 // it saw nothing. Sampled at level 0 through the same sampler.
 @group(4) @binding(3) var fluid_probe_distance: texture_2d_array<f32>;
 // The probes' live-lighting sums: one RGB sum per lobe per probe, probe-major,
-// written this frame by the sums pass before the fluid pass, read only by
-// fs_main_reflecting. Laid out at the probe cap; mirrors render-cpu
+// written this frame by the sums pass before the fluid pass, read by
+// fs_main_reflecting and the glossy overlay. Laid out at the probe cap; mirrors render-cpu
 // `FLUID_PROBE_SUMS_BYTES`.
 // IP rule (owner review to change, rendering_pipeline.md §7.3a): only
 // probe-bound faces of geometry with fixed position and orientation read the

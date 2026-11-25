@@ -43,7 +43,7 @@ fn assert_draws_the_probe_term(renderer: &mut Renderer, what: &str) -> GpuCreati
     created
 }
 
-// Acceptance row 47. At reflection quality off a glossy level records no
+// At reflection quality off a glossy level records no
 // overlay pass, allocates no D_static and keeps forward's one output, and its
 // frame is bit for bit that of the same level whose id 54 binds no world
 // face (what the level was before glossy faces). At Low the bound face draws
@@ -76,9 +76,9 @@ fn off_draws_the_level_as_before_and_low_draws_the_probe_term_alone() {
     assert_draws_the_probe_term(&mut glossy, "low");
 }
 
-// Acceptance row 48, pin P7 (live half). Off → low → off, live: the off
+// Live half. Off → low → off, live: the off
 // frames record no overlay and dispatch no sums; the first low frame after
-// off draws the probe term (row 60, pin P22: every glossy pixel meets the
+// off draws the probe term (every glossy pixel meets the
 // composite row); the second off frame is the first's bit for bit. Each
 // change builds no pipeline and uploads no probe resource: only low's
 // D_static target and its inputs group.
@@ -178,7 +178,7 @@ fn publish_floor(renderer: &mut Renderer, id: super::LevelSetId) {
     );
 }
 
-// Acceptance row 48, pin P7 (load half). A level set built at off publishes
+// Load half. A level set built at off publishes
 // with no D_static (a commit applies no tier); switched to low on its commit
 // frame, the next frame draws the probe term, building no pipeline. A set
 // built at off whose tier rose to low before its publish allocates D_static
@@ -213,7 +213,7 @@ fn a_level_built_at_off_draws_the_term_the_frame_after_a_switch_to_low() {
     assert_draws_the_probe_term(&mut renderer, "the first frame after the publish");
 }
 
-// Acceptance row 50, pins P17 and P20. Over a glossy level with a reflecting
+// Over a glossy level with a reflecting
 // pool, the overlay records once on a frame whose camera ranges reach a
 // glossy bucket, and the sums dispatch once on any frame with a probe-term
 // draw, overlay or fluid, never twice. A frame whose ranges reach no glossy
@@ -288,7 +288,7 @@ fn the_overlay_and_sums_gates_follow_ranges_tier_mask_and_fluid_draws() {
     }
 }
 
-// Acceptance row 60, pin P22 (resize half). After the scene extent changes,
+// Resize half. After the scene extent changes,
 // D_static follows it, and the first frame back at the proof extent meets
 // the composite row on every glossy pixel, with no validation error.
 #[test]

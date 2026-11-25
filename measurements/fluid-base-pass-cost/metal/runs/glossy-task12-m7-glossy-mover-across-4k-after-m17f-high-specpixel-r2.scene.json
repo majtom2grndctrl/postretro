@@ -1,0 +1,26 @@
+{
+  "map": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/7dacbf8e-a146-48c6-bc94-d7f57e2739b7/scratchpad/t12/m7a/content/dev/maps/glossy-floor-mover.prl",
+  "camera": {
+    "position": [
+      -1.6256,
+      1.6,
+      -1.6256
+    ],
+    "yaw_deg": 45.0,
+    "pitch_deg": -15.0,
+    "fov_deg": 100.0
+  },
+  "resolution": [
+    3840,
+    2160
+  ],
+  "output": "/var/folders/2d/gsn5t4bx2vsfbf_vybxvc86m0000gn/T/fluid-base-pass-traces/glossy-task12-m7-glossy-mover-across-4k-after-m17f-high-specpixel-r2.png",
+  "measurement": {
+    "report": "/Users/dhiester/Projects/Personal/postretro/measurements/fluid-base-pass-cost/metal/runs/glossy-task12-m7-glossy-mover-across-4k-after-m17f-high-specpixel-r2.report.json",
+    "warmup_frames": 300,
+    "sample_frames": 300
+  },
+  "light_term_mask": 383,
+  "reflection_quality": "high",
+  "specular_style": "pixel"
+}

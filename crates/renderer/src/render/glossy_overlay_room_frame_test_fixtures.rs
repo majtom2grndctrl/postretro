@@ -37,7 +37,7 @@ use super::fluid_baked_frame_test_fixtures::sh_section;
 use super::fluid_reflection_frame_test_fixtures::{FRAME, View, centre, read_scene, view_from};
 use super::fluid_reflection_sums_frame_test_fixtures::frame_at;
 use super::glossy_overlay_frame_test_fixtures::{GlossyFrame, read_static_diffuse};
-use super::{LevelGeometry, LevelGeometryShStorage, Renderer};
+use super::{LevelGeometry, LevelGeometryShStorage, LevelReflectionProbes, Renderer};
 
 /// The room's interior: x across, y up, z away from the eye.
 pub(super) const ROOM_MIN: Vec3 = Vec3::new(-3.0, 0.0, 1.0);
@@ -435,7 +435,10 @@ impl Room {
             vertices: &vertices,
             vertex_spec_owners: &[],
             vertex_emissive_volumes: &glow,
-            reflection_probes: Some(section),
+            reflection_probes: Some(LevelReflectionProbes {
+                section,
+                geometry_face_count: Face::ALL.len(),
+            }),
             emissive_volumes: &self.emissive_volumes,
             area_glow_lights: &self.area_lights,
             indices: &indices,
@@ -689,7 +692,7 @@ impl<'a> RoomReference<'a> {
     pub fn lookup(&self, face: Face, point: Vec3) -> Vec3 {
         use postretro_render_cpu::fluid_surface::reflection::reflection_mirror;
         use postretro_render_cpu::fluid_surface::reflection_hemisphere::reflection_above_hemisphere;
-        use postretro_render_cpu::fluid_surface::reflection_search::reflection_search_about;
+        use postretro_render_cpu::fluid_surface::reflection_search_about::reflection_search_about;
         let view = (self.view.eye - point).normalize();
         let ray = reflection_above_hemisphere(
             reflection_mirror(view, face.shading_normal()),

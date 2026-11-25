@@ -9,6 +9,7 @@ use postretro_render_cpu::fluid_surface::reflection_hemisphere::REFLECTION_UP_FA
 use postretro_render_cpu::fluid_surface::reflection_quality::{
     FluidReflectionPreset, FluidReflectionQuality,
 };
+use postretro_render_cpu::glossy_floor_blur::GlossyFloorTermBlur;
 use postretro_render_cpu::render_extent::Extent;
 use postretro_render_data::geometry::WorldVertex;
 
@@ -64,18 +65,14 @@ struct ChainLevel {
 }
 
 /// One level's floor-layer targets, owned by its glossy state and dropped
-/// with it. Exist only while the level has an up-facing glossy face at a
-/// tier that runs the floor layer.
+/// with it. Exist only while the level's set is published and has an
+/// up-facing glossy face at a tier that runs the floor layer.
 pub(crate) struct GlossyFloorTargets {
     highlight_free: wgpu::Texture,
     highlight_free_view: wgpu::TextureView,
     chain: wgpu::Texture,
     /// Every level, as the march group binds it for the hit to sample by
-    /// level.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "tests read the view the march group binds")
-    )]
+    /// level; a march-only tier change binds it again.
     chain_view: wgpu::TextureView,
     levels: Vec<ChainLevel>,
     /// The floor layer's target, (c × X, c) at the chain's level-0 extent,
@@ -86,9 +83,11 @@ pub(crate) struct GlossyFloorTargets {
     layer_depth_view: wgpu::TextureView,
     /// The march's group 3 over the chain and the tier's march uniform.
     march_group: wgpu::BindGroup,
-    /// The floor tier's preset the targets were sized and the march written
-    /// by.
+    /// The floor tier's preset the march was written by; its fraction sized
+    /// the targets.
     preset: FluidReflectionPreset,
+    /// The march uniform the group holds.
+    march: GlossyFloorMarchUniform,
 }
 
 impl GlossyFloorLayout {
@@ -127,43 +126,75 @@ impl GlossyFloorLayout {
 
     /// Bring `targets` in line with `quality` at `scene`: none at a tier that
     /// runs no floor layer or on a level without an up-facing glossy face
-    /// (`floor_faces`); otherwise at the scene extent and the tier's preset
-    /// (its fraction and march). Targets already there build nothing.
-    /// Returns whether it built them.
+    /// (`floor_blur` `None`); otherwise at the scene extent and the tier's
+    /// preset, the march blurring by the level's term blur.
+    /// Textures already at the scene extent and the tier's fraction stay: a
+    /// change between tiers of one fraction (high and very high) writes the
+    /// march's uniform and group alone, and the same tier builds nothing.
+    /// Returns whether it built the textures.
     pub(crate) fn sync(
         &self,
         device: &wgpu::Device,
         targets: &mut Option<GlossyFloorTargets>,
-        floor_faces: bool,
+        floor_blur: Option<GlossyFloorTermBlur>,
         quality: FluidReflectionQuality,
         scene: Extent,
     ) -> bool {
-        let preset = quality.floor_layer_preset().filter(|_| floor_faces);
-        let Some(preset) = preset else {
+        let (Some(preset), Some(term_blur)) = (quality.floor_layer_preset(), floor_blur) else {
             *targets = None;
             return false;
         };
-        if targets
-            .as_ref()
-            .is_some_and(|current| current.matches(scene, preset))
+        if let Some(current) = targets.as_mut()
+            && current.sized_for(scene, preset)
         {
+            if current.preset != preset {
+                let march = GlossyFloorMarchUniform::of(preset, scene, term_blur);
+                current.march_group = self.march_group(device, &current.chain_view, march);
+                current.preset = preset;
+                current.march = march;
+            }
             return false;
         }
-        *targets = Some(self.build(device, scene, preset));
+        *targets = Some(self.build(device, scene, preset, term_blur));
         true
     }
 
-    /// Recreate allocated targets at `scene` (the scene targets moved),
-    /// keeping their preset; absent ones stay absent.
-    pub(crate) fn resize(
+    /// The march's group 3: the chain, its sampler and `march`, in a uniform
+    /// of its own.
+    fn march_group(
         &self,
         device: &wgpu::Device,
-        targets: &mut Option<GlossyFloorTargets>,
-        scene: Extent,
-    ) {
-        if let Some(preset) = targets.as_ref().map(|current| current.preset) {
-            *targets = Some(self.build(device, scene, preset));
-        }
+        chain_view: &wgpu::TextureView,
+        march: GlossyFloorMarchUniform,
+    ) -> wgpu::BindGroup {
+        let march_uniform = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Glossy Floor March Uniform"),
+            contents: bytemuck::bytes_of(&march),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        log::info!(
+            "[Renderer] Glossy floor march: {} steps at {:.2} px",
+            march.step_budget,
+            march.stride,
+        );
+        device.new_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Glossy Floor March Bind Group"),
+            layout: &self.march_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(chain_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.march_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: march_uniform.as_entire_binding(),
+                },
+            ],
+        })
     }
 
     fn build(
@@ -171,6 +202,7 @@ impl GlossyFloorLayout {
         device: &wgpu::Device,
         scene: Extent,
         preset: FluidReflectionPreset,
+        term_blur: GlossyFloorTermBlur,
     ) -> GlossyFloorTargets {
         let highlight_free = device.new_texture(&wgpu::TextureDescriptor {
             label: Some("Glossy Highlight-Free Colour"),
@@ -256,30 +288,8 @@ impl GlossyFloorLayout {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
-        let march = GlossyFloorMarchUniform::of(preset, scene);
-        let march_uniform = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Glossy Floor March Uniform"),
-            contents: bytemuck::bytes_of(&march),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
-        let march_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Glossy Floor March Bind Group"),
-            layout: &self.march_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&chain_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.march_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: march_uniform.as_entire_binding(),
-                },
-            ],
-        });
+        let march = GlossyFloorMarchUniform::of(preset, scene, term_blur);
+        let march_group = self.march_group(device, &chain_view, march);
         let targets = GlossyFloorTargets {
             highlight_free,
             highlight_free_view,
@@ -292,19 +302,18 @@ impl GlossyFloorLayout {
             layer_depth,
             march_group,
             preset,
+            march,
         };
         let (scene, chain) = (targets.scene_extent(), targets.chain_extent());
         log::info!(
             "[Renderer] Glossy floor layer: highlight-free colour {}x{}, scene-colour chain and \
-             floor layer {}x{} in {} levels ({:?}), march {} steps at {:.2} px",
+             floor layer {}x{} in {} levels ({:?})",
             scene.width,
             scene.height,
             chain.width,
             chain.height,
             targets.chain_mip_count(),
             self.format,
-            march.step_budget,
-            march.stride,
         );
         targets
     }
@@ -335,11 +344,19 @@ fn target_usage() -> wgpu::TextureUsages {
 }
 
 impl GlossyFloorTargets {
-    fn matches(&self, scene: Extent, preset: FluidReflectionPreset) -> bool {
+    /// Whether the textures already suit `scene` at `preset`: the
+    /// highlight-free colour at the scene extent and the chain at the
+    /// preset's fraction of it. The march sizes nothing.
+    fn sized_for(&self, scene: Extent, preset: FluidReflectionPreset) -> bool {
         let size = self.highlight_free.size();
+        let chain =
+            postretro_render_cpu::fluid_surface::reflection_quality::reflection_target_extent(
+                (scene.width.max(1), scene.height.max(1)),
+                preset.fraction,
+            );
         size.width == scene.width.max(1)
             && size.height == scene.height.max(1)
-            && self.preset == preset
+            && (self.chain.width(), self.chain.height()) == chain
     }
 
     /// The highlight-free scene colour: forward's third attachment and the
@@ -369,6 +386,12 @@ impl GlossyFloorTargets {
     /// The march's group 3.
     pub(super) fn march_group(&self) -> &wgpu::BindGroup {
         &self.march_group
+    }
+
+    /// The march uniform the group holds (test-only).
+    #[cfg(test)]
+    pub(crate) fn march(&self) -> GlossyFloorMarchUniform {
+        self.march
     }
 
     /// The chain's level count, level 0 included.

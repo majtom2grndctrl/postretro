@@ -47,7 +47,7 @@ fn fit_facing(
     )
 }
 
-// Row 5's boxes: a wall's or a ceiling's fit runs along its own normal, so
+// A wall's or a ceiling's fit runs along its own normal, so
 // its box is the room in front of it, floored at the fit origin's plane.
 #[test]
 fn fit_box_from_a_wall_or_a_ceiling_reaches_the_room_in_front_of_it() {

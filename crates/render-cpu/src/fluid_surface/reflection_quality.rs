@@ -150,7 +150,7 @@ const FLUID_REFLECTION_PRESETS: [(FluidReflectionQuality, FluidReflectionPreset)
 /// run it at exactly the tiers that run water's layer
 /// (`rendering_pipeline.md` §7.3a, Glossy world faces).
 ///
-/// Starting values (`glossy-world-reflections` plan, Delegated answers):
+/// Starting values:
 /// water's steps, divisors and thickness, so the compiler's floor-probe
 /// stride equals water's, with the target fraction halved, since the floor's
 /// reflection is blurred by the texel's lobe and carries less detail. The

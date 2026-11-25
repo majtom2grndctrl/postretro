@@ -14,7 +14,7 @@ use crate::fluid_surface::reflection::{
     FLUID_REFLECTIVITY_MAX, reflection_fresnel, reflection_mirror, reflection_ratio_from_sums,
 };
 use crate::fluid_surface::reflection_hemisphere::reflection_above_hemisphere;
-use crate::fluid_surface::reflection_search::reflection_search_about;
+use crate::fluid_surface::reflection_search_about::reflection_search_about;
 use crate::specular_texel::{SPECULAR_EXPONENT_MIN, texel_exponent, tint_amount, tint_color};
 
 // `glossy_overlay.wgsl` mirrors each function and constant below statement for

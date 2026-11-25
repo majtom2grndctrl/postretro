@@ -1,9 +1,9 @@
 // The glossy floor layer's scene-colour mip chain: each level an isotropic
 // box downsample of the one above, level 0 of the highlight-free scene
 // colour. Its source holds the opaque scene alone: no highlight, no overlay
-// output and so no probe term (ip-check B2). Every tap weighs the same and
+// output and so no probe term. Every tap weighs the same and
 // sits at a fixed offset from the destination texel's centre: no weight or
-// offset reads a neighbour's exponent, normal or any probe quantity (B4).
+// offset reads a neighbour's exponent, normal or any probe quantity.
 // See: context/lib/rendering_pipeline.md §7.3a (Glossy world faces, Floors)
 
 @group(0) @binding(0) var chain_source: texture_2d<f32>;
@@ -24,8 +24,8 @@ fn vs_chain(@builtin(vertex_index) vertex: u32) -> ChainVertex {
 // The mean of four bilinear taps a quarter of a destination texel either
 // side of its centre on each axis. At two source texels per destination
 // texel each tap lands on one source texel's centre, and at four each lands
-// between four: either way the destination texel is the plain mean of the
-// source texels it covers.
+// between four: at those two ratios the destination texel is the plain mean of
+// the source texels it covers. Other ratios weigh the covered texels unevenly.
 @fragment
 fn fs_chain_downsample(in: ChainVertex) -> @location(0) vec4<f32> {
     let quarter = 0.25 * vec2<f32>(dpdx(in.uv).x, dpdy(in.uv).y);

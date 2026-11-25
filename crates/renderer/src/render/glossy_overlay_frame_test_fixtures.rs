@@ -22,7 +22,7 @@ use super::fluid_reflection_frame_test_fixtures::{
 };
 use super::fluid_reflection_sums_frame_test_fixtures::frame_at;
 use super::glossy_overlay::GlossyOverlayPipelines;
-use super::{LevelGeometry, LevelGeometryShStorage, Renderer};
+use super::{LevelGeometry, LevelGeometryShStorage, LevelReflectionProbes, Renderer};
 
 /// The probe's uniform capture colour, exact in f16.
 pub(super) const PROBE_COLOUR: Vec3 = Vec3::new(0.25, 0.75, 0.125);
@@ -342,7 +342,11 @@ pub(super) fn with_faces<R>(
         vertices: &vertices,
         vertex_spec_owners: &[],
         vertex_emissive_volumes: &[],
-        reflection_probes: probes,
+        // One leaf per face, in face order: id 17's face count.
+        reflection_probes: probes.map(|section| LevelReflectionProbes {
+            section,
+            geometry_face_count: faces.len(),
+        }),
         emissive_volumes: &[],
         area_glow_lights: &[],
         indices: &indices,

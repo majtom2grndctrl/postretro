@@ -1,9 +1,6 @@
-// Source gates and pure checks for the glossy floor layer's march and the
-// overlay's floor composite: the march shader's composition and bindings,
-// its IP fences (rows 40, 44, 53), the WGSL↔CPU pins of the blur at the hit
-// and the layered composite, the floor layer's reach (row 45), and the
-// recording order.
-// See: context/lib/testing_guide.md · context/lib/rendering_pipeline.md §7.3a (Glossy world faces, Floors) · context/plans/in-progress/glossy-world-reflections/ip-check.md §7
+// Source gates and pure checks for the floor layer's march and the overlay's
+// floor composite: shader composition, bindings, IP fences, WGSL↔CPU pins.
+// See: context/lib/testing_guide.md · context/lib/rendering_pipeline.md §7.3a (Glossy world faces, Floors)
 
 use super::*;
 use crate::render::gpu_test_harness::{wgsl_const_line, wgsl_function};
@@ -74,7 +71,7 @@ fn the_floor_march_shader_validates_with_its_composed_modules() {
     );
 }
 
-// Acceptance row 40 (source gate) and the carried §7.3a IP rules: the floor
+// Source gate and the carried §7.3a IP rules: the floor
 // layer's march is water's `screen_march`, composed unmodified from the one
 // file water composes (`the_march_and_its_confidence_read_no_direction` pins
 // its body and the floor's entry); the pass binds the camera, the world
@@ -133,6 +130,7 @@ fn the_floor_march_is_waters_and_binds_no_probe_quantity() {
     }
     for forbidden in [
         "fluid_reflection.wgsl",
+        "fluid_reflection_about.wgsl",
         "fluid_reflection_lights.wgsl",
         "fluid_reflection_oracle.wgsl",
         "reflection_probe_lobes.wgsl",
@@ -169,7 +167,7 @@ fn the_floor_march_is_waters_and_binds_no_probe_quantity() {
     ));
 }
 
-// Acceptance rows 36 and 40, fence B1 (`ip-check.md` §7): the chain level a
+// IP fence: the chain level a
 // hit reads is one function of the texel's exponent, the hit length and the
 // hit's view depth, with the camera's focal length and the chain's scale,
 // and the minimum blur inside the probe term's own exponent → mip function.
@@ -180,12 +178,19 @@ fn the_floor_march_is_waters_and_binds_no_probe_quantity() {
 #[test]
 fn the_floor_blur_reads_exponent_minimum_blur_and_hit_length_alone() {
     use postretro_render_cpu::glossy_floor_blur::{
-        GLOSSY_FLOOR_NEAREST_DEPTH, GLOSSY_FLOOR_PROBE_MIPS, GLOSSY_FLOOR_WIDEST_HALF_ANGLE,
+        GLOSSY_FLOOR_NEAREST_DEPTH, GLOSSY_FLOOR_WIDEST_HALF_ANGLE,
     };
-    assert_eq!(
-        squashed(wgsl_const_line(BLUR_WGSL, "GLOSSY_FLOOR_PROBE_MIPS")),
-        format!("constGLOSSY_FLOOR_PROBE_MIPS:u32={GLOSSY_FLOOR_PROBE_MIPS}u;")
+    // The probe term's blur the level matches is the section's α₀ and mip
+    // count, render-cpu `GlossyFloorTermBlur` member for member: constants
+    // of id 54's header, never a probe's colour, distance or shadow.
+    assert!(
+        squashed(BLUR_WGSL)
+            .contains("structGlossyFloorTermBlur{mip0_texel_angle:f32,colour_mip_count:u32,};")
     );
+    assert!(squashed(BLUR_CPU).contains(
+        "pubstructGlossyFloorTermBlur{pubmip0_texel_angle:f32,pubcolour_mip_count:u32,}"
+    ));
+    assert!(!squashed(BLUR_WGSL).contains("GLOSSY_FLOOR_PROBE_MIPS"));
     assert_eq!(
         squashed(wgsl_const_line(BLUR_WGSL, "GLOSSY_FLOOR_WIDEST_HALF_ANGLE")),
         format!("constGLOSSY_FLOOR_WIDEST_HALF_ANGLE:f32={GLOSSY_FLOOR_WIDEST_HALF_ANGLE:?};")
@@ -196,31 +201,33 @@ fn the_floor_blur_reads_exponent_minimum_blur_and_hit_length_alone() {
     );
     assert_eq!(
         squashed(wgsl_function(BLUR_WGSL, "glossy_floor_blur_half_angle")),
-        "fnglossy_floor_blur_half_angle(exponent:f32)->f32{\
-         returnmin(REFLECTION_PROBE_MIP0_TEXEL_ANGLE\
-         *exp2(reflection_probe_exponent_mip(exponent,GLOSSY_FLOOR_PROBE_MIPS)),\
+        "fnglossy_floor_blur_half_angle(exponent:f32,term:GlossyFloorTermBlur)->f32{\
+         returnmin(term.mip0_texel_angle\
+         *exp2(reflection_probe_exponent_mip(exponent,term.mip0_texel_angle,\
+         term.colour_mip_count)),\
          GLOSSY_FLOOR_WIDEST_HALF_ANGLE);}"
     );
     assert_eq!(
         squashed(wgsl_function(BLUR_CPU, "glossy_floor_blur_half_angle")),
-        "fnglossy_floor_blur_half_angle(exponent:f32)->f32{\
-         (REFLECTION_PROBE_MIP0_TEXEL_ANGLE\
-         *reflection_probe_exponent_mip(exponent,GLOSSY_FLOOR_PROBE_MIPS).exp2())\
+        "fnglossy_floor_blur_half_angle(exponent:f32,term:GlossyFloorTermBlur)->f32{\
+         (term.mip0_texel_angle\
+         *reflection_probe_exponent_mip(exponent,term.mip0_texel_angle,term.colour_mip_count)\
+         .exp2())\
          .min(GLOSSY_FLOOR_WIDEST_HALF_ANGLE)}"
     );
     assert_eq!(
         squashed(wgsl_function(BLUR_WGSL, "glossy_floor_blur_level")),
-        "fnglossy_floor_blur_level(exponent:f32,hit_length:f32,hit_depth:f32,focal:f32,\
-         chain_scale:f32,levels:u32)->f32{\
-         lethalf_width=tan(glossy_floor_blur_half_angle(exponent))*hit_length*focal\
+        "fnglossy_floor_blur_level(exponent:f32,term:GlossyFloorTermBlur,hit_length:f32,\
+         hit_depth:f32,focal:f32,chain_scale:f32,levels:u32)->f32{\
+         lethalf_width=tan(glossy_floor_blur_half_angle(exponent,term))*hit_length*focal\
          /max(hit_depth,GLOSSY_FLOOR_NEAREST_DEPTH);\
          returnclamp(log2(2.0*half_width*chain_scale),0.0,f32(levels-1u));}"
     );
     assert_eq!(
         squashed(wgsl_function(BLUR_CPU, "glossy_floor_blur_level")),
-        "fnglossy_floor_blur_level(exponent:f32,hit_length:f32,hit_depth:f32,focal:f32,\
-         chain_scale:f32,levels:u32,)->f32{\
-         lethalf_width=glossy_floor_blur_half_angle(exponent).tan()*hit_length*focal\
+        "fnglossy_floor_blur_level(exponent:f32,term:GlossyFloorTermBlur,hit_length:f32,\
+         hit_depth:f32,focal:f32,chain_scale:f32,levels:u32,)->f32{\
+         lethalf_width=glossy_floor_blur_half_angle(exponent,term).tan()*hit_length*focal\
          /hit_depth.max(GLOSSY_FLOOR_NEAREST_DEPTH);\
          (2.0*half_width*chain_scale).log2().max(0.0).min(levels.saturating_sub(1)asf32)}"
     );
@@ -230,14 +237,15 @@ fn the_floor_blur_reads_exponent_minimum_blur_and_hit_length_alone() {
          returnclamp(textureSampleLevel(floor_chain,floor_chain_sampler,uv,level).rgb,\
          vec3<f32>(0.0),vec3<f32>(65504.0));}"
     );
-    // The march hands the level the exponent and the hit alone, and reads
-    // at the hit's own screen position.
+    // The march hands the level the exponent, the section's term blur (from
+    // the march uniform, `the_floor_march_starts_from_the_probe_terms_point_and_writes_premultiplied`)
+    // and the hit alone, and reads at the hit's read pixel.
     assert_eq!(
         squashed(wgsl_function(MARCH_WGSL, "glossy_floor_hit_colour")),
-        "fnglossy_floor_hit_colour(pixel:vec2<f32>,exponent:f32,hit:GlossyFloorHit,\
-         extent:vec2<f32>,focal:f32)->vec3<f32>{\
+        "fnglossy_floor_hit_colour(pixel:vec2<f32>,exponent:f32,term:GlossyFloorTermBlur,\
+         hit:GlossyFloorHit,extent:vec2<f32>,focal:f32)->vec3<f32>{\
          letchain_scale=f32(textureDimensions(floor_chain).y)/extent.y;\
-         letlevel=glossy_floor_blur_level(exponent,hit.hit_length,hit.hit_depth,focal,\
+         letlevel=glossy_floor_blur_level(exponent,term,hit.hit_length,hit.hit_depth,focal,\
          chain_scale,textureNumLevels(floor_chain));\
          returnglossy_floor_blurred_hit(pixel/extent,level);}"
     );
@@ -300,7 +308,7 @@ fn the_floor_blur_reads_exponent_minimum_blur_and_hit_length_alone() {
 /// `fs_reflection` by the march's IP gate in `fluid_surface_tests`.
 pub(crate) const GLOSSY_FLOOR_MARCH_BODY: &str = "fnglossy_floor_march(in:GlossyVertexOutput,\
      pixel:bool,carve:bool,normal_map:bool)->vec4<f32>{\
-     letderivatives=glossy_overlay_derivatives(in);\
+     letderivatives=glossy_floor_derivatives(in);\
      letdepth=glossy_overlay_depth(in,derivatives,carve);\
      letexponent=glossy_floor_exponent(depth.uv,derivatives.ddx,derivatives.ddy);\
      letsurface=glossy_overlay_surface(in,derivatives,depth,pixel,normal_map);\
@@ -313,8 +321,9 @@ pub(crate) const GLOSSY_FLOOR_MARCH_BODY: &str = "fnglossy_floor_march(in:Glossy
      letorigin=glossy_floor_origin(surface.origin,surface.outward,focal);\
      letmarch=screen_march(origin,ray,uniforms.view_proj,scene_depth,\
      floor_march.stride,floor_march.step_budget,floor_march.thickness);\
-     letcolour=glossy_floor_hit_colour(march.pixel,exponent,\
-     glossy_floor_hit(origin,ray,march.pixel,extent),extent,focal);\
+     letread=glossy_floor_read_pixel(origin,march.pixel,extent);\
+     letcolour=glossy_floor_hit_colour(read,exponent,floor_march.term_blur,\
+     glossy_floor_hit(origin,ray,read,extent),extent,focal);\
      letpremultiplied=vec4<f32>(colour*march.confidence,march.confidence);\
      returnselect(vec4<f32>(0.0),premultiplied,march.confidence>0.0);}";
 
@@ -323,13 +332,28 @@ pub(crate) const GLOSSY_FLOOR_MARCH_BODY: &str = "fnglossy_floor_march(in:Glossy
 // hemisphere, one ray per target pixel (each entry one style and form, the
 // exponent setting the blur alone). Its origin lifts off the floor along the
 // face normal by one pixel's footprint at its view depth, reading the point,
-// the face normal and the projection alone; the hit length is solved from
-// the stop pixel by least squares, choosing no axis.
+// the face normal and the projection alone. The hit is read at the march's
+// last sample in front of the depth buffer, one stride back from the stop
+// along the march's own segment: no depth read, test or step of its own. The
+// hit length is solved from that read pixel by least squares, choosing no
+// axis.
 #[test]
 fn the_floor_march_starts_from_the_probe_terms_point_and_writes_premultiplied() {
     assert_eq!(
         squashed(wgsl_function(MARCH_WGSL, "glossy_floor_march")),
         GLOSSY_FLOOR_MARCH_BODY
+    );
+    // The shared helpers take the overlay's derivatives per scene pixel: the
+    // march rasterises at the chain's level-0 extent, a fraction of the
+    // scene's.
+    assert_eq!(
+        squashed(wgsl_function(MARCH_WGSL, "glossy_floor_derivatives")),
+        "fnglossy_floor_derivatives(in:GlossyVertexOutput)->GlossyDerivatives{\
+         letd=glossy_overlay_derivatives(in);\
+         letscale=vec2<f32>(textureDimensions(floor_chain))\
+         /vec2<f32>(textureDimensions(scene_depth));\
+         returnGlossyDerivatives(d.ddx*scale.x,d.ddy*scale.y,d.ddx_world*scale.x,\
+         d.ddy_world*scale.y);}"
     );
     assert_eq!(
         squashed(wgsl_function(MARCH_WGSL, "glossy_floor_origin")),
@@ -356,6 +380,35 @@ fn the_floor_march_starts_from_the_probe_terms_point_and_writes_premultiplied() 
          lethit_length=max(dot(num,den)/max(dot(den,den),1.0e-12),0.0);\
          returnGlossyFloorHit(hit_length,start.w+hit_length*along.w);}"
     );
+    assert_eq!(
+        squashed(wgsl_function(MARCH_WGSL, "glossy_floor_read_pixel")),
+        "fnglossy_floor_read_pixel(origin:vec3<f32>,stop:vec2<f32>,extent:vec2<f32>)\
+         ->vec2<f32>{\
+         letstart=screen_march_pixel(uniforms.view_proj*vec4<f32>(origin,1.0),extent);\
+         letalong=stop-start;\
+         returnstop-along*(floor_march.stride/max(length(along),floor_march.stride));}"
+    );
+    // The read point is placed, never searched for: it reads no depth and no
+    // probe quantity, tests nothing and marches no step of its own.
+    let read = squashed(wgsl_function(MARCH_WGSL, "glossy_floor_read_pixel"));
+    for word in [
+        "texture",
+        "scene_depth",
+        "select(",
+        "for(",
+        "loop",
+        "while",
+        "screen_march(",
+        "confidence",
+        "shadow",
+        "distance",
+        "capture",
+        "probe",
+        "normal",
+        "noise",
+    ] {
+        assert!(!read.contains(word), "the read pixel names `{word}`");
+    }
     // The overlay's probe term mirrors the same view about the same normal.
     assert!(
         squashed(wgsl_function(OVERLAY_WGSL, "glossy_overlay_sample")).contains(
@@ -404,17 +457,22 @@ fn the_floor_march_starts_from_the_probe_terms_point_and_writes_premultiplied() 
     ));
     assert!(frame.contains("render_pass_writes(TIMING_PAIR_GLOSSY_FLOOR_MARCH)"));
     const { assert!(TIMING_PAIR_GLOSSY_FLOOR_MARCH < TIMING_PAIR_COUNT) }
-    assert_eq!(TIMING_PAIR_COUNT, 26);
-    // The march uniform is the shader's struct, member for member.
-    assert_eq!(GLOSSY_FLOOR_MARCH_UNIFORM_BYTES, 16);
-    assert!(
-        squashed(MARCH_WGSL).contains(
-            "structGlossyFloorMarch{step_budget:u32,stride:f32,thickness:f32,spare:f32,};"
-        )
+    assert_eq!(TIMING_PAIR_COUNT, 27);
+    // The march uniform is the shader's struct, member for member: the
+    // tier's march, then the section's term blur at offset 16, the struct's
+    // own 16-byte span padding it to 32.
+    assert_eq!(GLOSSY_FLOOR_MARCH_UNIFORM_BYTES, 32);
+    assert_eq!(
+        std::mem::offset_of!(march::GlossyFloorMarchUniform, term_blur),
+        16
     );
+    assert!(squashed(MARCH_WGSL).contains(
+        "structGlossyFloorMarch{step_budget:u32,stride:f32,thickness:f32,spare:f32,\
+         term_blur:GlossyFloorTermBlur,};"
+    ));
 }
 
-// Acceptance row 45 (source half): no face but a probe-bound, up-facing one
+// Source half: no face but a probe-bound, up-facing one
 // takes the floor layer. The march's vertex stage drops every other face
 // whole (water's up-facing test on the face's flat normal); the overlay
 // reads the floor layer only through its `_floor` entries, and there only on
@@ -470,7 +528,7 @@ fn only_probe_bound_up_facing_faces_take_the_floor_layer() {
     assert!(!squashed(wgsl_function(OVERLAY_WGSL, "glossy_overlay_delta")).contains("floor"));
 }
 
-// Acceptance rows 4, 28 and the guard (plan Corrections): on a floor the
+// The guard: on a floor the
 // overlay's composite is water's layered form over the probe term, the same
 // `glossy_composite` the CPU reference mirrors (c = 0 is the probe term's
 // line), with F = Fresnel × `_s` × sharpness fade and the screen-space
@@ -566,7 +624,7 @@ fn the_floor_composite_is_the_layered_form_behind_both_early_outs() {
     assert!(squashed(OVERLAY_WGSL).contains("@group(3)@binding(2)varfloor_layer:texture_2d<f32>;"));
 }
 
-// Acceptance row 53: the no-history gate's binding inventory covers the
+// The no-history gate's binding inventory covers the
 // overlay and the floor march. Both inventories are closed, so a previous
 // frame's target, a reprojection or an intersection table would be a new
 // binding they refuse, and no source of either names one. Each target the

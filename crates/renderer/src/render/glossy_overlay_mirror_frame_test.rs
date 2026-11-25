@@ -179,7 +179,7 @@ fn mirrored_texels(layer: &[u8]) -> usize {
         .count()
 }
 
-// Acceptance rows 59 and 60, pins P10 and P22. At very high with the pool's
+// At very high with the pool's
 // plane selected, a glossy level records one overlay pass a frame, the main
 // view's: the mirror records none. The mirror's world colour (the planar
 // layer it resolves) and depth, and the water reading it, are bit for bit
@@ -240,7 +240,7 @@ fn the_mirror_records_no_overlay_and_matches_the_level_before_glossy_faces() {
     assert_bound_face_composite(&mut glossy, view, true, "the first frame after a resize");
 }
 
-// Acceptance row 58 (renderer half). At very high, a level whose glossy
+// Renderer half. At very high, a level whose glossy
 // floor outsizes its pool keeps the renderer's planar side as the level
 // without glossy faces does, on every frame of a camera path with the pool's
 // plane selected: the planar layer and mirror targets exist at the same
@@ -301,7 +301,7 @@ fn both(renderer: &mut Renderer, view: View) -> (GlossyFrame, GlossyFrame) {
     (production, forward)
 }
 
-// Acceptance row 46 (GPU half), pin P12. An opaque fluid surface and an
+// GPU half. An opaque fluid surface and an
 // opaque mover ghost drawn over a bound glossy face cover the overlay's
 // result: their pixels are bit for bit the same with the production overlay
 // and with one that adds nothing, though without them the overlay adds its

@@ -164,6 +164,8 @@ mod glossy_floor_frame_test;
 #[cfg(test)]
 mod glossy_floor_frame_test_fixtures;
 #[cfg(test)]
+mod glossy_floor_grazing_frame_test;
+#[cfg(test)]
 mod glossy_floor_layer_frame_test;
 #[cfg(test)]
 mod glossy_overlay_frame_test;
@@ -183,6 +185,8 @@ mod glossy_overlay_room_frame_test;
 mod glossy_overlay_room_frame_test_fixtures;
 #[cfg(test)]
 mod glossy_overlay_style_frame_test;
+#[cfg(test)]
+mod glossy_overlay_two_height_frame_test;
 #[cfg(test)]
 mod glossy_overlay_water_frame_test;
 #[cfg(test)]
@@ -396,9 +400,9 @@ pub use renderer_types::{
     CaptureGpuTimingState, CaptureGpuTimingWindow, CapturePromotionPin, CapturePromotionRow,
     CellOverlayState, ClearColor, DEFAULT_AMBIENT_FLOOR, DEFAULT_DYNAMIC_DIRECT_SCALE,
     DEFAULT_INDIRECT_SCALE, GpuTimingSupport, LevelGeometry, LevelGeometryLightmapStreaming,
-    LevelGeometryShStorage, LocatorDiagnostics, PortalOverlayState, PresentChoice, PresentHandle,
-    RUNTIME_DYNAMIC_LIGHT_RESERVE, Renderer, SPLASH_CLEAR_COLOR, SpatialCellSetDiagnostics,
-    SpatialDiagnostics, WorldWireframeMode,
+    LevelGeometryShStorage, LevelReflectionProbes, LocatorDiagnostics, PortalOverlayState,
+    PresentChoice, PresentHandle, RUNTIME_DYNAMIC_LIGHT_RESERVE, Renderer, SPLASH_CLEAR_COLOR,
+    SpatialCellSetDiagnostics, SpatialDiagnostics, WorldWireframeMode,
 };
 pub(crate) use renderer_types::{GpuTexture, POST_RETRO_ANISO_CLAMP};
 pub use rigid_occluder_depth::MoverOccluderAabb;

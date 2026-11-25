@@ -427,7 +427,8 @@ impl From<LightmapResidencyReport> for LightmapResidencyReportJson {
     }
 }
 
-/// Reflection probe rows, the same bytes the install log prints.
+/// Reflection probe rows, then the glossy overlay's and floor layer's target
+/// rows while they exist. The install log prints the probe rows alone.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct ReflectionProbeResidencyReportJson {
     rows: Vec<ResidencyAllocationJson>,
@@ -1026,7 +1027,7 @@ mod tests {
         assert!(lightmap.get("counters").is_none(), "no counters, no object");
     }
 
-    // glossy-world-reflections row 64: the probe family reaches the report.
+    // The probe family reaches the report.
     #[test]
     fn report_carries_reflection_probe_rows_when_attached() {
         let report = || {

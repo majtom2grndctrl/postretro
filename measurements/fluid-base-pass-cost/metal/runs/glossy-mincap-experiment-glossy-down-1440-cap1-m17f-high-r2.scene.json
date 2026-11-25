@@ -1,0 +1,25 @@
+{
+  "map": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/7dacbf8e-a146-48c6-bc94-d7f57e2739b7/scratchpad/mmin/mr/content/dev/maps/glossy-reflections-test.prl",
+  "camera": {
+    "position": [
+      -3.5,
+      1.6,
+      -3.5
+    ],
+    "yaw_deg": 45.0,
+    "pitch_deg": -89.0,
+    "fov_deg": 100.0
+  },
+  "resolution": [
+    2560,
+    1440
+  ],
+  "output": "/var/folders/2d/gsn5t4bx2vsfbf_vybxvc86m0000gn/T/fluid-base-pass-traces/glossy-mincap-experiment-glossy-down-1440-cap1-m17f-high-r2.png",
+  "measurement": {
+    "report": "/Users/dhiester/Projects/Personal/postretro/measurements/fluid-base-pass-cost/metal/runs/glossy-mincap-experiment-glossy-down-1440-cap1-m17f-high-r2.report.json",
+    "warmup_frames": 300,
+    "sample_frames": 300
+  },
+  "light_term_mask": 383,
+  "reflection_quality": "high"
+}

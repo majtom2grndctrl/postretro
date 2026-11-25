@@ -87,9 +87,8 @@ fn reflection_probes_round_trip_every_field_and_tile() {
     assert_eq!(decoded.colour_tile(1, 0), &section.tiles[16384..32768]);
 }
 
-// Row 61: version 3 round-trips with a synthetic three-mip chain (the
-// compiler writes one until the prefilter lands), each probe's mips in
-// sequence at halving edges.
+// Version 3 round-trips with a synthetic three-mip chain, each probe's mips
+// in sequence at halving edges.
 #[test]
 fn a_three_mip_colour_chain_round_trips_with_each_mip_in_sequence() {
     let mut section = section();
@@ -203,7 +202,7 @@ fn a_later_version_is_refused_with_the_named_version_error() {
     );
 }
 
-// Row 61: version 2 (five lobes, one binding list, one colour level) is
+// Version 2 (five lobes, one binding list, one colour level) is
 // refused by name, ahead of any layout it would misread.
 #[test]
 fn a_version_two_section_is_refused_with_the_named_version_error() {
@@ -618,7 +617,7 @@ fn unit_direction() -> impl Strategy<Value = [f32; 3]> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(4096))]
 
-    // Row 18: the six clamped squares of a unit direction sum to 1.
+    // The six clamped squares of a unit direction sum to 1.
     #[test]
     fn six_lobe_weights_sum_to_one_for_any_unit_direction(d in unit_direction()) {
         let weights = reflection_probe_lobe_weights(d);
@@ -627,7 +626,7 @@ proptest! {
         prop_assert!(weights.iter().all(|w| (0.0..=1.0).contains(w)), "{weights:?}");
     }
 
-    // Row 18, water parity: above the horizon (y ≥ 0, ±0 included) the first
+    // Water parity: above the horizon (y ≥ 0, ±0 included) the first
     // five weights are the five-lobe function's bit for bit and −Y is 0.
     #[test]
     fn six_lobe_weights_equal_the_five_lobe_weights_above_the_horizon(

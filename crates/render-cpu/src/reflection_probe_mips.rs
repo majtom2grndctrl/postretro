@@ -4,8 +4,8 @@
 use glam::{Vec2, Vec3};
 use postretro_level_format::reflection_probes::reflection_probe_colour_mip_dimension;
 pub use postretro_level_format::reflection_probes::{
-    REFLECTION_PROBE_MIN_BLUR_MIP, REFLECTION_PROBE_MIP0_TEXEL_ANGLE, reflection_lobe_half_width,
-    reflection_probe_exponent_mip, reflection_probe_term_half_width,
+    REFLECTION_PROBE_MIN_BLUR_MIP, reflection_lobe_half_width, reflection_probe_exponent_mip,
+    reflection_probe_mip0_texel_angle, reflection_probe_term_half_width,
 };
 
 use crate::fluid_surface::reflection::reflection_tile_uv;
@@ -21,10 +21,20 @@ pub struct ReflectionProbeMips {
 }
 
 /// The mips a texel of `exponent` reads from a `colour_mip_count`-mip chain
-/// (at least 1): the exponent → mip function's value, its floor and the
-/// next mip, capped at the last.
-pub fn reflection_probe_mips(exponent: f32, colour_mip_count: u32) -> ReflectionProbeMips {
-    let mip = reflection_probe_exponent_mip(exponent, colour_mip_count);
+/// (at least 1) of `tile_dimension` tiles: the exponent → mip function's
+/// value at that tile's α₀, its floor and the next mip, capped at the last.
+/// Both inputs are the section's own, as the overlay reads them from the
+/// installed array and probe table.
+pub fn reflection_probe_mips(
+    exponent: f32,
+    tile_dimension: u32,
+    colour_mip_count: u32,
+) -> ReflectionProbeMips {
+    let mip = reflection_probe_exponent_mip(
+        exponent,
+        reflection_probe_mip0_texel_angle(tile_dimension),
+        colour_mip_count,
+    );
     // WGSL `u32(f)` truncates; `mip` is never negative.
     let lower = mip as u32;
     ReflectionProbeMips {
@@ -36,8 +46,8 @@ pub fn reflection_probe_mips(exponent: f32, colour_mip_count: u32) -> Reflection
 
 /// Normalized UV of `direction` in colour mip `mip`: the octahedral mapping
 /// over that mip's own tile (`tile_dimension >> mip`) and its own 1-texel
-/// border. Interiors do not nest (126, 62, … 2 texels), so one UV cannot
-/// address two mips (pin P6).
+/// border. Interiors do not nest (126, 62, … 2 texels at 128²), so one UV
+/// cannot address two mips.
 pub fn reflection_tile_mip_uv(
     direction: Vec3,
     tile_dimension: u32,
@@ -80,7 +90,7 @@ pub fn reflection_probe_mip_colour(
     direction: Vec3,
     exponent: f32,
 ) -> Vec3 {
-    let mips = reflection_probe_mips(exponent, chain.len() as u32);
+    let mips = reflection_probe_mips(exponent, tile_dimension, chain.len() as u32);
     let read = |mip: u32| {
         reflection_probe_mip_sample(
             chain[mip as usize],

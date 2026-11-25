@@ -1,5 +1,5 @@
-// Colour mip prefilter tests: spread per mip (row 24), per-mip borders (row 25), the chain's layout and mip 0's bytes.
-// See: context/lib/testing_guide.md · context/plans/in-progress/glossy-world-reflections/index.md §Acceptance (Shading)
+// Colour mip prefilter tests: spread per mip, per-mip borders, the probe's hemisphere alone, the chain's layout and mip 0's bytes.
+// See: context/lib/resource_management.md §5.4 (Colour mips) · testing_guide.md
 
 use super::*;
 use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
@@ -9,6 +9,16 @@ use postretro_level_format::reflection_probes::{
 };
 
 const MIPS: u32 = 6;
+
+/// Hemispheres of every kind a probe faces: up, a wall, a ceiling, a slope.
+fn hemispheres() -> [ShareHemisphere; 4] {
+    [
+        ShareHemisphere::Up,
+        ShareHemisphere::Around(Vec3::X),
+        ShareHemisphere::Around(Vec3::NEG_Y),
+        ShareHemisphere::Around(Vec3::new(0.0, 1.0, 1.0).normalize()),
+    ]
+}
 
 /// Interior rows of the mip-0 capture from `radiance(x, y)`.
 fn capture(radiance: impl Fn(u32, u32) -> Vec3) -> Vec<Vec<Vec3>> {
@@ -31,9 +41,10 @@ fn smooth(x: u32, y: u32) -> Vec3 {
     )
 }
 
-/// The same mean as [`prefilter_mip`], over every source texel: no cull.
-fn brute_force(rows: &[&[Vec3]], mip: u32) -> Vec<Vec3> {
-    let exponent = reflection_probe_mip_exponent(mip);
+/// The same mean as [`prefilter_mip`], over every source texel in
+/// `hemisphere`: no cull.
+fn brute_force(rows: &[&[Vec3]], mip: u32, hemisphere: ShareHemisphere) -> Vec<Vec3> {
+    let exponent = reflection_probe_mip_exponent(mip, CAPTURE_MIP0_TEXEL_ANGLE);
     let interior = mip_interior(mip);
     let mut out = Vec::new();
     for y in 0..interior {
@@ -43,6 +54,9 @@ fn brute_force(rows: &[&[Vec3]], mip: u32) -> Vec<Vec3> {
             for sy in 0..TILE_INTERIOR {
                 for sx in 0..TILE_INTERIOR {
                     let d = texel_direction(sx, sy, TILE_INTERIOR);
+                    if !hemisphere.holds(d) {
+                        continue;
+                    }
                     let w = f64::from(
                         prefilter_weight(lookup.dot(d), exponent)
                             * texel_solid_angle(sx, sy, TILE_INTERIOR),
@@ -51,7 +65,11 @@ fn brute_force(rows: &[&[Vec3]], mip: u32) -> Vec<Vec3> {
                     weight += w;
                 }
             }
-            out.push((sum / weight).as_vec3());
+            out.push(if weight > 0.0 {
+                (sum / weight).as_vec3()
+            } else {
+                Vec3::ZERO
+            });
         }
     }
     out
@@ -60,7 +78,7 @@ fn brute_force(rows: &[&[Vec3]], mip: u32) -> Vec<Vec3> {
 #[test]
 fn the_prefilter_lobe_has_the_mapped_half_width() {
     for mip in 1..MIPS {
-        let exponent = reflection_probe_mip_exponent(mip);
+        let exponent = reflection_probe_mip_exponent(mip, CAPTURE_MIP0_TEXEL_ANGLE);
         let theta = reflection_lobe_half_width(exponent);
         assert!(
             (prefilter_weight(theta.cos(), exponent) - 0.5).abs() < 1e-4,
@@ -74,7 +92,7 @@ fn the_prefilter_lobe_has_the_mapped_half_width() {
 #[test]
 fn the_tabulated_lobe_follows_the_exact_lobe_and_cuts_at_the_cutoff() {
     for mip in 1..MIPS {
-        let exponent = reflection_probe_mip_exponent(mip);
+        let exponent = reflection_probe_mip_exponent(mip, CAPTURE_MIP0_TEXEL_ANGLE);
         let lobe = PrefilterLobe::new(exponent);
         for step in 0..=20_000 {
             let cos_angle = 1.0 - 2.0 * step as f32 / 20_000.0;
@@ -113,11 +131,13 @@ fn texel_solid_angles_cover_the_sphere_at_every_mip() {
     }
 }
 
-// Row 24: a one-texel bright source, prefiltered, spreads at each colour mip
+// A one-texel bright source, prefiltered, spreads at each colour mip
 // to the reflected-direction half-width of the exponent that maps to that
 // mip, within one texel of that mip (α₀·2^m). The half-maximum contour lies
 // between θ − α and θ + α: every texel at half the peak or more lies within
 // θ + α of the source, and every texel under half lies at least θ − α away.
+// The probe faces the source, and only lookups in its hemisphere count, as
+// only they are read.
 #[test]
 fn a_one_texel_source_spreads_to_each_mips_mapped_half_width() {
     // Off every axis and fold, in both hemispheres of the octahedral square.
@@ -131,18 +151,33 @@ fn a_one_texel_source_spreads_to_each_mips_mapped_half_width() {
         });
         let rows = as_rows(&rows);
         let source_direction = texel_direction(sx, sy, TILE_INTERIOR);
-        let source = PrefilterSource::new(&rows);
+        let hemisphere = ShareHemisphere::Around(source_direction);
+        let source = PrefilterSource::new(&rows, hemisphere);
         for mip in 1..MIPS {
-            let theta = reflection_lobe_half_width(reflection_probe_mip_exponent(mip));
-            assert!((theta - reflection_probe_mip_half_width(mip)).abs() < 1e-3);
-            let texel = reflection_probe_mip_half_width(mip);
+            let theta = reflection_lobe_half_width(reflection_probe_mip_exponent(
+                mip,
+                CAPTURE_MIP0_TEXEL_ANGLE,
+            ));
+            assert!(
+                (theta - reflection_probe_mip_half_width(mip, CAPTURE_MIP0_TEXEL_ANGLE)).abs()
+                    < 1e-3
+            );
+            let texel = reflection_probe_mip_half_width(mip, CAPTURE_MIP0_TEXEL_ANGLE);
             let interior = mip_interior(mip);
             let filtered = prefilter_mip(&source, mip);
-            let peak = filtered.iter().map(|v| v.x).fold(0.0f32, f32::max);
+            let read = |x: u32, y: u32| hemisphere.holds(texel_direction(x, y, interior));
+            let peak = (0..interior)
+                .flat_map(|y| (0..interior).map(move |x| (x, y)))
+                .filter(|&(x, y)| read(x, y))
+                .map(|(x, y)| filtered[(y * interior + x) as usize].x)
+                .fold(0.0f32, f32::max);
             assert!(peak > 0.0, "mip {mip}: the source reaches the mip");
             let (mut widest_bright, mut nearest_dim) = (0.0f32, f32::INFINITY);
             for y in 0..interior {
                 for x in 0..interior {
+                    if !read(x, y) {
+                        continue;
+                    }
                     let angle = texel_direction(x, y, interior)
                         .dot(source_direction)
                         .clamp(-1.0, 1.0)
@@ -155,7 +190,7 @@ fn a_one_texel_source_spreads_to_each_mips_mapped_half_width() {
                 }
             }
             eprintln!(
-                "[Task7 row 24] source ({sx},{sy}) mip {mip}: θ {:.2}°, half-max set reaches \
+                "[prefilter spread] source ({sx},{sy}) mip {mip}: θ {:.2}°, half-max set reaches \
                  {:.2}°, first dim texel {:.2}°, texel {:.2}°",
                 theta.to_degrees(),
                 widest_bright.to_degrees(),
@@ -180,15 +215,23 @@ fn a_one_texel_source_spreads_to_each_mips_mapped_half_width() {
     }
 }
 
+// Over the lookups an up-facing probe reads: past the horizon a lookup's
+// weight can be all lobe tail, which the cutoff drops by design.
 #[test]
 fn the_block_cull_changes_no_mip_by_more_than_its_cutoff() {
     let rows = capture(smooth);
     let rows = as_rows(&rows);
-    let source = PrefilterSource::new(&rows);
+    let hemisphere = ShareHemisphere::Up;
+    let source = PrefilterSource::new(&rows, hemisphere);
     for mip in 1..MIPS {
         let culled = prefilter_mip(&source, mip);
-        let exact = brute_force(&rows, mip);
+        let exact = brute_force(&rows, mip, hemisphere);
+        let interior = mip_interior(mip);
         for (index, (a, b)) in culled.iter().zip(&exact).enumerate() {
+            let (x, y) = (index as u32 % interior, index as u32 / interior);
+            if !hemisphere.holds(texel_direction(x, y, interior)) {
+                continue;
+            }
             let error = (*a - *b).abs().max_element() / b.max_element();
             assert!(
                 error < 10.0 * PREFILTER_CUTOFF,
@@ -198,18 +241,96 @@ fn the_block_cull_changes_no_mip_by_more_than_its_cutoff() {
     }
 }
 
+// Every lookup the probe reads keeps the colour; a texel behind its horizon
+// keeps it too, or stores 0 where its lobe reaches no texel in front.
 #[test]
 fn a_uniform_capture_stays_uniform_at_every_mip() {
     let colour = Vec3::new(0.3, 1.5, 4.0);
     let rows = capture(|_, _| colour);
     let rows = as_rows(&rows);
-    let source = PrefilterSource::new(&rows);
+    for hemisphere in hemispheres() {
+        let source = PrefilterSource::new(&rows, hemisphere);
+        for mip in 1..MIPS {
+            let interior = mip_interior(mip);
+            for (index, texel) in prefilter_mip(&source, mip).into_iter().enumerate() {
+                let (x, y) = (index as u32 % interior, index as u32 / interior);
+                let uniform = (texel - colour).abs().max_element() < 1e-5;
+                let read = hemisphere.holds(texel_direction(x, y, interior));
+                assert!(
+                    uniform || (!read && texel == Vec3::ZERO),
+                    "{hemisphere:?} mip {mip} ({x}, {y}): {texel}"
+                );
+            }
+        }
+    }
+}
+
+// An up-facing probe over a glossy floor: its rays pass through the floor's
+// plane and miss, so the lower hemisphere is black. No mip past 0 darkens
+// toward the horizon, where Fresnel weight is highest: every lookup it reads
+// keeps the upper hemisphere's colour.
+#[test]
+fn an_up_probes_mips_never_darken_toward_a_black_lower_hemisphere() {
+    let colour = Vec3::new(2.0, 1.0, 0.5);
+    let rows = capture(|x, y| {
+        if texel_direction(x, y, TILE_INTERIOR).y >= 0.0 {
+            colour
+        } else {
+            Vec3::ZERO
+        }
+    });
+    let rows = as_rows(&rows);
+    let hemisphere = ShareHemisphere::Up;
+    let source = PrefilterSource::new(&rows, hemisphere);
     for mip in 1..MIPS {
-        for texel in prefilter_mip(&source, mip) {
-            assert!(
-                (texel - colour).abs().max_element() < 1e-5,
-                "mip {mip}: {texel}"
-            );
+        let interior = mip_interior(mip);
+        let filtered = prefilter_mip(&source, mip);
+        for y in 0..interior {
+            for x in 0..interior {
+                let lookup = texel_direction(x, y, interior);
+                if !hemisphere.holds(lookup) {
+                    continue;
+                }
+                let texel = filtered[(y * interior + x) as usize];
+                assert!(
+                    (texel - colour).abs().max_element() < 1e-5,
+                    "mip {mip} ({x}, {y}) at height {}: {texel}",
+                    lookup.y
+                );
+            }
+        }
+    }
+}
+
+// A glossy wall's probe: its rays pass through the wall's plane into the
+// bright room beyond it. None of that room reaches any mip past 0, at a
+// lookup the probe reads or behind its horizon.
+#[test]
+fn a_wall_probes_mips_hold_none_of_the_room_behind_its_plane() {
+    let (lit, beyond) = (Vec3::new(0.2, 0.3, 0.4), Vec3::splat(1000.0));
+    let rows = capture(|x, y| {
+        if texel_direction(x, y, TILE_INTERIOR).x >= 0.0 {
+            lit
+        } else {
+            beyond
+        }
+    });
+    let rows = as_rows(&rows);
+    let hemisphere = ShareHemisphere::Around(Vec3::X);
+    let source = PrefilterSource::new(&rows, hemisphere);
+    for mip in 1..MIPS {
+        let interior = mip_interior(mip);
+        let filtered = prefilter_mip(&source, mip);
+        for y in 0..interior {
+            for x in 0..interior {
+                let texel = filtered[(y * interior + x) as usize];
+                let read = hemisphere.holds(texel_direction(x, y, interior));
+                let kept = (texel - lit).abs().max_element() < 1e-5;
+                assert!(
+                    kept || (!read && texel == Vec3::ZERO),
+                    "mip {mip} ({x}, {y}): {texel}"
+                );
+            }
         }
     }
 }
@@ -232,14 +353,15 @@ fn wrapped_source(x: u32, y: u32, dimension: u32) -> [u32; 2] {
     [source.0 as u32, source.1 as u32]
 }
 
-// Row 25: at every colour mip past 0 (mip 0's border is the capture's own,
+// At every colour mip past 0 (mip 0's border is the capture's own,
 // `capture::tests`), each tile border copies its wrapped interior, and the
 // stored chain is exactly those bordered tiles, BC6H-encoded mip by mip.
 #[test]
 fn every_mips_border_copies_its_wrapped_interior() {
     let rows = capture(smooth);
     let rows = as_rows(&rows);
-    let mips = prefiltered_mips(&rows, MIPS);
+    let hemisphere = ShareHemisphere::Around(Vec3::X);
+    let mips = prefiltered_mips(&rows, MIPS, hemisphere);
     assert_eq!(mips.len(), MIPS as usize - 1);
     let mut stored = encode_tile(&rows);
     for (mip, rgba) in (1..MIPS).zip(&mips) {
@@ -269,7 +391,7 @@ fn every_mips_border_copies_its_wrapped_interior() {
             rgba, dimension, dimension,
         ));
     }
-    assert_eq!(encode_colour_chain(&rows, MIPS), stored);
+    assert_eq!(encode_colour_chain(&rows, MIPS, hemisphere), stored);
 }
 
 #[test]
@@ -277,19 +399,22 @@ fn the_chain_keeps_mip_zero_byte_identical_and_has_the_formats_length() {
     let rows = capture(smooth);
     let rows = as_rows(&rows);
     let mip0 = encode_tile(&rows);
-    assert_eq!(
-        encode_colour_chain(&rows, 1),
-        mip0,
-        "one mip is the capture alone"
-    );
-    let chain = encode_colour_chain(&rows, MIPS);
-    assert_eq!(&chain[..mip0.len()], mip0.as_slice());
-    assert_eq!(
-        Some(chain.len()),
-        reflection_probe_colour_chain_bytes(
-            IRRADIANCE_FORMAT_BC6H,
-            REFLECTION_PROBE_TILE_DIMENSION,
-            MIPS
-        )
-    );
+    for hemisphere in hemispheres() {
+        assert_eq!(
+            encode_colour_chain(&rows, 1, hemisphere),
+            mip0,
+            "one mip is the capture alone"
+        );
+        // Mip 0 holds the whole sphere as captured, whatever the facing.
+        let chain = encode_colour_chain(&rows, MIPS, hemisphere);
+        assert_eq!(&chain[..mip0.len()], mip0.as_slice());
+        assert_eq!(
+            Some(chain.len()),
+            reflection_probe_colour_chain_bytes(
+                IRRADIANCE_FORMAT_BC6H,
+                REFLECTION_PROBE_TILE_DIMENSION,
+                MIPS
+            )
+        );
+    }
 }

@@ -108,7 +108,7 @@ fn a_level_probe_section_must_be_installable_and_bind_a_face() {
     );
 }
 
-// Pin P1, rows 64 and 65: a level whose id 54 binds world faces and no fluid
+// a level whose id 54 binds world faces and no fluid
 // face, with no fluid volume, installs its probes and sums on both build
 // paths, meters every colour mip, and dispatches no sums while nothing draws
 // a probe term (no overlay exists yet).
@@ -161,10 +161,10 @@ fn a_level_with_world_bound_probes_and_no_fluid_installs_and_meters_them() {
     );
     renderer.publish_level_set(id, PreviousLevelSet::Retire);
     assert_eq!(report(&renderer), oracle);
-    eprintln!("[GlossyTask4] world-only level: {oracle:?}");
+    eprintln!("[world-only level: {oracle:?}");
 }
 
-// Row 65's second half and pin P1's fluid side: a level with neither a
+// A level with neither a
 // probe-binding id 54 nor fluid allocates no probe resource; a fluid level
 // without probes binds the fluid install's dummies, which are not probes.
 #[test]
@@ -197,7 +197,7 @@ fn a_level_without_bound_probes_allocates_no_probe_resource() {
     }
 }
 
-// Pin P8, resource half, and row 64: an unload returns the probe rows to
+// Resource half: an unload returns the probe rows to
 // zero, and a level change, on either build path, leaves only the new
 // level's probes bound and metered.
 #[test]

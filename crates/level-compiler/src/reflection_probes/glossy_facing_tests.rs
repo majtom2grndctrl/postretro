@@ -245,7 +245,7 @@ fn assert_lifted_off(probe: &PlacedProbe, quad: &Quad) {
     );
 }
 
-// Row 5: derived probes on a floor, a wall and a down-facing ceiling, each on
+// Derived probes on a floor, a wall and a down-facing ceiling, each on
 // its face's front side, lifted along its normal; coplanar pieces of one face
 // group share a probe.
 #[test]
@@ -362,7 +362,7 @@ fn ramp(material: u32) -> Quad {
     )
 }
 
-// Row 5: a derived probe on a 45° slope sits on its front side, lifted along
+// A derived probe on a 45° slope sits on its front side, lifted along
 // its normal, and its box, fitted along the axis it is nearest, holds it.
 #[test]
 fn a_derived_probe_lifts_off_a_45_degree_slope_along_its_normal() {
@@ -386,7 +386,7 @@ fn a_derived_probe_lifts_off_a_45_degree_slope_along_its_normal() {
     );
 }
 
-// Row 5: faces on different planes, or on one plane facing opposite ways,
+// Faces on different planes, or on one plane facing opposite ways,
 // never share a derived probe.
 #[test]
 fn derived_probes_never_join_faces_on_other_planes_or_facing_the_other_way() {
@@ -427,7 +427,7 @@ fn room_volume() -> MapReflectionVolume {
     reflection_volume([-3.01, -0.01, -3.01], [3.01, 3.01, 3.01])
 }
 
-// Row 6: a `reflection_volume` claims the glossy world faces inside it; a box
+// A `reflection_volume` claims the glossy world faces inside it; a box
 // over neither water nor a glossy face drops with a warning.
 #[test]
 fn a_reflection_volume_claims_glossy_faces_and_an_empty_one_drops_with_a_warning() {
@@ -458,7 +458,7 @@ fn a_reflection_volume_claims_glossy_faces_and_an_empty_one_drops_with_a_warning
     );
 }
 
-// Row 7 and pin P3: one authored box binding a glossy floor and a glossy wall
+// One authored box binding a glossy floor and a glossy wall
 // makes a probe each; the floor's capture shows the wall, and the wall's the
 // floor.
 #[test]
@@ -498,7 +498,7 @@ fn in_one_box_a_glossy_floor_reflects_a_glossy_wall_and_the_wall_the_floor() {
     );
 }
 
-// Row 7 and pin P3: one authored box binding a pool and a glossy wall. The
+// One authored box binding a pool and a glossy wall. The
 // pool reflects the wall; the wall reflects the room with the pool's bed
 // where the water lies, as captures hold no fluid surface.
 #[test]
@@ -541,7 +541,7 @@ fn in_one_box_a_pool_reflects_a_glossy_wall_and_the_wall_shows_the_pools_bed() {
     );
 }
 
-// Row 8: an authored box over glossy floors on two heights and two glossy
+// An authored box over glossy floors on two heights and two glossy
 // walls facing different ways makes three probes, each with the box as its
 // box: one binding both floors, one per wall.
 #[test]
@@ -583,7 +583,7 @@ fn an_authored_box_makes_one_probe_per_facing_and_one_for_floors_on_two_heights(
     logs.assert_logged_once(LogLevel::Warn, "binds faces on more than one plane");
 }
 
-// Row 9 and pin P4: an authored box over a pool above a lower glossy floor
+// An authored box over a pool above a lower glossy floor
 // makes one up-facing probe whose capture point lies in front of both.
 #[test]
 fn a_box_over_a_pool_above_a_glossy_floor_captures_in_front_of_both() {
@@ -603,7 +603,83 @@ fn a_box_over_a_pool_above_a_glossy_floor_captures_in_front_of_both() {
     );
 }
 
-// Row 9 and pin P4: a face the capture point cannot serve binds nothing, and
+/// A glossy platform at 1 m over `x ∈ [1.5, 3]`, its whole depth.
+fn platform() -> Quad {
+    let (lo, hi) = (Vec3::new(1.5, 1.0, -3.0), Vec3::new(3.0, 1.0, 3.0));
+    (Vec3::Y, rect(lo, hi, 1, 1.0), 1, LIT)
+}
+
+/// A box nested in [`room_volume`] around [`platform`] alone, entity 3.
+fn platform_volume() -> MapReflectionVolume {
+    MapReflectionVolume {
+        source_entity: 3,
+        source_label: "entity 3 'reflection_volume'".to_string(),
+        ..reflection_volume([1.4, 0.9, -3.01], [3.01, 1.1, 3.01])
+    }
+}
+
+// A box's capture point follows what it binds. A nested box claims the
+// glossy platform inside the room's box, leaving it the pool alone: it
+// captures over the water exactly where it does with no glossy face offered,
+// not over the platform it never binds.
+#[test]
+fn a_box_a_nested_box_leaves_only_water_captures_over_that_water() {
+    let mut quads = vec![platform()];
+    quads.extend(room_except(&[], 0));
+    let place_gated = |gate: bool| {
+        let mut room = scene(&quads, &[MATTE_GREY, glossy(GREY)], gate);
+        room.extras.authored = vec![room_volume(), platform_volume()];
+        place(&room, &pool())
+    };
+    let water_only = place_gated(false);
+    assert_eq!(water_only.len(), 1, "{water_only:#?}");
+    let probes = place_gated(true);
+    assert_eq!(probes.len(), 2, "{probes:#?}");
+    let pool_probe = &probes[0];
+    assert_eq!(pool_probe.source_entity, 2);
+    assert_eq!(pool_probe.fluid_faces, vec![(0, 0)]);
+    assert!(pool_probe.world_faces.is_empty());
+    assert_eq!(pool_probe.capture_point, water_only[0].capture_point);
+    let capture = pool_probe.capture_point_vec3();
+    assert!(
+        (capture - Vec3::new(0.0, 0.502, 0.0)).length() < 1e-5,
+        "{capture}"
+    );
+    let (_, nested) = binding(&probes, 0);
+    assert_eq!(nested.source_entity, 3);
+    assert_lifted_off(nested, &quads[0]);
+}
+
+// A box's glossy probe captures in front of the frontmost plane it binds, not
+// of one a nested box claims: 2 mm over the room's glossy floor, under the
+// raised platform the nested box binds.
+#[test]
+fn a_box_captures_in_front_of_the_frontmost_plane_it_binds_not_a_nested_boxs() {
+    let mut quads = vec![room_face(0, 1, LIT), platform()];
+    quads.extend(room_except(&[0], 0));
+    let mut room = scene(&quads, &[MATTE_GREY, glossy(GREY)], true);
+    room.extras.authored = vec![room_volume(), platform_volume()];
+    let probes = place(&room, &no_water());
+    assert_eq!(probes.len(), 2, "{probes:#?}");
+    let (_, floor) = binding(&probes, 0);
+    assert_eq!(
+        (floor.source_entity, floor.world_faces.clone()),
+        (2, vec![0])
+    );
+    let capture = floor.capture_point_vec3();
+    assert!(
+        (capture - Vec3::new(0.0, 0.002, 0.0)).length() < 1e-5,
+        "{capture}"
+    );
+    let (_, raised) = binding(&probes, 1);
+    assert_eq!(
+        (raised.source_entity, raised.world_faces.clone()),
+        (3, vec![1])
+    );
+    assert_lifted_off(raised, &quads[1]);
+}
+
+// A face the capture point cannot serve binds nothing, and
 // the warning names it. The box's top is flush with a raised glossy floor,
 // so the clamp leaves the point on that floor's plane.
 #[test]
@@ -700,7 +776,7 @@ fn wall_room(pieces: &[([f32; 4], bool)]) -> LitFloorRoom {
     scene(&quads, &[MATTE_GREY, glossy(GREY)], true)
 }
 
-// Row 10, wall half: the capture point sits 2 mm off the wall, so with the
+// On a wall the capture point sits 2 mm off it, so with the
 // wall in its capture the texels along it read the wall itself and its own
 // fragments fall in capture shadow; transparent to its own probe, none do.
 #[test]
@@ -719,7 +795,7 @@ fn a_glossy_wall_probe_places_no_fragment_of_its_own_wall_in_capture_shadow() {
     );
 }
 
-// Row 11 and pin P2, wall half: a coplanar matte strip crossing a glossy wall
+// A coplanar matte strip crossing a glossy wall
 // casts no capture shadow on the glossy wall beyond it, and a glossy inlay
 // flush in a matte wall reflects over its whole area.
 #[test]
@@ -767,7 +843,7 @@ fn a_coplanar_matte_strip_or_surround_casts_no_capture_shadow_on_a_glossy_wall()
     );
 }
 
-// Row 19, compiler half: a glossy down-facing ceiling over a floor
+// A glossy down-facing ceiling over a floor
 // `light_area` panel takes that light's share on the −Y lobe, and none on
 // +Y, which it never reads.
 #[test]
@@ -818,7 +894,7 @@ fn a_glossy_ceiling_over_a_floor_light_area_panel_takes_its_share_on_the_down_lo
     assert_eq!(entry.shares[0], [0.0; 3], "+Y lies behind the ceiling");
 }
 
-// Row 68: an authored box whose facings make more probes than the threshold
+// An authored box whose facings make more probes than the threshold
 // builds, and the warning names the box and its probe count.
 #[test]
 fn an_authored_box_past_the_probe_warning_builds_and_names_its_count() {

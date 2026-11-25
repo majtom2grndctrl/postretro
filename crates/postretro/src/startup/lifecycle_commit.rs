@@ -260,12 +260,14 @@ impl App {
             .expect("the commit's checks found the renderer");
         let extent_rebuilds = renderer.extent_rebuilds();
         let reflection_tier_rebuilds = renderer.reflection_tier_rebuilds();
+        let glossy_target_builds = renderer.glossy_target_builds();
         let before = gpu_creation_counts();
         renderer.publish_level_set(id, PreviousLevelSet::Retire);
         report.publish_created = gpu_creation_counts().since(before);
         report.extent_rebuilds = renderer.extent_rebuilds() - extent_rebuilds;
         report.reflection_tier_rebuilds =
             renderer.reflection_tier_rebuilds() - reflection_tier_rebuilds;
+        report.glossy_target_builds = renderer.glossy_target_builds() - glossy_target_builds;
         report.model_cache =
             renderer
                 .enter_model_cache_offers(id)

@@ -1,21 +1,19 @@
-// The glossy world overlay: an Equal-depth redraw of glossy buckets that adds
-// W x (R - D_static) over forward's colour, R the bound probe's reflection
-// coloured as the texel's highlight, W its Fresnel x `_s` x sharpness fade x
-// capture-shadow weight, and D_static forward's static diffuse at the same
-// pixel. On up-facing faces at the tiers that run the floor layer, the
-// `_floor` entries composite the floor layer's (c x X, c) over the probe term
-// in water's layered form. Concatenated with glossy_surface.wgsl (the camera
-// and world-material groups and the world vertex), glossy_overlay_shading.wgsl
-// (where the fragment reflects from and about which normal: the reflection
-// style's point, forward's Surface Depth march and normal map),
-// material_shading.wgsl (the tint rule forward's highlight reads),
-// surface_depth.wgsl (forward's march), reflection_probe_blur.wgsl (the
-// exponent -> mip function that picks the colour mips R reads),
-// reflection_probe_lobes.wgsl, fluid_motion.wgsl, fluid_reflection_ray.wgsl
-// and fluid_reflection.wgsl, whose probe search, hemisphere, live lighting and
-// Fresnel it reuses by name. Mirrors render-cpu `glossy_reflection` and
-// `reflection_probe_mips`.
+// The glossy world overlay: an Equal-depth redraw of glossy buckets adding W x (R - D_static) over forward's colour; mirrors render-cpu `glossy_reflection` and `reflection_probe_mips`.
 // See: context/lib/rendering_pipeline.md §7.3a (Glossy world faces)
+
+// R is the bound probe's reflection coloured as the texel's highlight, W its
+// Fresnel x `_s` x sharpness fade x capture-shadow weight, and D_static
+// forward's static diffuse at the same pixel. On up-facing faces at the tiers
+// that run the floor layer, the `_floor` entries composite the floor layer's
+// (c x X, c) over the probe term in water's layered form. Concatenated with
+// glossy_surface.wgsl (the camera and world-material groups and the world
+// vertex), glossy_overlay_shading.wgsl (where the fragment reflects from and
+// about which normal), material_shading.wgsl (the tint rule),
+// surface_depth.wgsl (forward's march), reflection_probe_blur.wgsl (the
+// exponent -> mip function), reflection_probe_lobes.wgsl, fluid_motion.wgsl,
+// fluid_reflection_ray.wgsl and fluid_reflection.wgsl, whose hemisphere, box
+// hit and Fresnel it reuses by name, and fluid_reflection_about.wgsl (the
+// search, lookup and live lighting about the face's hemisphere axis).
 
 // --- Group 2: the level's probe records, read only: the colour array, the
 // share table, the distance array and the live-lighting sums the sums pass
@@ -201,7 +199,7 @@ fn glossy_overlay_sample(probe: u32, origin: vec3<f32>, view: vec3<f32>, normal:
                          axis: vec3<f32>, exponent: f32) -> FluidReflectionSample {
     let ray = fluid_reflection_above_hemisphere(fluid_reflection_mirror(view, normal), axis);
     let layer = fluid_probes.probes[probe].layer;
-    let search = fluid_reflection_search(origin, ray, fluid_probes.probes[probe].box_min,
+    let search = fluid_reflection_search_about(origin, ray, fluid_probes.probes[probe].box_min,
         fluid_probes.probes[probe].box_max, fluid_probes.probes[probe].capture_point, axis,
         fluid_probes.tile.xy, layer);
     let capture = glossy_overlay_probe_colour(search.lookup, layer, exponent);
@@ -212,13 +210,16 @@ fn glossy_overlay_sample(probe: u32, origin: vec3<f32>, view: vec3<f32>, normal:
 // The probe colour toward `direction` blurred by `exponent`: the two colour
 // mips the exponent -> mip function falls between, each read at its own
 // tile's UV (interiors do not nest, so one UV cannot address two mips),
-// blended. Mirrors render-cpu `reflection_probe_mip_colour`. IP rule (owner
-// review to change, rendering_pipeline.md §7.3a): the mips were prefiltered
-// at compile time and are only sampled here; the exponent picks a mip, never
-// a probe, and the blur reads no capture-shadow weight or distance tile.
+// blended. The section's own shape sets the selection: alpha_0 from the
+// table's tile dimension, the chain's length from the installed array. Mirrors
+// render-cpu `reflection_probe_mip_colour`. IP rule (owner review to change,
+// rendering_pipeline.md §7.3a): the mips were prefiltered at compile time and
+// are only sampled here; the exponent picks a mip, never a probe, and the blur
+// reads no capture-shadow weight or distance tile.
 fn glossy_overlay_probe_colour(direction: vec3<f32>, layer: u32, exponent: f32) -> vec3<f32> {
     let count = textureNumLevels(fluid_probe_array);
-    let mip = reflection_probe_exponent_mip(exponent, count);
+    let mip = reflection_probe_exponent_mip(exponent,
+        reflection_probe_mip0_texel_angle(fluid_probes.tile.x), count);
     let lower = u32(mip);
     let upper = min(lower + 1u, count - 1u);
     return mix(glossy_overlay_probe_mip(direction, layer, lower),
@@ -269,8 +270,8 @@ fn glossy_overlay_delta(in: GlossyVertexOutput, texel: GlossyTexel,
 // target bilinearly at the fragment's own screen position; pixel loads it
 // nearest at the texel centre's projection, so every fragment of a texel
 // reads one value, and a centre off screen or behind the camera reads c = 0.
-// IP rule (owner review to change, ip-check.md B3): no normal- or
-// noise-driven offset moves either read.
+// IP rule (owner review to change, rendering_pipeline.md §7.3a IP rules): no
+// normal- or noise-driven offset moves either read.
 fn glossy_overlay_floor_screen(in: GlossyVertexOutput, surface: GlossySurface,
                                pixel: bool) -> vec4<f32> {
     if in.probe == FLUID_REFLECTION_NO_PROBE

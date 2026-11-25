@@ -22,6 +22,7 @@ pub mod reflection;
 pub mod reflection_hemisphere;
 pub mod reflection_quality;
 pub mod reflection_search;
+pub mod reflection_search_about;
 pub mod reflection_style;
 pub mod screen_march;
 mod slots;

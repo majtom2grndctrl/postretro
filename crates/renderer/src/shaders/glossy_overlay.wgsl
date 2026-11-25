@@ -12,9 +12,10 @@
 // surface_depth.wgsl (forward's march), reflection_probe_blur.wgsl (the
 // exponent -> mip function that picks the colour mips R reads),
 // reflection_probe_lobes.wgsl, fluid_motion.wgsl, fluid_reflection_ray.wgsl
-// and fluid_reflection.wgsl, whose probe search, hemisphere, live lighting and
-// Fresnel it reuses by name. Mirrors render-cpu `glossy_reflection` and
-// `reflection_probe_mips`.
+// and fluid_reflection.wgsl, whose hemisphere, box hit and Fresnel it reuses
+// by name, and fluid_reflection_about.wgsl (the search, lookup and live
+// lighting about the face's hemisphere axis). Mirrors render-cpu
+// `glossy_reflection` and `reflection_probe_mips`.
 // See: context/lib/rendering_pipeline.md §7.3a (Glossy world faces)
 
 // --- Group 2: the level's probe records, read only: the colour array, the
@@ -201,7 +202,7 @@ fn glossy_overlay_sample(probe: u32, origin: vec3<f32>, view: vec3<f32>, normal:
                          axis: vec3<f32>, exponent: f32) -> FluidReflectionSample {
     let ray = fluid_reflection_above_hemisphere(fluid_reflection_mirror(view, normal), axis);
     let layer = fluid_probes.probes[probe].layer;
-    let search = fluid_reflection_search(origin, ray, fluid_probes.probes[probe].box_min,
+    let search = fluid_reflection_search_about(origin, ray, fluid_probes.probes[probe].box_min,
         fluid_probes.probes[probe].box_max, fluid_probes.probes[probe].capture_point, axis,
         fluid_probes.tile.xy, layer);
     let capture = glossy_overlay_probe_colour(search.lookup, layer, exponent);

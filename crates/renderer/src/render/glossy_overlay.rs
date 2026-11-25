@@ -35,7 +35,8 @@ use pipeline::overlay_pipeline;
 /// inputs (the style's point, forward's march and normal map), the tint rule
 /// forward's highlight reads, forward's Surface Depth march, the exponent →
 /// mip function, then the probe term, hemisphere and Fresnel it reuses from
-/// the fluid shader's modules, by name.
+/// the fluid shader's modules, by name, and the search, lookup and ratio
+/// about a face's hemisphere axis, which only the overlay composes.
 pub(crate) const GLOSSY_OVERLAY_SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/glossy_overlay.wgsl"),
     "\n",
@@ -56,6 +57,8 @@ pub(crate) const GLOSSY_OVERLAY_SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/fluid_reflection_ray.wgsl"),
     "\n",
     include_str!("../shaders/fluid_reflection.wgsl"),
+    "\n",
+    include_str!("../shaders/fluid_reflection_about.wgsl"),
     "\n",
 );
 

@@ -1,14 +1,14 @@
 // Fluid reflection distance search: box projection corrected against the
-// probe's stored per-texel distance. GPU-free CPU reference for
-// `fluid_reflection.wgsl`'s search, which mirrors it and a test pins.
+// probe's stored per-texel distance. Water's search: every tap and the lookup
+// clamp to the horizon, as up-facing water's probes read. GPU-free CPU
+// reference for `fluid_reflection.wgsl`'s search, which mirrors it and a test
+// pins. A glossy face of any facing searches about its own hemisphere axis
+// (`reflection_search_about`), which about +Y returns this search bit for bit.
 // See: context/lib/rendering_pipeline.md §7.3a (Reflection) · resource_management.md §5
 
 use glam::{Vec2, Vec3};
 
-use super::reflection::{reflection_box_hit, reflection_tile_uv};
-use super::reflection_hemisphere::{
-    FLUID_REFLECTION_UP, reflection_level, reflection_lookup_about,
-};
+use super::reflection::{reflection_box_hit, reflection_lookup, reflection_tile_uv};
 
 /// K: sphere steps from the search's start before the box hit closes the
 /// bracket. Each step moves to the point of the reflected ray as far from
@@ -90,19 +90,18 @@ pub struct FluidReflectionSearch {
 }
 
 /// `h(Q) = |v|₁ · w(v) − 1` for `v` the offset from the capture point to
-/// `q`, clamped to the hemisphere about `axis` as every tile read is (the
-/// horizon, for an up-facing probe): negative in front of the surface the
-/// capture stored in that direction, at or above 0 behind it. A stored 0 (no
-/// surface) gives −1, never a root. `distance` reads the distance tile at a
-/// normalized tile UV.
-pub fn reflection_search_h_about(
+/// `q`, clamped to the horizon as every tile read is: negative in front of
+/// the surface the capture stored in that direction, at or above 0 behind
+/// it. A stored 0 (no surface) gives −1, never a root. `distance` reads the
+/// distance tile at a normalized tile UV.
+pub fn reflection_search_h(
     q: Vec3,
     capture_point: Vec3,
-    axis: Vec3,
     tile: [u32; 2],
     distance: &impl Fn(Vec2) -> f32,
 ) -> f32 {
-    let level = reflection_level(q - capture_point, axis);
+    let toward = q - capture_point;
+    let level = Vec3::new(toward.x, toward.y.max(0.0), toward.z);
     let l1 = level.abs().element_sum();
     if l1 < FLUID_REFLECTION_SEARCH_EPSILON {
         return -1.0;
@@ -111,7 +110,7 @@ pub fn reflection_search_h_about(
 }
 
 /// GLSL `smoothstep`.
-fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+pub(super) fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
@@ -123,27 +122,27 @@ pub fn reflection_shadow_fade_angle(tile: [u32; 2]) -> f32 {
         / (tile[0] as f32 - 2.0 * tile[1] as f32)
 }
 
-/// h at the origin turned about the capture point's `axis` (its vertical,
-/// for an up-facing probe) by `turn` radians, keeping its distance from the
-/// capture point. `toward` is the origin minus the capture point. The fluid
-/// shader calls no trig: the turn's sine and cosine are their Taylor series
-/// to the fifth and fourth order, within 1e-8 of exact at the fade's ≈3°.
-/// About +Y the turn is exactly `(x·cos + z·sin, y, z·cos − x·sin)`.
-pub fn reflection_shadow_tap_about(
+/// h at the origin turned about the capture point's vertical by `turn`
+/// radians, keeping its distance from the capture point. `toward` is the
+/// origin minus the capture point. The fluid shader calls no trig: the turn's
+/// sine and cosine are their Taylor series to the fifth and fourth order,
+/// within 1e-8 of exact at the fade's ≈3°.
+pub fn reflection_shadow_tap(
     capture_point: Vec3,
     toward: Vec3,
     turn: f32,
-    axis: Vec3,
     tile: [u32; 2],
     distance: &impl Fn(Vec2) -> f32,
 ) -> f32 {
     let turn2 = turn * turn;
     let sine = turn * (1.0 - turn2 / 6.0 * (1.0 - turn2 / 20.0));
     let cosine = 1.0 - turn2 / 2.0 * (1.0 - turn2 / 12.0);
-    let along = axis * toward.dot(axis);
-    let across = toward - along;
-    let turned = along + across * cosine + axis.cross(across) * sine;
-    reflection_search_h_about(capture_point + turned, capture_point, axis, tile, distance)
+    let turned = Vec3::new(
+        toward.x * cosine + toward.z * sine,
+        toward.y,
+        toward.z * cosine - toward.x * sine,
+    );
+    reflection_search_h(capture_point + turned, capture_point, tile, distance)
 }
 
 /// One side's shadow edge for the fade, in radians from the origin: at most
@@ -158,7 +157,7 @@ pub fn reflection_shadow_tap_about(
 /// occluder against its background, not a wall seen obliquely, which a turn
 /// also reaches behind. A side the gate shuts takes no half tap.
 #[allow(clippy::too_many_arguments)]
-pub fn reflection_shadow_edge_about(
+pub fn reflection_shadow_edge(
     capture_point: Vec3,
     toward: Vec3,
     angle: f32,
@@ -166,7 +165,6 @@ pub fn reflection_shadow_edge_about(
     h_origin: f32,
     h_far: f32,
     h_opposite: f32,
-    axis: Vec3,
     tile: [u32; 2],
     distance: &impl Fn(Vec2) -> f32,
 ) -> f32 {
@@ -180,8 +178,7 @@ pub fn reflection_shadow_edge_about(
     if h_far <= 0.0 || gate <= 0.0 {
         return angle;
     }
-    let h_half =
-        reflection_shadow_tap_about(capture_point, toward, 0.5 * side, axis, tile, distance);
+    let h_half = reflection_shadow_tap(capture_point, toward, 0.5 * side, tile, distance);
     let crossing = if h_half > 0.0 {
         0.5 * angle * h_lit / (h_lit - h_half)
     } else {
@@ -195,24 +192,22 @@ pub fn reflection_shadow_edge_about(
 /// angle about the capture point, falling smoothly to 0 at the edge, where
 /// the shadow's 0 takes over (an origin behind the surface sits at the
 /// edge). A tap on each side turns the origin about the capture point's
-/// `axis` (its vertical, for an up-facing probe) by the angle, keeping its
-/// distance; each side then places its edge
-/// ([`reflection_shadow_edge_about`]), and the nearer counts. Two taps with
-/// no edge near, three with one, four with one each side. A function of the
-/// origin, the capture point, the axis and the tile alone.
-pub fn reflection_shadow_fade_about(
+/// vertical by the angle, keeping its distance; each side then places its
+/// edge ([`reflection_shadow_edge`]), and the nearer counts. Two taps with no
+/// edge near, three with one, four with one each side. A function of the
+/// origin, the capture point and the tile alone.
+pub fn reflection_shadow_fade(
     origin: Vec3,
     capture_point: Vec3,
-    axis: Vec3,
     tile: [u32; 2],
     h_origin: f32,
     distance: &impl Fn(Vec2) -> f32,
 ) -> f32 {
     let angle = reflection_shadow_fade_angle(tile);
     let toward = origin - capture_point;
-    let h_plus = reflection_shadow_tap_about(capture_point, toward, angle, axis, tile, distance);
-    let h_minus = reflection_shadow_tap_about(capture_point, toward, -angle, axis, tile, distance);
-    let edge = reflection_shadow_edge_about(
+    let h_plus = reflection_shadow_tap(capture_point, toward, angle, tile, distance);
+    let h_minus = reflection_shadow_tap(capture_point, toward, -angle, tile, distance);
+    let edge = reflection_shadow_edge(
         capture_point,
         toward,
         angle,
@@ -220,11 +215,10 @@ pub fn reflection_shadow_fade_about(
         h_origin,
         h_plus,
         h_minus,
-        axis,
         tile,
         distance,
     )
-    .min(reflection_shadow_edge_about(
+    .min(reflection_shadow_edge(
         capture_point,
         toward,
         angle,
@@ -232,7 +226,6 @@ pub fn reflection_shadow_fade_about(
         h_origin,
         h_minus,
         h_plus,
-        axis,
         tile,
         distance,
     ));
@@ -265,39 +258,31 @@ pub fn reflection_shadow_fade_about(
 /// through leaves the box through another slab ([`reflection_box_hit`]), so
 /// water outside an authored box resolves along its ray rather than at its
 /// own azimuth.
-///
-/// Every tap and the lookup clamp to the hemisphere about `axis`: the
-/// horizon for an up-facing probe ([`FLUID_REFLECTION_UP`]), a wall's,
-/// ceiling's or slope's face normal otherwise. The axis is the bound face's,
-/// never a lookup direction's.
-#[allow(clippy::too_many_arguments)]
-pub fn reflection_search_about(
+pub fn reflection_search(
     origin: Vec3,
     ray: Vec3,
     box_min: Vec3,
     box_max: Vec3,
     capture_point: Vec3,
-    axis: Vec3,
     tile: [u32; 2],
     distance: impl Fn(Vec2) -> f32,
 ) -> FluidReflectionSearch {
-    let h = |q: Vec3| reflection_search_h_about(q, capture_point, axis, tile, &distance);
+    let h = |q: Vec3| reflection_search_h(q, capture_point, tile, &distance);
     let box_hit = reflection_box_hit(origin, ray, box_min, box_max);
     let t_box = (box_hit - origin).dot(ray);
     let h_origin = h(origin);
     let h_box = h(box_hit);
     let ends_at = |point: Vec3, status, weight| FluidReflectionSearch {
         point,
-        lookup: reflection_lookup_about(point, capture_point, ray, axis),
+        lookup: reflection_lookup(point, capture_point, ray),
         status,
         weight,
     };
     if h_origin >= FLUID_REFLECTION_SHADOW_MARGIN {
         return ends_at(box_hit, FluidReflectionSearchStatus::CaptureShadow, 0.0);
     }
-    let weight =
-        reflection_shadow_fade_about(origin, capture_point, axis, tile, h_origin, &distance)
-            * (1.0 - smoothstep(0.0, FLUID_REFLECTION_SHADOW_MARGIN, h_origin));
+    let weight = reflection_shadow_fade(origin, capture_point, tile, h_origin, &distance)
+        * (1.0 - smoothstep(0.0, FLUID_REFLECTION_SHADOW_MARGIN, h_origin));
     if h_origin >= 0.0 {
         return ends_at(box_hit, FluidReflectionSearchStatus::CaptureShadow, weight);
     }
@@ -314,7 +299,8 @@ pub fn reflection_search_about(
             break;
         }
         let q = origin + ray * t_front;
-        let level = reflection_level(q - capture_point, axis);
+        let toward = q - capture_point;
+        let level = Vec3::new(toward.x, toward.y.max(0.0), toward.z);
         let radius = level.length() / (h_front + 1.0);
         let disc = b * b - (from_capture.dot(from_capture) - radius * radius);
         if disc < 0.0 {
@@ -358,76 +344,6 @@ pub fn reflection_search_about(
         origin + ray * t_hit,
         FluidReflectionSearchStatus::Hit,
         weight,
-    )
-}
-
-// Up-facing probes, water's and glossy floors': the search about +Y.
-
-/// [`reflection_search_h_about`] about [`FLUID_REFLECTION_UP`].
-pub fn reflection_search_h(
-    q: Vec3,
-    capture_point: Vec3,
-    tile: [u32; 2],
-    distance: &impl Fn(Vec2) -> f32,
-) -> f32 {
-    reflection_search_h_about(q, capture_point, FLUID_REFLECTION_UP, tile, distance)
-}
-
-/// [`reflection_shadow_tap_about`] about [`FLUID_REFLECTION_UP`].
-pub fn reflection_shadow_tap(
-    capture_point: Vec3,
-    toward: Vec3,
-    turn: f32,
-    tile: [u32; 2],
-    distance: &impl Fn(Vec2) -> f32,
-) -> f32 {
-    reflection_shadow_tap_about(
-        capture_point,
-        toward,
-        turn,
-        FLUID_REFLECTION_UP,
-        tile,
-        distance,
-    )
-}
-
-/// [`reflection_shadow_fade_about`] about [`FLUID_REFLECTION_UP`].
-pub fn reflection_shadow_fade(
-    origin: Vec3,
-    capture_point: Vec3,
-    tile: [u32; 2],
-    h_origin: f32,
-    distance: &impl Fn(Vec2) -> f32,
-) -> f32 {
-    reflection_shadow_fade_about(
-        origin,
-        capture_point,
-        FLUID_REFLECTION_UP,
-        tile,
-        h_origin,
-        distance,
-    )
-}
-
-/// [`reflection_search_about`] about [`FLUID_REFLECTION_UP`]: water's search.
-pub fn reflection_search(
-    origin: Vec3,
-    ray: Vec3,
-    box_min: Vec3,
-    box_max: Vec3,
-    capture_point: Vec3,
-    tile: [u32; 2],
-    distance: impl Fn(Vec2) -> f32,
-) -> FluidReflectionSearch {
-    reflection_search_about(
-        origin,
-        ray,
-        box_min,
-        box_max,
-        capture_point,
-        FLUID_REFLECTION_UP,
-        tile,
-        distance,
     )
 }
 

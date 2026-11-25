@@ -1,7 +1,8 @@
 // Glossy overlay shading inputs: where a glossy fragment reflects from and
 // about which normal. Forward's own Surface Depth march over forward's own
-// inputs picks the texel forward shaded, the normal map and the march's face
-// normal give the normal the view mirrors about, and the reflection style
+// inputs picks the texel forward shaded and whether it hit a top or a side,
+// the normal map (on a top) or the flat face normal (on a side) gives the
+// normal the view mirrors about, and the reflection style
 // picks the point: smooth the fragment, pixel the albedo texel's centre
 // (the texel-centre highlight's point, rendering_pipeline.md §4). Declares no
 // bindings: it reads glossy_overlay.wgsl's `uniforms`, `base_texture`,
@@ -77,19 +78,22 @@ struct GlossySurface {
     outward: vec3<f32>,
 };
 
-// The surface a texel of nonzero weight reflects from. The normal is
-// forward's shading normal: the march's face normal on a side hit, the normal
-// map's on a top (or on a flat material). Pixel style starts every fragment
-// of a texel at its texel-centre point on the true plane, mapped through the
-// fragment's UV->world Jacobian as forward's highlight is, so the texel reads
-// one search, one sample and one weight; smooth starts at the fragment.
+// The surface a texel of nonzero weight reflects from. On a top (or a flat
+// material) the view mirrors about the normal map's normal, forward's shading
+// normal there. On a carved side it mirrors about the flat face normal, never
+// the side's: a side normal lies in the face's plane, so its mirror would
+// point behind the face and the hemisphere floor would flatten it onto the
+// horizon. Pixel style starts every fragment of a texel at its texel-centre
+// point on the true plane, mapped through the fragment's UV->world Jacobian
+// as forward's highlight is, so the texel reads one search, one sample and
+// one weight; smooth starts at the fragment.
 fn glossy_overlay_surface(in: GlossyVertexOutput, d: GlossyDerivatives,
                           depth: SurfaceDepthResult, pixel: bool,
                           normal_map: bool) -> GlossySurface {
     let mesh_n = normalize(in.world_normal);
     let n_ts = glossy_overlay_tangent_normal(depth.uv, d, normal_map);
     let n_bump = reconstruct_tbn_normal(mesh_n, in.world_tangent, in.bitangent_sign, n_ts);
-    let normal = select(depth.normal, n_bump, depth.hit_top);
+    let normal = select(mesh_n, n_bump, depth.hit_top);
     let view = normalize(uniforms.camera_position - in.world_position);
     let point = specular_texel_point(!pixel, SpecularPoint(in.world_position, view), in.uv,
         depth.uv, in.world_position, uniforms.camera_position,

@@ -2,8 +2,8 @@
 //! reflection style (pixel reflects once per albedo texel from its centre,
 //! smooth per fragment, each from the first frame after a switch) and Surface
 //! Depth (the overlay marches each face as forward does, reads forward's
-//! texel and side normals, and stops marching on the frame the switch turns
-//! it off).
+//! texel, mirrors a carved side about the flat face normal, and stops
+//! marching on the frame the switch turns it off).
 //! See: context/lib/rendering_pipeline.md §7.3a (Glossy world faces), §7.3 (Surface Depth)
 
 use std::collections::HashMap;
@@ -192,15 +192,37 @@ fn fs_test_march_albedo(in: GlossyVertexOutput) -> @location(0) vec4<f32> {
         0.0);
 }
 
-// 1 where the overlay's shading normal leans off its face by more than 45°
-// (a carved side), else 0.
+// 1 where the overlay's march stops on a carved side, else 0.
 @fragment
 fn fs_test_march_side(in: GlossyVertexOutput) -> @location(0) vec4<f32> {
     let d = glossy_overlay_derivatives(in);
     let depth = glossy_overlay_march(in, d);
-    let surface = glossy_overlay_surface(in, d, depth, false, true);
-    return vec4<f32>(select(0.0, 1.0, dot(surface.normal, surface.outward) < 0.7071), 0.0, 0.0,
-        0.0);
+    return vec4<f32>(select(0.0, 1.0, !depth.hit_top), 0.0, 0.0, 0.0);
+}
+
+// On a carved side, in each style: red 1; green 1 where the overlay's mirror
+// is exactly the view mirrored about the flat face normal; blue 1 where that
+// mirror, before the hemisphere floor, lies in front of the face. 0 off a side.
+fn test_side_mirror(in: GlossyVertexOutput, pixel: bool) -> vec4<f32> {
+    let d = glossy_overlay_derivatives(in);
+    let depth = glossy_overlay_march(in, d);
+    let surface = glossy_overlay_surface(in, d, depth, pixel, true);
+    let side = !depth.hit_top;
+    let mirror = fluid_reflection_mirror(surface.view, surface.normal);
+    let flat_mirror = fluid_reflection_mirror(surface.view, surface.outward);
+    return vec4<f32>(select(0.0, 1.0, side),
+        select(0.0, 1.0, side && all(mirror == flat_mirror)),
+        select(0.0, 1.0, side && dot(mirror, surface.outward) > 0.0), 0.0);
+}
+
+@fragment
+fn fs_test_side_mirror_smooth(in: GlossyVertexOutput) -> @location(0) vec4<f32> {
+    return test_side_mirror(in, false);
+}
+
+@fragment
+fn fs_test_side_mirror_pixel(in: GlossyVertexOutput) -> @location(0) vec4<f32> {
+    return test_side_mirror(in, true);
 }
 "#;
 
@@ -284,10 +306,9 @@ fn albedo_matches(
 // Acceptance row 67 (pin P11): with Surface Depth on, the overlay marches
 // every face as forward does: the texel it reads is forward's (its albedo
 // matches forward's D_static in hue at every pixel of the floor, wall and
-// ceiling), the march moves texels against the unmarched read, and carved
-// sides reach the overlay's shading normal. Off, it reads the fragment's own
-// texel and no side, from the frame the switch turns it off; on again,
-// marched from that frame.
+// ceiling), the march moves texels against the unmarched read, and the march
+// stops on carved sides. Off, it reads the fragment's own texel and no side,
+// from the frame the switch turns it off; on again, marched from that frame.
 #[test]
 fn surface_depth_marches_the_overlay_as_forward_and_a_toggle_takes_the_same_frame() {
     let Some(mut renderer) = renderer() else {
@@ -323,7 +344,7 @@ fn surface_depth_marches_the_overlay_as_forward_and_a_toggle_takes_the_same_fram
             SurfaceDepthQuality::On => {
                 assert!(
                     side_count > 20,
-                    "carved sides reach the overlay: {side_count}"
+                    "the overlay's march stops on carved sides: {side_count}"
                 );
                 if marched.is_empty() {
                     marched = albedos;
@@ -348,6 +369,46 @@ fn surface_depth_marches_the_overlay_as_forward_and_a_toggle_takes_the_same_fram
                     );
                 }
             }
+        }
+    }
+}
+
+// A carved side mirrors the view about the flat face normal, in both styles
+// and on the floor, wall and ceiling: its mirror is the flat face's exactly
+// and lies in front of the face, so the hemisphere floor never flattens it
+// onto the horizon. A side's own normal lies in the face's plane and would
+// mirror the view behind the face. The floor layer marches from the same
+// surface (`glossy_overlay_surface`), so both layers reflect a side alike.
+#[test]
+fn a_carved_side_mirrors_about_the_flat_face_normal_in_front_of_the_face() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let room = Room::new([gradient, gradient, gradient]);
+    room.install(&mut renderer, &CARVED);
+    renderer.set_surface_depth_quality(SurfaceDepthQuality::On);
+    let view = room_view();
+    for entry in ["fs_test_side_mirror_smooth", "fs_test_side_mirror_pixel"] {
+        let (drawn, forward) = variant_frame(&mut renderer, view, entry);
+        for face in Face::ALL {
+            let mut sides = 0;
+            for (pixel, _) in face_pixels(view, face, MARGIN) {
+                let added = drawn.colour(pixel) - forward.colour(pixel);
+                if added.x <= 0.5 {
+                    continue;
+                }
+                sides += 1;
+                assert!(
+                    added.y > 0.5,
+                    "{entry}: {face:?} at {pixel}: a side mirrors about its own normal"
+                );
+                assert!(
+                    added.z > 0.5,
+                    "{entry}: {face:?} at {pixel}: a side's mirror points behind the face"
+                );
+            }
+            eprintln!("[side mirror] {entry}: {face:?} {sides} side pixels");
+            assert!(sides > 5, "{entry}: {face:?}: {sides} side pixels");
         }
     }
 }

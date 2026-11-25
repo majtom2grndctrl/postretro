@@ -241,9 +241,10 @@ fn overlay_reads_its_probe_from_the_binding_and_lights_through_the_sums() {
     assert!(sample.contains("letlayer=fluid_probes.probes[probe].layer;"));
     assert!(sample.contains("fluid_reflection_ratio_from_sums(probe,search.lookup)"));
     // Water's sample up to its colour tap: the same ray, layer and search,
-    // statement for statement, with the ray kept in the face's hemisphere
-    // where water floors it above the horizon (`FLUID_REFLECTION_UP`), so the
-    // binding and search fences carry over.
+    // statement for statement, with the ray kept in the face's hemisphere and
+    // the search run about the face's axis where water floors the ray above
+    // the horizon and searches up-only, so the binding and search fences
+    // carry over.
     let prefix = |body: &str| {
         body[body.find('{').expect("body") + 1..]
             .split("letuv=")
@@ -259,8 +260,14 @@ fn overlay_reads_its_probe_from_the_binding_and_lights_through_the_sums() {
             "fluid_reflection_above_horizon(fluid_reflection_mirror(view,outward))",
             "fluid_reflection_above_hemisphere(fluid_reflection_mirror(view,normal),axis)",
         )
-        .replace("search(world_position,", "search(origin,")
-        .replace("FLUID_REFLECTION_UP", "axis");
+        .replace(
+            "fluid_reflection_search(world_position,",
+            "fluid_reflection_search_about(origin,",
+        )
+        .replace(
+            "capture_point,fluid_probes.tile.xy",
+            "capture_point,axis,fluid_probes.tile.xy",
+        );
     assert_eq!(prefix(&sample), water_about_axis);
     assert!(
         squashed(wgsl_function(
@@ -587,8 +594,9 @@ fn the_entity_shadow_subtraction_lands_in_static_diffuse() {
 // snippet over forward's arguments (the eye vector, its length, the
 // derivatives), so it reads the texel forward shaded, and a live switch
 // reaches both through the one material uniform; the normal it mirrors about
-// is forward's shading normal (the march's face normal on a side hit, the
-// normal map's on a top); and pixel style takes the texel-centre point
+// is forward's shading normal on a top (the normal map's) and the flat face
+// normal on a carved side, whose own normal would mirror the view behind the
+// face; and pixel style takes the texel-centre point
 // forward's highlight takes, smooth the fragment (rendering_pipeline.md §4,
 // Texel-centre highlight; §7.3, Surface Depth).
 #[test]
@@ -663,7 +671,7 @@ fn overlay_shades_from_forwards_march_normal_and_texel_point() {
          letmesh_n=normalize(in.world_normal);\
          letn_ts=glossy_overlay_tangent_normal(depth.uv,d,normal_map);\
          letn_bump=reconstruct_tbn_normal(mesh_n,in.world_tangent,in.bitangent_sign,n_ts);\
-         letnormal=select(depth.normal,n_bump,depth.hit_top);\
+         letnormal=select(mesh_n,n_bump,depth.hit_top);\
          letview=normalize(uniforms.camera_position-in.world_position);\
          letpoint=specular_texel_point(!pixel,SpecularPoint(in.world_position,view),in.uv,\
          depth.uv,in.world_position,uniforms.camera_position,\
@@ -753,7 +761,7 @@ fn overlay_probe_term_mirrors_the_cpu_reference() {
          axis:vec3<f32>,exponent:f32)->FluidReflectionSample{\
          letray=fluid_reflection_above_hemisphere(fluid_reflection_mirror(view,normal),axis);\
          letlayer=fluid_probes.probes[probe].layer;\
-         letsearch=fluid_reflection_search(origin,ray,fluid_probes.probes[probe].box_min,\
+         letsearch=fluid_reflection_search_about(origin,ray,fluid_probes.probes[probe].box_min,\
          fluid_probes.probes[probe].box_max,fluid_probes.probes[probe].capture_point,axis,\
          fluid_probes.tile.xy,layer);\
          letcapture=glossy_overlay_probe_colour(search.lookup,layer,exponent);\

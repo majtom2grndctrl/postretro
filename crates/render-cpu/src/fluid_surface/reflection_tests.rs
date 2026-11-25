@@ -1990,3 +1990,65 @@ fn the_sums_pass_dispatches_whole_workgroups_over_every_installed_probe() {
         MAX_REFLECTION_PROBES * REFLECTION_PROBE_LOBE_COUNT * FLUID_PROBE_SUM_STRIDE
     );
 }
+
+// Water's ratio reads five lobes at the six-lobe stride. Every probe a water
+// face binds faces up, and the compiler leaves an up-facing probe's −Y share
+// 0, so the sums pass writes a −Y sum of exactly 0 whatever its lights do,
+// an overflowing light included; the five-lobe ratio then returns the
+// six-lobe ratio's bits toward every direction, below the horizon included.
+#[test]
+fn waters_five_lobe_ratio_is_the_six_lobe_ratio_bit_for_bit_at_a_zero_down_share() {
+    let mut up_facing = LOBED_SHARES;
+    up_facing[REFLECTION_PROBE_LOBE_COUNT - 1] = [0.0; 3];
+    let descriptors = [
+        flat_light([f32::MAX, 2.0, 1.0], true),
+        flat_light([2.0, 3.0, 0.5], true),
+        flat_light([0.0, 0.25, 0.0], true),
+        flat_light([1.0, 1.0, 1.0], false),
+    ];
+    let mut stored = unused_entries();
+    for (i, reference) in [[0.5, 1.0, 1.0], [1.0; 3], [2.0, 0.5, 0.0], [1.0; 3]]
+        .into_iter()
+        .enumerate()
+    {
+        stored[i] = entry(i as u32, reference, up_facing);
+    }
+    let mut checked = 0;
+    for time in [0.0, 0.3, 0.7] {
+        let sums = reflection_probe_sums(&stored, &lights(&descriptors, time));
+        let down = sums[REFLECTION_PROBE_LOBE_COUNT - 1];
+        assert_eq!(down.to_array().map(f32::to_bits), [0; 3], "{sums:?}");
+        for direction in sphere_directions() {
+            assert_eq!(
+                reflection_ratio_from_up_sums(&sums, direction).to_array(),
+                reflection_ratio_from_sums(&sums, direction).to_array(),
+                "toward {direction}"
+            );
+            checked += 1;
+        }
+    }
+    // Any sums whose −Y lobe is 0, of either sign, at any lookup.
+    let mut seed = 0x9E37_79B9u32;
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed as f32 / u32::MAX as f32 * 4.0 - 1.0
+    };
+    for zero in [0.0f32, -0.0] {
+        for direction in sphere_directions() {
+            let mut sums = [Vec3::ZERO; REFLECTION_PROBE_LOBE_COUNT];
+            for sum in &mut sums[..REFLECTION_PROBE_LOBE_COUNT - 1] {
+                *sum = Vec3::new(next(), next(), next());
+            }
+            sums[REFLECTION_PROBE_LOBE_COUNT - 1] = Vec3::splat(zero);
+            assert_eq!(
+                reflection_ratio_from_up_sums(&sums, direction).to_array(),
+                reflection_ratio_from_sums(&sums, direction).to_array(),
+                "{sums:?} toward {direction}"
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 2000, "{checked}");
+}

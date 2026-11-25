@@ -23,7 +23,8 @@ use crate::render::gpu_create::GpuCreate;
 /// shading inputs (so both layers reflect one ray from one point), the tint
 /// rule's texel read, forward's Surface Depth march, the probe term's
 /// exponent → mip function, then the ray and water's march, by name. Never
-/// the probe term's search, shadow or live lighting (`fluid_reflection.wgsl`).
+/// the probe term's search, shadow or live lighting (`fluid_reflection.wgsl`,
+/// `fluid_reflection_about.wgsl`).
 pub(crate) const GLOSSY_FLOOR_MARCH_SHADER_SOURCE: &str = concat!(
     include_str!("../../shaders/glossy_floor_march.wgsl"),
     "\n",

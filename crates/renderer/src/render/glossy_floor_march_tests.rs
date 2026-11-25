@@ -133,6 +133,7 @@ fn the_floor_march_is_waters_and_binds_no_probe_quantity() {
     }
     for forbidden in [
         "fluid_reflection.wgsl",
+        "fluid_reflection_about.wgsl",
         "fluid_reflection_lights.wgsl",
         "fluid_reflection_oracle.wgsl",
         "reflection_probe_lobes.wgsl",
@@ -416,7 +417,7 @@ fn the_floor_march_starts_from_the_probe_terms_point_and_writes_premultiplied() 
     ));
     assert!(frame.contains("render_pass_writes(TIMING_PAIR_GLOSSY_FLOOR_MARCH)"));
     const { assert!(TIMING_PAIR_GLOSSY_FLOOR_MARCH < TIMING_PAIR_COUNT) }
-    assert_eq!(TIMING_PAIR_COUNT, 26);
+    assert_eq!(TIMING_PAIR_COUNT, 27);
     // The march uniform is the shader's struct, member for member.
     assert_eq!(GLOSSY_FLOOR_MARCH_UNIFORM_BYTES, 16);
     assert!(

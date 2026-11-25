@@ -1,7 +1,7 @@
 # glossy-world-reflections — plan of record
 
 mode: resumable
-status: approved
+status: done (landed 2026-11-25)
 read at: 8dda8a34a
 
 Source unchanged since the brief's `a7bf2a19`; every cited symbol re-read at `8dda8a34a` (compiler, runtime, shaders).

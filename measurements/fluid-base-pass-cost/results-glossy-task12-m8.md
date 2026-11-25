@@ -1,6 +1,6 @@
 # Glossy world reflections, Task 12b: M8 probe-stage compile time
 
-Row M8 of `context/plans/in-progress/glossy-world-reflections/`: probe-stage compile time on the stress fixture plan.md names (checkpoint 1: the private project's largest map by source size, compiled cold), at a stated worker count, against the build before on the same fixture.
+Row M8 of `context/plans/done/glossy-world-reflections/`: probe-stage compile time on the stress fixture plan.md names (checkpoint 1: the private project's largest map by source size, compiled cold), at a stated worker count, against the build before on the same fixture.
 
 - **Fixture:** the private project's largest map, 5 038 791 bytes of `.map` source, compiled from a scratch copy of that project's mod root (the map file copied, every other entry of the mod root symlinked read-only) with `--baked-root` pointing at a scratch copy of the project's own baked material root, so neither compiler wrote into the project. Same map bytes for both binaries.
 - **Before:** `prl-build` at `8dda8a34a` (pre-branch; no `--glossy-reflections` flag exists), as the pre-branch build compiles the map.

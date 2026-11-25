@@ -111,6 +111,10 @@ Eleven reviewers, verdict "request changes". Owner rulings, all as recommended (
 
 Also ruled: the pixel-style grazing loss (pixel style shows no floor-layer hits at grazing; smooth does) is the fix loop's first step. Rare 1° tolerance edges are filed, not fixed. Hygiene refactors (test-hook modules, file splits) do not block landing; plan citations in source still get fixed. The compiler cost cuts (per-ray clone and union, the quadratic plane scan, per-probe prefilter setup) go to the 256² baker-hardening brief, which owns probe-stage cost after the warm-builds ruling.
 
+**Decision 5 outcome (owner, 2026-11-24): kept.** The floor layer reads a hit at the march's last sample in front of the surface, one stride back along the march's own line from the stop (`glossy_floor_read_pixel`): no depth read, no test, no step, so no second search. In a fixture a standing bar's reflection spilled up to ~6 strides past its outline at the stop read and spills none now; a flush strip's overshoot halves. Cost: up to a stride short, which shows as a thin dark seam where a glowing pillar meets its reflection (reads as contact shadow). Registers flat or lower.
+
+**Grazing loss outcome:** not reproduced. Floor-target confidence and the floor layer's contribution match smooth within 0.1 % at the showcase grazing pose; the visible difference is pixel style's one read per (large) texel. A guard test pins pixel style at ≥ 80 % of smooth's confidence at grazing. Changing it would change the B3 read rule.
+
 Fix order: grazing loss; prefilter hemisphere mask; 4 and 8; floor-march resolution scaling; authored capture plane; 7; 3; 5 prototype; header-derived constants; remaining should-fix; comment and doc drift.
 
 ## Owner checkpoints

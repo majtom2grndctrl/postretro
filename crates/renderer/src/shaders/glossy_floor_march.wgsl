@@ -1,7 +1,8 @@
 // The glossy floor layer's march: each up-facing, probe-bound glossy
 // fragment's mirrored ray marched across the frame's scene depth by water's
-// `screen_march`, unmodified, its hit read from the scene-colour chain at the
-// level the texel's lobe and the hit length set, written premultiplied
+// `screen_march`, unmodified, its hit read at the march's last sample in front
+// of the depth buffer from the scene-colour chain, at the level the texel's
+// lobe and the hit length set, written premultiplied
 // (c x X, c) to the floor layer's target, which the overlay composites over
 // the probe term on up-facing faces. Concatenated with glossy_floor_blur.wgsl
 // (the chain level and its read), glossy_surface.wgsl (the camera and
@@ -95,11 +96,11 @@ fn glossy_floor_exponent(uv: vec2<f32>, ddx: vec2<f32>, ddy: vec2<f32>) -> f32 {
     return specular_texel(slot, SPECULAR_EXPONENT_MIN).exponent;
 }
 
-// Where the march stopped along the ray: the hit length from the ray's origin
-// and the hit's view depth, from the stop pixel, which lies on the ray's
-// screen segment. Clip space is affine along the ray, so each screen axis
-// gives the ray parameter; one least-squares solve over both takes neither
-// in preference.
+// Where the floor layer reads the hit along the ray: the hit length from the
+// ray's origin and the hit's view depth, from the read pixel, which lies on
+// the ray's screen segment. Clip space is affine along the ray, so each
+// screen axis gives the ray parameter; one least-squares solve over both
+// takes neither in preference.
 struct GlossyFloorHit {
     hit_length: f32,
     hit_depth: f32,
@@ -133,9 +134,26 @@ fn glossy_floor_origin(point: vec3<f32>, outward: vec3<f32>, focal: f32) -> vec3
     return point + outward * (GLOSSY_FLOOR_ORIGIN_LIFT_PIXELS * max(depth, 0.0) / focal);
 }
 
+// Where the floor layer reads a hit: the march's last sample in front of the
+// depth buffer, one stride back from `stop` along the march's own screen
+// segment, which starts at the origin's pixel. A hit always follows a sample
+// in front (the in-front latch), so the point lies on the march's grid, on
+// screen, on the reflected ray. The stop can lie up to a stride past the
+// surface the ray crossed, and a ray passing within the thickness behind a
+// standing object stops on that object; read there, a bright strip's
+// reflection streaks along the ray over what the object hides. The sample in
+// front shows only what the ray had not yet reached, so a reflection never
+// spills past an object's silhouette; it may fall up to a stride short. One
+// read for every ray: no depth is read here, nothing is tested and no step is
+// taken, and the march and its confidence are unchanged.
+fn glossy_floor_read_pixel(origin: vec3<f32>, stop: vec2<f32>, extent: vec2<f32>) -> vec2<f32> {
+    let start = screen_march_pixel(uniforms.view_proj * vec4<f32>(origin, 1.0), extent);
+    let along = stop - start;
+    return stop - along * (floor_march.stride / max(length(along), floor_march.stride));
+}
+
 // The blurred scene colour at a hit: the chain level the texel's exponent, the
-// hit length and the hit's view depth set, read at the hit's own screen
-// position.
+// hit length and the hit's view depth set, read at the hit's read pixel.
 fn glossy_floor_hit_colour(pixel: vec2<f32>, exponent: f32, hit: GlossyFloorHit,
                            extent: vec2<f32>, focal: f32) -> vec3<f32> {
     let chain_scale = f32(textureDimensions(floor_chain).y) / extent.y;
@@ -170,8 +188,9 @@ fn glossy_floor_march(in: GlossyVertexOutput, pixel: bool, carve: bool,
     let origin = glossy_floor_origin(surface.origin, surface.outward, focal);
     let march = screen_march(origin, ray, uniforms.view_proj, scene_depth,
         floor_march.stride, floor_march.step_budget, floor_march.thickness);
-    let colour = glossy_floor_hit_colour(march.pixel, exponent,
-        glossy_floor_hit(origin, ray, march.pixel, extent), extent, focal);
+    let read = glossy_floor_read_pixel(origin, march.pixel, extent);
+    let colour = glossy_floor_hit_colour(read, exponent,
+        glossy_floor_hit(origin, ray, read, extent), extent, focal);
     let premultiplied = vec4<f32>(colour * march.confidence, march.confidence);
     return select(vec4<f32>(0.0), premultiplied, march.confidence > 0.0);
 }

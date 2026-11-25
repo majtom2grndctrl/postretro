@@ -316,3 +316,7 @@ mod blur_frame_test;
 #[cfg(test)]
 #[path = "glossy_floor_march_inputs_frame_test.rs"]
 mod march_inputs_frame_test;
+
+#[cfg(test)]
+#[path = "glossy_floor_streak_frame_test.rs"]
+mod streak_frame_test;

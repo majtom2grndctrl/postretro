@@ -232,7 +232,7 @@ fn the_floor_blur_reads_exponent_minimum_blur_and_hit_length_alone() {
          vec3<f32>(0.0),vec3<f32>(65504.0));}"
     );
     // The march hands the level the exponent and the hit alone, and reads
-    // at the hit's own screen position.
+    // at the hit's read pixel.
     assert_eq!(
         squashed(wgsl_function(MARCH_WGSL, "glossy_floor_hit_colour")),
         "fnglossy_floor_hit_colour(pixel:vec2<f32>,exponent:f32,hit:GlossyFloorHit,\
@@ -314,8 +314,9 @@ pub(crate) const GLOSSY_FLOOR_MARCH_BODY: &str = "fnglossy_floor_march(in:Glossy
      letorigin=glossy_floor_origin(surface.origin,surface.outward,focal);\
      letmarch=screen_march(origin,ray,uniforms.view_proj,scene_depth,\
      floor_march.stride,floor_march.step_budget,floor_march.thickness);\
-     letcolour=glossy_floor_hit_colour(march.pixel,exponent,\
-     glossy_floor_hit(origin,ray,march.pixel,extent),extent,focal);\
+     letread=glossy_floor_read_pixel(origin,march.pixel,extent);\
+     letcolour=glossy_floor_hit_colour(read,exponent,\
+     glossy_floor_hit(origin,ray,read,extent),extent,focal);\
      letpremultiplied=vec4<f32>(colour*march.confidence,march.confidence);\
      returnselect(vec4<f32>(0.0),premultiplied,march.confidence>0.0);}";
 
@@ -324,8 +325,11 @@ pub(crate) const GLOSSY_FLOOR_MARCH_BODY: &str = "fnglossy_floor_march(in:Glossy
 // hemisphere, one ray per target pixel (each entry one style and form, the
 // exponent setting the blur alone). Its origin lifts off the floor along the
 // face normal by one pixel's footprint at its view depth, reading the point,
-// the face normal and the projection alone; the hit length is solved from
-// the stop pixel by least squares, choosing no axis.
+// the face normal and the projection alone. The hit is read at the march's
+// last sample in front of the depth buffer, one stride back from the stop
+// along the march's own segment: no depth read, test or step of its own. The
+// hit length is solved from that read pixel by least squares, choosing no
+// axis.
 #[test]
 fn the_floor_march_starts_from_the_probe_terms_point_and_writes_premultiplied() {
     assert_eq!(
@@ -369,6 +373,35 @@ fn the_floor_march_starts_from_the_probe_terms_point_and_writes_premultiplied() 
          lethit_length=max(dot(num,den)/max(dot(den,den),1.0e-12),0.0);\
          returnGlossyFloorHit(hit_length,start.w+hit_length*along.w);}"
     );
+    assert_eq!(
+        squashed(wgsl_function(MARCH_WGSL, "glossy_floor_read_pixel")),
+        "fnglossy_floor_read_pixel(origin:vec3<f32>,stop:vec2<f32>,extent:vec2<f32>)\
+         ->vec2<f32>{\
+         letstart=screen_march_pixel(uniforms.view_proj*vec4<f32>(origin,1.0),extent);\
+         letalong=stop-start;\
+         returnstop-along*(floor_march.stride/max(length(along),floor_march.stride));}"
+    );
+    // The read point is placed, never searched for: it reads no depth and no
+    // probe quantity, tests nothing and marches no step of its own.
+    let read = squashed(wgsl_function(MARCH_WGSL, "glossy_floor_read_pixel"));
+    for word in [
+        "texture",
+        "scene_depth",
+        "select(",
+        "for(",
+        "loop",
+        "while",
+        "screen_march(",
+        "confidence",
+        "shadow",
+        "distance",
+        "capture",
+        "probe",
+        "normal",
+        "noise",
+    ] {
+        assert!(!read.contains(word), "the read pixel names `{word}`");
+    }
     // The overlay's probe term mirrors the same view about the same normal.
     assert!(
         squashed(wgsl_function(OVERLAY_WGSL, "glossy_overlay_sample")).contains(

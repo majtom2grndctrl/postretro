@@ -472,16 +472,23 @@ fn bake_or_load_with(
     }
 
     // Capture is a pure function of the keyed inputs, so a hit skips it.
-    let key = cache_key(
-        inputs,
-        &probes,
-        &exclusions,
-        constants,
-        crate::ray_traversal::TRACER_EPOCH,
-    )?;
+    // Hashing reads every input, id 22 included, so a build with no cache
+    // skips it.
+    let key = stage_cache
+        .map(|_| {
+            cache_key(
+                inputs,
+                &probes,
+                &exclusions,
+                constants,
+                crate::ray_traversal::TRACER_EPOCH,
+            )
+        })
+        .transpose()?;
     if let Some((section, reports)) =
         stage_cache
-            .and_then(|cache| cache.get(&key))
+            .zip(key.as_ref())
+            .and_then(|(cache, key)| cache.get(key))
             .and_then(|bytes| {
                 parse_cache_payload(&bytes)
                     .map_err(|e| {
@@ -495,7 +502,9 @@ fn bake_or_load_with(
         warn_hidden_reflectors(&section, &probes, inputs.environment_volumes, &world_faces);
         return Ok(Some(section));
     }
-    log::info!("[cache] reflection_probes miss");
+    if stage_cache.is_some() {
+        log::info!("[cache] reflection_probes miss");
+    }
 
     check_roster(inputs, references.len())?;
     let sh = ShVolumeSampler::new(inputs.sh_volume, PRODUCTION_PROBE_OCCLUSION)?
@@ -540,8 +549,8 @@ fn bake_or_load_with(
         max_distance: bounds.diagonal() as f32 + 1.0,
     };
     let (section, reports) = capture_probes(&scene, &probes, &exclusions, &references, control)?;
-    if let Some(cache) = stage_cache {
-        cache.put(&key, &cache_payload(&section, &reports));
+    if let (Some(cache), Some(key)) = (stage_cache, key.as_ref()) {
+        cache.put(key, &cache_payload(&section, &reports));
     }
     log_probes(&section, &reports);
     warn_hidden_reflectors(&section, &probes, inputs.environment_volumes, &world_faces);

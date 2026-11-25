@@ -618,7 +618,7 @@ render-rate view-feel sway/bob is a separate overlay composed on top (owned by
 movement), excluded from authority.
 
 The third-person avatar weapon mount does not read placement. Observers see the weapon
-posed by the sockets the wielder's `mesh.weaponMounts` entry names; the FP viewmodel is
+posed by the sockets the wielder's `mesh.mounts` entry names; the FP viewmodel is
 a screen-space presentation. The two vantages legitimately diverge — the shooter's
 authored FP placement versus observers' socket pose — and the TP mount carries no
 placement offset. Art owns its fit in the rig's bake. Each peer resolves the mount from
@@ -626,8 +626,13 @@ the replicated active weapon and the pawn's class against its own descriptors, s
 mount data crosses the wire; peers with differing descriptors present differently. A
 connected client's own body mounts the same way, never from its predicted inventory, so
 the weapon on its shadow-only body follows a switch once the host confirms it. Gameplay
-never reads a mount: fire origin and hit tests ignore it. NPCs resolve no mount
-(`entity_model.md` §2, Weapon mounts).
+never reads a pawn's mount: its fire origin and hit tests ignore it. Each peer composes an
+NPC's mounts from its own descriptors as it composes a pawn's, from the table
+`mesh.mounts` (`entity_model.md` §2, Weapon mounts), with no wire change. On the host
+only, an NPC's fire origin and near-path gate read its mount. No client reproduces an NPC
+shot, so peers need not agree on the pose for gameplay. Hit tests still ignore mounts. A
+client draws the host's launch point against its own pose of the gun, so a shot leaves
+the drawn barrel only as closely as the client's clip phase tracks the host's.
 
 **Fire origin composes on placement.** When a projectile weapon supplies a
 model-local `muzzleOffset`, its authoritative origin is the weapon's muzzle

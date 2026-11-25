@@ -71,7 +71,7 @@ fn life_state_staged_commit_rejects_retained_name_overflow_before_any_mutation()
         animations: Default::default(),
         default_state: None,
         locomotion: None,
-        weapon_mounts: None,
+        mounts: None,
     });
     let mut old_guard = incoming[1].clone();
     old_guard.health.as_mut().unwrap().max = 100.0;

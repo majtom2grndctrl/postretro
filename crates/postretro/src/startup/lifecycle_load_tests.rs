@@ -2453,7 +2453,7 @@ fn hot_reload_then_load_predicts_the_reloaded_model() {
         animations: Default::default(),
         default_state: None,
         locomotion: None,
-        weapon_mounts: None,
+        mounts: None,
     });
     script_ctx(&app)
         .data_registry

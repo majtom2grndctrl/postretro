@@ -5,22 +5,82 @@ use postretro_level_loader::LevelWorld;
 pub use postretro_model::ClipMetadata;
 use postretro_visibility::VisibleCells;
 
-/// Pure cull decision for one skinned-mesh instance — GPU-free, unit-testable.
+/// How far a model's cell-cull point sits above its origin, along the model's
+/// own up axis, in metres.
 ///
-/// An instance draws iff the visible set is `DrawAll`, or the cell its
-/// position lands in is a member of the visible cell set.
+/// Models are authored with the origin between the feet, so a placed model's
+/// origin lies on the floor it stands on. The cell locator sends a point on a
+/// splitting plane to the plane's front child, and a floor-height splitter is
+/// often a wall brush's downward-facing bottom face, whose front is the solid
+/// beneath the floor. The lift moves the point off that plane into the space
+/// the body occupies. 5 cm clears f32 rounding of plane distances by orders of
+/// magnitude and stays far below any body height. The lightmap walk
+/// measurement probes a floor's standing cell at the same height
+/// (`FLOOR_PROBE`); the two are separate constants.
+pub const MESH_CULL_LIFT: f32 = 0.05;
+
+/// The lifted point a model is first located at for its cell cull: its origin
+/// raised [`MESH_CULL_LIFT`] along its own up axis, taken from `model`, the
+/// model's world transform. Following the model's up rather than world up
+/// keeps a prop mounted on a wall or hung from a ceiling, turned so its feet
+/// face the surface, lifted off that surface into the room. A degenerate axis
+/// (zero or non-finite scale) lifts along world up.
+pub fn mesh_cull_point(model: &glam::Mat4) -> glam::Vec3 {
+    let up = model
+        .transform_vector3(glam::Vec3::Y)
+        .normalize_or(glam::Vec3::Y);
+    model.w_axis.truncate() + up * MESH_CULL_LIFT
+}
+
+/// The cell a model culls by: the cell holding its [`mesh_cull_point`], or,
+/// when that cell is solid or exterior, the cell holding its bare origin.
 ///
-/// Render-frame collectors (the ghost collectors in `scripting/frame_systems/`)
-/// call this, holding the `LevelWorld` and the frame's `VisibleCells`, before
-/// pushing an instance into the draw list, so the renderer's GPU pass never
-/// needs a world reference. The skinned-mesh collector
-/// (`scripting/frame_systems/mesh_render.rs`) tests the main view and the
-/// planar mirror's through [`mesh_visible_in_cell`] instead (`CullViews::reach`),
-/// locating the position once for both. The mesh cull tests the entity's
-/// CURRENT-TICK transform (stable per-tick visibility), not the sub-tick
-/// interpolated position. The locator lookup and the membership decision are
-/// split so the decision is unit-testable without constructing a full
-/// `LevelWorld`.
+/// No view draws a solid or exterior cell, so a lift into one left the open
+/// space: a prop pivoted at its top and hung upright from a ceiling lifts into
+/// the ceiling, or through a roof thinner than the lift into the void. Its
+/// origin then decides, as it did before the lift. One case remains: a lift
+/// through a brush thinner than [`MESH_CULL_LIFT`] into another open cell culls
+/// by that cell.
+pub fn locate_mesh_cell(world: &LevelWorld, model: &glam::Mat4) -> u32 {
+    let lifted = world.locate_cell(mesh_cull_point(model));
+    let closed = |cell: &postretro_level_loader::CellData| cell.is_solid || cell.is_exterior;
+    let cell = if world.cells.get(lifted).is_some_and(closed) {
+        world.locate_cell(model.w_axis.truncate())
+    } else {
+        lifted
+    };
+    cell as u32
+}
+
+/// Pure cull decision for one skinned-mesh instance at world transform
+/// `model` — GPU-free, unit-testable.
+///
+/// The instance draws iff the visible set is `DrawAll`, or its
+/// [`locate_mesh_cell`] is a member of the visible cell set.
+///
+/// The mesh ghost collector (`scripting/frame_systems/ghost_render.rs`) calls
+/// this at a ghost's mapped holder transform, holding the `LevelWorld` and the
+/// frame's `VisibleCells`, before pushing an instance into the draw list, so
+/// the renderer's GPU pass never needs a world reference. The skinned-mesh
+/// collector (`scripting/frame_systems/mesh_render.rs`) tests the main view
+/// and the planar mirror's through [`locate_mesh_cell`] and
+/// [`mesh_visible_in_cell`] instead (`CullViews::reach`), locating the model
+/// once for both at its CURRENT-TICK transform (stable per-tick visibility).
+pub fn mesh_model_visible(world: &LevelWorld, visible: &VisibleCells, model: &glam::Mat4) -> bool {
+    // `DrawAll` short-circuits before the cell lookup: every instance draws, so
+    // the locator descent is pure waste on that path.
+    let VisibleCells::Culled(_) = visible else {
+        return true;
+    };
+    mesh_visible_in_cell(visible, locate_mesh_cell(world, model))
+}
+
+/// Pure cull decision for a point-located instance (a billboard ghost): it
+/// draws iff the visible set is `DrawAll`, or the cell `pos` lands in is a
+/// member of the visible cell set. Skinned meshes cull by
+/// [`mesh_model_visible`] instead. The locator lookup and the membership
+/// decision are split so the decision is unit-testable without constructing a
+/// full `LevelWorld`.
 pub fn mesh_visible(world: &LevelWorld, visible: &VisibleCells, pos: glam::Vec3) -> bool {
     // `DrawAll` short-circuits before the cell lookup: every instance draws, so
     // the locator descent is pure waste on that path.
@@ -51,6 +111,36 @@ mod tests {
     fn mesh_cull_excludes_instance_in_nonvisible_cell() {
         let visible = VisibleCells::Culled(vec![0]);
         assert!(!mesh_visible_in_cell(&visible, 1));
+    }
+
+    #[test]
+    fn mesh_cull_point_lifts_the_origin_along_the_model_up_axis() {
+        use glam::{Mat4, Quat, Vec3};
+        let origin = Vec3::new(3.0, 0.0, -2.0);
+        let upright = Mat4::from_scale_rotation_translation(
+            Vec3::splat(4.0),
+            Quat::from_rotation_y(1.0),
+            origin,
+        );
+        assert!(
+            mesh_cull_point(&upright).abs_diff_eq(origin + Vec3::Y * MESH_CULL_LIFT, 1e-6),
+            "an upright model lifts straight up, by the lift alone whatever its scale or yaw",
+        );
+        // Turned a quarter about +Z, the model's up is world -X: a prop with
+        // its feet against a wall on its +X side.
+        let on_wall = Mat4::from_rotation_translation(
+            Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+            origin,
+        );
+        assert!(
+            mesh_cull_point(&on_wall).abs_diff_eq(origin - Vec3::X * MESH_CULL_LIFT, 1e-6),
+            "a turned model lifts along its own up",
+        );
+        let collapsed = Mat4::from_scale_rotation_translation(Vec3::ZERO, Quat::IDENTITY, origin);
+        assert!(
+            mesh_cull_point(&collapsed).abs_diff_eq(origin + Vec3::Y * MESH_CULL_LIFT, 1e-6),
+            "a zero-scale model, with no up axis, lifts along world up",
+        );
     }
 
     #[test]

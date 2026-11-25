@@ -2,7 +2,7 @@
 
 > **Status:** draft — epic *shape*, not yet per-spec detail. **New epic (Epic 22)** per owner decision — not an E17 continuation — delivering the non-visibility-bearing kinematic-cluster capability roadmap E17-F had parked. Source-grounded findings in `research.md`.
 > **Layout:** this folder is the epic hub (index + `research.md`). The four child specs get their own sibling `E22--*` folders, drafted **detail-on-open** in dependency order (the E10/E15/E19 pattern) — not written up front, because each reshapes what the next assumes.
-> **Related:** `context/lib/build_pipeline.md` §Source-format neutrality, §Compiler pipeline, §PRL section IDs · `context/lib/entity_model.md` · `context/lib/rendering_pipeline.md` §4/§7.4 · `context/plans/roadmap.md` Epic 17 (kinematic substrate this builds on) + Epic 22 stub, "Chunk Primitive" / "Sector Graph" (Future/Infra) · working branch `claude/grouped-brushes-prl-build`.
+> **Related:** `context/plans/drafts/map-cli--prefab-map/index.md` (map-editing CLI and `.prefab.map` prefabs; instance identity builds on this epic) · `context/lib/build_pipeline.md` §Source-format neutrality, §Compiler pipeline, §PRL section IDs · `context/lib/entity_model.md` · `context/lib/rendering_pipeline.md` §4/§7.4 · `context/plans/roadmap.md` Epic 17 (kinematic substrate this builds on) + Epic 22 stub, "Chunk Primitive" / "Sector Graph" (Future/Infra) · working branch `claude/grouped-brushes-prl-build`.
 > **Names not locked** (scope still settling): "assembly" and the child-spec folder names are working proposals; the epic number (22) and placement are decided.
 
 ## Goal

@@ -28,8 +28,25 @@ Read at `ecc6adc` (main), after weapon activations, activation start-lane/cadenc
 | HUD facts | `crates/sim/src/scripting_systems/ui_proxy.rs`: `publish_local_weapon_state` writes local `player.weapon.*`, spread, charge, and resource facts on every role (`ReplicationScope::None`). Resource and reload facts are owner-private replicated on a connected client. |
 | Sounds | `crates/postretro/src/sound_events/descriptors.rs`: `weapon_emission_sound` resolves frozen shot sounds, then action sounds, then the canonical-name table. Emitter is the pawn (`entity_emitter`), not the weapon. Observer cues ride reliable Input-channel `WeaponCuesMessage`; `WeaponCueKind` is `{ Activate, Impact }` only. No non-shot weapon cue reaches observers today; a selection cue needs a new kind and a wire bump. |
 | Condition algebra | `crates/foundation/src/ir/mod.rs`: `IrType` and `IrValue` are number and bool only; `ir/scope.rs` gives String/Enum slots no IR projection, by design (`plans/done/M14--behavior-ir-substrate`, `plans/done/E18--ir-valued-reactions`). SDK `read()` overloads accept number and boolean refs only. HUD branches on enum/string slots through UI-only `stateEquals` (`sdk/lib/ui/state.ts`; `content/dev/scripts/hud.ts` on `player.weaponResource`). |
-| AI | Enemies drive primary only (`crates/ai/src/weapon_controller.rs`). No rule picks a mode for an AI-wielded modal weapon. |
+| AI | Enemies drive primary only (`crates/ai/src/weapon_controller.rs`). No rule picks a mode for an AI-wielded modal weapon. Read again at `bb7323fc5`: §Enemy weapons. |
 | Versions | `WIRE_VERSION` (`crates/net/src/handshake.rs`), `SNAPSHOT_VERSION` (`crates/net/src/wire.rs`), `TUNING_PAYLOAD_EPOCH`, `StateSchema::fingerprint`. History: `networking.md` §Version gates. |
+
+## Enemy weapons
+
+Read at `bb7323fc5`, after the owner widened the brief to enemy weapons (2026-11-23).
+
+| Seam | Read source and observed contract |
+|---|---|
+| Controller | `crates/ai/src/weapon_controller.rs`: `AiWeaponControllers` holds `ActorWeapons` per enemy, its `weapons` keyed by canonical weapon name, each a full `WeaponComponent` (resource, recovery, activation cursor) plus the initiating `attack_name`. `sync` derives the set from resolved attacks and rebuilds only when the graph `Arc` or `descriptor_generation` changes. |
+| Start | `advance_actor` takes a `WeaponAttackRequest { canonical_weapon, attack_name }`, no mode. It starts only when the weapon has no cursor, sets `input.initiation` on `ActivationLane::Primary`, and hard-codes secondary unpressed. A request for another weapon cancels the active one's execution. A refused start fires nothing and clears `attack_name`. Shots launch with `range: shot.activation.values.range`, the base scaled by the step's `range` scale. |
+| Resolution | `crates/ai/src/brain_programs.rs`: `resolve_projectile_attacks` maps each graph attack naming a weapon to a `ResolvedProjectileAttack`, sharing one `Arc<WeaponDescriptor>` per weapon across attacks. Hitscan or missing weapons disable the attack with a warn-once. `ResolvedProjectileAttack::range` returns the weapon's `range`; `cooldown_ms` returns `primary.recovery_ms`. |
+| Gate and cooldown | `crates/ai/src/compute.rs`: the fire proposal rejects a weapon attack when the target is past `range()`, and records `cooldown_ms()` as the attack's cooldown; a whiffed release reads the same value. Attack cooldown is per attack name, not per weapon. |
+| Authoring | `AttackParams.weapon: Option<String>` (`crates/foundation/src/data_descriptors/types/behavior.rs`). `validate_attacks` (`types/behavior/recursive.rs`) rejects `damage`, `maxRange`, `queueRange`, `cooldownMs` and `damageType` on a weapon attack. The SDK passes attacks through (`sdk/lib/data_script/attacks.ts`, `.luau`). |
+| Content | `content/dev/scripts/enemy-rifle.ts`: `enemy_rifle_burst` (6 damage, 12 m, `press`, three shots 120 ms apart, 1000 ms recovery) and `enemy_rifle_long` (10 damage, 20 m, `hold`, one shot, 750 ms recovery) share sounds, projectile and credit source. `enemy_rifle` (10 damage, 12 m) is the traps' single shot. `content/dev/scripts/limitator.ts`: `shoot` and `spray` name `enemy_rifle_burst`, `longshot` names `enemy_rifle_long`. `rifle-squads.ts` spreads the limitator. Other call sites: `content/dev/start-script.ts`, `crates/ai/src/clip_timed_shipped_tests.rs`, `crates/scripting-core/src/staged_manifest/surface_example_tests.rs`. |
+
+Consequences for a modal enemy rifle:
+- The burst and the long shot differ in damage, range, trigger, steps and recovery. Steps, trigger and recovery are per-action today; damage and the flight range ride shot scales. Only the reach gate needs a per-mode number.
+- One weapon means one recovery for all three attacks. Today `longshot`'s rifle recovers separately from the bursts'.
 
 ## Existing lifecycle
 

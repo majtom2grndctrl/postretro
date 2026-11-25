@@ -1114,6 +1114,65 @@ mod tests {
         assert!(capture_mesh_models(&registry).unwrap().is_empty());
     }
 
+    // Regression: spawner-test's prop stands on its floor, origin at z 0, as the
+    // model contract places it. prl-build splits that floor on a downward-facing
+    // plane, so the bare origin ties into the solid beneath and the capture drew
+    // an empty floor. The prop must draw even when every open cell is visible.
+    #[test]
+    fn spawner_prop_standing_on_its_floor_draws_in_capture() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let out = tempfile::tempdir().unwrap();
+        let prl = out.path().join("spawner-test.prl");
+        fs::write(
+            &prl,
+            crate::startup::teleporters_surface_tests::run_prl_build_on(
+                &workspace.join("content/dev/maps/spawner-test.map"),
+                &[],
+            ),
+        )
+        .expect("write the compiled PRL");
+        let world = postretro_level_loader::load_prl(prl.to_str().unwrap())
+            .expect("compiled spawner-test loads");
+        let origin = world
+            .map_entities
+            .iter()
+            .find(|entity| entity.classname == "prop_mesh")
+            .map(|prop| Vec3::from(prop.origin))
+            .expect("spawner-test places a prop_mesh");
+        assert!(
+            world.cells[world.locate_cell(origin)].is_solid,
+            "fixture: the prop's bare origin ties into the solid beneath its floor"
+        );
+        let open_cells: Vec<u32> = (0..world.cells.len() as u32)
+            .filter(|&cell| !world.cells[cell as usize].is_solid)
+            .collect();
+
+        let registry = spawn_capture_receiver_registry(&world).expect("spawner-test spawns");
+        let mut mesh_collector = MeshRenderCollector::new();
+        collect_capture_receiver_draws(
+            &registry,
+            &world,
+            &VisibleCells::Culled(open_cells),
+            origin + Vec3::new(2.0, 1.6, 0.0),
+            &mut KinematicMoverRenderCollector::new(),
+            &mut mesh_collector,
+            &mut crate::ghost_links::GhostLinks::default(),
+            &mut crate::scripting_systems::ghost_render::GhostRenderCollector::new(),
+            &mut crate::scripting_systems::mover_ghost_render::MoverGhostRenderCollector::new(),
+        );
+        assert!(
+            mesh_collector.instances().iter().any(|instance| {
+                instance.forward_visible
+                    && instance
+                        .transform
+                        .w_axis
+                        .truncate()
+                        .abs_diff_eq(origin, 1e-5)
+            }),
+            "the prop standing on the floor draws at its authored origin"
+        );
+    }
+
     #[test]
     fn capture_receiver_draws_come_from_vm_free_spawned_registry_collectors() {
         let world = capture_receiver_test_world();

@@ -18,7 +18,7 @@ const animatedMesh = {
 };
 
 // Wieldable co-op fixtures, exported so player descriptors can name them in
-// `mesh.weaponMounts` (scripts/player.ts).
+// `mesh.mounts` (scripts/player.ts).
 export const coopHealthWeaponEntity = defineEntity({ canonicalName: "coop_health_weapon", components: {
   health: { max: 48, hitbox: { halfExtents: [0.3, 0.2, 0.5], offset: [0, 0.2, 0] } },
   mesh: { model: SMG }, touchable: { mode: "press", radius: 1 },

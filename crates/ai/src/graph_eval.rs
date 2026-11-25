@@ -84,6 +84,7 @@ pub(super) fn select_transitions(
         scope.repoint_scope_relative(ScopeRelativeValues {
             time_in_activity_ms: brain.activity_timer(depth).unwrap_or(0.0),
             attacks_fired_in_activity: brain.activity_attack_count(depth).unwrap_or(0),
+            attacks_held_in_activity: brain.activity_held_count(depth).unwrap_or(0),
             activity_roll: brain.activity_roll(depth).unwrap_or(0.0),
             damage_in_activity: brain.damage_in_activity(depth).unwrap_or(0.0),
         });
@@ -552,6 +553,7 @@ fn selector_motion(
     scope.repoint_scope_relative(ScopeRelativeValues {
         time_in_activity_ms: brain.activity_timer(depth).unwrap_or(0.0),
         attacks_fired_in_activity: brain.activity_attack_count(depth).unwrap_or(0),
+        attacks_held_in_activity: brain.activity_held_count(depth).unwrap_or(0),
         activity_roll: brain.activity_roll(depth).unwrap_or(0.0),
         damage_in_activity: brain.damage_in_activity(depth).unwrap_or(0.0),
     });
@@ -586,6 +588,7 @@ fn selector_action<'a>(
     scope.repoint_scope_relative(ScopeRelativeValues {
         time_in_activity_ms: brain.activity_timer(depth).unwrap_or(0.0),
         attacks_fired_in_activity: brain.activity_attack_count(depth).unwrap_or(0),
+        attacks_held_in_activity: brain.activity_held_count(depth).unwrap_or(0),
         activity_roll: brain.activity_roll(depth).unwrap_or(0.0),
         damage_in_activity: brain.damage_in_activity(depth).unwrap_or(0.0),
     });

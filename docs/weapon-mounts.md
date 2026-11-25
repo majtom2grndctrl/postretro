@@ -131,10 +131,13 @@ non-uniform scale instead of solving against that invalid frame.
 
 ## 6. Declare the mount on the character
 
-A character names its bakes in `components.mesh.weaponMounts`, one entry per
-weapon it may wield. `weapon` is the weapon's `defineEntity` value, as in
+A character, player or NPC, names its bakes in `components.mesh.mounts`, one
+entry per weapon it may wield (an NPC's entries cover the weapons its attacks
+name; see [NPCs carry weapons the same way](#npcs-carry-weapons-the-same-way)). `item` is the weapon's `defineEntity` value, as in
 `inventory.loadout`; `attachments` maps sockets to bakes, like
-`mesh.attachments`.
+`mesh.attachments`. A weapon built into the character's body takes
+`{ item, muzzleSocket: "<body socket>" }` instead: it names no `attachments` and
+mounts nothing. An entry names exactly one of the two.
 
 ```typescript
 import { defineEntity } from "postretro";
@@ -146,9 +149,9 @@ export const playerEntity = defineEntity({
   components: {
     mesh: {
       model: "models/exo_red/model.gltf",
-      weaponMounts: [
-        { weapon: rifle, attachments: { hand_r: "models/cyberpunk_weapons/rifle/exo_red.gltf" } },
-        { weapon: pistol, attachments: { hand_r: "models/cyberpunk_weapons/pistol/exo_red.gltf" } },
+      mounts: [
+        { item: rifle, attachments: { hand_r: "models/cyberpunk_weapons/rifle/exo_red.gltf" } },
+        { item: pistol, attachments: { hand_r: "models/cyberpunk_weapons/pistol/exo_red.gltf" } },
       ],
     },
     inventory: { loadout: [rifle, pistol] },
@@ -180,7 +183,9 @@ This author-time read is separate from the skinned character mount solver. It
 requires a rigid rest socket on the viewmodel and reports an error if `"muzzle"`
 is absent or is a skinned joint. The runtime does not look up this socket; only
 the copied `muzzleOffset` participates in projectile simulation, so a
-third-person mount never moves where a shot starts.
+third-person mount never moves where a player's shot starts. (An NPC's shot
+does start at its mounted muzzle; see
+[Where an NPC's shot starts](#where-an-npcs-shot-starts).)
 
 ## Pose and character limits
 
@@ -193,6 +198,112 @@ its own bake of each weapon, named `<rig>.gltf` for the character model's folder
 name under `content/dev/models/`. The rifle the Limitator holds is
 `content/dev/models/ar_4/limitator.gltf`; the rifle squads' trooper and warrior
 each have their own bake in that folder, `rodin_sci-fi_trooper_m.gltf` and
-`cyberpunk_warrior_f.gltf`. These NPC bakes mount through `mesh.attachments`,
-not `weaponMounts`, as every weapon an NPC carries still does. A folder whose
-raw source lives outside your project, like `ar_4/`, holds bakes only.
+`cyberpunk_warrior_f.gltf`. A folder whose raw source lives outside your
+project, like `ar_4/`, holds bakes only.
+
+## NPCs carry weapons the same way
+
+An NPC lists its weapons in `components.mesh.mounts`, the table a player uses,
+with the same entry shape. The differences are what mounts and when:
+
+- An NPC mounts the entry of **every weapon its attacks name**, all at once. A
+  weapon its attacks never name has an entry that does nothing and warns of
+  nothing.
+- An entry's sockets win over `mesh.attachments` on a socket both name.
+- Two attack weapons may share a socket only if they name the **same model**
+  there, as the Limitator's two rifles share one bake on `hand_r`. Different
+  models on one socket fail the load, naming the character and the socket.
+  Entries on different sockets are always fine.
+- An NPC with a `mounts` table that lacks an entry for an attack weapon mounts
+  nothing for that weapon. An NPC with no table mounts no weapon.
+
+```typescript
+export const limitator = defineEntity({
+  canonicalName: "limitator",
+  components: {
+    mesh: {
+      model: "models/limitator/model.gltf",
+      mounts: [
+        { item: burstRifle, attachments: { hand_r: "models/ar_4/limitator.gltf" } },
+        { item: longRifle, attachments: { hand_r: "models/ar_4/limitator.gltf" } },
+      ],
+    },
+    // behavior: its attacks name burstRifle's and longRifle's weapons
+  },
+});
+```
+
+## Where an NPC's shot starts
+
+An NPC's shot leaves its fired weapon's **muzzle**, posed on the clip it is
+playing, not the top of its head. Every peer draws the same mounted gun; the
+shot's start is a host decision.
+
+- **A mounted bake** carries a rigid node named `muzzle` at the barrel tip,
+  tagged in the glTF as `extras.socket = "muzzle"`. Add it when you export the
+  bake, as for the cyberpunk viewmodels:
+
+  ```bash
+  blender --background --python tools/prop_to_gltf.py -- \
+    --input content/mymod/models/rifle/model.gltf \
+    --output scratch/rifle/trooper.gltf \
+    --grip 0.025 -0.068 0.082 --scale 0.62 \
+    --socket muzzle=BarrelTip
+  ```
+
+  `BarrelTip` is the name of an empty or node you placed at the tip in the
+  source; keep it at the tip through any rebake. `solve-weapon-mount` keeps the
+  socket and tells you nothing about it: its `--check` proves orientation only.
+  **Moving the `muzzle` node moves where the NPC's shots start and which cover
+  blocks them**, so re-test an NPC's shots behind low cover after any bake edit.
+- **A weapon built into the body** (a cannon fused to an arm) names a body
+  socket instead of a bake:
+
+  ```typescript
+  mounts: [{ item: armCannon, muzzleSocket: "cannon_tip" }],
+  ```
+
+  Its shots leave that posed socket, a skin joint you tag in the model like any
+  other socket, and the entry mounts nothing. `cannon_brute`
+  (`content/dev/scripts/arm-cannon.ts`) is the example.
+- **Several `muzzle` sockets.** If one entry mounts several bakes and more than
+  one carries a `muzzle`, the shot leaves the first in socket-name order and the
+  load warns.
+
+An entry takes exactly one of `attachments` and `muzzleSocket`; both or neither
+fails the load.
+
+A pawn ignores `muzzleSocket`: players fire from their first-person placement
+plus `muzzleOffset`, whatever their entry says, and the entry mounts nothing.
+
+## Cover near the gun
+
+An NPC does not fire into cover at its gun. Before a shot leaves, the engine
+sweeps the shot's radius along two legs: from the NPC's body (its eye) to the
+muzzle, then from the muzzle toward the target's aim point for the first 2 m
+(less if the target is nearer: the leg then stops about one shot radius short
+of the aim point, so a ledge just beside a point-blank target does not hold the
+shot). If something blocks either leg, the NPC **holds the shot** rather than
+launching it into the lip. A burst checks every shot; an attack with no clip
+moment counts once per hold, not once per tick. A held shot counts in
+`brain.attacksHeldInActivity`, which a behavior row can read to move on. An
+obstacle past 2 m does not hold anything: the shot flies and hits it, which is
+how a player ducks behind a column and makes the NPC waste shots. The target's
+line of sight (`brain.targetVisible`) is the eye's verdict and is separate:
+`targetVisible` can read true while every shot is held.
+
+## When data is missing
+
+Each warning prints once per level load, naming the character and the weapon.
+The NPC still works; the missing piece draws or launches as described.
+
+| Problem | What happens |
+|---|---|
+| A `mounts` table with no entry for an attack weapon | Mounts nothing for it; its shots leave from the eye. |
+| An entry socket the character's model lacks | Nothing draws there; warns; that weapon's shots leave from the eye, unless another socket of the entry carries a `muzzle`. |
+| An entry model the level did not load | Nothing draws there; warns; that weapon's shots leave from the eye, unless another socket of the entry carries a `muzzle`. |
+| No loaded bake carries a `muzzle` socket | Warns; the weapon's shots leave from the eye. |
+| Several bakes carry a `muzzle` socket | Warns, naming the one the shots use. |
+| A `muzzleSocket` the body model lacks | Warns; shots leave from the eye. |
+
+A character with no `mounts` table at all logs nothing and fires from the eye.

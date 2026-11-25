@@ -305,7 +305,7 @@ pub(crate) fn distinct_descriptor_mesh_models<'a>(
 }
 
 /// Collect first-person viewmodels declared by weapon descriptors, and every
-/// prop a character's `mesh.weaponMounts` table lists. Wieldable instances
+/// prop a character's `mesh.mounts` table lists. Wieldable instances
 /// intentionally have no `MeshComponent`, and a mount joins its holder only on a
 /// switch, so a registry-driven sweep cannot discover these presentation assets.
 /// Every role may present an active weapon, therefore this list is always
@@ -322,7 +322,7 @@ pub fn weapon_presentation_models(descriptors: &[EntityTypeDescriptor]) -> Vec<S
         let mut mount_models: Vec<&str> = descriptor
             .mesh
             .iter()
-            .flat_map(|mesh| mesh.weapon_mount_models())
+            .flat_map(|mesh| mesh.mount_models())
             .collect();
         mount_models.sort_unstable();
         for model in viewmodel
@@ -708,12 +708,7 @@ pub(crate) fn descriptor_mesh_component(
     };
     // Descriptor maps are unordered. Give the component a stable attachment
     // order so later presentation collection is deterministic across runs.
-    let mut attachments: Vec<(String, String)> = mesh_desc
-        .attachments
-        .iter()
-        .map(|(socket, model)| (socket.clone(), model.clone()))
-        .collect();
-    attachments.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+    let attachments = super::npc_mounts::compose_attachments(descriptor, mesh_desc);
     Some(
         component
             .with_attachments(attachments)
@@ -3123,17 +3118,20 @@ mod tests {
 
     #[test]
     fn weapon_presentation_models_collects_every_weapon_mount_table_model_once() {
-        use postretro_entities::data_descriptors::WeaponMountDescriptor;
+        use postretro_entities::data_descriptors::MountDescriptor;
 
-        let mount = |weapon: &str, attachments: &[(&str, &str)]| WeaponMountDescriptor {
-            weapon: weapon.to_string(),
-            attachments: attachments
-                .iter()
-                .map(|(socket, model)| (socket.to_string(), model.to_string()))
-                .collect(),
+        let mount = |weapon: &str, attachments: &[(&str, &str)]| MountDescriptor {
+            item: weapon.to_string(),
+            attachments: Some(
+                attachments
+                    .iter()
+                    .map(|(socket, model)| (socket.to_string(), model.to_string()))
+                    .collect(),
+            ),
+            muzzle_socket: None,
         };
         let mut player = mesh_descriptor("player", false);
-        player.mesh.as_mut().unwrap().weapon_mounts = Some(vec![
+        player.mesh.as_mut().unwrap().mounts = Some(vec![
             mount(
                 "rifle",
                 &[
@@ -3145,7 +3143,7 @@ mod tests {
         ]);
         // An NPC is a character too; a table on any descriptor joins the sweep.
         let mut trooper = mesh_descriptor("trooper", false);
-        trooper.mesh.as_mut().unwrap().weapon_mounts = Some(vec![
+        trooper.mesh.as_mut().unwrap().mounts = Some(vec![
             mount("rifle", &[("hand_r", "models/rifle/trooper.gltf")]),
             mount("pistol", &[("hand_r", "models/pistol/exo_red.gltf")]),
         ]);

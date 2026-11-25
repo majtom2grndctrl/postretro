@@ -206,10 +206,10 @@ fn connected_client_prediction_covers_replicated_placements() {
     }
 }
 
-/// The dev mod's descriptors with the dev player's `mesh.weaponMounts`
+/// The dev mod's descriptors with the dev player's `mesh.mounts`
 /// replaced by `table`.
 fn dev_descriptors_with_player_table(
-    table: Vec<postretro_entities::data_descriptors::WeaponMountDescriptor>,
+    table: Vec<postretro_entities::data_descriptors::MountDescriptor>,
 ) -> Vec<EntityTypeDescriptor> {
     let mut descriptors = dev_descriptors();
     let player = descriptors
@@ -220,7 +220,7 @@ fn dev_descriptors_with_player_table(
         .mesh
         .as_mut()
         .expect("the dev player has a mesh")
-        .weapon_mounts = Some(table);
+        .mounts = Some(table);
     descriptors
 }
 
@@ -230,9 +230,10 @@ fn dev_descriptors_with_player_table(
 #[test]
 fn every_weapon_mount_table_model_is_swept_and_predicted_on_both_roles() {
     let descriptors = dev_descriptors_with_player_table(vec![
-        postretro_entities::data_descriptors::WeaponMountDescriptor {
-            weapon: "reference_rifle".to_string(),
-            attachments: [("back".to_string(), PROP_MODEL.to_string())].into(),
+        postretro_entities::data_descriptors::MountDescriptor {
+            item: "reference_rifle".to_string(),
+            attachments: Some([("back".to_string(), PROP_MODEL.to_string())].into()),
+            muzzle_socket: None,
         },
     ]);
     let placements = vec![record("player_spawn", &[], 0)];
@@ -265,7 +266,7 @@ fn level_install_warns_once_for_a_loadout_weapon_the_player_table_lacks() {
         .and_then(|inventory| inventory.loadout.first().cloned())
         .expect("the dev player carries a loadout");
     let warning = format!(
-        "[Weapon mounts] entity `player` has no weaponMounts entry for weapon `{loadout_weapon}`; it mounts nothing"
+        "[Weapon mounts] entity `player` has no mounts entry for weapon `{loadout_weapon}`; it mounts nothing"
     );
     for connected_client in [false, true] {
         let logs = postretro_test_log_capture::LogCapture::start();

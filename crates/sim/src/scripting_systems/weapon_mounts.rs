@@ -7,14 +7,14 @@ use postretro_entities::EntityTypeDescriptor;
 use super::hit_zones::HitZoneStore;
 
 /// Warn once per level load that `character` declares a weapon-mount table
-/// without an entry for `weapon`. The install-time loadout check and the
-/// writer's first wield share this key, so a loadout weapon warns at load and
-/// not again when wielded.
+/// without an entry for `weapon`. The install-time loadout check, the NPC
+/// attack-weapon check and the writer's first wield share this key, so a
+/// weapon warns at load and not again when wielded or spawned.
 pub fn warn_missing_weapon_mount_entry(store: &HitZoneStore, character: &str, weapon: &str) {
     if store.mark_attachment_resolution_warning(format!("weapon-mount-entry:{character}:{weapon}"))
     {
         log::warn!(
-            "[Weapon mounts] entity `{character}` has no weaponMounts entry for weapon `{weapon}`; it mounts nothing"
+            "[Weapon mounts] entity `{character}` has no mounts entry for weapon `{weapon}`; it mounts nothing"
         );
     }
 }
@@ -75,10 +75,11 @@ pub fn warn_weapon_mount_model_missing(
 }
 
 /// Level-install check of every declared weapon-mount table against the
-/// descriptor set: a loadout weapon the table lacks warns now, and an entry
+/// descriptor set: a loadout weapon the table lacks warns now, as does a
+/// weapon an NPC's attacks name (whether or not it spawns), and an entry
 /// naming no weapon descriptor warns that it never mounts. Runs after the
 /// per-level warn-once set clears, so each warning repeats at most once per
-/// level load. A character without `mesh.weaponMounts` logs nothing.
+/// level load. A character without `mesh.mounts` logs nothing.
 pub fn check_weapon_mount_tables(descriptors: &[EntityTypeDescriptor], store: &HitZoneStore) {
     let is_weapon = |name: &str| {
         descriptors.iter().any(|descriptor| {
@@ -92,20 +93,30 @@ pub fn check_weapon_mount_tables(descriptors: &[EntityTypeDescriptor], store: &H
         let Some(mesh) = descriptor.mesh.as_ref() else {
             continue;
         };
-        let Some(table) = mesh.weapon_mounts.as_deref() else {
+        let Some(table) = mesh.mounts.as_deref() else {
             continue;
         };
         for entry in table {
-            if !is_weapon(&entry.weapon)
+            if !is_weapon(&entry.item)
                 && store.mark_attachment_resolution_warning(format!(
                     "weapon-mount-unknown:{character}:{}",
-                    entry.weapon
+                    entry.item
                 ))
             {
                 log::warn!(
-                    "[Weapon mounts] entity `{character}` has a weaponMounts entry for `{}`, which names no weapon; the entry never mounts",
-                    entry.weapon
+                    "[Weapon mounts] entity `{character}` has a mounts entry for `{}`, which names no weapon; the entry never mounts",
+                    entry.item
                 );
+            }
+        }
+        // An NPC mounts every weapon its attacks name, whether or not it ever
+        // spawns, so each one the table lacks warns now. A pawn's missing entry
+        // shares the key, so the same text never doubles.
+        if let Some(behavior) = descriptor.behavior.as_ref() {
+            for weapon in behavior.attack_weapons() {
+                if mesh.mount(weapon).is_none() {
+                    warn_missing_weapon_mount_entry(store, character, weapon);
+                }
             }
         }
         // A loadout name that resolves to no weapon is never wielded; the
@@ -116,7 +127,7 @@ pub fn check_weapon_mount_tables(descriptors: &[EntityTypeDescriptor], store: &H
             .map(|inventory| inventory.loadout.as_slice())
             .unwrap_or_default();
         for weapon in loadout {
-            if is_weapon(weapon) && mesh.weapon_mount(weapon).is_none() {
+            if is_weapon(weapon) && mesh.mount(weapon).is_none() {
                 warn_missing_weapon_mount_entry(store, character, weapon);
             }
         }

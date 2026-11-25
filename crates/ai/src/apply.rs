@@ -17,13 +17,16 @@ use crate::agent_steering;
 use crate::ai_host::AiHost;
 use crate::emission::entity_emitter;
 use crate::nav::distance_xz;
+use crate::npc_launch::{self, LaunchInputs};
 use crate::sim::EnemyProjectilePresentationSpawn;
-use crate::weapon_controller::AiWeaponControllers;
+use crate::weapon_controller::{AiWeaponControllers, SkippedShot, WithheldStart};
 use glam::Quat;
 use postretro_entities::components::agent::ArrivalLeash;
-use postretro_entities::components::brain::{BrainComponent, EngagedMotionMemory, TravelVariant};
+use postretro_entities::components::brain::{
+    BrainComponent, EngagedMotionMemory, Interruption, TravelVariant,
+};
 use postretro_entities::components::health::{DamageContext, DamageProducer};
-use postretro_entities::components::mesh::{SwitchResult, switch_animation_state};
+use postretro_entities::components::mesh::{MeshComponent, SwitchResult, switch_animation_state};
 use postretro_entities::{AiCue, AiEmission, Transform};
 use postretro_foundation::DamagePayload;
 use std::borrow::Cow;
@@ -43,6 +46,73 @@ fn commit_attack_fire(
         .insert(attack_name, cooldown_ms);
     brain.record_successful_attack_fire();
     registry.set_component(actor, brain).is_ok()
+}
+
+/// A launched projectile shot of `attack` ends that attack's near-path hold,
+/// so its next hold counts again. A contact strike, or another attack's shot,
+/// leaves it: neither ends this attack's hold.
+fn end_held_hold(
+    registry: &mut postretro_entities::EntityRegistry,
+    actor: postretro_entities::EntityId,
+    attack: &str,
+) {
+    // Writes only when the attack holds: most shots end nothing.
+    let Ok(brain) = registry.get_component::<BrainComponent>(actor) else {
+        return;
+    };
+    if !brain.holds(attack) {
+        return;
+    }
+    let mut brain = brain.clone();
+    brain.end_held_hold(attack);
+    let _ = registry.set_component(actor, brain);
+}
+
+/// A skipped burst shot restarts its attack's cooldown as a fired one does,
+/// adding nothing to `attacksFiredInActivity`; one the near-path test held
+/// counts in `attacksHeldInActivity` at every depth on the path now.
+fn commit_skipped_shot(
+    registry: &mut postretro_entities::EntityRegistry,
+    actor: postretro_entities::EntityId,
+    skipped: SkippedShot,
+) {
+    let Ok(mut brain) = registry.get_component::<BrainComponent>(actor).cloned() else {
+        return;
+    };
+    brain
+        .attack_cooldown_remaining_ms
+        .insert(skipped.attack_name, skipped.recovery_ms);
+    if skipped.held {
+        brain.record_held_shot();
+    }
+    let _ = registry.set_component(actor, brain);
+}
+
+/// An attack whose first shot the near-path test held did not start. A clip
+/// moment that whiffed counts once; an attack with no clip moment counts once
+/// per hold (`BrainComponent::record_held_hold`).
+fn commit_withheld_start(
+    registry: &mut postretro_entities::EntityRegistry,
+    actor: postretro_entities::EntityId,
+    withheld: &WithheldStart,
+) {
+    if !withheld.held {
+        return;
+    }
+    let Ok(brain) = registry.get_component::<BrainComponent>(actor) else {
+        return;
+    };
+    // A hold already counted at every depth changes nothing on later ticks.
+    if !withheld.clip_moment && brain.held_hold_counted(&withheld.attack_name) {
+        return;
+    }
+    let mut brain = brain.clone();
+    if withheld.clip_moment {
+        brain.record_held_shot();
+    } else {
+        brain.record_held_hold(&withheld.attack_name);
+    }
+    let _ = registry.set_component(actor, brain);
 }
 
 /// Prefix of the warn-once key for a leap whose clip cannot time its moment,
@@ -111,12 +181,15 @@ pub(super) fn apply_outcomes<H>(
     blocked_warned: &mut std::collections::HashSet<postretro_entities::EntityId>,
     weapons: &mut AiWeaponControllers,
     turns: &mut attack_turns::AttackTurnRuntime,
+    launch_inputs: LaunchInputs<'_>,
     host: &mut H,
 ) -> super::AiTickResult
 where
     H: AiHost + ?Sized,
 {
     let mut events: Vec<AiEmission> = Vec::new();
+    // Posed joints for NPC muzzles, reused across this pass's launches.
+    let mut pose_scratch = Vec::new();
     let mut projectile_spawns = Vec::new();
     // Once an entity crosses the terminal simulation gate in this batch, a
     // synchronous impact policy may restore positive health but cannot make a
@@ -423,19 +496,91 @@ where
                     && !host.is_quiescent(registry, target.entity)
             })
         });
-        let fire = weapons.advance_actor(
+        // The brain's own draw is planned before the launch, which reads
+        // whether it lands; apply makes it below.
+        let draw = plan_own_draw(registry, &outcome, locomotion_intent.moving);
+        // A switch since compute (a reaction an earlier outcome's contact hit
+        // ran on this enemy) is foreign: recorded now, before the launch.
+        let mut interruption = outcome.brain.clip_clock.interruption;
+        if mesh_switches(registry, outcome.id) != outcome.brain.clip_clock.mesh_switches {
+            interruption = Interruption::Foreign;
+        }
+        // Only an NPC with a shot to start or a burst in flight poses a
+        // muzzle: the rest of the tick's aiming NPCs pay nothing here.
+        let active_weapon = weapons.active_weapon(outcome.id);
+        let shooting = active_weapon.is_some() || weapon_request.is_some();
+        let shooter = weapon_aim.filter(|_| shooting).map(|eye_aim| {
+            let mesh = registry.get_component::<MeshComponent>(outcome.id).ok();
+            let aim = npc_launch::classify(
+                mesh,
+                &outcome.brain.clip_clock,
+                interruption,
+                outcome.brain.launch.airborne_presented,
+                draw.own_draw,
+                clip_clock::start_time(&outcome.brain.clip_clock, outcome.id),
+            );
+            let muzzles = match aim {
+                npc_launch::Aim::Aiming { time } => {
+                    let requested = weapon_request
+                        .as_ref()
+                        .map(|request| request.canonical_weapon.as_str())
+                        .filter(|requested| active_weapon != Some(*requested));
+                    let candidates: Vec<&str> =
+                        active_weapon.into_iter().chain(requested).collect();
+                    npc_launch::pose_muzzles(
+                        registry,
+                        outcome.id,
+                        &outcome.brain.clip_clock,
+                        time,
+                        &candidates,
+                        launch_inputs.descriptors,
+                        launch_inputs.store,
+                        &mut pose_scratch,
+                    )
+                }
+                _ => Vec::new(),
+            };
+            npc_launch::NpcShooter {
+                aim,
+                eye_aim,
+                eye: eye_aim.origin,
+                // Compute sets both from one target perception; the eye
+                // ray's point keeps a launch well-formed if they ever part.
+                target_aim: outcome
+                    .target_aim
+                    .unwrap_or(eye_aim.origin + eye_aim.direction),
+                world: launch_inputs.world,
+                muzzles,
+            }
+        });
+        let decide = |weapon: &str, radius: f32| match shooter.as_ref() {
+            Some(shooter) => shooter.decide(weapon, radius),
+            None => npc_launch::ShotLaunch::NotAiming,
+        };
+        let advance = weapons.advance_actor(
             registry,
             outcome.id,
             weapon_request,
             weapon_aim,
+            &decide,
             tick_dt.max(0.0) * 1000.0,
             host,
         );
+        let fire = advance.fired;
         grant_started |= granted_attack.is_some_and(|granted| {
             fire.as_ref()
                 .is_some_and(|fire| fire.attack_name == granted)
                 || weapons.executing_attack(outcome.id) == Some(granted)
         });
+        if let Some(skipped) = advance.skipped {
+            commit_skipped_shot(registry, outcome.id, skipped);
+        }
+        for withheld in [&advance.withheld_request, &advance.withheld]
+            .into_iter()
+            .flatten()
+        {
+            commit_withheld_start(registry, outcome.id, withheld);
+        }
         if let Some(fire) = fire
             && commit_attack_fire(
                 registry,
@@ -444,6 +589,8 @@ where
                 fire.recovery_ms,
             )
         {
+            // Only the held attack's own launched shot ends its hold.
+            end_held_hold(registry, outcome.id, &fire.attack_name);
             projectile_spawns.push(EnemyProjectilePresentationSpawn {
                 projectile: fire.projectile,
                 descriptor_class: fire.canonical_weapon,
@@ -474,53 +621,18 @@ where
         // the prior animation — it never aborts the tick. The latches are still
         // persisted after failures so unresolved clips do not re-request the
         // same switch every tick.
-        let airborne_clip = launch::airborne_clip(registry, outcome.id, &outcome.brain.launch);
-        let animation_name =
-            airborne_clip.or_else(|| animation_for_path(&outcome.brain, locomotion_intent.moving));
-        let travel_variant = if airborne_clip.is_some() {
-            TravelVariant::Base
-        } else {
-            travel_variants::presentable(
-                registry,
-                outcome.id,
-                animation_name,
-                outcome.travel_variant,
-            )
-        };
+        let OwnDrawPlan {
+            airborne_clip,
+            animation_name,
+            travel_variant,
+            redraw,
+            switch_due,
+            ..
+        } = draw;
         let mut own_switch = None;
-        // A redraw request stays pending only while the fresh mesh's clip
-        // indices are still filling; a drawn state restarts the clock. A
-        // switch since compute (an earlier slot's contact hit) flinched the
-        // fresh mesh: the flinch stays on screen and the redraw is dropped, as
-        // compute drops it for a switch before the AI stage. The next
-        // compute's check reads that switch as foreign and cancels the moment.
-        let redraw = outcome.brain.clip_clock.redraw
-            && mesh_switches(registry, outcome.id) == outcome.brain.clip_clock.mesh_switches;
-        // A flinch over a release or recover stays on screen until the enemy
-        // leaves the activity: the brain never draws the strike over it, not
-        // on a stop, a stride resuming or a travel variant changing. That
-        // holds for one an earlier slot's contact hit just switched in too,
-        // which the next compute reads as foreign and starts staggering on.
-        // Not on an entry tick: there the entry's own switch draws over such
-        // a flinch, a recover's as any other's, and the next compute reads
-        // no foreign switch, so no stagger starts. That absorption is the
-        // same one a clip-timed attack's entry makes.
-        let flinch_shows = !outcome.state_changed
-            && (outcome.brain.clip_clock.stagger.is_some()
-                || (clip_clock::routes_flinches(&outcome.brain)
-                    && mesh_switches(registry, outcome.id)
-                        != outcome.brain.clip_clock.mesh_switches));
         let mut redraw_pending = false;
         let mut redrawn = false;
-        if !flinch_shows
-            && (should_switch_animation(
-                outcome.state_changed,
-                locomotion_intent.moving,
-                outcome.brain.locomotion_moving,
-            ) || airborne_clip.is_some() != outcome.brain.launch.airborne_presented
-                || travel_variant != outcome.brain.presented_travel_variant
-                || redraw)
-        {
+        if switch_due {
             // Only a variant the mesh declares is requested, so a missing
             // `X_left` plays `X` without warning.
             let variant_name = animation_name
@@ -541,11 +653,20 @@ where
                                 before,
                                 after: mesh_switches(registry, outcome.id),
                             });
+                            interruption = Interruption::None;
                         }
                         // The fresh mesh already draws the state, from its
                         // start at the drop.
-                        SwitchResult::AlreadyInState => redrawn = redraw && tracked,
+                        SwitchResult::AlreadyInState => {
+                            redrawn = redraw && tracked;
+                            interruption = Interruption::None;
+                        }
                         SwitchResult::UnknownState | SwitchResult::NotAnimated => {
+                            // The mesh keeps its prior state: no pose to fire
+                            // from, unless a switch the brain did not make shows.
+                            if interruption != Interruption::Foreign {
+                                interruption = Interruption::FailedOwnSwitch;
+                            }
                             if warned.insert(format!("anim:{name}")) {
                                 log::warn!(
                                     "[AI] enemy animation state `{name}` could not be \
@@ -594,6 +715,7 @@ where
                 brain.clip_clock.mesh_switches = own.after;
             }
             brain.clip_clock.redraw = redraw_pending;
+            brain.clip_clock.interruption = interruption;
             if redrawn {
                 clip_clock::redrawn(&mut brain.clip_clock, outcome.id);
             }
@@ -605,6 +727,113 @@ where
         events,
         projectile_spawns,
     }
+}
+
+/// The brain's own draw this apply, planned before the launch.
+struct OwnDrawPlan<'a> {
+    /// The knockback's airborne clip to draw, if any.
+    airborne_clip: Option<&'a str>,
+    /// The state the path draws (or the airborne clip).
+    animation_name: Option<&'a str>,
+    travel_variant: TravelVariant,
+    /// A dropped enemy's fresh mesh asks for a redraw.
+    redraw: bool,
+    /// The brain switches the mesh this apply.
+    switch_due: bool,
+    /// What the launch reads of the switch: an activity entry, or a stride or
+    /// travel-variant change, onto a state the mesh can draw makes the enemy
+    /// aiming; one onto a state it cannot draw fails and leaves no pose.
+    own_draw: npc_launch::OwnDraw,
+}
+
+/// Plan the brain's own draw: on a state change, a stride stopping or
+/// resuming, an airborne launch's clip starting or ending, a directional
+/// travel variant changing, or a dropped enemy's fresh mesh asking for a
+/// redraw.
+///
+/// A flinch over a release or recover stays on screen until the enemy leaves
+/// the activity: the brain never draws the strike over it, not on a stop, a
+/// stride resuming or a travel variant changing. That holds for one an
+/// earlier slot's contact hit just switched in too, which the next compute
+/// reads as foreign and starts staggering on. Not on an entry tick: there the
+/// entry's own switch draws over such a flinch, a recover's as any other's,
+/// and the next compute reads no foreign switch, so no stagger starts. That
+/// absorption is the same one a clip-timed attack's entry makes.
+fn plan_own_draw<'a>(
+    registry: &postretro_entities::EntityRegistry,
+    outcome: &'a super::EnemyOutcome,
+    moving: bool,
+) -> OwnDrawPlan<'a> {
+    let airborne_clip = launch::airborne_clip(registry, outcome.id, &outcome.brain.launch);
+    let animation_name = airborne_clip.or_else(|| animation_for_path(&outcome.brain, moving));
+    let travel_variant = if airborne_clip.is_some() {
+        TravelVariant::Base
+    } else {
+        travel_variants::presentable(registry, outcome.id, animation_name, outcome.travel_variant)
+    };
+    // A redraw request stays pending only while the fresh mesh's clip
+    // indices are still filling; a drawn state restarts the clock. A switch
+    // since compute (an earlier slot's contact hit) flinched the fresh mesh:
+    // the flinch stays on screen and the redraw is dropped, as compute drops
+    // it for a switch before the AI stage. The next compute's check reads
+    // that switch as foreign and cancels the moment.
+    let switches = mesh_switches(registry, outcome.id);
+    let seen = outcome.brain.clip_clock.mesh_switches;
+    let redraw = outcome.brain.clip_clock.redraw && switches == seen;
+    let flinch_shows = !outcome.state_changed
+        && (outcome.brain.clip_clock.stagger.is_some()
+            || (clip_clock::routes_flinches(&outcome.brain) && switches != seen));
+    let stride_or_entry = should_switch_animation(
+        outcome.state_changed,
+        moving,
+        outcome.brain.locomotion_moving,
+    );
+    let variant_changed = travel_variant != outcome.brain.presented_travel_variant;
+    let switch_due = !flinch_shows
+        && (stride_or_entry
+            || airborne_clip.is_some() != outcome.brain.launch.airborne_presented
+            || variant_changed
+            || redraw);
+    // Only an entry or a stride or variant change makes the launch tick
+    // aiming; a redraw tick and the airborne clip's edges do not. A redraw
+    // whose clip is still filling waits rather than failing.
+    let own_draw = match drawable_name(animation_name, travel_variant) {
+        Some(name)
+            if switch_due && airborne_clip.is_none() && (stride_or_entry || variant_changed) =>
+        {
+            let usable = registry
+                .get_component::<MeshComponent>(outcome.id)
+                .ok()
+                .and_then(|mesh| mesh.animation.as_ref())
+                .is_some_and(|animation| animation.is_state_usable(&name));
+            if usable {
+                npc_launch::OwnDraw::Aiming
+            } else if redraw {
+                npc_launch::OwnDraw::None
+            } else {
+                npc_launch::OwnDraw::Fails
+            }
+        }
+        _ => npc_launch::OwnDraw::None,
+    };
+    OwnDrawPlan {
+        airborne_clip,
+        animation_name,
+        travel_variant,
+        redraw,
+        switch_due,
+        own_draw,
+    }
+}
+
+/// The name the own draw requests: the travel variant's when one presents.
+fn drawable_name(animation_name: Option<&str>, travel_variant: TravelVariant) -> Option<String> {
+    let name = animation_name?;
+    Some(if travel_variant == TravelVariant::Base {
+        name.to_string()
+    } else {
+        format!("{name}{}", travel_variant.suffix())
+    })
 }
 
 /// The brain's own animation switch this tick, as the clip clock accounts it.

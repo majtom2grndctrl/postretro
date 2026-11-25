@@ -30,6 +30,8 @@ mod model_cache_tests;
 #[cfg(test)]
 pub(crate) mod model_tests;
 #[cfg(test)]
+mod mount_rename_gate_tests;
+#[cfg(test)]
 mod oracle_tests;
 #[cfg(test)]
 mod sound_tests;

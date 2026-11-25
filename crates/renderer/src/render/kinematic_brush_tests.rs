@@ -1106,7 +1106,7 @@ fn each_beauty_pipeline_builds_its_styles_entry_and_reports_the_style_it_selecte
 // highlight-free forms, and its depth pipeline when it is built, at full
 // init, and nothing later: exactly five render pipelines, with cube-array
 // shadows on and off (the no-cube source carries every fragment entry). So a
-// tier change builds no mover pipeline (pin P28).
+// tier change builds no mover pipeline.
 #[test]
 fn building_the_mover_pass_creates_both_beauty_pipelines_and_its_depth_pipeline() {
     use crate::render::gpu_create::gpu_creation_counts;

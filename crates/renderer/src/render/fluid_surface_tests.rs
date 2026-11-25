@@ -5882,7 +5882,7 @@ fn the_sums_pass_records_after_the_flush_and_before_the_fluid_pass() {
     );
 
     // The renderer: prefill, pre-scene compute, sums, world forward, the
-    // fluid pass, in one recorded sequence (P5, P17, P20): every probe-term
+    // fluid pass, in one recorded sequence: every probe-term
     // reader, the fluid pass and the glossy overlay after the skinned-mesh
     // pass alike, reads this frame's sums.
     let scene_source = scene_source_with_fluid_passes();

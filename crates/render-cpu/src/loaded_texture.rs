@@ -51,6 +51,24 @@ pub fn slot_levels(slot: &PrmSlot) -> Vec<(u32, u32, &[u8])> {
     out
 }
 
+/// The glossy opt-in over a world material's consumed specular slot: the
+/// level-format verdict on its mip 0, the level the renderer uploads first.
+/// A slot the plan does not `consume`, or one that failed to read, binds a
+/// placeholder, which never reflects. Call only for a `texture_2d` slot
+/// (layered sidecars never reach a world upload: [`slot_levels`]).
+pub fn specular_slot_reflects_in(
+    slot_result: &Result<PrmSlot, PrmReadError>,
+    consume: bool,
+) -> bool {
+    let Ok(slot) = slot_result else {
+        return false;
+    };
+    consume
+        && slot_levels(slot).first().is_some_and(|&(_, _, mip0)| {
+            postretro_level_format::glossy_opt_in::specular_slot_reflects(slot.format, mip0)
+        })
+}
+
 /// Splits a layer-major mip payload for a `texture_2d_array` upload.
 ///
 /// The `.prm` header owns `layer_count`; every layer carries the full mip chain
@@ -305,6 +323,141 @@ mod tests {
         assert_eq!(levels.len(), 2);
         assert_eq!((levels[0].0, levels[0].1, levels[0].2.len()), (8, 8, 64));
         assert_eq!((levels[1].0, levels[1].1, levels[1].2.len()), (4, 4, 16));
+    }
+
+    /// A 4×4 three-mip slot of `format` whose every texel is `mip0` at mip 0
+    /// and `rest` at the coarser mips.
+    fn specular_slot(format: PrmFormat, mip0: &[u8], rest: &[u8]) -> PrmSlot {
+        let mut payload = mip0.repeat(16);
+        payload.extend(rest.repeat(4 + 1));
+        PrmSlot {
+            format,
+            width: 4,
+            height: 4,
+            level_count: 3,
+            payload,
+        }
+    }
+
+    /// R `_s` 255, G the plane, B the sharpest smoothness, A no tint.
+    const SHARP: [u8; 4] = [255, 127, 255, 0];
+    /// The same texel with no smoothness (`_p` absent, B 0).
+    const NO_SMOOTHNESS: [u8; 4] = [255, 127, 0, 0];
+    /// Sharp, but no specular (`_s` 0).
+    const NO_SPECULAR: [u8; 4] = [0, 127, 255, 0];
+    /// Smoothness present but at the sharpness floor's byte or below.
+    fn dull() -> [u8; 4] {
+        use postretro_level_format::glossy_opt_in::GLOSSY_SHARPNESS_FLOOR_EXPONENT;
+        use postretro_level_format::specular_smoothness::{
+            smoothness_byte_exponent, smoothness_byte_is_present,
+        };
+        let at_floor = (1..=u8::MAX)
+            .filter(|&b| smoothness_byte_is_present(b))
+            .take_while(|&b| smoothness_byte_exponent(b) <= GLOSSY_SHARPNESS_FLOOR_EXPONENT)
+            .last()
+            .expect("some present byte decodes at or below the floor");
+        [255, 127, at_floor, 0]
+    }
+
+    // The renderer's glossy buckets: a consumed four-channel slot with a
+    // texel past both conditions reflects; anything else binds or reads as
+    // a non-reflecting slot.
+    #[test]
+    fn a_consumed_sharp_specular_slot_reflects() {
+        let slot = Ok(specular_slot(PrmFormat::Rgba8Unorm, &SHARP, &SHARP));
+        assert!(specular_slot_reflects_in(&slot, true));
+        // Unconsumed: the placeholder binds, which never reflects.
+        assert!(!specular_slot_reflects_in(&slot, false));
+    }
+
+    #[test]
+    fn a_specular_slot_without_smoothness_does_not_reflect() {
+        // `_p` absent: the four-channel slot's B is 0 everywhere.
+        let slot = Ok(specular_slot(PrmFormat::Rgba8Unorm, &NO_SMOOTHNESS, &SHARP));
+        assert!(!specular_slot_reflects_in(&slot, true));
+        // A two-channel slot (`_s` and `_h`, no smoothness channel) never
+        // reflects, whatever its bytes.
+        let narrow = Ok(PrmSlot {
+            format: PrmFormat::Rg8Unorm,
+            width: 4,
+            height: 4,
+            level_count: 3,
+            payload: vec![255; 2 * (16 + 4 + 1)],
+        });
+        assert!(!specular_slot_reflects_in(&narrow, true));
+    }
+
+    #[test]
+    fn a_specular_slot_without_specular_does_not_reflect() {
+        let slot = Ok(specular_slot(PrmFormat::Rgba8Unorm, &NO_SPECULAR, &SHARP));
+        assert!(!specular_slot_reflects_in(&slot, true));
+    }
+
+    // Only mip 0 is read: qualifying coarser mips under a mip 0 with no
+    // qualifying texel do not reflect, and a mip 0 with one qualifying texel
+    // among dull ones does.
+    #[test]
+    fn a_specular_slot_with_no_qualifying_texel_at_mip_0_does_not_reflect() {
+        let dull = dull();
+        let slot = Ok(specular_slot(PrmFormat::Rgba8Unorm, &dull, &SHARP));
+        assert!(!specular_slot_reflects_in(&slot, true));
+        let mut one = specular_slot(PrmFormat::Rgba8Unorm, &dull, &dull);
+        one.payload[4 * 5..4 * 6].copy_from_slice(&SHARP);
+        assert!(specular_slot_reflects_in(&Ok(one), true));
+        // A slot that failed to read binds a placeholder.
+        assert!(!specular_slot_reflects_in(
+            &Err(PrmReadError::NotPresent),
+            true
+        ));
+    }
+
+    // A layered sidecar never reaches a world upload: the world plan refuses
+    // it, so its entry is a placeholder, and only a one-layer specular slot
+    // ever meets the opt-in.
+    #[test]
+    fn a_layered_specular_sidecar_never_reaches_the_opt_in() {
+        let file = PrmFile {
+            header: PrmHeader {
+                stage_version: STAGE_VERSION,
+                slot_mask: PrmSlots::SPECULAR,
+                bundle_hash: [0u8; 32],
+                total_body_bytes: 0,
+                layer_count: 2,
+            },
+            slots: [
+                None,
+                Some(PrmSlot {
+                    format: PrmFormat::Rgba8Unorm,
+                    width: 1,
+                    height: 1,
+                    level_count: 1,
+                    payload: [SHARP, SHARP].concat(),
+                }),
+                None,
+                None,
+            ],
+        };
+        let bytes = file.to_bytes().expect("the layered sidecar serializes");
+        let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+        let header = header.expect("the header parses");
+        assert!(
+            crate::texture_prep::d2_texture_slot_plan(
+                &header,
+                &slots,
+                TextureSlotPolicy::WorldBundle
+            )
+            .is_none(),
+            "a layered sidecar plans no texture_2d upload"
+        );
+        // Its single-layer counterpart reflects.
+        let single = Ok(PrmSlot {
+            format: PrmFormat::Rgba8Unorm,
+            width: 1,
+            height: 1,
+            level_count: 1,
+            payload: SHARP.to_vec(),
+        });
+        assert!(specular_slot_reflects_in(&single, true));
     }
 
     #[test]

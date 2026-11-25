@@ -6,7 +6,7 @@ and their glossy floor-layer forms `fs_pixel_highlight_free` and
 `fs_smooth_highlight_free`, which also write the highlight-free colour.
 The mover shader sits near a register cliff on the RDNA1 Mac target
 (`context/lib/rendering_pipeline.md` §7.3): a small WGSL edit can push an
-entry's VGPR count into a slower occupancy tier. Screen both entries after
+entry's VGPR count into a slower occupancy tier. Screen every beauty entry after
 every edit to `kinematic_brush.wgsl`, or to any snippet composed into it,
 before it lands. The tool also screens the fluid surface, glossy overlay,
 glossy floor march and world forward entries (see their sections).
@@ -74,7 +74,7 @@ Before mover-smooth-specular-pipeline: one `fs_main` pipeline drew both styles.
 | specular-texel-sharpness: sharpness and tint with albedo read before the light loop, beside the tint accumulator | 224 | 101 |
 | specular-texel-sharpness task 6, shipped: albedo read after the loop | 128 | 104 |
 
-One beauty pipeline per style (mover-smooth-specular-pipeline):
+One beauty pipeline per style, then the highlight-free forms for the glossy floor layer (the four beauty entries):
 
 | Build | Entry | VGPRs | SGPRs |
 |---|---|---|---|
@@ -130,8 +130,8 @@ fewer hold 16 waves per SIMD, 72 hold 14, 88 hold 11 and 96 hold 10.
 
 | Build | Entry | VGPRs | SGPRs |
 |---|---|---|---|
-| 25a74b0d1, before Task 10: one `fs_main` | `fs_main` | 48 | 64 |
-| 41ba36d8c, Task 10: the march, normal map, hemisphere axis, guard, texel point | `fs_pixel` | 96 | 80 |
+| 25a74b0d1, before the march: one `fs_main` | `fs_main` | 48 | 64 |
+| 41ba36d8c, the single-pass march: normal map, hemisphere axis, guard, texel point | `fs_pixel` | 96 | 80 |
 | same | `fs_smooth` | 83 | 78 |
 | per-form pipelines: `fs_pixel` / `fs_smooth` march and sample the normal map (materials that can march) | `fs_pixel` | 95 | 80 |
 | same | `fs_smooth` | 84 | 78 |
@@ -139,8 +139,7 @@ fewer hold 16 waves per SIMD, 72 hold 14, 88 hold 11 and 96 hold 10.
 | same | `fs_smooth_flat` | 61 | 64 |
 | same, march-free with the neutral normal placeholder's one texel loaded | `fs_pixel_plain` | 63 | 64 |
 | same | `fs_smooth_plain` | 61 | 64 |
-
-| glossy floor layer (Task 11b): the six entries above, unchanged | `fs_pixel` … `fs_smooth_plain` | 95 / 84 / 62 / 61 / 63 / 61 | 80 / 78 / 64 / 64 / 64 / 64 |
+| glossy floor layer: the six entries above, unchanged | `fs_pixel` … `fs_smooth_plain` | 95 / 84 / 62 / 61 / 63 / 61 | 80 / 78 / 64 / 64 / 64 / 64 |
 | same, the floor tiers' forms compositing the floor layer | `fs_pixel_floor` | 95 | 80 |
 | same | `fs_smooth_floor` | 84 | 78 |
 | same | `fs_pixel_flat_floor` | 64 | 68 |
@@ -171,7 +170,7 @@ attachment is the screen's default.
 
 | Build | Entry | VGPRs | SGPRs |
 |---|---|---|---|
-| Task 11b: the march from the overlay's point, lifted one pixel | `fs_pixel` | 95 | 82 |
+| the march from the overlay's point, lifted one pixel | `fs_pixel` | 95 | 82 |
 | same | `fs_smooth` | 84 | 80 |
 | same | `fs_pixel_flat` | 42 | 58 |
 | same | `fs_smooth_flat` | 42 | 58 |

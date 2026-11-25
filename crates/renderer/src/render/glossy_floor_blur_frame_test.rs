@@ -1,4 +1,4 @@
-// GPU proof of the floor layer's blur at the hit (acceptance row 36): a
+// GPU proof of the floor layer's blur at the hit: a
 // one-pixel bright hit in the highlight-free colour, filtered by the
 // production chain and read through the production level function and read
 // at the hit, spreads to the probe term's half-width for each exponent.
@@ -6,11 +6,13 @@
 
 use glam::{UVec2, Vec2};
 use postretro_level_format::reflection_probes::{
-    REFLECTION_PROBE_MIN_BLUR_MIP, reflection_probe_mip_exponent, reflection_probe_term_half_width,
+    REFLECTION_PROBE_MIN_BLUR_MIP, REFLECTION_PROBE_TILE_DIMENSION,
+    reflection_probe_full_colour_mip_count, reflection_probe_mip_exponent,
+    reflection_probe_mip0_texel_angle, reflection_probe_term_half_width,
 };
 use postretro_level_format::specular_smoothness::SPECULAR_EXPONENT_MAX;
 use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
-use postretro_render_cpu::glossy_floor_blur::GLOSSY_FLOOR_PROBE_MIPS;
+use postretro_render_cpu::glossy_floor_blur::GlossyFloorTermBlur;
 use postretro_render_cpu::render_extent::Extent;
 
 use super::GlossyFloorTargets;
@@ -21,7 +23,7 @@ use crate::render::glossy_overlay_frame_test_fixtures::renderer;
 /// 512 scene pixels per unit of tangent at depth 1, at High (chain at ½).
 const SCENE: u32 = 1024;
 const FOCAL: f32 = 512.0;
-/// The reference hit (plan, Delegated answers: row 36's tolerance): a hit
+/// The reference hit: a hit
 /// 4 m along the reflected ray, at 8 m of view depth.
 const HIT_LENGTH: f32 = 4.0;
 const HIT_DEPTH: f32 = 8.0;
@@ -30,14 +32,25 @@ const BRIGHT: f32 = 1024.0;
 /// Profile samples a side of the hit, and their spacing in scene pixels.
 const SAMPLES: u32 = 1024;
 const STEP: f32 = 0.5;
-/// Row 36's tolerance on the half-width at half maximum.
+/// Tolerance on the half-width at half maximum.
 const TOLERANCE: f32 = 0.30;
+/// The engine section's probe chain: 128² tiles, every mip.
+const ANGLE: f32 = reflection_probe_mip0_texel_angle(REFLECTION_PROBE_TILE_DIMENSION);
+const MIPS: u32 = 6;
+
+fn engine_term_blur() -> GlossyFloorTermBlur {
+    assert_eq!(
+        MIPS,
+        reflection_probe_full_colour_mip_count(REFLECTION_PROBE_TILE_DIMENSION)
+    );
+    GlossyFloorTermBlur::of_section(REFLECTION_PROBE_TILE_DIMENSION, MIPS)
+}
 
 const PROBE_WGSL: &str = include_str!("../shaders/reflection_probe_blur.wgsl");
 const BLUR_WGSL: &str = include_str!("../shaders/glossy_floor_blur.wgsl");
 
-/// The probe's test entry: samples `2 × SAMPLES` points along x (row 0) and
-/// y (row 1) through the hit, at the level the production function gives
+/// The probe's test entry: samples `2 × SAMPLES` points along x and
+/// y through the hit, at the level the production function gives
 /// the exponent and hit, through the production read.
 const PROFILE_WGSL: &str = r"
 struct Profile {
@@ -49,7 +62,8 @@ struct Profile {
     focal: f32,
     step: f32,
     samples: f32,
-    spare: vec2<f32>,
+    mip0_texel_angle: f32,
+    colour_mip_count: u32,
 };
 @group(3) @binding(2) var<uniform> profile: Profile;
 
@@ -65,7 +79,8 @@ fn fs_profile(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
     let axis = select(vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0), floor(at.y) > 0.5);
     let uv = (profile.hit + axis * offset) / profile.scene;
     let chain_scale = f32(textureDimensions(floor_chain).y) / profile.scene.y;
-    let level = glossy_floor_blur_level(profile.exponent, profile.hit_length,
+    let term = GlossyFloorTermBlur(profile.mip0_texel_angle, profile.colour_mip_count);
+    let level = glossy_floor_blur_level(profile.exponent, term, profile.hit_length,
         profile.hit_depth, profile.focal, chain_scale, textureNumLevels(floor_chain));
     return vec4<f32>(glossy_floor_blurred_hit(uv, level), level);
 }
@@ -82,7 +97,7 @@ struct ProfileUniform {
     focal: f32,
     step: f32,
     samples: f32,
-    spare: [f32; 2],
+    term: GlossyFloorTermBlur,
 }
 
 /// One sampled profile through the hit: x then y, each `2 × SAMPLES`
@@ -134,7 +149,7 @@ fn chain_over_one_bright_texel(renderer: &Renderer, hit: UVec2) -> GlossyFloorTa
     assert!(floor.layout.sync(
         &renderer.device,
         &mut targets,
-        true,
+        Some(engine_term_blur()),
         FluidReflectionQuality::High,
         Extent {
             width: SCENE,
@@ -291,7 +306,7 @@ impl ProfileProbe {
             focal: FOCAL,
             step: STEP,
             samples: SAMPLES as f32,
-            spare: [0.0; 2],
+            term: engine_term_blur(),
         };
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Glossy floor blur proof uniform"),
@@ -367,7 +382,7 @@ impl ProfileProbe {
 /// Exponents from the widest blur the reference window holds to the cap.
 const EXPONENTS: [f32; 6] = [12.0, 16.0, 32.0, 64.0, 128.0, 256.0];
 
-// Acceptance row 36 (GPU): a one-pixel bright hit, filtered by the
+// GPU: a one-pixel bright hit, filtered by the
 // production scene-colour chain and read at the production level, spreads
 // at the reference hit (4 m along the ray, 8 m deep, 512 px per unit of
 // tangent, High's ½ chain) to a reflected-angle half-width at half maximum
@@ -393,10 +408,10 @@ fn a_one_pixel_hit_spreads_to_the_probe_terms_blur_at_the_reference_hit() {
         for exponent in EXPONENTS {
             let spread = probe.spread(&renderer, &targets, hit, exponent, HIT_LENGTH);
             let measured = spread.angle(HIT_LENGTH);
-            let probe_term = reflection_probe_term_half_width(exponent, GLOSSY_FLOOR_PROBE_MIPS);
+            let probe_term = reflection_probe_term_half_width(exponent, ANGLE, MIPS);
             let ratio = measured / probe_term;
             eprintln!(
-                "[row 36] hit {hit}, n = {exponent}: level {:.2}, half-width {measured:.4} rad \
+                "hit {hit}, n = {exponent}: level {:.2}, half-width {measured:.4} rad \
                  against the probe term's {probe_term:.4} ({ratio:.3})",
                 spread.level
             );
@@ -412,7 +427,7 @@ fn a_one_pixel_hit_spreads_to_the_probe_terms_blur_at_the_reference_hit() {
         }
         // One exponent at four hit lengths: the footprint follows the
         // probe term's cone, the same angle at each.
-        let probe_term = reflection_probe_term_half_width(64.0, GLOSSY_FLOOR_PROBE_MIPS);
+        let probe_term = reflection_probe_term_half_width(64.0, ANGLE, MIPS);
         let mut previous = 0.0;
         for hit_length in [
             HIT_LENGTH / 4.0,
@@ -424,7 +439,7 @@ fn a_one_pixel_hit_spreads_to_the_probe_terms_blur_at_the_reference_hit() {
             let width = Spread::half_width(&spread.x).max(Spread::half_width(&spread.y));
             let ratio = spread.angle(hit_length) / probe_term;
             eprintln!(
-                "[row 36] hit {hit}, n = 64, length {hit_length}: level {:.2}, \
+                "hit {hit}, n = 64, length {hit_length}: level {:.2}, \
                  {width:.1} px ({ratio:.3})",
                 spread.level
             );
@@ -436,7 +451,8 @@ fn a_one_pixel_hit_spreads_to_the_probe_terms_blur_at_the_reference_hit() {
             previous = width;
         }
         // The cap and the minimum-blur exponent read one spread.
-        let min_blur = reflection_probe_mip_exponent(REFLECTION_PROBE_MIN_BLUR_MIP as u32) * 1.0001;
+        let min_blur =
+            reflection_probe_mip_exponent(REFLECTION_PROBE_MIN_BLUR_MIP as u32, ANGLE) * 1.0001;
         for hit_length in [HIT_LENGTH / 2.0, HIT_LENGTH, HIT_LENGTH * 2.0] {
             let cap = probe.spread(&renderer, &targets, hit, SPECULAR_EXPONENT_MAX, hit_length);
             let at_min = probe.spread(&renderer, &targets, hit, min_blur, hit_length);

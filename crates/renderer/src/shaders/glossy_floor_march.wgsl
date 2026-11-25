@@ -30,8 +30,12 @@ struct GlossyFloorMarch {
     // Metres of view depth a step's interval may lie behind the depth buffer
     // for a hit.
     thickness: f32,
-    // Padding to the uniform's 16 bytes; carries nothing.
+    // Padding; carries nothing.
     spare: f32,
+    // The probe term's blur the floor blur matches: the section's alpha_0 and
+    // colour mip count, filled at install from id 54's header (this pass
+    // binds no probe array to read them from).
+    term_blur: GlossyFloorTermBlur,
 };
 @group(3) @binding(2) var<uniform> floor_march: GlossyFloorMarch;
 
@@ -152,12 +156,13 @@ fn glossy_floor_read_pixel(origin: vec3<f32>, stop: vec2<f32>, extent: vec2<f32>
     return stop - along * (floor_march.stride / max(length(along), floor_march.stride));
 }
 
-// The blurred scene colour at a hit: the chain level the texel's exponent, the
-// hit length and the hit's view depth set, read at the hit's read pixel.
-fn glossy_floor_hit_colour(pixel: vec2<f32>, exponent: f32, hit: GlossyFloorHit,
-                           extent: vec2<f32>, focal: f32) -> vec3<f32> {
+// The blurred scene colour at a hit: the chain level the texel's exponent (at
+// the section's term blur), the hit length and the hit's view depth set, read
+// at the hit's read pixel.
+fn glossy_floor_hit_colour(pixel: vec2<f32>, exponent: f32, term: GlossyFloorTermBlur,
+                           hit: GlossyFloorHit, extent: vec2<f32>, focal: f32) -> vec3<f32> {
     let chain_scale = f32(textureDimensions(floor_chain).y) / extent.y;
-    let level = glossy_floor_blur_level(exponent, hit.hit_length, hit.hit_depth, focal,
+    let level = glossy_floor_blur_level(exponent, term, hit.hit_length, hit.hit_depth, focal,
         chain_scale, textureNumLevels(floor_chain));
     return glossy_floor_blurred_hit(pixel / extent, level);
 }
@@ -189,7 +194,7 @@ fn glossy_floor_march(in: GlossyVertexOutput, pixel: bool, carve: bool,
     let march = screen_march(origin, ray, uniforms.view_proj, scene_depth,
         floor_march.stride, floor_march.step_budget, floor_march.thickness);
     let read = glossy_floor_read_pixel(origin, march.pixel, extent);
-    let colour = glossy_floor_hit_colour(read, exponent,
+    let colour = glossy_floor_hit_colour(read, exponent, floor_march.term_blur,
         glossy_floor_hit(origin, ray, read, extent), extent, focal);
     let premultiplied = vec4<f32>(colour * march.confidence, march.confidence);
     return select(vec4<f32>(0.0), premultiplied, march.confidence > 0.0);

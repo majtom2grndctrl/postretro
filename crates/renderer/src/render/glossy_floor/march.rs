@@ -8,6 +8,7 @@ use std::num::NonZeroU64;
 use bytemuck::{Pod, Zeroable};
 use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionPreset;
 use postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle;
+use postretro_render_cpu::glossy_floor_blur::GlossyFloorTermBlur;
 use postretro_render_cpu::render_extent::Extent;
 
 use super::{GlossyFloorPass, GlossyFloorTargets};
@@ -68,8 +69,13 @@ pub(crate) struct GlossyFloorMarchUniform {
     pub step_budget: u32,
     pub stride: f32,
     pub thickness: f32,
-    /// Padding to the uniform's 16 bytes; carries nothing.
+    /// Padding; carries nothing.
     pub spare: f32,
+    /// The probe term's blur the floor blur matches, from the level's id 54
+    /// header: the march binds no probe array to read it from.
+    pub term_blur: GlossyFloorTermBlur,
+    /// Padding to the uniform's 32 bytes (a struct member's 16-byte span).
+    pub tail: [u32; 2],
 }
 
 pub(crate) const GLOSSY_FLOOR_MARCH_UNIFORM_BYTES: u64 =
@@ -77,13 +83,20 @@ pub(crate) const GLOSSY_FLOOR_MARCH_UNIFORM_BYTES: u64 =
 
 impl GlossyFloorMarchUniform {
     /// The march a floor tier's `preset` runs at `scene` extent: water's
-    /// columns, its stride in full-resolution pixels.
-    pub(crate) fn of(preset: FluidReflectionPreset, scene: Extent) -> Self {
+    /// columns, its stride in full-resolution pixels, and the level's
+    /// `term_blur`.
+    pub(crate) fn of(
+        preset: FluidReflectionPreset,
+        scene: Extent,
+        term_blur: GlossyFloorTermBlur,
+    ) -> Self {
         Self {
             step_budget: preset.march.step_budget,
             stride: preset.march.stride((scene.width, scene.height)),
             thickness: preset.march.thickness,
             spare: 0.0,
+            term_blur,
+            tail: [0; 2],
         }
     }
 }

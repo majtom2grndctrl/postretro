@@ -40,7 +40,7 @@ fn close(a: f32, b: f32, tolerance: f32) -> bool {
     (a - b).abs() <= tolerance
 }
 
-// Acceptance row 4: a texel at or below the floor draws no term, one past
+// A texel at or below the floor draws no term, one past
 // the band the full term, one inside the band a fraction rising with its
 // exponent.
 #[test]
@@ -78,7 +78,7 @@ fn sharpness_fade_withholds_the_floor_rises_through_the_band_and_fills_past_it()
     );
 }
 
-// Acceptance row 4: at grazing, where Fresnel reaches 1 and the fade alone
+// At grazing, where Fresnel reaches 1 and the fade alone
 // shapes the weight, adjacent texels across the floor contour differ by no
 // more than adjacent texels inside the band.
 #[test]
@@ -102,7 +102,7 @@ fn adjacent_texels_across_the_floor_contour_differ_no_more_than_inside_the_band(
     assert_eq!(weight_at(SHARP, 0.0), 1.0);
 }
 
-// Acceptance row 4: `_s` 0 draws no term in either layer; halving `_s`
+// `_s` 0 draws no term in either layer; halving `_s`
 // halves the weight.
 #[test]
 fn specular_zero_draws_nothing_and_half_specular_halves_the_weight() {
@@ -131,7 +131,7 @@ fn specular_zero_draws_nothing_and_half_specular_halves_the_weight() {
     }
 }
 
-// Acceptance row 34: head-on, an untinted texel reflects at 0.04 and a
+// Head-on, an untinted texel reflects at 0.04 and a
 // tint-1 texel at 1; a texel without `_t` at 0.04, coloured by raw albedo.
 // At grazing all reach 1. These hold at `_s` 1.
 #[test]
@@ -162,7 +162,7 @@ fn strength_is_water_fresnel_from_the_untinted_base_to_one_at_full_tint() {
     );
 }
 
-// Acceptance rows 27, 34: the reflection takes its highlight's colour: the
+// The reflection takes its highlight's colour: the
 // tint rule's colour for a tinted texel (white at t = 0, the albedo's hue at
 // t = 1), raw albedo without `_t`.
 #[test]
@@ -194,7 +194,7 @@ fn reflection_colour_is_the_highlights_colour() {
     assert_eq!(probe_only, colour);
 }
 
-// Acceptance row 34: the probe share scales by the capture-shadow weight;
+// The probe share scales by the capture-shadow weight;
 // at c = 0 the composite is s·F·(colour·R − D_static), and s = 0 adds
 // exactly nothing (withheld, never filled).
 #[test]
@@ -235,7 +235,7 @@ fn capture_shadow_scales_the_probe_share_and_withholds_at_zero() {
     assert_eq!(at(0.0), at(1.0));
 }
 
-// Acceptance row 30: static diffuse (a character's promoted-light shadow
+// Static diffuse (a character's promoted-light shadow
 // included) fades by (1 − W), and no output channel falls below 0 over a dark
 // reflected ceiling, head-on or grazing, untinted or tint-1, while D_static
 // is stored no larger than forward's colour.

@@ -1,7 +1,5 @@
-// The glossy floor's screen-space layer: the highlight-free scene colour
-// forward, the mover pass and the skinned-mesh pass write at the tiers that
-// run the layer, the scene-colour mip chain, and the march whose hit reads
-// it, into the floor layer's target the overlay composites.
+// The glossy floor's screen-space layer: the highlight-free scene colour, its
+// mip chain, and the march into the target the overlay composites.
 // See: context/lib/rendering_pipeline.md §7.3a (Glossy world faces, Floors)
 
 mod chain;

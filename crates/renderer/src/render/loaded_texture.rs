@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use postretro_level_format::prm::{PrmReadError, PrmSlot};
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
-use postretro_render_cpu::loaded_texture::slot_levels;
+use postretro_render_cpu::loaded_texture::{slot_levels, specular_slot_reflects_in};
 use postretro_render_cpu::surface_depth::{SurfaceReliefLevels, surface_relief_from_surface_map};
 use postretro_render_cpu::texture_prep::{
     PreparedTexture, PreparedWorldTextures, prepare_world_textures,
@@ -194,20 +194,6 @@ pub(super) fn upload_prepared_texture(
         reflects: specular_slot_reflects_in(&slots[1], plan.consume[1]),
         normal_mapped: plan.consume[2] && slots[2].is_ok(),
     }
-}
-
-/// The glossy opt-in over the consumed specular slot's mip 0, the level
-/// `upload_slot_or_placeholder` uploads first. A slot the plan does not
-/// consume, or one that failed to read, binds a placeholder, which never
-/// reflects.
-fn specular_slot_reflects_in(slot_result: &Result<PrmSlot, PrmReadError>, consume: bool) -> bool {
-    let Ok(slot) = slot_result else {
-        return false;
-    };
-    consume
-        && slot_levels(slot).first().is_some_and(|&(_, _, mip0)| {
-            postretro_level_format::glossy_opt_in::specular_slot_reflects(slot.format, mip0)
-        })
 }
 
 /// The raw relief band of every mip of the specular slot, from the exact bytes

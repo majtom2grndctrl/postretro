@@ -105,7 +105,7 @@ fn spread(values: &[Vec3]) -> f32 {
     (hi - lo).max_element()
 }
 
-// Acceptance row 35 (pin P9): in pixel style the overlay's term is one value
+// In pixel style the overlay's term is one value
 // per albedo texel, the reference's at the texel's centre point; in smooth it
 // varies across the texel, the reference's at each fragment. Each holds on
 // the first frame after a switch, both ways, on the floor, wall and ceiling.
@@ -303,7 +303,7 @@ fn albedo_matches(
     (counts, albedos)
 }
 
-// Acceptance row 67 (pin P11): with Surface Depth on, the overlay marches
+// With Surface Depth on, the overlay marches
 // every face as forward does: the texel it reads is forward's (its albedo
 // matches forward's D_static in hue at every pixel of the floor, wall and
 // ceiling), the march moves texels against the unmarched read, and the march
@@ -328,7 +328,7 @@ fn surface_depth_marches_the_overlay_as_forward_and_a_toggle_takes_the_same_fram
         let (drawn, forward) = variant_frame(&mut renderer, view, "fs_test_march_albedo");
         let (counts, albedos) = albedo_matches(view, &drawn, &forward);
         for (face, (matched, checked)) in Face::ALL.iter().zip(&counts) {
-            eprintln!("[row 67] {quality:?}: {face:?} {matched} of {checked} match forward");
+            eprintln!("[surface depth] {quality:?}: {face:?} {matched} of {checked} match forward");
             assert!(
                 matched == checked && *checked > 150,
                 "{quality:?}: {face:?}: the overlay's texel is forward's at {matched} of {checked}"
@@ -362,7 +362,7 @@ fn surface_depth_marches_the_overlay_as_forward_and_a_toggle_takes_the_same_fram
                             (albedos[pixel] - marched[pixel]).abs().max_element() > 0.05
                         })
                         .count();
-                    eprintln!("[row 67] {face:?}: the march moves {moved} pixels' texels");
+                    eprintln!("[surface depth] {face:?}: the march moves {moved} pixels' texels");
                     assert!(
                         moved > 20,
                         "{face:?}: the march moves {moved} texels against Off"
@@ -413,7 +413,7 @@ fn a_carved_side_mirrors_about_the_flat_face_normal_in_front_of_the_face() {
     }
 }
 
-// Acceptance rows 35 (both layers) and 45 (GPU half). The room's floor
+// Only the floor takes the floor layer, in both styles. The room's floor
 // reflects its walls through the floor layer; what the floor layer adds over
 // the probe term alone, F·colour·c·(X − R), is one value per albedo texel in
 // pixel style (the texel's weight, its point's probe term and the floor
@@ -478,9 +478,31 @@ fn the_floor_layer_reaches_the_floor_alone_once_per_texel_in_pixel_style() {
             .values()
             .filter(|values| values.iter().any(|value| value.abs().max_element() > 0.01))
             .count();
+        eprintln!(
+            "[floor layer texels] {style:?}: {taking} of {} covered floor texels take it",
+            texels.len()
+        );
+        // The floor reflects the room's walls over most of its covered
+        // texels: measured 18 of 20 in smooth and 14 of 20 in pixel style,
+        // which reads one value per texel at its centre's projection, so a
+        // texel whose centre's ray leaves the screen takes nothing. The
+        // bounds keep about a quarter of margin: three quarters in smooth,
+        // half in pixel.
         assert!(
-            taking > 8,
-            "{style:?}: {taking} floor texels take the floor layer"
+            texels.len() >= 16,
+            "{style:?}: {} floor texels in view",
+            texels.len()
+        );
+        let (num, den) = if style == FluidReflectionStyle::Pixel {
+            (1, 2)
+        } else {
+            (3, 4)
+        };
+        assert!(
+            taking * den >= texels.len() * num,
+            "{style:?}: {taking} of {} covered floor texels take the floor layer, \
+             under {num}/{den} of them: the floor stopped reflecting the walls",
+            texels.len()
         );
         let varying = texels
             .values()

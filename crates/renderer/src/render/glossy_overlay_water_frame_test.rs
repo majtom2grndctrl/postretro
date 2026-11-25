@@ -1,5 +1,4 @@
-//! Adapter-backed proof of acceptance row 38 in the form the plan's
-//! correction gives it: water's screen-space layer reflects an on-screen
+//! Adapter-backed proof that water's screen-space layer reflects an on-screen
 //! glossy wall's composited result, at a tier that runs both screen-space
 //! layers, and water's screen-space term is the same at every water
 //! capture-shadow weight.
@@ -191,8 +190,7 @@ fn near(a: Vec3, b: Vec3, slack: f32) -> bool {
     (a - b).abs().max_element() <= slack
 }
 
-// Acceptance row 38 (plan Correction "Row 38 is unreachable as written for
-// floors"): at High, which runs water's screen-space layer and the floor
+// At High, which runs water's screen-space layer and the floor
 // layer, water reflects a glossy wall standing behind the pool. The wall is
 // a tint-1 mirror (W = 1), so the overlay turns it from forward's colour
 // into its probe's capture. Water's march reads scene depth alone, so its

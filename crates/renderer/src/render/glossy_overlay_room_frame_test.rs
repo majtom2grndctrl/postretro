@@ -37,7 +37,7 @@ use super::glossy_overlay_room_frame_test_fixtures::{
 
 /// Pixels this close (metres) to a face edge are left out.
 const MARGIN: f32 = 0.08;
-/// Row 33's bound: 1/255 of a channel, plus the scene colour's own f16 step.
+/// The bound: 1/255 of a channel, plus the scene colour's own f16 step.
 fn bound(value: f32) -> f32 {
     1.0 / 255.0 + half_step(value)
 }
@@ -66,7 +66,7 @@ fn force(
     roster[slot] = light;
 }
 
-/// Assert every pixel of `face` matches the reference within row 33's bound,
+/// Assert every pixel of `face` matches the reference within `bound`,
 /// returning how many it checked and the largest gap.
 fn assert_face_matches(
     reference: &RoomReference<'_>,
@@ -114,7 +114,7 @@ fn uniform(colour: Vec3) -> fn(Vec3, u32) -> Vec3 {
 
 const REFERENCE: [f32; 3] = [0.8, 0.6, 0.4];
 
-// Acceptance row 33 (and the GPU half of pin P5 per orientation): a glossy
+// Per orientation: a glossy
 // mirror (W = 1) floor, wall and down-facing ceiling, each bound to a probe storing one
 // light with a different share on every lobe, match the GPU-free reference
 // within 1/255 per channel through the sums, at the light's reference, forced
@@ -157,7 +157,7 @@ fn floor_wall_and_ceiling_live_lighting_match_the_reference_through_the_sums() {
         for face in Face::ALL {
             let (checked, worst) =
                 assert_face_matches(&reference, &production, &forward, view, face, case);
-            eprintln!("[row 33] {case}: {face:?} {checked} pixels, worst {worst}");
+            eprintln!("{case}: {face:?} {checked} pixels, worst {worst}");
             if case != "at reference" {
                 // The forced light reaches every orientation on its frame.
                 let moved = face_pixels(view, face, MARGIN)
@@ -215,7 +215,7 @@ fn panel_below(direction: Vec3, _mip: u32) -> Vec3 {
 
 const PANEL: [f32; 3] = [1.0, 0.9, 0.8];
 
-// Acceptance row 19 (GPU half): a glossy down-facing ceiling over a floor
+// GPU half: a glossy down-facing ceiling over a floor
 // `light_area` panel, whose probe stores the panel's light on the −Y lobe
 // alone, reflects the panel and its lit floor; pulsing the light brightens
 // both on the pulse frame, each by the reference's ratio. About the horizon
@@ -301,7 +301,7 @@ fn skylight(direction: Vec3, mip: u32) -> Vec3 {
 
 const SKY: [f32; 3] = [0.9, 0.9, 1.0];
 
-// Acceptance row 21: a script turning a skylight off scales its reflected
+// A script turning a skylight off scales its reflected
 // glass and the reflected room by one live-lighting ratio on that frame, at
 // every tier that draws the probe term. The floor's probe is lit by that
 // light alone (its share 1 on every lobe): off, glass and room both go dark;
@@ -380,7 +380,7 @@ fn a_scripted_skylight_scales_its_glass_and_the_room_together_on_the_frame_at_ev
     }
 }
 
-// Acceptance row 20: a glossy floor under a static `light_area` skylight
+// A glossy floor under a static `light_area` skylight
 // (the ceiling's glass) reflects its glass at the probe's glow, read from the
 // colour mips each texel's exponent picks: a sharp texel and a soft one read
 // different blurs, each the reference's. The floor draws no highlight from
@@ -458,7 +458,7 @@ fn a_floor_under_a_skylight_reflects_its_glass_blurred_by_each_texels_exponent()
     );
 }
 
-// Acceptance row 22: a `light_area` glass face whose material is glossy (a
+// A `light_area` glass face whose material is glossy (a
 // tint-1 texel, so W = 1 at every angle) keeps its glow through the
 // composite unchanged: the glow's difference to the frame, glowing minus
 // dark glass, is forward's with the overlay and without it.
@@ -545,7 +545,7 @@ fn set_volume(renderer: &mut Renderer, factor: [f32; 3]) {
     }));
 }
 
-// Acceptance row 32 (the carried gap, pin P13): the difference a scripted
+// The carried gap: the difference a scripted
 // `emissive_volume` face (the floor) and an animated `light_area` face (the
 // ceiling) make mid-pulse, glowing minus dark, is the same with and without
 // the overlay within one half-float step, at a tint-1 texel (W = 1) and an

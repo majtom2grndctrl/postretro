@@ -36,10 +36,15 @@ const CHARACTER_AT: [Vec3; 2] = [Vec3::new(-2.2, 0.0, 6.5), Vec3::new(-1.2, 0.0,
 
 /// The floor level with a mover and a character installed, lit by the
 /// ambient floor so both read apart from the floor; `probes` as id 54. In
-/// smooth style, whose read the reference's bilinear tap mirrors (pixel
-/// style's per-texel read is `glossy_overlay_style_frame_test`'s).
-fn install_standing(renderer: &mut Renderer, probes: &ReflectionProbesSection) {
-    renderer.set_fluid_reflection_style(FluidReflectionStyle::Smooth);
+/// `style`: the reference reads the floor layer bilinearly in smooth and
+/// nearest in pixel ([`Layers::pixel`]; the per-texel read over a texel grid
+/// is `glossy_overlay_style_frame_test`'s).
+fn install_standing(
+    renderer: &mut Renderer,
+    probes: &ReflectionProbesSection,
+    style: FluidReflectionStyle,
+) {
+    renderer.set_fluid_reflection_style(style);
     install_floor_with(renderer, probes, None, &[]);
     renderer.set_ambient_floor(1.0);
     install_mover(renderer, &upright_mover());
@@ -145,7 +150,7 @@ const MATERIALS: [(&str, FloorMaterial); 5] = [
     ),
 ];
 
-// Acceptance rows 37, 4, 27, 28 (both layers) and 45 (GPU half). At High a
+// Both layers, GPU half. At High a
 // mover and a character standing on a bound glossy floor reflect in its
 // floor layer; every bound pixel they leave uncovered is the layered form of
 // the CPU reference over that frame's floor layer (F·colour·[c·X + (1 −
@@ -158,10 +163,22 @@ const MATERIALS: [(&str, FloorMaterial); 5] = [
 // the frame is the probe term's.
 #[test]
 fn movers_and_characters_reflect_through_the_layered_form_on_the_frame_they_move() {
+    standing_objects_reflect_through_the_layered_form(FluidReflectionStyle::Smooth);
+}
+
+// The same in pixel style: the march and the composite run pixel style's
+// entries, the overlay reading the floor layer nearest rather than
+// bilinearly, and every clause holds.
+#[test]
+fn movers_and_characters_reflect_through_the_layered_form_in_pixel_style() {
+    standing_objects_reflect_through_the_layered_form(FluidReflectionStyle::Pixel);
+}
+
+fn standing_objects_reflect_through_the_layered_form(style: FluidReflectionStyle) {
     let Some(mut renderer) = renderer() else {
         return;
     };
-    install_standing(&mut renderer, &floor_probe(true));
+    install_standing(&mut renderer, &floor_probe(true), style);
     renderer.set_reflection_quality(High);
     let view = floor_view();
     for (name, material) in MATERIALS {
@@ -181,6 +198,7 @@ fn movers_and_characters_reflect_through_the_layered_form_on_the_frame_they_move
             floor: Some(floor),
             material,
             shadow: 1.0,
+            pixel: style == FluidReflectionStyle::Pixel,
         };
         let checked = assert_layered_composite(
             view,
@@ -247,7 +265,7 @@ fn movers_and_characters_reflect_through_the_layered_form_on_the_frame_they_move
     renderer.release_level_resources();
 }
 
-// Acceptance row 49 and the guard (plan Corrections): a mover face coplanar
+// The guard: a mover face coplanar
 // with the bound glossy face takes nothing from either layer. Where the
 // floor under it reflects a character standing behind, the floor layer is
 // confident, and still every pixel the guard marks is the mover pass's
@@ -299,11 +317,11 @@ fn shadowing_probe() -> ReflectionProbesSection {
     probes
 }
 
-// Acceptance rows 12 (GPU half) and 40 (fence B1): the floor layer's target
+// GPU half: the floor layer's target
 // is bit for bit the same with every floor point in capture shadow (s = 0)
 // as with none (s = 1), and at s = 0 every bound pixel away from the capture
 // point is the layered form with no probe share, F·colour·c·X − F·c·D: the
-// screen-space layer neither widens, renormalises nor fills where the probe
+// screen-space layer neither widens nor renormalises where the probe
 // term is withheld, and its contribution is the same at every s.
 #[test]
 fn the_floor_layer_is_the_same_at_every_capture_shadow_weight() {
@@ -313,7 +331,7 @@ fn the_floor_layer_is_the_same_at_every_capture_shadow_weight() {
     let view = floor_view();
     let mut at_shadow = Vec::new();
     for probes in [floor_probe(true), shadowing_probe()] {
-        install_standing(&mut renderer, &probes);
+        install_standing(&mut renderer, &probes, FluidReflectionStyle::Smooth);
         renderer.set_reflection_quality(High);
         stand(&mut renderer, None);
         let without = frames(&mut renderer, view);
@@ -342,6 +360,7 @@ fn the_floor_layer_is_the_same_at_every_capture_shadow_weight() {
         floor: Some(floor),
         material: FloorMaterial::WHITE_SHARP,
         shadow: 0.0,
+        pixel: false,
     };
     let checked = assert_layered_composite(
         view,
@@ -400,7 +419,7 @@ fn low_then_medium(renderer: &mut Renderer, faces: &[FixtureFace]) -> (Frames, F
     (low, medium)
 }
 
-// Acceptance row 17 (GPU half, pin P16): a freestanding monument on a glossy
+// GPU half: a freestanding monument on a glossy
 // floor reflects in the floor layer on the first frame after a live low →
 // medium switch, and at Low it is absent from the reflection: there every
 // pixel it leaves uncovered is the monument-free room's, bit for bit.

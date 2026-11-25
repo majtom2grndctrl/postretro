@@ -111,7 +111,7 @@ fn overlay_vertex_stage_repeats_forwards_invariant_clip_position() {
     }
 }
 
-// Acceptance row 32 (source gate): forward's layout and budget stay
+// Source gate: forward's layout and budget stay
 // untouched, and the overlay's layout refuses every lighting binding: it
 // binds the shared camera group, forward's material group (read for albedo
 // and the specular slot only), and two groups of its own, textures, uniforms
@@ -289,8 +289,8 @@ fn overlay_reads_its_probe_from_the_binding_and_lights_through_the_sums() {
 // capture-shadow weight, R coloured as the highlight; additive over the scene
 // colour. A texel whose weight is 0 adds nothing and reads no normal map and
 // runs no probe search; a pixel this frame's mover guard marked adds
-// nothing, its mark read after the weight with D_static, in the one load
-// (pins P15, P23). One entry per reflection style and material form over one
+// nothing, its mark read after the weight with D_static, in the one load.
+// One entry per reflection style and material form over one
 // shading.
 #[test]
 fn overlay_adds_the_weighted_reflection_minus_static_diffuse() {
@@ -344,7 +344,7 @@ fn overlay_adds_the_weighted_reflection_minus_static_diffuse() {
     assert_eq!(blend.alpha.src_factor, wgpu::BlendFactor::Zero);
 }
 
-// Acceptance rows 4, 27, 34: the shader's weight and colour mirror render-cpu
+// The shader's weight and colour mirror render-cpu
 // `glossy_reflection` statement for statement, with its constants pinned to
 // the reference's (the sharpness fade's to level-format's, the reflectivities
 // to water's Fresnel scale), and the texel is read as forward reads its
@@ -466,7 +466,7 @@ fn forward_entries_share_shading_and_only_the_static_diffuse_entry_writes_it() {
     );
 }
 
-// Acceptance row 30: D_static is stored by the scene colour's own
+// D_static is stored by the scene colour's own
 // conversion, so it never exceeds forward's stored colour and the composite
 // cannot undershoot (`static_diffuse_format`).
 #[test]
@@ -499,7 +499,7 @@ fn overlay_gate_needs_tier_mask_ready_level_and_a_glossy_range() {
     assert!(!glossy_overlay_draws(Off, all, true, true));
 }
 
-// Acceptance row 46 (recording order), pin P12: the overlay records after
+// Recording order: the overlay records after
 // forward, the mover pass and the skinned-mesh pass, and before the Ghost
 // Pass, the planar mirror, the fluid passes, billboards, billboard ghosts
 // and the fog composite, so each of those draws over its result and nothing
@@ -565,7 +565,7 @@ fn overlay_records_after_the_skinned_mesh_pass_and_before_the_ghost_pass() {
     assert_eq!(frame.matches("self.glossy_floor_layer_draws(").count(), 1);
 }
 
-// Acceptance row 30: a character's promoted-light shadow is forward's
+// A character's promoted-light shadow is forward's
 // shadowmask union subtraction from the static direct light, taken before
 // D_static, so it is part of what the overlay replaces and fades by (1 − W)
 // with the rest of the static diffuse.
@@ -588,7 +588,7 @@ fn the_entity_shadow_subtraction_lands_in_static_diffuse() {
     );
 }
 
-// Acceptance rows 35, 67: the overlay shades from forward's own inputs. Its
+// The overlay shades from forward's own inputs. Its
 // vertex stage decodes the tangent as forward does and interpolates position,
 // UV, normal and tangent as forward's do; its march is forward's Surface Depth
 // snippet over forward's arguments (the eye vector, its length, the

@@ -44,7 +44,7 @@ fn production_and_forward(renderer: &mut Renderer) -> (GlossyFrame, GlossyFrame)
     (production, forward)
 }
 
-// Acceptance row 28: a bound glossy texel shows forward + W·(R − D_static)
+// A bound glossy texel shows forward + W·(R − D_static)
 // within one half-float step, W the head-on-0.04 Schlick weight times the
 // capture-shadow weight (1 here: zero distances); where W is 0 (an unbound
 // glossy face, a non-glossy face, everything off the floor) the output is
@@ -85,7 +85,7 @@ fn glossy_floor_composites_forward_plus_weighted_probe_minus_static_diffuse() {
     assert!(checked > 100, "the bound face covers the view: {checked}");
 }
 
-// Acceptance row 28: with R forced equal to forward's own static diffuse
+// With R forced equal to forward's own static diffuse
 // read back on the same frame, every glossy pixel is within one half-float
 // step of forward's; a deliberately perturbed D_static fails that check.
 #[test]
@@ -126,7 +126,7 @@ fn reflection_equal_to_static_diffuse_leaves_forward_and_a_perturbed_static_diff
     );
 }
 
-// Acceptance row 52: every forward-shaded pixel of a glossy face, bound or
+// Every forward-shaded pixel of a glossy face, bound or
 // with its probe dropped, takes exactly one overlay fragment and no other
 // pixel takes one, measured by a variant adding a constant per fragment; in
 // production the unbound glossy face is byte-identical to forward's.
@@ -169,7 +169,7 @@ fn every_glossy_pixel_takes_exactly_one_overlay_fragment() {
     );
 }
 
-// Acceptance row 51 (GPU half): forward's colour from its two-output forms
+// GPU half: forward's colour from its two-output forms
 // equals its one-output form's at every pixel, a level without glossy faces
 // allocates no D_static and records no overlay, and at reflection quality
 // off neither does a glossy level.
@@ -228,7 +228,7 @@ fn renderer_or_skip() -> Renderer {
     renderer().expect("a second renderer on the adapter the first found")
 }
 
-// Acceptance rows 29 (partial), 30: on the glossy faces, with no dynamic
+// Partial coverage: on the glossy faces, with no dynamic
 // light, highlight or glow in the fixture, forward's colour is its static
 // diffuse bit for bit — D_static is stored by the scene colour's own
 // conversion, so it never exceeds the colour (no undershoot at W = 1) — and
@@ -265,7 +265,7 @@ fn static_diffuse_carries_the_static_terms_on_glossy_buckets_only() {
     }
 }
 
-// Pins P1, P14, P20: a glossy level with no fluid records one overlay pass
+// a glossy level with no fluid records one overlay pass
 // and dispatches the sums once on a frame with a glossy range; a frame with
 // an all-terms mask bit off records neither; a frame whose glossy ranges the
 // GPU culls whole leaves forward's output byte-identical.

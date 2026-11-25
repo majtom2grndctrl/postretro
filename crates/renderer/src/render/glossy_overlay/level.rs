@@ -5,6 +5,7 @@
 
 use postretro_level_format::SectionId;
 use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
+use postretro_render_cpu::glossy_floor_blur::GlossyFloorTermBlur;
 use postretro_render_cpu::render_extent::Extent;
 
 use crate::render::glossy_floor::{GlossyFloorLayout, GlossyFloorTargets, binds_an_up_facing_face};
@@ -48,11 +49,12 @@ pub(crate) struct GlossyLevelState {
     /// Forward's D_static target, at scene extent while the set is published
     /// and the reflection tier is above off; `None` otherwise.
     target: Option<StaticDiffuseTarget>,
-    /// Whether a bound world face faces up by water's test: only such a
-    /// level takes the floor layer.
-    floor_faces: bool,
+    /// While a bound world face faces up by water's test (only such a level
+    /// takes the floor layer), the probe term's blur its floor blur matches:
+    /// the section's α₀ and colour mip count, from id 54's header.
+    floor_blur: Option<GlossyFloorTermBlur>,
     /// The floor layer's highlight-free colour, scene-colour chain, target
-    /// and march depth, while `floor_faces` holds at a tier that runs the
+    /// and march depth, while `floor_blur` is set at a tier that runs the
     /// floor layer.
     floor: Option<GlossyFloorTargets>,
     /// The overlay's inputs group, while D_static exists: D_static, the
@@ -96,7 +98,9 @@ impl GlossyLevelLayout {
             world_probes,
             probe_group: None,
             target: None,
-            floor_faces: binds_an_up_facing_face(geometry.vertices, &stream),
+            floor_blur: binds_an_up_facing_face(geometry.vertices, &stream).then(|| {
+                GlossyFloorTermBlur::of_section(section.tile_dimension, section.colour_mip_count)
+            }),
             floor: None,
             inputs_group: None,
         })
@@ -152,7 +156,7 @@ impl GlossyLevelLayout {
         let had_floor = state.floor.is_some();
         let floor_built =
             self.floor
-                .sync(device, &mut state.floor, state.floor_faces, quality, extent);
+                .sync(device, &mut state.floor, state.floor_blur, quality, extent);
         let floor_moved = floor_built || had_floor != state.floor.is_some();
         let created = if quality == FluidReflectionQuality::Off {
             state.target = None;
@@ -270,7 +274,7 @@ impl GlossyLevelState {
     /// at the tiers that run it.
     #[cfg(test)]
     pub(crate) fn has_floor_faces(&self) -> bool {
-        self.floor_faces
+        self.floor_blur.is_some()
     }
 
     /// The ledger rows of every target allocated: D_static, then the floor

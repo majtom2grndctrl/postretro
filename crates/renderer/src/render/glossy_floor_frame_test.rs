@@ -5,9 +5,13 @@
 //! See: context/lib/rendering_pipeline.md §7.3a (Glossy world faces, Floors)
 
 use glam::{Mat4, UVec2, Vec3};
-use postretro_level_format::reflection_probes::ReflectionProbeWorldBinding;
+use postretro_level_format::reflection_probes::{
+    REFLECTION_PROBE_TILE_DIMENSION, ReflectionProbeWorldBinding,
+    reflection_probe_full_colour_mip_count, reflection_probe_zero_distances,
+};
 use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
 use postretro_render_cpu::frame_uniforms::SpecularStyle;
+use postretro_render_cpu::glossy_floor_blur::GlossyFloorTermBlur;
 
 use super::fluid_reflection_frame_test_fixtures::{FRAME, View, centre, pixels};
 use super::fluid_reflection_sums_frame_test_fixtures::frame_at;
@@ -174,7 +178,7 @@ fn footprint_range(
     range
 }
 
-// Acceptance row 41, pin P26 (the halves the floor march does not need).
+// The halves the floor march does not need are dropped.
 // At a floor tier, a wall with `_s` and no `_p` (untinted), a glossy wall
 // and the glossy floor (tinted, then untinted) and a mover face each draw a
 // bright highlight from a test-only static highlight (forward's world
@@ -238,7 +242,7 @@ fn the_highlight_free_colour_leaves_each_passs_highlight_out_and_the_chain_filte
     renderer.release_level_resources();
 }
 
-// Acceptance row 41, pin P26 (own outputs, A/B within the build): forward's
+// Own outputs, A/B within the build: forward's
 // and the mover pass's colour at a floor tier (their highlight-free forms)
 // is bit for bit the colour at Low (the two-output forms) and, for the
 // production sources, at Off (forward's one-output form): adding the
@@ -291,7 +295,7 @@ fn forward_and_mover_colour_is_the_same_bits_at_a_floor_tier_as_below_it() {
     renderer.release_level_resources();
 }
 
-// Acceptance row 42, pin P27. With the walls' test highlights on screen, a
+// With the walls' test highlights on screen, a
 // mover and a character with no highlight of their own stand in front of
 // them: their pixels' highlight-free colour is their own pass's colour,
 // with nothing of the wall's highlight taken from them. On the next frame,
@@ -554,7 +558,7 @@ fn publish_room(renderer: &mut Renderer, id: super::LevelSetId) {
     set_mover(renderer, Some(mover_in_front()));
 }
 
-// Acceptance rows 39 and 43, pins P21 and P28. The highlight-free colour,
+// Lifecycle: the highlight-free colour,
 // the chain and the floor layer's target and depth follow the floor layer.
 // On the first frame after install, a resize, a level set published at
 // another extent and a live low → medium switch, all sit at the current
@@ -862,7 +866,7 @@ fn floor_tiers_of_one_fraction_share_the_floor_targets() {
     }
 }
 
-// Acceptance rows 43 and 45 (no up-facing face). A level whose glossy faces
+// No up-facing face. A level whose glossy faces
 // bound to a probe are all walls takes no floor layer: at a floor tier it
 // allocates no highlight-free colour and no chain, records no chain, and
 // its mover writes its one output, while the overlay still draws the
@@ -895,7 +899,49 @@ fn a_level_without_an_up_facing_glossy_face_takes_no_floor_layer() {
     renderer.release_level_resources();
 }
 
-// Acceptance row 39 (no overlay output). The chain records before the
+// The floor blur matches the probe term the section's own header sets: the
+// march's uniform carries α₀ from id 54's tile dimension and its colour mip
+// count, for a 64² and a 256² capture with full chains and a one-mip 128²
+// section (whose probe term reads mip 0 alone), at each floor tier. The
+// march binds no probe array, so the header reaches it through the uniform
+// alone.
+#[test]
+fn the_floor_march_blurs_by_the_sections_own_tile_and_mip_count() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    for (tile, mips) in [
+        (64, reflection_probe_full_colour_mip_count(64)),
+        (256, reflection_probe_full_colour_mip_count(256)),
+        (REFLECTION_PROBE_TILE_DIMENSION, 1),
+    ] {
+        let mut probes = floor_probe(true);
+        let texel = probes.tiles[..8].to_vec();
+        let texels: u32 = (0..mips).map(|mip| (tile >> mip).pow(2)).sum();
+        probes.tile_dimension = tile;
+        probes.colour_mip_count = mips;
+        probes.tiles = texel.repeat(texels as usize);
+        probes.distances = reflection_probe_zero_distances(1, tile);
+        install_faces(&mut renderer, &room_faces(), &probes);
+        set_bucket_material(&mut renderer, 0, FloorMaterial::WHITE_SHARP, true);
+        for tier in [Medium, High] {
+            renderer.set_reflection_quality(tier);
+            let glossy = renderer.level().glossy.as_ref().expect("glossy state");
+            let march = glossy
+                .floor()
+                .expect("a floor tier builds the floor targets")
+                .march();
+            assert_eq!(
+                march.term_blur,
+                GlossyFloorTermBlur::of_section(tile, mips),
+                "{tile}² × {mips} at {tier:?}"
+            );
+        }
+        renderer.release_level_resources();
+    }
+}
+
+// No overlay output. The chain records before the
 // overlay: it is bit for bit the same whatever the overlay adds, while the
 // scene colour it leaves differs.
 #[test]

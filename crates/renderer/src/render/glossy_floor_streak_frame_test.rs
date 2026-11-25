@@ -126,7 +126,7 @@ fn test_streak_march(in: GlossyVertexOutput, back: bool, sharp: bool) -> vec4<f3
     let march = screen_march(origin, ray, uniforms.view_proj, scene_depth,
         floor_march.stride, floor_march.step_budget, floor_march.thickness);
     let read = select(march.pixel, glossy_floor_read_pixel(origin, march.pixel, extent), back);
-    let colour = glossy_floor_hit_colour(read, exponent,
+    let colour = glossy_floor_hit_colour(read, exponent, floor_march.term_blur,
         glossy_floor_hit(origin, ray, read, extent), extent, focal);
     if sharp {
         let x = glossy_floor_blurred_hit(read / extent, 0.0).r;

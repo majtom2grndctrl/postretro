@@ -1,6 +1,5 @@
-// The frame's glossy world overlay: its draw gate, the coplanar-mover guard and
-// its one pass after the skinned-mesh pass and before the Ghost Pass, and its
-// D_static lifecycle.
+// The frame's glossy world overlay: draw gate, coplanar-mover guard, its pass
+// before the Ghost Pass, and D_static lifecycle.
 // See: context/lib/rendering_pipeline.md §7.3a (Glossy world faces)
 
 use super::cpu_stages::RenderStage;
@@ -122,7 +121,7 @@ impl Renderer {
             );
         };
         // The committed reflection style, read each frame, so the first
-        // frame after a style commit draws in the new style (pin P9).
+        // frame after a style commit draws in the new style.
         full.glossy_overlay.record(
             &mut pass,
             self.fluid_reflection_style,

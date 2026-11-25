@@ -44,7 +44,7 @@ fn smooth(x: u32, y: u32) -> Vec3 {
 /// The same mean as [`prefilter_mip`], over every source texel in
 /// `hemisphere`: no cull.
 fn brute_force(rows: &[&[Vec3]], mip: u32, hemisphere: ShareHemisphere) -> Vec<Vec3> {
-    let exponent = reflection_probe_mip_exponent(mip);
+    let exponent = reflection_probe_mip_exponent(mip, CAPTURE_MIP0_TEXEL_ANGLE);
     let interior = mip_interior(mip);
     let mut out = Vec::new();
     for y in 0..interior {
@@ -78,7 +78,7 @@ fn brute_force(rows: &[&[Vec3]], mip: u32, hemisphere: ShareHemisphere) -> Vec<V
 #[test]
 fn the_prefilter_lobe_has_the_mapped_half_width() {
     for mip in 1..MIPS {
-        let exponent = reflection_probe_mip_exponent(mip);
+        let exponent = reflection_probe_mip_exponent(mip, CAPTURE_MIP0_TEXEL_ANGLE);
         let theta = reflection_lobe_half_width(exponent);
         assert!(
             (prefilter_weight(theta.cos(), exponent) - 0.5).abs() < 1e-4,
@@ -92,7 +92,7 @@ fn the_prefilter_lobe_has_the_mapped_half_width() {
 #[test]
 fn the_tabulated_lobe_follows_the_exact_lobe_and_cuts_at_the_cutoff() {
     for mip in 1..MIPS {
-        let exponent = reflection_probe_mip_exponent(mip);
+        let exponent = reflection_probe_mip_exponent(mip, CAPTURE_MIP0_TEXEL_ANGLE);
         let lobe = PrefilterLobe::new(exponent);
         for step in 0..=20_000 {
             let cos_angle = 1.0 - 2.0 * step as f32 / 20_000.0;
@@ -154,9 +154,15 @@ fn a_one_texel_source_spreads_to_each_mips_mapped_half_width() {
         let hemisphere = ShareHemisphere::Around(source_direction);
         let source = PrefilterSource::new(&rows, hemisphere);
         for mip in 1..MIPS {
-            let theta = reflection_lobe_half_width(reflection_probe_mip_exponent(mip));
-            assert!((theta - reflection_probe_mip_half_width(mip)).abs() < 1e-3);
-            let texel = reflection_probe_mip_half_width(mip);
+            let theta = reflection_lobe_half_width(reflection_probe_mip_exponent(
+                mip,
+                CAPTURE_MIP0_TEXEL_ANGLE,
+            ));
+            assert!(
+                (theta - reflection_probe_mip_half_width(mip, CAPTURE_MIP0_TEXEL_ANGLE)).abs()
+                    < 1e-3
+            );
+            let texel = reflection_probe_mip_half_width(mip, CAPTURE_MIP0_TEXEL_ANGLE);
             let interior = mip_interior(mip);
             let filtered = prefilter_mip(&source, mip);
             let read = |x: u32, y: u32| hemisphere.holds(texel_direction(x, y, interior));

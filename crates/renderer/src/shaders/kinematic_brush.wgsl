@@ -679,8 +679,9 @@ fn accumulate_pixel_direct(
 
 // The smooth pipeline's light-loop sums: diffuse, and every selected-static
 // record's specular, tinted or not. One specular sum keeps this loop under the
-// register cliff; a second (untinted beside tinted) crosses it
-// (rendering_pipeline.md §7.3, Mover register cliff).
+// register cliff; a second (untinted beside tinted) crosses it. The pixel loop
+// keeps a third, untinted sum, read only by the highlight-free entry and dead
+// in the other three (rendering_pipeline.md §7.3, Mover register cliff).
 struct MoverSmoothDirect {
     diffuse: vec3<f32>,
     specular: vec3<f32>,

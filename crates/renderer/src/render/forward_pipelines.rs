@@ -257,7 +257,7 @@ impl ForwardStaticDiffusePipelines {
 /// dynamic light, glow), computed in f32 and stored by the same monotone
 /// conversion, so the stored D_static never exceeds the stored colour, per
 /// channel, and the overlay's forward + W·(R − D_static) at W ≤ 1, R ≥ 0
-/// never falls below 0 (brief row 30). A shorter float (`Rg11b10Ufloat`) is
+/// never falls below 0. A shorter float (`Rg11b10Ufloat`) is
 /// stored by a conversion whose rounding the backends leave to the
 /// implementation: rounded to nearest it can exceed the colour by 2⁻⁷ (R, G)
 /// or 2⁻⁶ (B) of itself and undershoot at W near 1; truncated (AMD on

@@ -37,7 +37,7 @@ fn names_planar(text: &str) -> bool {
     })
 }
 
-// Acceptance row 54: the scan that pins water's probe layer to its face's
+// The scan that pins water's probe layer to its face's
 // binding covers the overlay. The probe index rides the per-vertex world
 // stream, written once at install from id 54's world bindings alone and read
 // flat; the fragment hands that varying to the probe term and nothing else;
@@ -141,7 +141,7 @@ fn the_overlay_probe_layer_derives_from_the_face_binding_alone() {
     }
 }
 
-// Acceptance row 49 (source half), pins P15 and P23. The guard covers the
+// Source half. The guard covers the
 // pixels the mover colour pass shades: the mover pass's own `vs_depth` from
 // its own module and layout, Equal without a depth write. It marks D_static's
 // alpha alone, which forward clears to 0 and writes as 0 on every frame it
@@ -198,7 +198,7 @@ fn the_mover_guard_marks_this_frames_movers_through_their_own_clip_path() {
     }
 }
 
-// Acceptance row 47 (source half): no planar layer reaches a world face at
+// Source half: no planar layer reaches a world face at
 // any tier. The overlay's shader, recording and level state name no planar
 // resource, and the production composite takes no screen-space share
 // (`vec4(0.0)`) until the floor layer lands.

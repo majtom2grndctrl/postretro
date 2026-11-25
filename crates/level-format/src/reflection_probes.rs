@@ -8,9 +8,9 @@ mod error;
 mod wire;
 
 pub use blur::{
-    REFLECTION_PROBE_MIN_BLUR_MIP, REFLECTION_PROBE_MIP0_TEXEL_ANGLE, reflection_lobe_half_width,
-    reflection_probe_exponent_mip, reflection_probe_full_colour_mip_count,
-    reflection_probe_mip_exponent, reflection_probe_mip_half_width,
+    REFLECTION_PROBE_MIN_BLUR_MIP, reflection_lobe_half_width, reflection_probe_exponent_mip,
+    reflection_probe_full_colour_mip_count, reflection_probe_mip_exponent,
+    reflection_probe_mip_half_width, reflection_probe_mip0_texel_angle,
     reflection_probe_term_half_width,
 };
 pub use error::{BindingList, ReflectionProbesError};

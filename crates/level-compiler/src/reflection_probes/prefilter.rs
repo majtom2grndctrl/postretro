@@ -5,7 +5,7 @@ use glam::{DVec3, Vec3};
 use postretro_level_format::reflection_probes::{
     REFLECTION_PROBE_TILE_BORDER, REFLECTION_PROBE_TILE_DIMENSION,
     reflection_probe_colour_mip_dimension, reflection_probe_full_colour_mip_count,
-    reflection_probe_mip_exponent,
+    reflection_probe_mip_exponent, reflection_probe_mip0_texel_angle,
 };
 
 use super::capture::{TILE_INTERIOR, bordered_rgba_at, encode_tile, octahedral_direction};
@@ -24,6 +24,10 @@ const PREFILTER_BLOCK: u32 = 6;
 /// Linear interpolation in it stays within about 2e-5 of the lobe's peak at
 /// mip 1, the narrowest.
 const PREFILTER_TABLE_STEPS: usize = 4096;
+/// α₀ of the tile the compiler captures, the engine's: each mip's lobe is
+/// the one the runtime's exponent → mip function maps to it at this size.
+pub(super) const CAPTURE_MIP0_TEXEL_ANGLE: f32 =
+    reflection_probe_mip0_texel_angle(REFLECTION_PROBE_TILE_DIMENSION);
 /// Bumped when the prefilter's output for the same capture changes; keyed
 /// into the stage cache for sections that carry mips.
 pub(super) const PREFILTER_VERSION: u32 = 2;
@@ -51,9 +55,9 @@ pub(super) fn key_bytes(mip_count: u32) -> Vec<u8> {
     ] {
         out.extend_from_slice(&value.to_le_bytes());
     }
-    for value in
-        std::iter::once(PREFILTER_CUTOFF).chain((1..mip_count).map(reflection_probe_mip_exponent))
-    {
+    for value in std::iter::once(PREFILTER_CUTOFF).chain(
+        (1..mip_count).map(|mip| reflection_probe_mip_exponent(mip, CAPTURE_MIP0_TEXEL_ANGLE)),
+    ) {
         out.extend_from_slice(&value.to_le_bytes());
     }
     out
@@ -229,7 +233,7 @@ pub(super) fn prefilter_weight(cos_angle: f32, exponent: f32) -> f32 {
 /// Colour mip `mip`'s interior, row-major: each texel the solid-angle-
 /// weighted mean of the mip-0 capture in the probe's hemisphere
 /// ([`PrefilterSource`]) under the lobe of
-/// `reflection_probe_mip_exponent(mip)` ([`PrefilterLobe`]), centred on
+/// `reflection_probe_mip_exponent(mip, α₀)` ([`PrefilterLobe`]), centred on
 /// the texel's direction. The mean divides by the weight inside the
 /// hemisphere, so a lookup at the horizon reads what lies above it at full
 /// strength. Texels past the lobe's [`PREFILTER_CUTOFF`] angle add nothing,
@@ -239,7 +243,7 @@ pub(super) fn prefilter_weight(cos_angle: f32, exponent: f32) -> f32 {
 /// horizon, which no lookup's filter taps. The distance tile and
 /// capture-shadow weight never enter: only colour is blurred.
 pub(super) fn prefilter_mip(source: &PrefilterSource, mip: u32) -> Vec<Vec3> {
-    let lobe = PrefilterLobe::new(reflection_probe_mip_exponent(mip));
+    let lobe = PrefilterLobe::new(reflection_probe_mip_exponent(mip, CAPTURE_MIP0_TEXEL_ANGLE));
     // Per block, the dot below which no member can reach the cutoff angle.
     let cull: Vec<f32> = source
         .blocks

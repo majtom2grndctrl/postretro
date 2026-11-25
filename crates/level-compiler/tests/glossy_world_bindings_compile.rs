@@ -9,10 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use glam::Vec3;
-use postretro_level_format::glossy_opt_in::specular_slot_reflects;
 use postretro_level_format::octahedral;
 use postretro_level_loader::{LevelWorld, NO_WORLD_PROBE, build_vertex_world_probes, load_prl};
-use postretro_render_cpu::loaded_texture::slot_levels;
+use postretro_render_cpu::loaded_texture::specular_slot_reflects_in;
 use postretro_render_cpu::texture_prep::{PreparedTexture, prepare_world_textures};
 
 use prl_build_support::{BuildDir, link_dev_textures, prl_build};
@@ -127,21 +126,14 @@ fn load_room() -> (BuildDir, LevelWorld) {
     (dir, world)
 }
 
-/// The renderer's glossy opt-in for one prepared world material: the
-/// verdict over the consumed specular slot's uploaded mip 0, as the
-/// renderer's `specular_slot_reflects_in` takes it. A placeholder never
-/// reflects.
+/// The renderer's glossy opt-in for one prepared world material: render-cpu
+/// `specular_slot_reflects_in` over its specular slot, as the renderer calls
+/// it at upload. A placeholder never reflects.
 fn runtime_reflects(entry: &PreparedTexture) -> bool {
     let PreparedTexture::Bundle { slots, plan, .. } = entry else {
         return false;
     };
-    let Ok(slot) = &slots[1] else {
-        return false;
-    };
-    plan.consume[1]
-        && slot_levels(slot)
-            .first()
-            .is_some_and(|&(_, _, mip0)| specular_slot_reflects(slot.format, mip0))
+    specular_slot_reflects_in(&slots[1], plan.consume[1])
 }
 
 /// One probe's bound plane, measured from the vertices the stream stamps

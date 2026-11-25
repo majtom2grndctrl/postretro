@@ -1,6 +1,4 @@
-// The glossy world overlay pass: its pipelines (one per reflection style) over
-// its own layout, forward's static-diffuse forms, the coplanar-mover guard,
-// the floor layer's pass, and the frame's draw gate.
+// The glossy world overlay pass: its pipelines over its own layout, forward's static-diffuse forms, the mover guard, the floor pass and the draw gate.
 // See: context/lib/rendering_pipeline.md §7.3a (Glossy world faces), §10
 
 mod level;
@@ -65,8 +63,10 @@ pub(crate) const GLOSSY_OVERLAY_SHADER_SOURCE: &str = concat!(
 /// The overlay's groups: 0 the shared camera group, 1 the face's world
 /// material (forward's group 1 layout and bind groups, so a material's live
 /// uniform reaches both), 2 the level's probe records, 3 the frame's inputs
-/// (forward's static diffuse and a sampler). Forward is at 16/16 sampled
-/// textures, so the overlay never binds through forward's whole layout.
+/// (forward's static diffuse, a sampler, and the floor layer's target or its
+/// 1×1 placeholder of c = 0 where no floor layer runs). Forward is at 16/16
+/// sampled textures, so the overlay never binds through forward's whole
+/// layout.
 pub(crate) const GLOSSY_OVERLAY_MATERIAL_GROUP: u32 = 1;
 pub(crate) const GLOSSY_OVERLAY_PROBE_GROUP: u32 = 2;
 pub(crate) const GLOSSY_OVERLAY_INPUTS_GROUP: u32 = 3;

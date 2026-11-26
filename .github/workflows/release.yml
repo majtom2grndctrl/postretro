@@ -15,8 +15,6 @@ name: Release
 on:
   push:
     tags: [ "v*" ]
-    # TEMPORARY: dry-run trigger while the workflow is off main. Remove before merge.
-    branches: [ "claude/release-workflow" ]
   workflow_dispatch:
 
 permissions:

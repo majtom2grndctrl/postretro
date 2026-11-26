@@ -1,11 +1,12 @@
-//! `dist` and `sdk-dist`: build the binaries, then hand the content work over.
+//! `sdk-dist`: build the SDK bundle's binaries, then hand the assembly over.
 //!
-//! Stage 1 of `build_pipeline.md` §Distribution packaging builds release
-//! binaries and needs cargo. Stages 2 through 7 are pure content work and do
-//! not, which is why they live in `postretro-tool` — a binary that ships inside
-//! the SDK bundle and can therefore run on a machine with no repository and no
-//! toolchain. `xtask` owns exactly the half that cannot travel: it compiles the
-//! binaries and tells the tool where they are.
+//! Building binaries needs cargo; assembling a distribution is pure content
+//! work and does not, which is why it lives in `postretro-tool` — a binary that
+//! ships inside the SDK bundle and can therefore run on a machine with no
+//! repository and no toolchain. `xtask` owns exactly the half that cannot
+//! travel: it compiles the binaries and tells the tool where they are. A player
+//! payload has no xtask half at all: a game developer runs the bundle's
+//! `bin/postretro-tool dist`, which `sdk-check` scripts.
 //!
 //! See: context/lib/build_pipeline.md §Distribution packaging
 
@@ -126,10 +127,6 @@ const TOOL: Build = Build {
     profile: Profile::Release,
 };
 
-/// The player payload's binaries, handed to `postretro-tool dist`. The tool
-/// that runs the assembly is built after them and ships in no payload.
-const DIST_BUILDS: [Build; 3] = [RELEASE_ENGINE, PRL_BUILD, SCRIPTS_BUILD];
-
 /// The SDK bundle's binaries, handed to `postretro-tool sdk-dist`. The bundle
 /// ships the tool itself, so it is both what runs the assembly and one of the
 /// binaries being copied; naming it keeps that from resting on the tool
@@ -142,19 +139,6 @@ const SDK_DIST_BUILDS: [Build; 6] = [
     MINT_IDENTITY,
     TOOL,
 ];
-
-pub(crate) fn dist(args: Vec<OsString>) -> Result<i32, String> {
-    let context = Context::prepare("dist")?;
-
-    println!("Stage 1: build release postretro, prl-build, scripts-build, and postretro-tool");
-    let binaries = DIST_BUILDS
-        .iter()
-        .map(|build| context.build(build))
-        .collect::<Result<Vec<_>, _>>()?;
-    let tool = context.build(&TOOL)?.path;
-
-    context.delegate(&tool, "dist", &binaries, args)
-}
 
 pub(crate) fn sdk_dist(args: Vec<OsString>) -> Result<i32, String> {
     let context = Context::prepare("sdk-dist")?;
@@ -370,7 +354,7 @@ fn cargo_target_dir(cargo: &OsStr, workspace: &Path) -> Result<PathBuf, String> 
     Ok(PathBuf::from(target_dir))
 }
 
-fn binary_name(name: &str) -> String {
+pub(crate) fn binary_name(name: &str) -> String {
     if cfg!(windows) {
         format!("{name}.exe")
     } else {
@@ -545,28 +529,12 @@ mod tests {
             .collect()
     }
 
-    // The player payload's engine and every binary beside it build release
-    // with default features, so a payload carries no camera-route playback,
-    // recording or drain-cap seed.
-    #[test]
-    fn player_dist_builds_every_binary_release_with_default_features() {
-        let engine: Vec<&Build> = DIST_BUILDS
-            .iter()
-            .filter(|build| build.package == "postretro")
-            .collect();
-        assert_eq!(engine.len(), 1, "the payload ships one engine");
-        assert_eq!(engine[0].flag, "--release-engine");
-        for build in DIST_BUILDS.iter().chain([&TOOL]) {
-            let args = build.cargo_args();
-            assert!(args.contains(&"--release"), "{args:?}");
-            assert!(features_of(&args).is_empty(), "{args:?}");
-            assert_eq!(build.profile.target_subdir(), "release");
-        }
-    }
-
     // The SDK bundle's authoring engine builds debug with the feature
-    // playback, recording and the cap seed ride, and its release engine with
-    // none. The bundle ships the tool, which carries `generate-camera-route`.
+    // playback, recording and the cap seed ride. Every other binary builds
+    // release with default features — the release engine is the one every
+    // player payload built with the bundle ships, so a payload carries no
+    // camera-route playback, recording or cap seed. The bundle ships the
+    // tool, which carries `generate-camera-route`.
     #[test]
     fn sdk_bundle_authoring_engine_carries_playback_and_its_release_engine_does_not() {
         let feature = camera_route_feature();
@@ -605,11 +573,14 @@ mod tests {
             .iter()
             .filter(|build| build.flag != "--engine")
         {
+            let args = build.cargo_args();
             assert!(
-                features_of(&build.cargo_args()).is_empty(),
+                features_of(&args).is_empty(),
                 "{} builds with default features",
                 build.flag
             );
+            assert!(args.contains(&"--release"), "{args:?}");
+            assert_eq!(build.profile.target_subdir(), "release");
         }
 
         let tool = by_flag("--tool");

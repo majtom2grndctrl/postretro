@@ -60,7 +60,7 @@ cargo run -p postretro-level-compiler -- <in>.map -o <out>.prl   # compile a lev
 
 Other profiles are deliberate exceptions. `--release` (thin LTO, no incremental: an edit rebuild takes a minute or more) is for distribution, perf validation, and preflight's release check. `--profile dev-debug` drops workspace optimization and restores full debug info for stepping through code in a debugger. `--profile profiling` keeps `dev` codegen and incremental builds but drops debug assertions and overflow checks; use it for perf iteration and profiling with `dev-tools` or `tracy`: `cargo run -p xtask -- run --profile profiling --features dev-tools -- <map>.prl`. Debug assertions skew `dev` timings: on Mac, `objc2` checks every Objective-C message, about 2.7 ms of Metal submit per frame. Shipped numbers stay on `--release`.
 
-Runtime-only environment variables never trigger a rebuild: `RUST_LOG`, `WGPU_BACKEND`, and the `POSTRETRO_*` diagnostics (§6.4). Distribution builds: `cargo run -p xtask -- dist` and `sdk-dist` (`build_pipeline.md` §Distribution packaging).
+Runtime-only environment variables never trigger a rebuild: `RUST_LOG`, `WGPU_BACKEND`, and the `POSTRETRO_*` diagnostics (§6.4). SDK bundle: `cargo run -p xtask -- sdk-dist` builds it; `cargo run -p xtask -- sdk-check` builds it and runs its `dist` on an external project outside the repository (`build_pipeline.md` §Distribution packaging, §SDK bundle).
 
 ### Worktree builds
 

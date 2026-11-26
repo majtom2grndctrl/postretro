@@ -243,6 +243,18 @@ postretro-tool dist
 The payload lands at `dist/<name>/`, carrying your content published at
 `content/base` and the install's release engine.
 
+A distribution ships the levels your mod's `maps` catalog names, so it needs
+at least one. The starter declares none, and `dist` refuses a mod whose entry
+script names no `maps/<name>.prl` path. Add a catalog entry to
+`start-script.ts`, inside `defineMod({ ... })`, and put its source map at
+`content/base/maps/arena.map`:
+
+```ts
+  maps: [
+    { id: "arena", path: "maps/arena.prl", name: "Arena" },
+  ],
+```
+
 It refuses to write outside your project's own `dist/`, and refuses to delete a
 non-empty directory there that no distribution run produced. See
 [docs/distribution.md](distribution.md) for the full rules, the level-selection

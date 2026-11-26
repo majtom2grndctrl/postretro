@@ -229,6 +229,13 @@ your PC"** on first launch. To proceed, choose **More info**, then **Run
 anyway**. This is expected for this build; only run a payload from a source you
 trust.
 
+The macOS engine binary is unsigned too. A recipient who downloaded the payload
+clears Gatekeeper's quarantine flag once, from the folder they extracted into:
+
+```bash
+xattr -dr com.apple.quarantine my-game
+```
+
 The game requires a graphics adapter that supports DirectX 12 or Vulkan. On its
 first run it writes editable player settings under
 `%APPDATA%\<name>\config\settings.toml` — `<name>` being the manifest's

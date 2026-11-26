@@ -1,0 +1,147 @@
+# Engine release: one SDK bundle per shipped platform, each built natively.
+#
+# A `v*` tag builds every platform and opens a draft GitHub Release with the
+# archives attached; the owner publishes it. A manual dispatch is a dry run:
+# same builds, archives kept as workflow artifacts, no Release.
+#
+# Each platform runs `xtask sdk-check`, which builds the bundle into
+# `dist/postretro-sdk` and then proves it outside the repository. The archive
+# is that same bundle, so nothing ships that the check did not pass.
+#
+# See: context/lib/build_pipeline.md §Distribution packaging (§SDK release)
+
+name: Release
+
+on:
+  push:
+    tags: [ "v*" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      label: ${{ steps.resolve.outputs.label }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: resolve
+        name: Check the tag against the workspace version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '[.packages[] | select(.name == "postretro-tool")][0].version')
+          if [[ -z "$version" || "$version" == "null" ]]; then
+            echo "::error::could not read the workspace version"; exit 1
+          fi
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match workspace version v$version in Cargo.toml"
+              exit 1
+            fi
+            label="v$version"
+          else
+            label="v$version-dev.${GITHUB_SHA::8}"
+          fi
+          echo "label=$label" >> "$GITHUB_OUTPUT"
+          echo "Release label: $label"
+
+  bundle:
+    name: Bundle (${{ matrix.platform }})
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-arm64
+            runner: macos-15
+          - platform: macos-x64
+            runner: macos-15-intel
+          - platform: windows-x64
+            runner: windows-latest
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+      ARCHIVE_BASE: postretro-sdk-${{ needs.version.outputs.label }}-${{ matrix.platform }}
+    steps:
+      - name: Allow long paths (Windows)
+        if: runner.os == 'Windows'
+        run: git config --system core.longpaths true
+
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins the channel; this installs it up front so the
+      # cache key sees the real rustc.
+      - name: Install toolchain
+        shell: bash
+        run: rustup toolchain install && rustc --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.platform }}
+
+      - name: Disk before build
+        shell: bash
+        run: df -h . || true
+
+      - name: sdk-check (builds and verifies dist/postretro-sdk)
+        shell: bash
+        run: cargo run -p xtask -- sdk-check
+
+      - name: Disk after build
+        if: always()
+        shell: bash
+        run: df -h . || true
+
+      - name: Archive bundle (macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: tar -C dist -czf "$ARCHIVE_BASE.tar.gz" postretro-sdk
+
+      - name: Archive bundle (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: 7z a -tzip -mx=7 "$ARCHIVE_BASE.zip" ./dist/postretro-sdk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE_BASE }}
+          path: |
+            ${{ env.ARCHIVE_BASE }}.tar.gz
+            ${{ env.ARCHIVE_BASE }}.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  release:
+    name: Draft GitHub Release
+    if: github.ref_type == 'tag'
+    needs: [ version, bundle ]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: archives
+          merge-multiple: true
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -l archives
+          gh release create "$TAG" archives/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --verify-tag \
+            --title "PostRetro $TAG" \
+            --notes "PostRetro SDK $TAG. Download the bundle for your operating system, unpack it, and start with docs/modding.md. These builds are unsigned: see \"Install a downloaded bundle\" in docs/modding.md."

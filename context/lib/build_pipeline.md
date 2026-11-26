@@ -1125,6 +1125,18 @@ The starter declares no levels, so the bundle runs no bake stage. The sweep refu
 
 **`docs/` is modder-facing only.** `sdk-dist` copies that tree verbatim into every bundle, so every command in it must be runnable by someone holding only a bundle. The engine-developer workflow — `cargo run -p xtask -- …` — lives in `CLAUDE.md`, `AGENTS.md`, and here, never in `docs/`. No command in `docs/` names a `content/dev` path, since no bundle carries one.
 
+### SDK release
+
+`.github/workflows/release.yml` publishes the SDK bundle. A `v<version>` tag builds every shipped platform and opens a **draft** GitHub Release that the owner publishes; a manual dispatch is a dry run that keeps the archives as workflow artifacts, labelled `v<version>-dev.<sha>`.
+
+**The tag is the workspace version.** Every crate inherits `[workspace.package] version`, and the workflow refuses a tag that is not `v` plus that version. Bump the version in `Cargo.toml` on main, then tag that commit.
+
+**Each platform builds on its own runner and ships only what `sdk-check` passed.** The host-builds-for-host constraint above makes this a runner matrix: `macos-arm64` (`macos-15`), `macos-x64` (`macos-15-intel`), `windows-x64` (`windows-latest`). Each runs `cargo run -p xtask -- sdk-check` and archives the `dist/postretro-sdk` that check built and verified — `.tar.gz` on macOS, which keeps executable bits, `.zip` on Windows — as `postretro-sdk-<label>-<platform>`. The archive holds the fixed `postretro-sdk/` root. One failing platform blocks the Release.
+
+**Linux is not shipped.** The engine has not been run on Linux. A runner could pass `sdk-check` there, but that check boots no engine, so it would not show the graphics, audio or gamepad paths work. Add a matrix row after a playtest on a real Linux machine.
+
+**Bundles are unsigned.** No Developer ID signing, notarization or Authenticode yet; `docs/modding.md` (Install a downloaded bundle) and `docs/distribution.md` (What recipients should expect) give the Gatekeeper and SmartScreen steps.
+
 ---
 
 ## Non-Goals

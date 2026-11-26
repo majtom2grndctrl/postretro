@@ -53,6 +53,24 @@ postretro-sdk/
 `core/` is what the engine owns and a game never replaces. See "Payload layout"
 in [docs/distribution.md](distribution.md).
 
+## Install a downloaded bundle
+
+Release bundles are named `postretro-sdk-<version>-<platform>`: `macos-arm64`
+(Apple Silicon), `macos-x64` (Intel Mac) or `windows-x64`. Unpack it anywhere;
+the archive holds one `postretro-sdk/` folder.
+
+These builds are unsigned. On macOS, Gatekeeper blocks binaries from a
+downloaded archive until you clear its quarantine flag once, from the folder
+you unpacked into:
+
+```bash
+xattr -dr com.apple.quarantine postretro-sdk
+```
+
+On Windows, SmartScreen may show **"Windows protected your PC"** the first time
+an executable runs. Choose **More info**, then **Run anyway**. Only do either
+for a bundle from a source you trust.
+
 ## Check the install
 
 From the bundle root:

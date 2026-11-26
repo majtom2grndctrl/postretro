@@ -28,6 +28,16 @@ jobs:
     #   - https://gh.io/using-larger-runners (GitHub.com only)
     # Consider using larger runners or machines with greater resources for possible analysis time improvements.
     runs-on: ${{ (matrix.language == 'swift' && 'macos-latest') || 'ubuntu-latest' }}
+    env:
+      # The rust-analyzer-based extractor fails to expand a macro statement
+      # whose own cfg attribute is false, and starts with `debug_assertions`
+      # off. Turning it on makes the `#[cfg(debug_assertions)]` assertion
+      # statements development_guide.md §3.6 requires live, so they expand.
+      # `test` goes off: sim's inline test modules call
+      # `postretro_ai::test_tick_runner!` across the sim(dev) -> ai -> sim
+      # dev-dependency cycle, which the extractor cannot resolve, and test
+      # code is not shipped code. Other languages ignore this variable.
+      CODEQL_EXTRACTOR_RUST_OPTION_CARGO_CFG_OVERRIDES: "-test,debug_assertions"
     permissions:
       # required for all workflows
       security-events: write

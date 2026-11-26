@@ -32,19 +32,10 @@ somewhere else entirely. See [docs/external-projects.md](external-projects.md).
 ## Player payload vs. SDK bundle
 
 `dist` (this doc) produces a lean **player payload**: a release engine plus
-baked content, meant to be run, not edited. If you instead want to hand someone
-the ability to keep editing a mod — TrenchBroom files, script sources, the
-level and script compilers, and a debug engine that hot-reloads — use
-`sdk-dist`, the **content-complete SDK bundle**. It bakes the same content (so
-it is still playable out of the box) and additionally ships the sources and
-tools:
-
-```bash
-bin/postretro-tool sdk-dist
-```
-
-See [docs/modding.md](modding.md) for the SDK bundle's contents and authoring
-workflow.
+your game's baked content, meant to be run, not edited. The **SDK bundle** you
+are holding is the other kind of distribution — the engine and its tools, with
+no game content of its own. You build payloads with it; you do not build SDK
+bundles. See [docs/modding.md](modding.md).
 
 ## Build on the operating system you will ship for
 
@@ -82,10 +73,9 @@ name, not a path — no slashes, no `..` — because every mod lives directly un
 material sidecars by walking up two levels from the mod it mounted, which lands
 at the project root only for `content/<mod>`.
 
-An SDK bundle ships its own `postretro.toml` at the bundle root, already
-correct, so the bundle is a project you can build from immediately. Its `name`
-is the bundle's folder name, `<name>-sdk`, so the bundle keeps its own player
-data apart from the installed game's (see [docs/modding.md](modding.md)).
+An SDK bundle ships a `postretro.toml` at its root for its empty starter mod
+(`name = "postretro-sdk"`, `mod = "base"`). Change `name` before you release a
+game built from it.
 
 ## Make a payload
 

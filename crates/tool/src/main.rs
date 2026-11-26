@@ -93,7 +93,8 @@ USAGE:
 
 COMMANDS:
   dist                 Assemble a runnable player distribution payload
-  sdk-dist             Assemble a content-complete modder SDK bundle
+  sdk-dist             Assemble the SDK bundle: engine, tools, sdk/docs/tools/core
+                       and an empty starter mod; ships no game content
   run                  Launch the engine against this project, with its mod
                        and baked materials root already correct; a level
                        path (maps/<name>.prl) is relative to the mod

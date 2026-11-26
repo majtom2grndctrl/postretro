@@ -7,7 +7,7 @@
 accepted = [
     "postretro",
     "postretro-dev",
-    "postretro-dev-sdk",
+    "postretro-sdk",
     "my.game",
     "my-game",
     "my_game",

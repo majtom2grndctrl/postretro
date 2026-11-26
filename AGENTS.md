@@ -24,4 +24,4 @@ cargo run -p postretro-tool -- solve-weapon-mount <skeleton.gltf> --weapon <weap
 cargo run -p postretro-tool -- mint-identity dev
 ```
 
-Human-facing docs live in `docs/` and are copied verbatim into every SDK bundle. Every command there must be runnable by someone holding only a bundle — `cargo run -p xtask -- …` belongs in `context/`, never in `docs/`.
+Human-facing docs live in `docs/` and are copied verbatim into every SDK bundle. Every command there must be runnable by someone holding only a bundle — `cargo run -p xtask -- …` belongs in `context/`, never in `docs/`. The bundle ships no game content, so no command in `docs/` names a `content/dev` path (`context/lib/build_pipeline.md` §SDK bundle).

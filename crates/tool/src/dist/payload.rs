@@ -954,7 +954,7 @@ mod tests {
     fn rename_aside_reports_the_holder_when_the_denial_persists() {
         let attempts = Cell::new(0u32);
         let result = rename_aside_with(
-            Path::new("dist/postretro-dev-sdk"),
+            Path::new("dist/postretro-sdk"),
             Path::new("dist/.aside"),
             || {
                 attempts.set(attempts.get() + 1);
@@ -969,7 +969,7 @@ mod tests {
             error.contains("holding a handle inside the existing payload"),
             "{error}"
         );
-        assert!(error.contains("postretro-dev-sdk"), "{error}");
+        assert!(error.contains("postretro-sdk"), "{error}");
     }
 
     /// The retry is scoped to lock denials: an unrelated failure is reported at

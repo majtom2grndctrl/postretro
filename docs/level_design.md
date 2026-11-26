@@ -213,7 +213,7 @@ A glowing surface that lights the room as one soft panel: a ceiling skylight, a 
 
 **Scripts** see an area light as a light of type `"Area"`, at the centre of its glowing faces. `pulse`, `fade`, `flicker` and `colorShift` work; `sweep` has no direction to turn and is refused. See [LightComponent](scripting-reference.md#lightcomponent).
 
-**Examples.** The engine's sample content has two: `content/dev/maps/area-light-panel.map`, a room lit by one ceiling panel, and `content/dev/maps/area-lights-demo.map`, two skylights pulsed by the map's script (`content/dev/scripts/area-lights-demo.ts`). Each panel is a frame brush and a glass brush whose underside alone carries a glowing texture.
+**Examples.** The engine's source repository (not the SDK bundle) has two: `content/dev/maps/area-light-panel.map`, a room lit by one ceiling panel, and `content/dev/maps/area-lights-demo.map`, two skylights pulsed by the map's script (`content/dev/scripts/area-lights-demo.ts`). Each panel is a frame brush and a glass brush whose underside alone carries a glowing texture.
 
 ---
 

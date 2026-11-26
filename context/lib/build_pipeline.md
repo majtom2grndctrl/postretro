@@ -1034,7 +1034,7 @@ A payload reproduces the tree the engine expects, rooted at the payload director
   baked/materials/             .prm sidecars
 ```
 
-**A distribution publishes the developer's mod at `content/<mod>` for the mod their `postretro.toml` declares**, keeping that name rather than renaming it — and the launcher mounts that same mod by name. `base` is the recommended convention for a downstream game; the engine's own `dev` is what a distribution of this workspace keeps. Because the manifest names only the mod and the tool places it under `content/`, the runtime grandparent derivation resolves `<payload>/baked/materials` (§Baked texture mips) for whatever the project named — so the name is honored without special-casing. Honoring it also aligns the published tree with the engine's own bare-launch default (`content/dev`): a payload started without its launcher finds its mod where the engine already looks. Level paths stay mod-root-relative throughout, so nothing expressed against the source mod root — the scanned `maps/<name>.prl` literals, the completion marker's lines, the runtime catalog — changes with the root's name. This is a destination-path parameter at assembly, not a redesign of the stages.
+**A player payload publishes the developer's mod at `content/<mod>` for the mod their `postretro.toml` declares**, keeping that name rather than renaming it — and the launcher mounts that same mod by name. `base` is the recommended convention for a downstream game. A `dist` of this workspace publishes `dev` only to test the packaging pipeline (§SDK bundle). Because the manifest names only the mod and the tool places it under `content/`, the runtime grandparent derivation resolves `<payload>/baked/materials` (§Baked texture mips) for whatever the project named — so the name is honored without special-casing. Level paths stay mod-root-relative throughout, so nothing expressed against the source mod root — the scanned `maps/<name>.prl` literals, the completion marker's lines, the runtime catalog — changes with the root's name. This is a destination-path parameter at assembly, not a redesign of the stages.
 
 `core/` holds what the engine owns and a mounted game never replaces, so it sits outside `content/` and `--mod` never redirects it. It is deliberately one path component, which keeps it outside the two-component shape a mod root must have (§Baked texture mips) — engine assets are not a mod. Stage 5 copies it from the **install root**, never from the project: a game repository carries no engine assets, and a project that happens to hold a directory of that name does not get to stand in for the engine's. The install root is named by `--install-root <dir>` or derived from the tool's own executable location; a checkout is the one layout that derivation cannot see, so `xtask` names the workspace explicitly.
 
@@ -1050,11 +1050,11 @@ The engine learns nothing about `postretro.toml` — it keeps plain flags, so ch
 
 ### Player-data directory
 
-The package name is a game's player-data identity. Every launch that knows its project — the payload launcher, `postretro-tool run`, an SDK bundle's launcher — passes `--app-name <package name>`, and the engine resolves its config and data directories from it at boot stage 1 (`boot_sequence.md` §1) through `ProjectDirs::from`, so each platform normalizes the name its own way: macOS turns spaces into `-`, Linux lowercases and drops whitespace, and case-insensitive file systems fold case. A bare engine launch, `cargo run -p xtask -- run` included, uses `postretro`. The flag is the whole interface: the engine still learns nothing about `postretro.toml`. An authoring run writes where the shipped game writes, so an author sees their players' first launch and saves.
+The package name is a game's player-data identity. Every launch that knows its project — the payload launcher and `postretro-tool run` — passes `--app-name <package name>`, and the engine resolves its config and data directories from it at boot stage 1 (`boot_sequence.md` §1) through `ProjectDirs::from`, so each platform normalizes the name its own way: macOS turns spaces into `-`, Linux lowercases and drops whitespace, and case-insensitive file systems fold case. A bare engine launch, `cargo run -p xtask -- run` included, uses `postretro`. The flag is the whole interface: the engine still learns nothing about `postretro.toml`. An authoring run writes where the shipped game writes, so an author sees their players' first launch and saves.
 
 **One resolution, one chokepoint.** Config and data directories resolve together, once, in one engine module — the only `ProjectDirs::from` call in the workspace, held there by a source-scan test. Saves live in the data directory, and an implicit character's id is `settings.toml`'s `player_id` (`player_options.md` §2), so split resolutions would orphan every save. `postretro-sim` receives the data directory and resolves none of its own.
 
-**The tool refuses what the engine refuses.** `dist`, `sdk-dist`, and `run` reject at manifest read a package name the engine's `--app-name` rule rejects, so no launcher ships that fails at boot. One shared case table holds both checks to the same verdict per name. An SDK bundle is its own project — its marker names the package `<package>-sdk` — so a modder's runs never touch the installed game's saves, and a derivative built from the bundle does not collide with the original by default. From a game's first release, renaming `[package].name` strands its players' settings, `player_id` and saves.
+**The tool refuses what the engine refuses.** `dist` and `run` reject at manifest read a package name the engine's `--app-name` rule rejects, so no launcher ships that fails at boot; `sdk-dist` opens the same manifest and refuses it too. One shared case table holds the tool's check and the engine's to the same verdict per name. The SDK bundle's marker declares the fixed package `postretro-sdk` (§SDK bundle), so its runs share no settings or saves with a shipped game or a bare `postretro` launch. From a game's first release, renaming `[package].name` strands its players' settings, `player_id` and saves.
 
 ### Output-root containment
 
@@ -1082,11 +1082,11 @@ The gate is one-sided. A directory holding content and **no** marker was produce
 
 ### Publication locks
 
-`prl-build` takes a `.<name>.prl.pack.lock` beside every pack it writes and leaves the file behind on purpose: unlinking it would let a waiter keep the old inode open while the next compiler creates and locks a fresh one, so `crates/level-compiler/src/pack.rs` is not where this is fixed. The consequence is that locks reach a distribution from both directions — stage 5 copies a mod tree that already holds the author's, and stage 6 bakes new ones straight into the payload after the copy filter has run.
+`prl-build` takes a `.<name>.prl.pack.lock` beside every pack it writes and leaves the file behind on purpose: unlinking it would let a waiter keep the old inode open while the next compiler creates and locks a fresh one, so `crates/level-compiler/src/pack.rs` is not where this is fixed. The consequence is that locks reach a player payload from both directions — stage 5 copies a mod tree that already holds the author's, and stage 6 bakes new ones straight into the payload after the copy filter has run.
 
-Packaging removes them. Both outputs delete every lock in the finished tree before the sweep, and both sweeps refuse one that survived, which is what stops a later change reintroducing them. Nothing recompiles a shipped `.prl` in place, and a modder who rebakes inside an SDK bundle recreates the lock on demand, so removal costs nothing. The refusal matches on the file's name rather than its extension: `.prl.pack.lock` is a compound suffix behind a leading dot, and the single extension a path API reports for it is a bare `lock` — too narrow to identify these files and too broad to be safe.
+Packaging removes them. `dist` deletes every lock in its finished payload before its sweep. Both sweeps, the payload's and the SDK bundle's, refuse any lock still in the tree, which is what stops a later change reintroducing them. Nothing recompiles a shipped `.prl` in place, so removal costs nothing. The refusal matches on the file's name rather than its extension: `.prl.pack.lock` is a compound suffix behind a leading dot, and the single extension a path API reports for it is a bare `lock` — too narrow to identify these files and too broad to be safe.
 
-Compiler scratch is the other build leftover: `prl-build`'s `.<name>.prl.pack-*.tmp` and `.<name>.prl.cluster-sh-*.spool`, and the texture baker's `<name>.tmp.<pid>`, each renamed into place or deleted on success. Only a killed bake strands one, and it strands it in the author's tree, so both copy filters skip these exact shapes and both sweeps refuse them — matched by name for the same reason as the lock, since a bare `tmp` extension is one a mod could legitimately use.
+Compiler scratch is the other build leftover: `prl-build`'s `.<name>.prl.pack-*.tmp` and `.<name>.prl.cluster-sh-*.spool`, and the texture baker's `<name>.tmp.<pid>`, each renamed into place or deleted on success. Only a killed bake strands one, and it strands it in the author's tree, so `dist`'s copy filter skips these exact shapes and both distribution sweeps refuse them — matched by name for the same reason as the lock, since a bare `tmp` extension is one a mod could legitimately use.
 
 ### Shipped level set
 
@@ -1098,33 +1098,37 @@ Each resolved level bakes from `content/<mod>/maps/<stem>.map` at default flags.
 
 A recipe may not supply the arguments the tool owns. `-o`, `--release`, `--bake-fidelity` and the TUI switches decide what kind of bake a distribution runs. `--baked-root` and `--cache-dir` are the pair that must stay consistent across the compiler and the engine: prl-build reads the last occurrence of each, so a recipe naming one would win and reintroduce exactly the degradation the flags exist to close.
 
-### SDK bundle (modder distribution)
+### SDK bundle (engine distribution)
 
-Distribution has two outputs under `dist/`: the player payload (`dist`, above) and the modder SDK bundle (`postretro-tool sdk-dist`). Both bake the maps — the SDK bundle is **content-complete**: it runs the same level and material bakes as the player payload, so it is playable on arrival, and *additionally* ships what authoring needs. The invariant that separates them is subtraction, not baking: the player payload carries only released runtime artifacts, while the SDK bundle is a superset that also carries the compilers, the tool, the SDK, the docs, and the mod's `.map`/`.ts` sources beside the baked output. Its sweep is correspondingly lighter — it confirms the required entries exist rather than forbidding sources.
+Distribution has two outputs under `dist/`: the player payload (`dist`, above) and the SDK bundle (`postretro-tool sdk-dist`). A player payload is a game developer's game, so it carries their mod. The SDK bundle is the engine a game developer builds with, so **it ships no game content**: game developers bring their own. The workspace's `content/dev` is an engine-developer fixture — maps, scripts and models that exercise features — and ships in no bundle or release.
 
-**The bundle is a project in its own right.** It carries a generated `postretro.toml` naming the source project's own mod (`dev` for this workspace) and the package `<package name>-sdk` (§Player-data directory), so its recipient can produce a player payload from it with no repository, no Rust toolchain, and no cargo. That is the whole reason for shipping the tool, and it is what makes the bundle's own `dist` run the real acceptance for this machinery: every workspace test has a `Cargo.toml` ancestor and a cargo binary, which are the two things the recipient does not have.
-
-**The SDK engine is a debug build with `--features dev-tools`, never `--release`.** One engine both plays the baked maps and authors. TS startup auto-compile and TS/Luau hot reload are gated on debug builds, not on the `dev-tools` feature — the feature only adds the debug inspector overlay, and a release engine links no TypeScript compiler at all (`scripting.md` §8), so it cannot serve an edit-and-reload authoring loop. The bundle needs both bits set: debug for the compile/hot-reload loop, the feature for the inspector.
-
-Bundle root is `<package name>-sdk` under `dist/`, sibling to the player payload's `<package name>` root; the `-sdk` suffix is what keeps the two from colliding under the same output directory, and it is the bundle's package name, so its launcher passes `--app-name <package name>-sdk`. Beyond the baked levels, baked materials, and `core/` tree the player payload also holds, the bundle carries:
+The bundle carries:
 
 - the debug authoring engine at the bundle root, with `scripts-build` beside it because the engine's own hot-reload discovery looks there rather than in `bin/`;
-- `bin/` holding `postretro-tool`, `prl-build`, `scripts-build`, `mint-identity`, and a release engine under the distinct name `postretro-release` — the authoring engine at the root owns the plain name, and a payload must carry an optimized engine;
-- `sdk/`, `docs/`, and `tools/`, copied from the install root alongside `core/` — all four are engine-owned, and the project is never consulted for any of them;
-- the mod tree whole, published under the project's declared mod root like a player payload's, with its `.map`/`.ts` sources beside the freshly baked `.prl` and the emitted entry `.js`;
-- a generated `README.md` quickstart and the project marker.
+- `bin/` holding `postretro-tool`, `prl-build`, `scripts-build`, `mint-identity`, and a release engine under the distinct name `postretro-release` — the authoring engine at the root owns the plain name, and the payloads its recipient builds must carry an optimized engine;
+- `sdk/`, `docs/`, `tools/` and `core/`, copied from the install root — all four are engine-owned, and the project is never consulted for any of them;
+- an empty starter mod at `content/base`, a generated `postretro.toml` naming it, and a generated `README.md` quickstart.
 
-Because the bundle's binaries sit where the tool's own sibling search looks, `bin/postretro-tool dist` from the bundle root needs no flags at all.
+The starter declares no levels, so the bundle runs no bake stage. The sweep refuses any mod but the starter under `content/` and any `baked/` tree, so game content cannot reach a bundle.
 
-It reuses the player payload's bake stages (model-texture bake, per-level `prl-build --release`, materials copy) and its containment and completion-gate machinery (§Output-root containment, §Completion gate). The same host-builds-for-host native-toolchain constraint applies: a bundle's binaries are as host-specific as the player payload's.
+**The SDK engine is a debug build with `--features dev-tools`, never `--release`.** TS startup auto-compile and TS/Luau hot reload are gated on debug builds, not on the `dev-tools` feature — the feature only adds the debug inspector overlay, and a release engine links no TypeScript compiler at all (`scripting.md` §8), so it cannot serve an edit-and-reload authoring loop. The bundle needs both bits set: debug for the compile/hot-reload loop, the feature for the inspector.
 
-**`docs/` is modder-facing only.** `sdk-dist` copies that tree verbatim into every bundle, so every command in it must be runnable by someone holding only a bundle. The engine-developer workflow — `cargo run -p xtask -- …` — lives in `CLAUDE.md`, `AGENTS.md`, and here, never in `docs/`.
+**The bundle root is a starter project, so the tool works on arrival.** `bin/postretro-tool run` from the root boots the starter to the engine's fallback menu, which is the install check. The starter's source is `sdk/templates/starter/` — engine-owned, so it also ships under the bundle's `sdk/` for a developer starting a project in their own repository (`docs/external-projects.md`). The bundle compiles the starter's entry script before it ships, which proves the starter builds; the emitted `.js` ships beside the `.ts`.
+
+**The bundle's name is fixed, not derived.** Its root under `dist/`, and the package its marker declares, are both `postretro-sdk`, whatever project runs the command. The project supplies no name and no content; it anchors the output root (§Output-root containment). A developer renames the package before releasing anything built from the starter.
+
+`sdk-dist` reuses the player payload's containment and completion-gate machinery (§Output-root containment, §Completion gate). The same host-builds-for-host native-toolchain constraint applies: a bundle's binaries are as host-specific as the player payload's.
+
+**Acceptance for the shipped tool runs outside any repository.** Every workspace test has a `Cargo.toml` ancestor and a cargo binary, the two things a recipient lacks. `bin/postretro-tool run` on the starter of a relocated bundle is the smallest check; `bin/postretro-tool dist` on an external project is the full one.
+
+**`docs/` is modder-facing only.** `sdk-dist` copies that tree verbatim into every bundle, so every command in it must be runnable by someone holding only a bundle. The engine-developer workflow — `cargo run -p xtask -- …` — lives in `CLAUDE.md`, `AGENTS.md`, and here, never in `docs/`. No command in `docs/` names a `content/dev` path, since no bundle carries one.
 
 ---
 
 ## Non-Goals
 
 - Runtime level compilation
+- Demo content in the SDK bundle
 - Format plugin registry — adding an input format is a code change in `format/`, not a registration surface
 - WAD file support
 - Runtime lightmap baking

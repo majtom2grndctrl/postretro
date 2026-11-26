@@ -10,15 +10,6 @@ textures for the before/after captures.
 
 ## Build and run
 
-From an SDK bundle of this workspace, at the bundle root:
-
-```bash
-bin/prl-build content/dev/maps/specular-texel-sharpness.map \
-  --baked-root baked --cache-dir .build-caches/prl-cache \
-  -o content/dev/maps/specular-texel-sharpness.prl
-bin/postretro-tool run maps/specular-texel-sharpness.prl
-```
-
 From the workspace root:
 
 ```bash

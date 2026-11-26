@@ -5,14 +5,17 @@ name: postretro-codeql
 # Test code holds fixed passwords, nonces and digests on purpose: tests must be
 # repeatable. Alerts there, such as "Hard-coded cryptographic value", are not
 # findings about shipped code. Inline `#[cfg(test)] mod tests` blocks inside
-# production files are not covered by these patterns; dismiss any alert there
-# as "Used in tests".
+# production files are not covered by these patterns; the Rust extractor drops
+# them instead, through the cfg overrides in .github/workflows/codeql.yml.
 paths-ignore:
   - "**/*_tests.rs"
   - "**/*_test.rs"
+  - "**/*_tests/**"
   - "**/tests/**"
   - "**/*fixtures*.rs"
   - "**/*fixture*.ts"
   - "**/*fixture*.luau"
-  # Plan research scripts, not shipped code.
+  # Plan and measurement research scripts, not shipped code. Measurement `.rs`
+  # files belong to no crate, so the Rust extractor cannot resolve them.
   - "context/plans/**"
+  - "measurements/**"

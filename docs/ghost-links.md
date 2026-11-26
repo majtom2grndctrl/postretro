@@ -425,8 +425,9 @@ These load, with one warning each when the level starts:
 
 ## Trying it
 
-The SDK bundle's dev mod ships a two-copy fixture with both set-pieces:
+The engine's source repository holds a two-copy fixture with both set-pieces:
 `content/dev/maps/ghost-links.map` (its Luau twin is `ghost-links-luau.map`).
+It is not part of the SDK bundle; build the same layout in your own map.
 Each copy is a room with a back room through its east doorway. Copy A's
 doorway is shut by a yellow barrier; copy B's stands open, and the red button
 on the north wall of back room B drops copy A's barrier, whose ghost sinks in
@@ -461,9 +462,9 @@ copy B's. Until its cue, each closet stays shut and its monsters asleep.
   nothing again.
 
 ```bash
-bin/prl-build content/dev/maps/ghost-links.map \
+bin/prl-build content/base/maps/ghost-links.map \
   --baked-root baked --cache-dir .build-caches/prl-cache \
-  -o content/dev/maps/ghost-links.prl
+  -o content/base/maps/ghost-links.prl
 bin/postretro-tool run maps/ghost-links.prl
 ```
 
@@ -484,5 +485,4 @@ bin/postretro-tool run maps/ghost-links.prl --host
 POSTRETRO_NET_LAG=45,60,5 bin/postretro-tool run maps/ghost-links.prl --connect 127.0.0.1:27015
 ```
 
-Compile your own maps the same way, with your mod's folder in place of
-`content/dev`; see [Compiling Your Map](level_design.md#compiling-your-map).
+Use your mod's folder in place of `content/base`; see [Compiling Your Map](level_design.md#compiling-your-map).

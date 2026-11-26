@@ -43,7 +43,7 @@
 - **Clip-timed attacks / clip events / `action.at` / `animationDone` / enemy clip time on the game tick** → `entity_model.md` §7c (Clip-timed attacks) · event format and converter: `resource_management.md` §7 (Clip events)
 - **Build pipeline / FGD / TrenchBroom** → `build_pipeline.md`
 - **Distribution / packaging a runnable build / `dist` payload layout / launcher / `.dist-incomplete` / which levels ship** → `build_pipeline.md` §Distribution packaging
-- **Modder SDK bundle / shipping the content tools / `prl-build` + `scripts-build` in a distribution / `sdk-dist`** → `build_pipeline.md` §Distribution packaging (§SDK bundle)
+- **SDK bundle / shipping the engine and content tools / why the SDK ships no game content / `content/dev` as engine-developer fixtures / the starter mod / `sdk-dist`** → `build_pipeline.md` §Distribution packaging (§SDK bundle)
 - **`postretro-tool` / `postretro.toml` project marker / project discovery / helper-binary resolution / why `xtask` cannot ship** → `build_pipeline.md` §Distribution packaging (§The project marker, §Why the tool is not xtask)
 - **Player-data directory / where `settings.toml` and saves live / `--app-name` / per-game user directories** → `build_pipeline.md` §Distribution packaging (§Player-data directory) · `player_options.md` §2
 - **Authoring launch against a project / `postretro-tool run` / `--core-root` / `--install-root` / who supplies `--baked-root` and `--cache-dir`** → `build_pipeline.md` §Distribution packaging (§Authoring launch) · `ui.md` §5 · `docs/external-projects.md` (author-facing)
@@ -101,7 +101,7 @@
 - **Damage types / defense layers / shields / armor / resist / points dealt / `grantLayer` / reaction body order** → `scripting.md` §2 (Damage type and defense layer declarations), §5 (Defense layer slots), §10.5, §10.8, §11 (Defense layers), §12 (Body order) · `entity_model.md` §Components (Defense layers and damage types) · co-op: `networking.md` §What gates, and what replicates instead
 - **Status effects / damage over time / burn, shock, corrode / damaging fluids, lava, slime / script damage running impact policies** → `scripting.md` §2 (Impact-policy evaluation, Status declarations) · `entity_model.md` §Components (Status effects) · co-op: `networking.md` §What gates, and what replicates instead
 - **Knockback / hit impulses / rocket jumping** → `entity_model.md` §Components (Knockback) · `movement.md` §6 · `networking.md` §Game-logic-owned apply invariant
-- **Game / mod author docs (human-facing, not agent context)** → `docs/` — every command there must be runnable from an SDK bundle alone; `cargo run -p xtask -- …` never appears in it
+- **Game / mod author docs (human-facing, not agent context)** → `docs/` — every command there must be runnable from an SDK bundle alone; `cargo run -p xtask -- …` never appears in it, and no command names `content/dev`, which the bundle does not ship
 - **Game content in an author's own repository, outside an engine install (human-facing walkthrough)** → `docs/external-projects.md`; the contract behind it is `build_pipeline.md` §Baked texture mips and §Distribution packaging
 - **Collision (world/entity)** → `entity_model.md` §7
 - **Radial entity query / one-to-many overlap / all entities within radius / non-ray query family** → `entity_model.md` §7 (Radial entity overlap)

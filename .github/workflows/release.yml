@@ -29,7 +29,7 @@ jobs:
     outputs:
       label: ${{ steps.resolve.outputs.label }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: resolve
         name: Check the tag against the workspace version
         shell: bash
@@ -76,13 +76,14 @@ jobs:
         if: runner.os == 'Windows'
         run: git config --system core.longpaths true
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      # rust-toolchain.toml pins the channel; this installs it up front so the
-      # cache key sees the real rustc.
+      # rust-toolchain.toml pins the channel; this installs it up front so a
+      # stale preinstalled stable (macos-15-intel ships 1.98) cannot fail the
+      # workspace rust-version, and the cache key sees the real rustc.
       - name: Install toolchain
         shell: bash
-        run: rustup toolchain install && rustc --version
+        run: rustup update --no-self-update stable && rustc --version
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -111,7 +112,7 @@ jobs:
         shell: bash
         run: 7z a -tzip -mx=7 "$ARCHIVE_BASE.zip" ./dist/postretro-sdk
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ env.ARCHIVE_BASE }}
           path: |
@@ -129,7 +130,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: archives
           merge-multiple: true

@@ -157,7 +157,8 @@ a double-click. Do not flatten the folder, and do not move `core/`.
 The shipped level set is the `maps/<name>.prl` paths written **literally** in
 your mod's emitted entry-script catalog. To add or drop a shipped level, add or
 remove that catalog entry, then make sure its source map exists at
-`content/<mod>/maps/<name>.map`.
+`content/<mod>/maps/<name>.map`. A run needs at least one: a mod whose entry
+script names no level, like the bundle's empty starter, is refused.
 
 A path the script assembles at runtime rather than writing as a literal ships
 nothing and reports nothing — no stage ever saw the level, so the recipient gets

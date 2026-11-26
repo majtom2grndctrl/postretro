@@ -43,7 +43,7 @@
 - **Clip-timed attacks / clip events / `action.at` / `animationDone` / enemy clip time on the game tick** → `entity_model.md` §7c (Clip-timed attacks) · event format and converter: `resource_management.md` §7 (Clip events)
 - **Build pipeline / FGD / TrenchBroom** → `build_pipeline.md`
 - **Distribution / packaging a runnable build / `dist` payload layout / launcher / `.dist-incomplete` / which levels ship** → `build_pipeline.md` §Distribution packaging
-- **SDK bundle / shipping the engine and content tools / why the SDK ships no game content / `content/dev` as engine-developer fixtures / the starter mod / `sdk-dist`** → `build_pipeline.md` §Distribution packaging (§SDK bundle)
+- **SDK bundle / shipping the engine and content tools / why the SDK ships no game content / `content/dev` as engine-developer fixtures / the starter mod / `sdk-dist` / `sdk-check` (bundle acceptance outside the repository)** → `build_pipeline.md` §Distribution packaging (§SDK bundle)
 - **`postretro-tool` / `postretro.toml` project marker / project discovery / helper-binary resolution / why `xtask` cannot ship** → `build_pipeline.md` §Distribution packaging (§The project marker, §Why the tool is not xtask)
 - **Player-data directory / where `settings.toml` and saves live / `--app-name` / per-game user directories** → `build_pipeline.md` §Distribution packaging (§Player-data directory) · `player_options.md` §2
 - **Authoring launch against a project / `postretro-tool run` / `--core-root` / `--install-root` / who supplies `--baked-root` and `--cache-dir`** → `build_pipeline.md` §Distribution packaging (§Authoring launch) · `ui.md` §5 · `docs/external-projects.md` (author-facing)

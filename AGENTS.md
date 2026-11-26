@@ -14,7 +14,7 @@ Read `context/lib/index.md` before doing anything else. It routes to the right c
 
 ## Content tooling
 
-Authoring runs, asset bakes, the weapon-mount solver, and distribution assembly live in `postretro-tool`, which compiles nothing and ships inside SDK bundles. It finds its project by walking up for `postretro.toml`, and its helper binaries by looking beside its own executable — so build what it needs first. Its engine-owned trees (`core/`, `sdk/`, `docs/`, `tools/`) resolve under the **install root**, which a checkout build in `target/` cannot derive, so pass `--install-root .` from the workspace root for `run`, `dist` and `sdk-dist`.
+Authoring runs, asset bakes, the weapon-mount solver, and distribution assembly live in `postretro-tool`, which compiles nothing and ships inside SDK bundles. It finds its project by walking up for `postretro.toml`, and its helper binaries by looking beside its own executable — so build what it needs first. Its engine-owned trees (`core/`, `sdk/`, `docs/`, `tools/`) resolve under the **install root**, which a checkout build in `target/` cannot derive, so pass `--install-root .` from the workspace root for `run` and `sdk-dist`. A player payload's `dist` is the game developer's command, run from a bundle; `cargo run -p xtask -- sdk-check` builds the bundle and runs that `dist` on an external project outside the repository.
 
 ```bash
 cargo run -p postretro-tool -- --help                     # full usage

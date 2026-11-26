@@ -1,11 +1,11 @@
 // Development workflow entry points for Postretro.
 //
 // What lives here is what needs cargo and a workspace: launching the engine
-// through `cargo run`, analysing the workspace crate graph, and building the
-// binaries a distribution ships. The content tooling a distribution's recipient
-// needs — `dist`, `sdk-dist`, `run`, the asset bakes, the mount solver — lives in
-// `postretro-tool`, which ships inside the SDK bundle and resolves nothing at
-// compile time.
+// through `cargo run`, analysing the workspace crate graph, building the
+// binaries the SDK bundle ships, and checking that bundle from outside the
+// repository. The content tooling a bundle's recipient needs — `dist`, `run`,
+// the asset bakes, the mount solver — lives in `postretro-tool`, which ships
+// inside the SDK bundle and resolves nothing at compile time.
 //
 // See: context/lib/development_guide.md
 
@@ -21,6 +21,7 @@ mod emissive_gates;
 mod environment_gates;
 #[cfg(test)]
 mod mover_shot_gates;
+mod sdk_check;
 #[cfg(test)]
 mod seam_gates;
 #[cfg(test)]
@@ -68,12 +69,12 @@ fn try_main() -> Result<i32, String> {
         return crate_graph::run(args.collect());
     }
 
-    if command == "dist" {
-        return dist::dist(args.collect());
-    }
-
     if command == "sdk-dist" {
         return dist::sdk_dist(args.collect());
+    }
+
+    if command == "sdk-check" {
+        return sdk_check::run(args.collect());
     }
 
     Err(format!(
@@ -389,8 +390,8 @@ fn print_help() {
            cargo run -p xtask -- observe <runspec.json> [--pool-seed=<u64>]\n\
            cargo run -p xtask -- capture <scene.json>\n\
            cargo run -p xtask -- crate-graph [--write | --check | --mermaid | --rdeps <crate> | --deps <crate>]\n\
-           cargo run -p xtask -- dist [--manifest <path>] [--out <dir>]\n\
-           cargo run -p xtask -- sdk-dist [--manifest <path>] [--out <dir>]\n\n\
+           cargo run -p xtask -- sdk-dist [--manifest <path>] [--out <dir>]\n\
+           cargo run -p xtask -- sdk-check\n\n\
          COMMANDS:\n\
            run                  Build scripts-build, then run the postretro engine\n\
            observe              Build scripts-build, then run the engine headless\n\
@@ -401,19 +402,22 @@ fn print_help() {
            crate-graph          Analyze the internal crate dependency graph: print it,\n\
                                 --write the committed snapshot, --check its freshness,\n\
                                 --mermaid the diagram, or query --rdeps / --deps of a crate\n\
-           dist                 Build the release binaries, then assemble a host-native\n\
-                                standalone distribution payload through postretro-tool;\n\
-                                from this workspace it packages content/dev as a test of\n\
-                                the packaging pipeline, not a release\n\
            sdk-dist             Build the authoring and release binaries, then assemble the\n\
                                 host-native SDK bundle through postretro-tool: the\n\
                                 authoring engine (debug + dev-tools), the release engine,\n\
                                 the compilers, postretro-tool itself, sdk/docs/tools/core,\n\
                                 and an empty starter mod. It ships no game content;\n\
-                                content/dev ships in no bundle\n\n\
+                                content/dev ships in no bundle\n\
+           sdk-check            Build the SDK bundle as sdk-dist does, copy it outside the\n\
+                                repository, create an external project from its starter\n\
+                                with one fixture level, and run the bundle's own\n\
+                                `bin/postretro-tool dist` there, then verify the payload.\n\
+                                Slow (debug and release engine builds); keeps its temp\n\
+                                directory on failure\n\n\
          CONTENT TOOLING:\n\
-           Authoring runs, asset bakes, and the weapon-mount solver live in\n\
-           `postretro-tool`, which needs no cargo and ships inside the SDK bundle:\n\
+           Authoring runs, asset bakes, the weapon-mount solver and player payloads\n\
+           live in `postretro-tool`, which needs no cargo and ships inside the SDK\n\
+           bundle:\n\
              cargo run -p postretro-tool -- run --install-root . maps/campaign-test.prl\n\
              cargo run -p postretro-tool -- bake-model-textures <scene.gltf>\n\
              cargo run -p postretro-tool -- solve-weapon-mount <skeleton.gltf> ...\n\
@@ -422,9 +426,10 @@ fn print_help() {
            it runs helper binaries rather than building them, so build what it needs\n\
            first (for example `cargo build -p postretro-sim --bin mint-identity`); and\n\
            its engine-owned trees (core/, sdk/, docs/, tools/) resolve under the install\n\
-           root, which a checkout build in target/ cannot derive — `dist` and `sdk-dist`\n\
-           above pass `--install-root` for you, so a direct `dist`, `sdk-dist`, or\n\
-           `run` invocation needs `--install-root .` from the workspace root.\n\n\
+           root, which a checkout build in target/ cannot derive — `sdk-dist` above\n\
+           passes `--install-root` for you, so a direct `sdk-dist` or `run`\n\
+           invocation needs `--install-root .` from the workspace root. A game's\n\
+           `dist` runs from a bundle, which derives it; `sdk-check` runs that path.\n\n\
          EXAMPLES:\n\
            cargo run -p xtask -- run content/dev/maps/campaign-test.prl\n\
            cargo run -p xtask -- run --features dev-tools -- content/dev/maps/campaign-test.prl\n\
